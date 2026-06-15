@@ -4,9 +4,9 @@
 package store
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,7 +15,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dal-go/dalgo/dal"
 	"github.com/google/uuid"
+	"github.com/ingitdb/ingitdb-cli/pkg/dalgo2ingitdb"
+	"github.com/ingitdb/ingitdb-cli/pkg/ingitdb/validator"
 )
 
 // Op is a collection-level operation, mirroring the `Op` enum in main.tsp.
@@ -58,6 +61,7 @@ type Store struct {
 	mu         sync.Mutex
 	vaults     []Vault
 	namespaces map[string]*Namespace // by namespace id
+	dbs        map[string]dal.DB     // by vault id; inGitDB-backed record store
 }
 
 // Open initialises the data directory, loads or seeds the owner token, and
@@ -74,12 +78,16 @@ func Open(dir string) (*Store, error) {
 	s := &Store{
 		dir:        abs,
 		namespaces: map[string]*Namespace{},
+		dbs:        map[string]dal.DB{},
 	}
 	if err := s.loadOrCreateOwnerToken(); err != nil {
 		return nil, err
 	}
 	s.seed()
 	if err := s.ensureCollectionSchemas(); err != nil {
+		return nil, err
+	}
+	if err := s.openDatabases(); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -183,12 +191,42 @@ func randomHex(n int) (string, error) {
 // The data dir defaults to ~/openvaultdb.
 // ---------------------------------------------------------------------------
 
-func (s *Store) collectionDir(vault, nsID, collection string) string {
-	return filepath.Join(s.dir, "vaults", vault, nsDiskPath(nsID), collection)
+// vaultDir is the inGitDB project root for a vault (the projectPath passed to
+// dalgo2ingitdb.NewDatabase). It must exist before the DB is opened.
+func (s *Store) vaultDir(vault string) string {
+	return filepath.Join(s.dir, "vaults", vault)
 }
 
-func (s *Store) recordsDir(vault, nsID, collection string) string {
-	return filepath.Join(s.collectionDir(vault, nsID, collection), "$records")
+func (s *Store) collectionDir(vault, nsID, collection string) string {
+	return filepath.Join(s.vaultDir(vault), nsDiskPath(nsID), collection)
+}
+
+// collectionRelPath is the collection directory relative to the vault project
+// root, using "/" separators (the path recorded in root-collections.yaml).
+func collectionRelPath(nsID, collection string) string {
+	return filepath.ToSlash(filepath.Join(nsDiskPath(nsID), collection))
+}
+
+// collectionID is the dalgo collection identifier for a (namespace, collection)
+// pair. dalgo encodes a record key as "<collectionID>/<recordKey>" and validates
+// the collection segment with ingitdb.ValidateCollectionID, which allows only
+// alphanumerics, '.' and '_' (no '/' and no '-'). So the nested relative path is
+// flattened to a dotted, sanitized handle. It is decoupled from the on-disk path
+// (mapped via root-collections.yaml), so collisions only matter within one vault.
+func collectionID(nsID, collection string) string {
+	raw := collectionRelPath(nsID, collection)
+	var b strings.Builder
+	for _, r := range raw {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.':
+			b.WriteRune(r)
+		case r == '/':
+			b.WriteRune('.')
+		default:
+			b.WriteRune('_')
+		}
+	}
+	return strings.Trim(b.String(), "._")
 }
 
 // nsDiskPath maps a domain-bounded namespace id to nested on-disk directories.
@@ -217,53 +255,118 @@ func nsDiskPath(nsID string) string {
 	return filepath.Join(safe...)
 }
 
-// ensureCollectionSchemas writes a .ingitdb-collection.yaml for each seeded
-// collection so the on-disk store is a valid inGitDB collection.
+// ensureCollectionSchemas creates the inGitDB on-disk layout for every seeded
+// vault×namespace×collection: the collection directory with its
+// .collection/definition.yaml and an empty $records/ directory, plus the
+// per-vault .ingitdb/root-collections.yaml mapping each collection's dalgo ID to
+// its (nested) on-disk path. The vault project root must exist before
+// dalgo2ingitdb.NewDatabase stats it, so this runs at startup.
 func (s *Store) ensureCollectionSchemas() error {
 	for _, v := range s.vaults {
+		rootCollections := map[string]string{}
 		for _, ns := range s.namespaces {
 			for _, col := range ns.Collections {
 				dir := s.collectionDir(v.ID, ns.ID, col)
 				if err := os.MkdirAll(filepath.Join(dir, "$records"), 0o755); err != nil {
 					return err
 				}
-				schemaPath := filepath.Join(dir, ".ingitdb-collection.yaml")
-				if _, err := os.Stat(schemaPath); err == nil {
-					continue
-				}
-				if err := os.WriteFile(schemaPath, []byte(tasksCollectionSchema), 0o644); err != nil {
+				schemaDir := filepath.Join(dir, ".collection")
+				if err := os.MkdirAll(schemaDir, 0o755); err != nil {
 					return err
 				}
+				schemaPath := filepath.Join(schemaDir, "definition.yaml")
+				if _, err := os.Stat(schemaPath); err != nil {
+					if !os.IsNotExist(err) {
+						return err
+					}
+					if err := os.WriteFile(schemaPath, []byte(tasksCollectionDefinition), 0o644); err != nil {
+						return err
+					}
+				}
+				rootCollections[collectionID(ns.ID, col)] = collectionRelPath(ns.ID, col)
 			}
+		}
+		if err := s.writeRootCollections(v.ID, rootCollections); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-// ListRecords returns all records in a collection.
-func (s *Store) ListRecords(vault, nsID, collection string) ([]Record, error) {
-	dir := s.recordsDir(vault, nsID, collection)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []Record{}, nil
+// writeRootCollections writes <vault>/.ingitdb/root-collections.yaml, a flat
+// YAML map of collection ID -> relative path that the inGitDB CollectionsReader
+// uses to discover collections.
+func (s *Store) writeRootCollections(vault string, rootCollections map[string]string) error {
+	dir := filepath.Join(s.vaultDir(vault), ".ingitdb")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	ids := make([]string, 0, len(rootCollections))
+	for id := range rootCollections {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	var b strings.Builder
+	for _, id := range ids {
+		fmt.Fprintf(&b, "%s: %s\n", id, rootCollections[id])
+	}
+	return os.WriteFile(filepath.Join(dir, "root-collections.yaml"), []byte(b.String()), 0o644)
+}
+
+// openDatabases opens one inGitDB-backed dal.DB per vault, rooted at the vault
+// project directory (which ensureCollectionSchemas has already created).
+func (s *Store) openDatabases() error {
+	for _, v := range s.vaults {
+		db, err := dalgo2ingitdb.NewDatabase(s.vaultDir(v.ID), validator.NewCollectionsReader())
+		if err != nil {
+			return fmt.Errorf("open inGitDB for vault %q: %w", v.ID, err)
 		}
+		s.dbs[v.ID] = db
+	}
+	return nil
+}
+
+func (s *Store) dbFor(vault string) (dal.DB, error) {
+	db, ok := s.dbs[vault]
+	if !ok {
+		return nil, fmt.Errorf("no database for vault %q", vault)
+	}
+	return db, nil
+}
+
+// ListRecords returns all records in a collection, each reconstructed with its
+// id (the record's $key / filename) re-attached.
+func (s *Store) ListRecords(vault, nsID, collection string) ([]Record, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	db, err := s.dbFor(vault)
+	if err != nil {
 		return nil, err
 	}
+	colID := collectionID(nsID, collection)
+	ctx := context.Background()
+
+	q := dal.From(dal.NewRootCollectionRef(colID, "")).NewQuery().
+		SelectIntoRecord(func() dal.Record {
+			return dal.NewRecordWithData(dal.NewKeyWithID(colID, ""), map[string]any{})
+		})
+	reader, err := db.ExecuteQueryToRecordsReader(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
 	out := []Record{}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
+	for {
+		r, err := reader.Next()
+		if err == dal.ErrNoMoreRecords {
+			break
 		}
-		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
 			return nil, err
 		}
-		var r Record
-		if err := json.Unmarshal(b, &r); err != nil {
-			return nil, err
-		}
-		out = append(out, r)
+		rec := recordFromData(r.Data(), fmt.Sprintf("%v", r.Key().ID))
+		out = append(out, rec)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return fmt.Sprint(out[i]["id"]) < fmt.Sprint(out[j]["id"])
@@ -271,7 +374,8 @@ func (s *Store) ListRecords(vault, nsID, collection string) ([]Record, error) {
 	return out, nil
 }
 
-// CreateRecord persists a new record, generating id/createdAt/done defaults.
+// CreateRecord persists a new record, generating id/createdAt/done defaults. The
+// id is the record's $key (filename); it is not stored inside the record file.
 func (s *Store) CreateRecord(vault, nsID, collection string, rec Record) (Record, error) {
 	if rec == nil {
 		rec = Record{}
@@ -279,39 +383,60 @@ func (s *Store) CreateRecord(vault, nsID, collection string, rec Record) (Record
 	id, _ := rec["id"].(string)
 	if id == "" {
 		id = uuid.NewString()
-		rec["id"] = id
 	}
+	rec["id"] = id
 	if _, ok := rec["createdAt"]; !ok {
 		rec["createdAt"] = time.Now().UTC().Format(time.RFC3339)
 	}
 	if _, ok := rec["done"]; !ok {
 		rec["done"] = false
 	}
-	if err := s.writeRecord(vault, nsID, collection, id, rec); err != nil {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	db, err := s.dbFor(vault)
+	if err != nil {
+		return nil, err
+	}
+	colID := collectionID(nsID, collection)
+	dataRec := dal.NewRecordWithData(dal.NewKeyWithID(colID, id), dataWithoutID(rec))
+	err = db.RunReadwriteTransaction(context.Background(), func(ctx context.Context, tx dal.ReadwriteTransaction) error {
+		return tx.Insert(ctx, dataRec)
+	})
+	if err != nil {
 		return nil, err
 	}
 	return rec, nil
 }
 
-// GetRecord loads a single record by id.
+// GetRecord loads a single record by id, re-attaching id.
 func (s *Store) GetRecord(vault, nsID, collection, id string) (Record, bool, error) {
-	b, err := os.ReadFile(s.recordPath(vault, nsID, collection, id))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.getRecordLocked(vault, nsID, collection, id)
+}
+
+func (s *Store) getRecordLocked(vault, nsID, collection, id string) (Record, bool, error) {
+	db, err := s.dbFor(vault)
 	if err != nil {
-		if os.IsNotExist(err) {
+		return nil, false, err
+	}
+	colID := collectionID(nsID, collection)
+	rec := dal.NewRecordWithData(dal.NewKeyWithID(colID, id), map[string]any{})
+	if err := db.Get(context.Background(), rec); err != nil {
+		if dal.IsNotFound(err) {
 			return nil, false, nil
 		}
 		return nil, false, err
 	}
-	var r Record
-	if err := json.Unmarshal(b, &r); err != nil {
-		return nil, false, err
-	}
-	return r, true, nil
+	return recordFromData(rec.Data(), id), true, nil
 }
 
-// UpdateRecord merges a patch into an existing record.
+// UpdateRecord merges a patch into an existing record and rewrites it.
 func (s *Store) UpdateRecord(vault, nsID, collection, id string, patch Record) (Record, bool, error) {
-	cur, ok, err := s.GetRecord(vault, nsID, collection, id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur, ok, err := s.getRecordLocked(vault, nsID, collection, id)
 	if err != nil || !ok {
 		return nil, ok, err
 	}
@@ -321,77 +446,89 @@ func (s *Store) UpdateRecord(vault, nsID, collection, id string, patch Record) (
 		}
 		cur[k] = v
 	}
-	if err := s.writeRecord(vault, nsID, collection, id, cur); err != nil {
+	cur["id"] = id
+
+	db, err := s.dbFor(vault)
+	if err != nil {
+		return nil, true, err
+	}
+	colID := collectionID(nsID, collection)
+	dataRec := dal.NewRecordWithData(dal.NewKeyWithID(colID, id), dataWithoutID(cur))
+	err = db.RunReadwriteTransaction(context.Background(), func(ctx context.Context, tx dal.ReadwriteTransaction) error {
+		return tx.Set(ctx, dataRec)
+	})
+	if err != nil {
 		return nil, true, err
 	}
 	return cur, true, nil
 }
 
-// DeleteRecord removes a record by id.
+// DeleteRecord removes a record by id, returning ok=false (no error) if missing.
 func (s *Store) DeleteRecord(vault, nsID, collection, id string) (bool, error) {
-	err := os.Remove(s.recordPath(vault, nsID, collection, id))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok, err := s.getRecordLocked(vault, nsID, collection, id); err != nil || !ok {
+		return ok, err
+	}
+	db, err := s.dbFor(vault)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
+		return false, err
+	}
+	colID := collectionID(nsID, collection)
+	key := dal.NewKeyWithID(colID, id)
+	err = db.RunReadwriteTransaction(context.Background(), func(ctx context.Context, tx dal.ReadwriteTransaction) error {
+		return tx.Delete(ctx, key)
+	})
+	if err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-func (s *Store) recordPath(vault, nsID, collection, id string) string {
-	return filepath.Join(s.recordsDir(vault, nsID, collection), safeID(id)+".json")
-}
-
-func (s *Store) writeRecord(vault, nsID, collection, id string, rec Record) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	dir := s.recordsDir(vault, nsID, collection)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+// dataWithoutID returns a copy of rec with the "id" field removed; the id is the
+// record's $key (filename) in inGitDB and must not be stored in the file.
+func dataWithoutID(rec Record) map[string]any {
+	out := make(map[string]any, len(rec))
+	for k, v := range rec {
+		if k == "id" {
+			continue
+		}
+		out[k] = v
 	}
-	b, err := json.MarshalIndent(rec, "", "  ")
-	if err != nil {
-		return err
+	return out
+}
+
+// recordFromData builds a Record from an inGitDB record payload, re-attaching id.
+func recordFromData(data any, id string) Record {
+	rec := Record{}
+	if m, ok := data.(map[string]any); ok {
+		for k, v := range m {
+			rec[k] = v
+		}
 	}
-	return os.WriteFile(s.recordPath(vault, nsID, collection, id), b, 0o644)
+	rec["id"] = id
+	return rec
 }
 
-// safeID prevents path traversal via record ids.
-func safeID(id string) string {
-	id = strings.ReplaceAll(id, "/", "_")
-	id = strings.ReplaceAll(id, "\\", "_")
-	id = strings.ReplaceAll(id, "..", "_")
-	return id
-}
-
-// tasksCollectionSchema is the inGitDB collection schema for `tasks`,
-// matching the fields pinned in INTEGRATION.md.
-const tasksCollectionSchema = `titles:
+// tasksCollectionDefinition is the inGitDB collection definition for `tasks`,
+// written to <collection>/.collection/definition.yaml. One JSON file per record
+// under $records/, keyed by the record id ({key}). The id is the $key and is not
+// a stored column.
+const tasksCollectionDefinition = `titles:
   en: Tasks
-recordsDir: $records
+record_file:
+  name: "{key}.json"
+  type: "map[string]any"
+  format: json
 columns:
-  id:
-    type: string
-    titles:
-      en: ID
-    primaryKey: true
   title:
     type: string
-    titles:
-      en: Title
     required: true
   done:
-    type: boolean
-    titles:
-      en: Done
-    default: false
+    type: bool
   createdAt:
     type: string
-    titles:
-      en: Created At
-columnsOrder:
-  - id
+columns_order:
   - title
   - done
   - createdAt
