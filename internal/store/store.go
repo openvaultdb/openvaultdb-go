@@ -179,25 +179,32 @@ func randomHex(n int) (string, error) {
 
 // ---------------------------------------------------------------------------
 // Record persistence (inGitDB-style: one JSON file per record under
-// <dir>/vaults/<vault>/ns/<sanitized-ns>/collections/<col>/$records/<id>.json)
+// <dir>/vaults/<vault>/<owner-domain>/<name>/<col>/$records/<id>.json).
+// The data dir defaults to ~/openvaultdb.
 // ---------------------------------------------------------------------------
 
 func (s *Store) collectionDir(vault, nsID, collection string) string {
-	return filepath.Join(s.dir, "vaults", vault, "ns", nsPath(nsID), "collections", collection)
+	return filepath.Join(s.dir, "vaults", vault, nsDiskPath(nsID), collection)
 }
 
 func (s *Store) recordsDir(vault, nsID, collection string) string {
 	return filepath.Join(s.collectionDir(vault, nsID, collection), "$records")
 }
 
-// nsPath turns a domain-bounded namespace id (which contains '/') into nested
-// path segments, so the on-disk layout mirrors the namespace hierarchy — e.g.
-// "todo-demo.openvaultdb.app/openvaultdb/todos" becomes the directories
-// todo-demo.openvaultdb.app/openvaultdb/todos. Each segment is sanitized and
-// empty/relative segments ("", ".", "..") are dropped to keep records within
-// the collection tree.
-func nsPath(nsID string) string {
+// nsDiskPath maps a domain-bounded namespace id to nested on-disk directories.
+// The "openvaultdb" infix from the namespace convention
+// (<owner-domain>/openvaultdb/<name>) is dropped on disk — it stays in the
+// namespace id and its manifest URL, but is redundant under a data dir that is
+// already OpenVaultDB's. So "todo-demo.openvaultdb.app/openvaultdb/todos"
+// becomes the directories todo-demo.openvaultdb.app/todos. Each segment is
+// sanitized; empty/relative segments ("", ".", "..") are dropped to keep
+// records within the tree.
+func nsDiskPath(nsID string) string {
 	parts := strings.Split(nsID, "/")
+	// Drop the convention's "openvaultdb" infix at position 1.
+	if len(parts) >= 2 && parts[1] == "openvaultdb" {
+		parts = append(parts[:1:1], parts[2:]...)
+	}
 	safe := make([]string, 0, len(parts))
 	for _, p := range parts {
 		p = strings.TrimSpace(p)

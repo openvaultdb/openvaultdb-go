@@ -3,12 +3,23 @@ package cli
 import (
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/openvaultdb/openvaultdb-go/internal/server"
 	"github.com/openvaultdb/openvaultdb-go/internal/store"
 )
+
+// defaultDataDir is ~/openvaultdb when a home directory is resolvable, else a
+// local ./openvaultdb fallback.
+func defaultDataDir() string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, "openvaultdb")
+	}
+	return "./openvaultdb"
+}
 
 func serveCommand() *cobra.Command {
 	var (
@@ -36,6 +47,6 @@ func serveCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().IntVar(&port, "port", 8088, "TCP port to listen on")
-	cmd.Flags().StringVar(&dataDir, "data-dir", "./ovdb-data", "directory for on-disk vault data")
+	cmd.Flags().StringVar(&dataDir, "data-dir", defaultDataDir(), "directory for on-disk vault data (default ~/openvaultdb)")
 	return cmd
 }
