@@ -104,10 +104,13 @@ func (s *Store) loadOrCreateOwnerToken() error {
 	return os.WriteFile(path, []byte(tok+"\n"), 0o600)
 }
 
-// seed populates the demo vault and namespace per INTEGRATION.md.
+// seed populates the default vaults (personal, family, work) and the demo
+// namespace. Records are isolated per vault; the namespace is shared.
 func (s *Store) seed() {
 	s.vaults = []Vault{
-		{ID: "local", Name: "Local Vault", Backend: "ingit"},
+		{ID: "personal", Name: "Personal", Backend: "ingit"},
+		{ID: "family", Name: "Family", Backend: "ingit"},
+		{ID: "work", Name: "Work", Backend: "ingit"},
 	}
 	ns := &Namespace{
 		ID:          "todo-demo.openvaultdb.app/openvaultdb/todos",
