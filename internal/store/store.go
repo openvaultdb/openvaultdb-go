@@ -183,17 +183,31 @@ func randomHex(n int) (string, error) {
 // ---------------------------------------------------------------------------
 
 func (s *Store) collectionDir(vault, nsID, collection string) string {
-	return filepath.Join(s.dir, "vaults", vault, "ns", sanitizeNS(nsID), "collections", collection)
+	return filepath.Join(s.dir, "vaults", vault, "ns", nsPath(nsID), "collections", collection)
 }
 
 func (s *Store) recordsDir(vault, nsID, collection string) string {
 	return filepath.Join(s.collectionDir(vault, nsID, collection), "$records")
 }
 
-// sanitizeNS turns a namespace id (which contains '/') into a single safe path
-// segment so the on-disk layout stays flat and predictable.
-func sanitizeNS(nsID string) string {
-	return strings.ReplaceAll(nsID, "/", "~")
+// nsPath turns a domain-bounded namespace id (which contains '/') into nested
+// path segments, so the on-disk layout mirrors the namespace hierarchy — e.g.
+// "todo-demo.openvaultdb.app/openvaultdb/todos" becomes the directories
+// todo-demo.openvaultdb.app/openvaultdb/todos. Each segment is sanitized and
+// empty/relative segments ("", ".", "..") are dropped to keep records within
+// the collection tree.
+func nsPath(nsID string) string {
+	parts := strings.Split(nsID, "/")
+	safe := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" || p == "." || p == ".." {
+			continue
+		}
+		p = strings.ReplaceAll(p, "\\", "_")
+		safe = append(safe, p)
+	}
+	return filepath.Join(safe...)
 }
 
 // ensureCollectionSchemas writes a .ingitdb-collection.yaml for each seeded
