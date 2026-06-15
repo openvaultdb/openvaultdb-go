@@ -2,6 +2,19 @@
 
 Reference implementation and Go libraries for [OpenVaultDB](https://openvaultdb.com/), a user-owned application database platform with portable storage backends and DTQL query support.
 
+<!-- dev-approach:v1 -->
+## Our approach to development
+
+We build with our own tooling:
+
+- **[SpecScore](https://specscore.md)** — specify requirements as `SpecScore.md` artifacts
+- **[SpecStudio](https://specscore.studio)** — author & manage specs across their lifecycle
+- **[inGitDB](https://ingitdb.com)** — store structured data in Git where applicable
+- **[DALgo](https://dalgo.io)** — data access layer for Go
+- **[cover100.dev](https://cover100.dev)** — drive toward 100% test coverage
+- **[DataTug](https://datatug.io)** — query & explore data
+<!-- /dev-approach -->
+
 ## `ovdb-server` — reference local server
 
 A local HTTP server implementing the OpenVaultDB wire contract
