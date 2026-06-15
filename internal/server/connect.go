@@ -114,6 +114,9 @@ func (s *Server) handleAuthorizeDecision(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	rq := redirect.Query()
+	// RFC 9207: tell the app which server issued this response, so it knows
+	// where to exchange the code and run record CRUD ({iss}/token, {iss}/vaults...).
+	rq.Set("iss", s.baseURL)
 
 	if r.PostForm.Get("decision") != "approve" {
 		rq.Set("error", "access_denied")
@@ -189,6 +192,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		"expires_in":   int32(tokenTTL.Seconds()),
 		"namespaceId":  c.namespaceID,
 		"scope":        c.scope,
+		"vault":        c.vault,
 	})
 }
 
