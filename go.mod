@@ -6,7 +6,8 @@ require (
 	charm.land/fang/v2 v2.0.1
 	github.com/dal-go/dalgo v0.62.4
 	github.com/google/uuid v1.6.0
-	github.com/ingitdb/ingitdb-cli v1.31.0
+	github.com/ingitdb/dalgo2ingitdb v0.0.1
+	github.com/ingitdb/ingitdb-go/ingitdb v0.0.1
 	github.com/spf13/cobra v1.10.2
 )
 
@@ -39,7 +40,7 @@ require (
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/strongo/random v0.0.1 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	go.starlark.net v0.0.0-20260522144826-ec58d4b459e2 // indirect
+	go.starlark.net v0.0.0-20260613233743-8ba36ccb83fb // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
