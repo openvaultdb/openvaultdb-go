@@ -3,6 +3,8 @@ package server
 import (
 	"io"
 	"net/http"
+
+	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 )
 
 // handleDTQL accepts a DTQL-YAML document (dalgo's native lossless
@@ -21,6 +23,13 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(doc) == 0 {
 		writeError(w, http.StatusBadRequest, "bad_request", "body must contain a DTQL YAML document")
+		return
+	}
+	// DTQL's target collection is only known after deserialization, which
+	// happens inside core — so authorization here requires an UNSCOPED
+	// records:read grant (or the owner token); collection-scoped grants must
+	// use /query, where the collection is explicit.
+	if !s.authorize(w, r, db.ID(), auth.CapRecordsRead, "") {
 		return
 	}
 	records, err := db.ExecuteDTQL(r.Context(), doc)

@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 	"github.com/openvaultdb/openvaultdb-go/pkg/mount"
 	"github.com/openvaultdb/openvaultdb-go/pkg/server"
@@ -20,6 +21,8 @@ import (
 func newServeCmd() *cobra.Command {
 	var addr, dir string
 	var manifests []string
+	var authEnabled bool
+	var ownerToken, authStorePath string
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Run the OpenVaultDB API server",
@@ -59,9 +62,32 @@ Databases are mounted from --manifest files and/or every *.yaml manifest in --di
 					db.ID(), db.Manifest.Storage.Engine, db.Manifest.Database.SchemaMode)
 			}
 
+			var opts []server.Option
+			if authEnabled {
+				if ownerToken == "" {
+					ownerToken = os.Getenv("OVDB_OWNER_TOKEN")
+				}
+				if ownerToken == "" {
+					generated, err := auth.NewToken()
+					if err != nil {
+						return err
+					}
+					ownerToken = generated
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+						"auth enabled; generated owner token (set --owner-token or OVDB_OWNER_TOKEN to pin):\n  %s\n", ownerToken)
+				} else {
+					_, _ = fmt.Fprintln(cmd.OutOrStdout(), "auth enabled")
+				}
+				store, err := auth.OpenStore(authStorePath)
+				if err != nil {
+					return err
+				}
+				opts = append(opts, server.WithAuth(&auth.Config{OwnerToken: ownerToken, Store: store}))
+			}
+
 			srv := &http.Server{
 				Addr:              addr,
-				Handler:           server.New(Version, dbs).Handler(),
+				Handler:           server.New(Version, dbs, opts...).Handler(),
 				ReadHeaderTimeout: 10 * time.Second,
 			}
 			errCh := make(chan error, 1)
@@ -87,5 +113,8 @@ Databases are mounted from --manifest files and/or every *.yaml manifest in --di
 	cmd.Flags().StringVar(&addr, "addr", DefaultAddr, "listen address")
 	cmd.Flags().StringVar(&dir, "dir", "", "directory with database manifest *.yaml files")
 	cmd.Flags().StringArrayVar(&manifests, "manifest", nil, "database manifest file (repeatable)")
+	cmd.Flags().BoolVar(&authEnabled, "auth", false, "require bearer tokens (owner token + app connect flow)")
+	cmd.Flags().StringVar(&ownerToken, "owner-token", "", "owner bearer token (default: $OVDB_OWNER_TOKEN, else generated)")
+	cmd.Flags().StringVar(&authStorePath, "auth-store", "ovdb-auth.json", "path of the persisted app-grants file (tokens stored hashed)")
 	return cmd
 }

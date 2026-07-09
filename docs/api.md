@@ -17,6 +17,43 @@ small: just enough for DALgo-backed Sneat CRUD validation. Versioned under `/v1`
   - `400 bad_request` — malformed key/body/query
   - `501 not_supported` — operation not in MVP
 
+## Authentication (optional, `ovdb serve --auth`)
+
+Off by default (local-dev). When enabled, every endpoint except the three
+public ones (`/.well-known/openvaultdb`, `/authorize`, `/token`) requires
+`Authorization: Bearer <token>`:
+
+- **Owner token** (`--owner-token` / `$OVDB_OWNER_TOKEN`, generated and
+  printed if unset): full access, including `/v1/databases` and the
+  database list in `/v1/status`.
+- **App tokens** come from the connect flow and are scoped to ONE database
+  with capabilities per the spec taxonomy, optionally collection-scoped:
+  `records:read`, `records:write:contacts`, `records:delete`,
+  `collections:read`, `schema:read`. Reads/queries need `records:read`;
+  `/dtql` needs an UNSCOPED `records:read` (its target collection is known
+  only after deserialization). Missing/invalid token → `401 unauthorized`;
+  insufficient capability → `403 forbidden`.
+
+Connect flow (OAuth-style, dev consent page):
+
+```
+GET  /authorize?client_id=app&redirect_uri=<abs-url>&db=<id>&capabilities=records:read,records:write:notes&state=s
+     → consent HTML; POST /authorize with decision=approve
+     → 302 redirect_uri?code=<one-time, 5 min>&state=s
+POST /token   grant_type=authorization_code&code=...&client_id=app   (form-encoded)
+     → 200 {"access_token":"ovdb_...","token_type":"Bearer","expires_in":3600,"database":"<id>"}
+```
+
+Grants are persisted in `--auth-store` (default `ovdb-auth.json`) with
+SHA-256 token hashes — the raw token exists only in the client. Tokens
+expire after 1 h (no refresh in MVP; re-run the connect flow).
+
+```
+GET /.well-known/openvaultdb
+→ 200 {"name":"OpenVaultDB","protocol":"openvaultdb/0.1","version":"...","authEnabled":true,
+       "authorizeEndpoint":"/authorize","tokenEndpoint":"/token"}
+```
+
 ## Endpoints
 
 ### Server / databases
