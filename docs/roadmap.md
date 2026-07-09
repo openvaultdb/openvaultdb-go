@@ -131,7 +131,9 @@ emulator when `FIRESTORE_EMULATOR_HOST` is set.
   document-column mode (→ partial/schemaless, would make Postgres the first
   SQL engine with all three modes); case-preserving identifiers (needs dalgo
   core to quote column identifiers in structured-query rendering). MySQL is
-  cheap after this via the same dalgo2sql base.
+  done (2026-07-09): dalgo2mysql over the same dalgo2sql base, needing
+  no dalgo2sql change (MySQL uses `?` placeholders and preserves identifier
+  case). Six green engine/mode configurations now.
 - **Embedded KV (Badger/BuntDB)** — dalgo drivers exist but target dalgo
   v0.24; modernize upstream first. Value: embedded schemaless without git.
 - **Redis** — not planned as a storage engine (ephemeral-by-default fits

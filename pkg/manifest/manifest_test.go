@@ -547,3 +547,51 @@ storage:
 // ingitdbBase is declared above but unused as a variable; suppress the lint
 // warning by referencing it here via a blank identifier.
 var _ = ingitdbBase
+
+// TestSQLEngineOptions covers the pathless SQL/cloud engines: they need no
+// storage.path, expose a DSN env-var indirection with defaults, and reject
+// their option block under the wrong engine.
+func TestSQLEngineOptions(t *testing.T) {
+	t.Run("postgres pathless with dsn_env default", func(t *testing.T) {
+		m, err := manifest.Parse([]byte(`
+database: {id: db, schema_mode: strict}
+storage: {engine: postgres}
+schemas: {collections: {c: {fields: {id: {type: string}}}}}
+`))
+		if err != nil {
+			t.Fatalf("valid postgres manifest rejected: %v", err)
+		}
+		if got := m.Storage.Postgres.DSNEnvVar(); got != "OVDB_POSTGRES_DSN" {
+			t.Errorf("default DSNEnvVar = %q", got)
+		}
+	})
+	t.Run("mysql pathless with dsn_env override", func(t *testing.T) {
+		m, err := manifest.Parse([]byte(`
+database: {id: db, schema_mode: strict}
+storage: {engine: mysql, mysql: {dsn_env: MY_DSN}}
+schemas: {collections: {c: {fields: {id: {type: string}}}}}
+`))
+		if err != nil {
+			t.Fatalf("valid mysql manifest rejected: %v", err)
+		}
+		if got := m.Storage.MySQL.DSNEnvVar(); got != "MY_DSN" {
+			t.Errorf("DSNEnvVar = %q, want MY_DSN", got)
+		}
+	})
+	t.Run("mysql options under wrong engine rejected", func(t *testing.T) {
+		_, err := manifest.Parse([]byte(`
+database: {id: db, schema_mode: strict}
+storage: {engine: sqlite, path: ./x.db, mysql: {dsn_env: X}}
+schemas: {collections: {c: {fields: {id: {type: string}}}}}
+`))
+		if err == nil || !strings.Contains(err.Error(), "mysql options are only valid") {
+			t.Fatalf("expected wrong-engine rejection, got %v", err)
+		}
+	})
+	t.Run("nil MySQLOptions DSNEnvVar default", func(t *testing.T) {
+		var o *manifest.MySQLOptions
+		if got := o.DSNEnvVar(); got != "OVDB_MYSQL_DSN" {
+			t.Errorf("nil DSNEnvVar = %q", got)
+		}
+	})
+}
