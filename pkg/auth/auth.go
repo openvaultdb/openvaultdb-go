@@ -29,7 +29,8 @@ const (
 	CapRecordsWrite    = "records:write"  // PUT/POST/PATCH records, batch set/insert/update
 	CapRecordsDelete   = "records:delete" // DELETE records, batch delete
 	CapCollectionsRead = "collections:read"
-	CapSchemaRead      = "schema:read" // inferred-schema endpoint
+	CapSchemaRead      = "schema:read"      // inferred-schema endpoint
+	CapDatabasesCreate = "databases:create" // POST /v1/databases (server-level)
 )
 
 var knownCapabilities = map[string]bool{
@@ -38,6 +39,7 @@ var knownCapabilities = map[string]bool{
 	CapRecordsDelete:   true,
 	CapCollectionsRead: true,
 	CapSchemaRead:      true,
+	CapDatabasesCreate: true,
 }
 
 // Capability is one parsed grant entry: an action, optionally scoped to a
@@ -101,9 +103,9 @@ type Grant struct {
 	ID            string       `json:"id"`              // short random identifier (8 hex bytes)
 	Label         string       `json:"label,omitempty"` // human display name
 	TokenHash     string       `json:"tokenHash"`
-	PrincipalType string       `json:"principalType"` // "application" (MVP)
-	PrincipalID   string       `json:"principalId"`   // client_id
-	DatabaseID    string       `json:"databaseId"`
+	PrincipalType string       `json:"principalType"`        // "application" (MVP)
+	PrincipalID   string       `json:"principalId"`          // client_id
+	DatabaseID    string       `json:"databaseId,omitempty"` // "" = server-level grant (e.g. databases:create)
 	Capabilities  []Capability `json:"capabilities"`
 	IssuedAt      time.Time    `json:"issuedAt"`
 	ExpiresAt     time.Time    `json:"expiresAt,omitempty"` // zero = never expires
@@ -138,6 +140,13 @@ type Principal struct {
 // action targets the database as a whole (listing collections, queries whose
 // target collection cannot be determined) — that requires an UNSCOPED grant
 // entry, so collection-scoped grants never leak beyond their collection.
+//
+// Database matching is on the GRANT side only: a grant with an empty
+// DatabaseID is SERVER-LEVEL and matches any requested database (including
+// the empty requested id used for server-level checks such as
+// databases:create). A grant with a concrete DatabaseID matches only that
+// exact database — it never matches a server-level check, because the
+// requested "" differs from its concrete id.
 func (p *Principal) Allows(databaseID, action, collection string) bool {
 	if p == nil {
 		return false
@@ -146,7 +155,7 @@ func (p *Principal) Allows(databaseID, action, collection string) bool {
 		return true
 	}
 	g := p.Grant
-	if g == nil || g.DatabaseID != databaseID {
+	if g == nil || (g.DatabaseID != "" && g.DatabaseID != databaseID) {
 		return false
 	}
 	for _, c := range g.Capabilities {

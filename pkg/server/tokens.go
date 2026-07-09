@@ -22,7 +22,7 @@ type tokenResponse struct {
 	ID           string     `json:"id"`
 	Token        string     `json:"token,omitempty"` // only in create response
 	Label        string     `json:"label,omitempty"`
-	DatabaseID   string     `json:"databaseId"`
+	DatabaseID   string     `json:"databaseId,omitempty"` // "" = server-level grant
 	Capabilities []string   `json:"capabilities"`
 	IssuedAt     time.Time  `json:"issuedAt"`
 	ExpiresAt    *time.Time `json:"expiresAt,omitempty"`
@@ -60,22 +60,30 @@ func (s *Server) handleTokensCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body: "+err.Error())
 		return
 	}
-	if req.DatabaseID == "" {
-		writeError(w, http.StatusBadRequest, "bad_request", "databaseId is required")
-		return
-	}
 	if len(req.Capabilities) == 0 {
 		writeError(w, http.StatusBadRequest, "bad_request", "at least one capability is required")
 		return
 	}
 	caps := make([]auth.Capability, 0, len(req.Capabilities))
+	hasDatabasesCreate := false
 	for _, cs := range req.Capabilities {
 		c, err := auth.ParseCapability(cs)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 			return
 		}
+		if c.Action == auth.CapDatabasesCreate {
+			hasDatabasesCreate = true
+		}
 		caps = append(caps, c)
+	}
+	// An empty databaseId means a SERVER-LEVEL grant — allowed only for
+	// tokens carrying databases:create (a create-db token cannot name a
+	// database that does not exist yet).
+	if req.DatabaseID == "" && !hasDatabasesCreate {
+		writeError(w, http.StatusBadRequest, "bad_request",
+			"databaseId is required unless capabilities include "+auth.CapDatabasesCreate)
+		return
 	}
 	var expiresAt time.Time
 	if req.ExpiresIn != "" {

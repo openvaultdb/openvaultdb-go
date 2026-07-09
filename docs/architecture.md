@@ -41,7 +41,7 @@ worked around (see "Upstream contributions" below).
 
 ```text
 github.com/openvaultdb/openvaultdb-go
-  cmd/ovdb          — CLI (`serve`, `init`, `status`, `databases`, `version`)
+  cmd/ovdb          — CLI (`serve`, `init`, `status`, `databases`, `token`, `version`)
   pkg/manifest      — database manifest (id, schema mode, engine config, schemas, push policy)
   pkg/schema        — schema modes + record validation
   pkg/inferred      — inferred schema catalogue (observed fields)
@@ -206,6 +206,21 @@ See docs/api.md. Summary: records CRUD at
 `/batch` (ordered ops, one dal transaction), `/query` (JSON structured
 query), `/dtql` (DTQL YAML pass-through), `/inferred-schema`, `/status`,
 `/databases`.
+
+## Runtime database provisioning (--data-dir)
+
+Manifests are normally operator-authored files, but `ovdb serve --data-dir
+<dir>` adds a second, server-managed source of databases: `POST
+/v1/databases` provisions an inGitDB schemaless database at runtime —
+`<data-dir>/<id>/` (git-initialised data directory) plus `<data-dir>/<id>.yaml`
+(a generated manifest in the exact same format as hand-written ones). The
+new database is mounted live into the running server (the mounted-databases
+map is mutex-guarded for this), and on restart the data-dir is rescanned with
+the ordinary manifest-directory loader, so created databases persist without
+any extra registry. Creation is allowed for the owner or any token carrying
+the server-level `databases:create` capability; a non-owner creator receives
+a freshly minted token scoped to the new database (per-app isolation — see
+docs/api.md).
 
 ## Conformance & validation
 

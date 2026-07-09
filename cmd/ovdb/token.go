@@ -103,9 +103,24 @@ func scopeCapabilities(scope string) ([]string, error) {
 	case "read-write", "":
 		return []string{"records:read", "collections:read", "schema:read",
 			"records:write", "records:delete"}, nil
+	case "create-db":
+		// Deliberately NO records capabilities: a provisioning token can only
+		// create databases; each created database gets its own scoped token.
+		return []string{"databases:create"}, nil
 	default:
-		return nil, fmt.Errorf("unknown scope %q: use read-only or read-write", scope)
+		return nil, fmt.Errorf("unknown scope %q: use read-only, read-write or create-db", scope)
 	}
+}
+
+// hasCreateDBCapability reports whether the capability list contains
+// databases:create (a server-level token needs no --db).
+func hasCreateDBCapability(caps []string) bool {
+	for _, c := range caps {
+		if c == "databases:create" {
+			return true
+		}
+	}
+	return false
 }
 
 // newTokenCreateCmd returns "ovdb token create".
@@ -122,6 +137,7 @@ The token secret is printed ONCE and never stored — save it immediately.
 
 --scope read-only  → records:read, collections:read, schema:read
 --scope read-write → read-only set + records:write, records:delete  (default)
+--scope create-db  → databases:create only (server-level; --db not allowed)
 --capability       → append extra raw capability strings (validated server-side)
 --expires          → Go duration string e.g. 720h (default: never expires)`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -129,14 +145,14 @@ The token secret is printed ONCE and never stored — save it immediately.
 			if err != nil {
 				return err
 			}
-			if dbID == "" {
-				return fmt.Errorf("--db is required")
-			}
 			caps, err := scopeCapabilities(scope)
 			if err != nil {
 				return err
 			}
 			caps = append(caps, extraCaps...)
+			if dbID == "" && !hasCreateDBCapability(caps) {
+				return fmt.Errorf("--db is required unless the token carries databases:create (--scope create-db or --capability databases:create)")
+			}
 
 			type createReq struct {
 				Label        string   `json:"label"`
@@ -178,7 +194,11 @@ The token secret is printed ONCE and never stored — save it immediately.
 			if resp.Label != "" {
 				cmd.Println("  Label:    ", resp.Label)
 			}
-			cmd.Println("  Database: ", resp.DatabaseID)
+			if resp.DatabaseID != "" {
+				cmd.Println("  Database: ", resp.DatabaseID)
+			} else {
+				cmd.Println("  Database:  (server-level)")
+			}
 			if resp.ExpiresAt != nil {
 				cmd.Println("  Expires:  ", resp.ExpiresAt.Format(time.RFC3339))
 			} else {
@@ -190,13 +210,12 @@ The token secret is printed ONCE and never stored — save it immediately.
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&dbID, "db", "", "database ID (required)")
+	cmd.Flags().StringVar(&dbID, "db", "", "database ID (required unless the token carries databases:create)")
 	cmd.Flags().StringVar(&label, "label", "", "human-readable label for this token")
-	cmd.Flags().StringVar(&scope, "scope", "", "capability scope: read-only or read-write (default read-write)")
+	cmd.Flags().StringVar(&scope, "scope", "", "capability scope: read-only, read-write (default) or create-db")
 	cmd.Flags().StringArrayVar(&extraCaps, "capability", nil, "additional capability string (repeatable)")
 	cmd.Flags().StringVar(&expires, "expires", "", "token lifetime as a Go duration (e.g. 720h); default: never")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "print raw JSON response")
-	_ = cmd.MarkFlagRequired("db")
 	return cmd
 }
 
@@ -252,8 +271,12 @@ func newTokenListCmd(tf *tokenFlags) *cobra.Command {
 				if t.RevokedAt != nil {
 					revoked = t.RevokedAt.Format("2006-01-02")
 				}
+				db := t.DatabaseID
+				if db == "" {
+					db = "(server)"
+				}
 				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-					t.ID, t.Label, t.DatabaseID,
+					t.ID, t.Label, db,
 					strings.Join(t.Capabilities, ","),
 					t.IssuedAt.Format("2006-01-02"),
 					expires, revoked)

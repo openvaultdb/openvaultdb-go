@@ -23,6 +23,10 @@ func TestScopeCapabilities(t *testing.T) {
 			want:  []string{"records:read", "collections:read", "schema:read", "records:write", "records:delete"},
 		},
 		{
+			scope: "create-db", // provisioning only — must NOT include records caps
+			want:  []string{"databases:create"},
+		},
+		{
 			scope:   "superuser",
 			wantErr: true,
 		},
@@ -47,6 +51,15 @@ func TestScopeCapabilities(t *testing.T) {
 				t.Errorf("scope %q: caps[%d] = %q, want %q", tc.scope, i, c, tc.want[i])
 			}
 		}
+	}
+}
+
+func TestHasCreateDBCapability(t *testing.T) {
+	if !hasCreateDBCapability([]string{"records:read", "databases:create"}) {
+		t.Error("databases:create present but not detected")
+	}
+	if hasCreateDBCapability([]string{"records:read"}) {
+		t.Error("databases:create absent but detected")
 	}
 }
 

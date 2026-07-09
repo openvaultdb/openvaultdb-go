@@ -23,5 +23,6 @@ func newDatabasesCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&url, "url", "http://"+DefaultAddr, "server base URL")
+	cmd.AddCommand(newDatabasesCreateCmd())
 	return cmd
 }

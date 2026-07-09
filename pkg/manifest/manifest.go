@@ -167,6 +167,18 @@ func (o *InGitDBOptions) PushBranch() string {
 
 var dbIDRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 
+// ValidateID checks a database id against the manifest id constraint
+// (also used by the server when creating databases at runtime).
+func ValidateID(id string) error {
+	if id == "" {
+		return fmt.Errorf("database id is required")
+	}
+	if !dbIDRe.MatchString(id) {
+		return fmt.Errorf("database id %q is invalid: must match %s", id, dbIDRe.String())
+	}
+	return nil
+}
+
 // Load reads and validates a manifest from a YAML file.
 func Load(path string) (*Manifest, error) {
 	b, err := os.ReadFile(path)

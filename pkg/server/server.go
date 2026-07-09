@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sort"
+	"sync"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
@@ -14,8 +15,14 @@ import (
 // Server serves one or more mounted databases.
 type Server struct {
 	version string
-	dbs     map[string]*core.Database
+
+	mu  sync.RWMutex // guards dbs — databases can be mounted at runtime
+	dbs map[string]*core.Database
+
+	createMu sync.Mutex // serializes runtime database creation end-to-end
+
 	authCfg *auth.Config // nil = auth disabled (local-dev default)
+	dataDir string       // "" = runtime database creation disabled
 }
 
 // Option configures the Server.
@@ -25,6 +32,13 @@ type Option func(*Server)
 // every data/admin request must carry the owner token or a scoped app token.
 func WithAuth(cfg *auth.Config) Option {
 	return func(s *Server) { s.authCfg = cfg }
+}
+
+// WithDataDir enables runtime database creation (POST /v1/databases):
+// each created database gets a manifest YAML plus an inGitDB data directory
+// under dir, so a restart rescan (mount.Dir) remounts them.
+func WithDataDir(dir string) Option {
+	return func(s *Server) { s.dataDir = dir }
 }
 
 // New creates a Server over mounted databases keyed by database id.
@@ -44,6 +58,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /.well-known/openvaultdb", s.handleWellKnown)
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	mux.HandleFunc("GET /v1/databases", s.handleDatabases)
+	mux.HandleFunc("POST /v1/databases", s.handleDatabaseCreate)
 	mux.HandleFunc("GET /v1/databases/{db}", s.handleDatabase)
 	mux.HandleFunc("GET /v1/databases/{db}/inferred-schema", s.handleInferredSchema)
 	mux.HandleFunc("/v1/databases/{db}/records/", s.handleRecord) // GET/HEAD/PUT/POST/PATCH/DELETE
@@ -88,15 +103,24 @@ func (s *Server) isOwner(r *http.Request) bool {
 
 func (s *Server) db(w http.ResponseWriter, r *http.Request) *core.Database {
 	id := r.PathValue("db")
-	db, ok := s.dbs[id]
-	if !ok {
+	db := s.getDB(id)
+	if db == nil {
 		writeError(w, http.StatusNotFound, "not_found", "database not found: "+id)
 		return nil
 	}
 	return db
 }
 
+// getDB returns the mounted database with the given id, or nil.
+func (s *Server) getDB(id string) *core.Database {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.dbs[id]
+}
+
 func (s *Server) databaseIDs() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	ids := make([]string, 0, len(s.dbs))
 	for id := range s.dbs {
 		ids = append(ids, id)
@@ -127,9 +151,13 @@ func (s *Server) handleDatabases(w http.ResponseWriter, r *http.Request) {
 		Engine     string `json:"engine"`
 		SchemaMode string `json:"schemaMode"`
 	}
-	infos := make([]dbInfo, 0, len(s.dbs))
-	for _, id := range s.databaseIDs() {
-		db := s.dbs[id]
+	ids := s.databaseIDs()
+	infos := make([]dbInfo, 0, len(ids))
+	for _, id := range ids {
+		db := s.getDB(id)
+		if db == nil {
+			continue
+		}
 		infos = append(infos, dbInfo{
 			ID:         id,
 			Engine:     db.Manifest.Storage.Engine,

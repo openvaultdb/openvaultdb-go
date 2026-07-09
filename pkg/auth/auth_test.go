@@ -80,6 +80,55 @@ func TestPrincipalAllows(t *testing.T) {
 	}
 }
 
+// TestPrincipalAllows_ServerLevel covers grants with an empty DatabaseID
+// (server-level, e.g. databases:create) and the interaction between
+// db-scoped grants and server-level checks.
+func TestPrincipalAllows_ServerLevel(t *testing.T) {
+	createOnly := &Principal{Grant: &Grant{
+		DatabaseID:   "", // server-level
+		Capabilities: []Capability{{Action: CapDatabasesCreate}},
+	}}
+	serverWideRead := &Principal{Grant: &Grant{
+		DatabaseID:   "", // server-level grant WITH records caps: matches any db (owner's choice)
+		Capabilities: []Capability{{Action: CapRecordsRead}},
+	}}
+	dbScopedCreate := &Principal{Grant: &Grant{
+		DatabaseID:   "db1", // concrete db + create cap: must NOT pass a server-level check
+		Capabilities: []Capability{{Action: CapDatabasesCreate}},
+	}}
+
+	for _, tc := range []struct {
+		name                   string
+		p                      *Principal
+		db, action, collection string
+		want                   bool
+	}{
+		{"create-db token allows server-level create", createOnly, "", CapDatabasesCreate, "", true},
+		{"create-db token cannot read records", createOnly, "db1", CapRecordsRead, "notes", false},
+		{"create-db token cannot write records", createOnly, "db1", CapRecordsWrite, "notes", false},
+		{"create-db token cannot list collections", createOnly, "db1", CapCollectionsRead, "", false},
+		{"server-wide read matches any db", serverWideRead, "db1", CapRecordsRead, "notes", true},
+		{"server-wide read matches another db", serverWideRead, "db2", CapRecordsRead, "x", true},
+		{"server-wide read cannot create", serverWideRead, "", CapDatabasesCreate, "", false},
+		{"db-scoped create fails server-level check", dbScopedCreate, "", CapDatabasesCreate, "", false},
+		{"db-scoped create matches its own db only", dbScopedCreate, "db1", CapDatabasesCreate, "", true},
+	} {
+		if got := tc.p.Allows(tc.db, tc.action, tc.collection); got != tc.want {
+			t.Errorf("%s: Allows(%q,%q,%q) = %v, want %v", tc.name, tc.db, tc.action, tc.collection, got, tc.want)
+		}
+	}
+}
+
+func TestParseCapability_DatabasesCreate(t *testing.T) {
+	c, err := ParseCapability("databases:create")
+	if err != nil {
+		t.Fatalf("ParseCapability(databases:create): %v", err)
+	}
+	if c.Action != CapDatabasesCreate || c.Collection != "" {
+		t.Fatalf("ParseCapability(databases:create) = %+v", c)
+	}
+}
+
 func TestStore_CodeExchangeAndPersistence(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.json")
 	s, err := OpenStore(path)

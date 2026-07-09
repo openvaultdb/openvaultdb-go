@@ -19,7 +19,7 @@ import (
 )
 
 func newServeCmd() *cobra.Command {
-	var addr, dir string
+	var addr, dir, dataDir string
 	var manifests []string
 	var authEnabled bool
 	var ownerToken, authStorePath string
@@ -28,7 +28,9 @@ func newServeCmd() *cobra.Command {
 		Short: "Run the OpenVaultDB API server",
 		Long: `Run the OpenVaultDB HTTP API server over databases described by manifests.
 
-Databases are mounted from --manifest files and/or every *.yaml manifest in --dir.`,
+Databases are mounted from --manifest files and/or every *.yaml manifest in --dir.
+With --data-dir, databases can also be created at runtime (POST /v1/databases);
+created databases persist as manifests in the data-dir and are remounted on restart.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dbs := map[string]*core.Database{}
 			if dir != "" {
@@ -48,8 +50,25 @@ Databases are mounted from --manifest files and/or every *.yaml manifest in --di
 				}
 				dbs[db.ID()] = db
 			}
-			if len(dbs) == 0 {
-				return fmt.Errorf("no databases mounted: provide --manifest files or a --dir with *.yaml manifests")
+			if dataDir != "" {
+				// Rescan previously created databases (each persisted as a
+				// manifest YAML in the data-dir by POST /v1/databases).
+				if err := os.MkdirAll(dataDir, 0o755); err != nil {
+					return fmt.Errorf("failed to create data dir %s: %w", dataDir, err)
+				}
+				created, err := mount.Dir(dataDir)
+				if err != nil {
+					return err
+				}
+				for id, db := range created {
+					if _, dup := dbs[id]; dup {
+						return fmt.Errorf("%s: duplicate database id %q (also in --data-dir)", dataDir, id)
+					}
+					dbs[id] = db
+				}
+			}
+			if len(dbs) == 0 && dataDir == "" {
+				return fmt.Errorf("no databases mounted: provide --manifest files, a --dir with *.yaml manifests, or a --data-dir for runtime-created databases")
 			}
 			defer func() {
 				for _, db := range dbs {
@@ -84,6 +103,9 @@ Databases are mounted from --manifest files and/or every *.yaml manifest in --di
 				}
 				opts = append(opts, server.WithAuth(&auth.Config{OwnerToken: ownerToken, Store: store}))
 			}
+			if dataDir != "" {
+				opts = append(opts, server.WithDataDir(dataDir))
+			}
 
 			srv := &http.Server{
 				Addr:              addr,
@@ -113,6 +135,7 @@ Databases are mounted from --manifest files and/or every *.yaml manifest in --di
 	cmd.Flags().StringVar(&addr, "addr", DefaultAddr, "listen address")
 	cmd.Flags().StringVar(&dir, "dir", "", "directory with database manifest *.yaml files")
 	cmd.Flags().StringArrayVar(&manifests, "manifest", nil, "database manifest file (repeatable)")
+	cmd.Flags().StringVar(&dataDir, "data-dir", "", "directory for runtime-created databases (enables POST /v1/databases)")
 	cmd.Flags().BoolVar(&authEnabled, "auth", false, "require bearer tokens (owner token + app connect flow)")
 	cmd.Flags().StringVar(&ownerToken, "owner-token", "", "owner bearer token (default: $OVDB_OWNER_TOKEN, else generated)")
 	cmd.Flags().StringVar(&authStorePath, "auth-store", "ovdb-auth.json", "path of the persisted app-grants file (tokens stored hashed)")

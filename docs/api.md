@@ -185,7 +185,8 @@ Authorization: Bearer <owner-token>
 Content-Type: application/json
 {
   "label":        "optional display name",
-  "databaseId":   "mydb",         // required; must be a mounted database
+  "databaseId":   "mydb",         // optional ONLY when capabilities include databases:create;
+                                  // empty = SERVER-LEVEL grant (matches every database)
   "capabilities": ["records:read", "records:write"],  // required; validated server-side
   "expiresIn":    "720h"          // optional Go duration; omit = never expires
 }
@@ -200,6 +201,12 @@ Content-Type: application/json
   }
 → 400 bad_request  — missing/invalid databaseId, unknown capability, bad expiresIn
 → 401/403          — missing/invalid owner token
+
+Server-level grants: a grant whose databaseId is empty matches EVERY mounted
+database — the typical use is a provisioning token carrying only
+databases:create (no records capabilities), but the owner may also mint
+server-wide data grants deliberately. A db-scoped grant never matches a
+server-level check.
 
 GET /v1/tokens
 Authorization: Bearer <owner-token>
@@ -224,6 +231,43 @@ Authorization: Bearer <owner-token>
 
 The revoked grant stays persisted for the audit trail. Revocation takes effect
 immediately on the running server — no restart required.
+
+## Runtime database creation
+
+`POST /v1/databases` provisions a new database at runtime — the multi-app
+story: each app holds a provisioning token (databases:create only, no data
+capabilities) and creates its own database, receiving a fresh token scoped to
+just that database.
+
+Requires `ovdb serve --data-dir <dir>`: each created database gets an inGitDB
+schemaless data directory (`<data-dir>/<id>/`, git-initialised) plus a
+manifest YAML (`<data-dir>/<id>.yaml`); on restart the data-dir is rescanned
+and all created databases are remounted. The database is mounted live — no
+restart needed.
+
+Allowed callers: the owner, or any principal whose grant allows the
+server-level `databases:create` capability.
+
+```
+POST /v1/databases
+Authorization: Bearer <owner-token | databases:create token>
+Content-Type: application/json
+{"id": "my-app-db", "label": "optional label"}   // id must match ^[a-zA-Z0-9][a-zA-Z0-9_-]*$
+→ 201 {
+    "database": {"id":"my-app-db","engine":"ingitdb","schemaMode":"schemaless"},
+    "token": {                       // ONLY when the creator is NOT the owner:
+      "id":           "...",         // a freshly minted grant scoped to the new
+      "token":        "ovdb_...",    // database (records:read/write/delete,
+      "databaseId":   "my-app-db",   // collections:read, schema:read) — the
+      "capabilities": [...],         // secret is returned ONCE, never again.
+      "issuedAt":     "..."          // Owner-created databases get no auto-token.
+    }
+  }
+→ 400 bad_request     — invalid id
+→ 401/403             — missing token / token without databases:create
+→ 409 already_exists  — id collides with a mounted database
+→ 501 not_supported   — server started without --data-dir
+```
 
 ## Explicitly not in MVP
 

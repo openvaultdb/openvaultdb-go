@@ -126,6 +126,14 @@ authentication. Token hashes are the only credential in the file; the raw
 token secret appears only in the `POST /v1/tokens` response and is never
 stored. Non-owner callers (app tokens or unauthenticated) get 403/401.
 
+Server-level grants (empty `databaseId`) exist for the `databases:create`
+capability (runtime provisioning via `POST /v1/databases` under
+`--data-dir`). A server-level grant with records capabilities grants data
+access to ALL databases — minting one is an explicit owner decision; the
+recommended pattern is a provisioning token carrying `databases:create` only,
+with each app receiving a token scoped to just its own created database
+(minted automatically on create).
+
 ## Auth MVP (2026-07-09 update)
 
 `ovdb serve --auth` adds the first authentication layer (still NOT

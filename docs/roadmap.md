@@ -84,6 +84,19 @@ correctly (missing IDs are synthesized from the token hash prefix). Zero
 `expiresAt` now means "never expires" (admin-created tokens). Follow-ups:
 OIDC and passkeys, refresh/rotation, CSRF protection on the consent form.
 
+### Dynamic database provisioning — done (2026-07-09)
+
+`ovdb serve --data-dir <dir>` + `POST /v1/databases` (and `ovdb databases
+create`): databases are created at runtime and mounted live — a hosted-OVDB
+prerequisite delivered early. Each created database is inGitDB schemaless
+under `<data-dir>/<id>/` with a persisted manifest YAML, so a restart rescan
+remounts everything. Grants gained a server-level form (empty `databaseId`)
+carrying the new `databases:create` capability; when a non-owner app token
+creates a database the server mints and returns a token scoped to just that
+database (per-app isolation: the provisioning token itself has no data
+capabilities). Follow-ups: engine choice at create time (ingitdb-schemaless
+only for now), database deletion/archival API, per-tenant quotas.
+
 See [docs/threat-model.md](threat-model.md) for the current posture.
 
 ---

@@ -66,7 +66,7 @@ func (s *Server) validateConnect(v url.Values) (consentView, string) {
 	if cv.DatabaseID == "" {
 		return cv, "db is required"
 	}
-	if _, ok := s.dbs[cv.DatabaseID]; !ok {
+	if s.getDB(cv.DatabaseID) == nil {
 		return cv, "unknown database: " + cv.DatabaseID
 	}
 	u, err := url.Parse(cv.RedirectURI)
