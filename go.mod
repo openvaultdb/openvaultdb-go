@@ -6,6 +6,7 @@ require (
 	cloud.google.com/go/firestore v1.22.0
 	github.com/dal-go/dalgo v0.62.10
 	github.com/dal-go/dalgo2firestore v0.9.0
+	github.com/dal-go/dalgo2mysql v0.1.1
 	github.com/dal-go/dalgo2postgres v0.1.1
 	github.com/ingitdb/dalgo2ingitdb v0.2.0
 	github.com/ingitdb/ingitdb-go/ingitdb v0.0.1
@@ -19,6 +20,7 @@ require (
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	cloud.google.com/go/longrunning v0.9.0 // indirect
+	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
@@ -26,6 +28,7 @@ require (
 	github.com/georgysavva/scany/v2 v2.1.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/go-sql-driver/mysql v1.9.3 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.17 // indirect
@@ -69,7 +72,7 @@ require (
 	github.com/RoaringBitmap/roaring/v2 v2.19.0 // indirect
 	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	github.com/dal-go/dalgo2openvaultdb v0.1.0
-	github.com/dal-go/dalgo2sql v0.9.0
+	github.com/dal-go/dalgo2sql v0.9.2
 	github.com/dal-go/dalgo2sqlite v0.0.17
 	github.com/gofrs/flock v0.13.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect

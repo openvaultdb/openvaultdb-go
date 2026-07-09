@@ -145,3 +145,13 @@ process environment. ovdb opens exactly one connection pool per mounted
 Postgres database and issues only parameterized statements (identifiers are
 validated against a safe pattern before quoting), so record data cannot inject
 SQL.
+
+
+## MySQL engine (2026-07-09)
+
+Same posture as the PostgreSQL engine: the DSN carries credentials and is read
+from the environment variable named by `storage.mysql.dsn_env` (default
+`OVDB_MYSQL_DSN`), never from the manifest. Prefer a TLS-enabled DSN
+(`tls=true` or a custom TLS config) for non-local servers. ovdb issues only
+parameterized statements; identifiers are validated against a safe pattern
+before backtick-quoting, so record data cannot inject SQL.

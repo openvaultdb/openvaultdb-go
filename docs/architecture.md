@@ -61,6 +61,7 @@ github.com/dal-go/dalgo2openvaultdb   — DALgo driver speaking the HTTP API
 | sqlite    | github.com/dal-go/dalgo2sqlite     | strict (MVP choice, not a permanent limitation) |
 | firestore | github.com/dal-go/dalgo2firestore  | strict, partial, schemaless   |
 | postgres  | github.com/dal-go/dalgo2postgres   | strict (MVP; JSONB doc-column mode → all three, roadmap) |
+| mysql     | github.com/dal-go/dalgo2mysql      | strict (MVP; JSON doc-column mode → all three, roadmap) |
 
 ### inGitDB (reference engine)
 
@@ -109,6 +110,18 @@ engine with all three modes). PostgreSQL folds identifiers to lower case, so
 collection and field names are stored lower-cased; ovdb restores declared
 field-name case on read (see `coerceToSchema`) so strict validation and
 clients see faithful names.
+
+### MySQL
+
+`dalgo2mysql` (go-sql-driver, pure Go) over `dalgo2sql` — the third relational
+engine, sharing the same base as SQLite and Postgres. The DSN comes from the
+environment variable named by `storage.mysql.dsn_env` (default
+`OVDB_MYSQL_DSN`); manifests never carry secrets. Strict mode only in MVP.
+Unlike Postgres, MySQL preserves identifier case (with the default
+`lower_case_table_names=0`) and treats column names case-insensitively, so no
+case folding or read-side case restoration is needed. MySQL DDL is
+non-transactional (each statement auto-commits), so collection provisioning is
+not rolled back on a later error in the same open.
 
 ## Schema modes
 

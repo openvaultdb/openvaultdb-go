@@ -59,8 +59,13 @@ func File(manifestPath string) (*core.Database, error) {
 			return nil, fmt.Errorf("%s: %w", manifestPath, err)
 		}
 		cataloguePath = filepath.Join(baseDir, m.Database.ID+".inferred.json")
+	case "mysql":
+		if db, modes, err = openMySQL(m); err != nil {
+			return nil, fmt.Errorf("%s: %w", manifestPath, err)
+		}
+		cataloguePath = filepath.Join(baseDir, m.Database.ID+".inferred.json")
 	default:
-		return nil, fmt.Errorf("%s: unknown storage engine %q (supported: sqlite, ingitdb, firestore, postgres)",
+		return nil, fmt.Errorf("%s: unknown storage engine %q (supported: sqlite, ingitdb, firestore, postgres, mysql)",
 			manifestPath, m.Storage.Engine)
 	}
 

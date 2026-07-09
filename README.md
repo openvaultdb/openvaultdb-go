@@ -317,6 +317,30 @@ Set the connection string in the environment, never the manifest:
 Conformance tests run when `DALGO2POSTGRES_TEST_DSN` points at a reachable
 PostgreSQL (e.g. `docker run -e POSTGRES_PASSWORD=… -p 5432:5432 postgres:17`).
 
+### MySQL manifest example
+
+```yaml
+database:
+  id: myapp
+  schema_mode: strict     # mysql: strict only in MVP
+
+storage:
+  engine: mysql
+  mysql:
+    dsn_env: OVDB_MYSQL_DSN   # env var holding the DSN (default shown)
+
+schemas:
+  collections:
+    contacts:
+      fields:
+        title: {type: string, required: true}
+```
+
+Set the connection string (go-sql-driver form) in the environment, never the
+manifest: `export OVDB_MYSQL_DSN='user:pass@tcp(host:3306)/db?parseTime=true'`.
+Conformance tests run when `DALGO2MYSQL_TEST_DSN` points at a reachable MySQL
+(e.g. `docker run -e MYSQL_ROOT_PASSWORD=… -e MYSQL_DATABASE=ovdb -p 3306:3306 mysql:8`).
+
 ## MVP boundaries
 
 ### In MVP
