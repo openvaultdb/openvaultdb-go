@@ -73,6 +73,16 @@ schemaless mode auto-creates definitions on first write (fields inferred from
 the record, all optional), including nested subcollections via path-form
 names (`spaces/ext`).
 
+**GitHub backend** (`storage.ingitdb.github`): instead of a local working
+tree, records are written directly to a GitHub repository over the API — no
+local checkout. Each write batch (one dal transaction) is one commit via the
+GitHub Git tree API (`dalgo2ingitdb4github`, batching variant); the collection
+layout comes from an in-memory Definition built from the manifest's declared
+schemas, so it supports strict and partial modes. The token comes from the env
+var named by `token_env` (default `OVDB_GITHUB_TOKEN`); manifests never carry
+secrets. This is the "your data lives in your GitHub repo" story without ovdb
+owning a working tree.
+
 Publication policy (`storage.ingitdb.push`): `none` (default) | `sync`
 (push before the write is acknowledged; push failure fails the request but
 the local commit stands) | `async` (coalescing single-flight background
@@ -122,6 +132,16 @@ Unlike Postgres, MySQL preserves identifier case (with the default
 case folding or read-side case restoration is needed. MySQL DDL is
 non-transactional (each statement auto-commits), so collection provisioning is
 not rolled back on a later error in the same open.
+
+### Cloud-managed relational (no new engine)
+
+Amazon RDS & Aurora, Azure Database for PostgreSQL/MySQL, and Google Cloud SQL
+are the same wire protocol as self-hosted PostgreSQL/MySQL. The existing
+`postgres`/`mysql` engines reach them by pointing the DSN (in the env var) at
+the cloud endpoint with TLS — e.g.
+`postgres://user:pass@mydb.abc123.us-east-1.rds.amazonaws.com:5432/app?sslmode=require`
+or `user:pass@tcp(mydb.mysql.database.azure.com:3306)/app?tls=true`. No new
+engine is needed; only the DSN changes.
 
 ## Schema modes
 

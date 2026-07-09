@@ -595,3 +595,56 @@ schemas: {collections: {c: {fields: {id: {type: string}}}}}
 		}
 	})
 }
+
+// TestInGitDBGitHubBackend covers the GitHub backend of the inGitDB engine:
+// pathless, requires owner+repo, rejects the push option, and applies ref/
+// token-env defaults.
+func TestInGitDBGitHubBackend(t *testing.T) {
+	t.Run("valid github backend, pathless, defaults", func(t *testing.T) {
+		m, err := manifest.Parse([]byte(`
+database: {id: db, schema_mode: strict}
+storage:
+  engine: ingitdb
+  ingitdb:
+    github: {owner: me, repo: data}
+schemas: {collections: {c: {fields: {title: {type: string}}}}}
+`))
+		if err != nil {
+			t.Fatalf("valid github manifest rejected: %v", err)
+		}
+		gh := m.Storage.InGitDB.GitHub
+		if gh.GitRef() != "main" || gh.TokenEnvVar() != "OVDB_GITHUB_TOKEN" {
+			t.Errorf("defaults wrong: ref=%q tokenEnv=%q", gh.GitRef(), gh.TokenEnvVar())
+		}
+	})
+	t.Run("missing owner/repo rejected", func(t *testing.T) {
+		_, err := manifest.Parse([]byte(`
+database: {id: db, schema_mode: strict}
+storage: {engine: ingitdb, ingitdb: {github: {owner: me}}}
+schemas: {collections: {c: {fields: {title: {type: string}}}}}
+`))
+		if err == nil || !strings.Contains(err.Error(), "owner and repo") {
+			t.Fatalf("expected owner/repo rejection, got %v", err)
+		}
+	})
+	t.Run("push option rejected with github backend", func(t *testing.T) {
+		_, err := manifest.Parse([]byte(`
+database: {id: db, schema_mode: strict}
+storage:
+  engine: ingitdb
+  ingitdb:
+    push: sync
+    github: {owner: me, repo: data}
+schemas: {collections: {c: {fields: {title: {type: string}}}}}
+`))
+		if err == nil || !strings.Contains(err.Error(), "push does not apply") {
+			t.Fatalf("expected push-vs-github rejection, got %v", err)
+		}
+	})
+	t.Run("nil github options defaults", func(t *testing.T) {
+		var gh *manifest.InGitDBGitHubOptions
+		if gh.GitRef() != "main" || gh.TokenEnvVar() != "OVDB_GITHUB_TOKEN" {
+			t.Errorf("nil defaults wrong")
+		}
+	})
+}

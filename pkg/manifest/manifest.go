@@ -83,10 +83,14 @@ func (o *MySQLOptions) DSNEnvVar() string {
 	return o.DSNEnv
 }
 
-// InGitDBOptions configures inGitDB-specific storage behavior.
+// InGitDBOptions configures inGitDB-specific storage behavior. It has two
+// backends: the local filesystem working tree (default, driven by
+// storage.path) and, when GitHub is set, direct writes to a GitHub repo over
+// the API (no local working tree — each write batch is one commit via the
+// GitHub Git tree API).
 type InGitDBOptions struct {
-	// Push controls whether ovdb pushes to the git remote after each
-	// committed write batch:
+	// Push controls whether ovdb pushes the local working tree to the git
+	// remote after each committed write batch (filesystem backend only):
 	//   "none"  (default) — commit locally only, never push;
 	//   "sync"  — push before acknowledging the write; a failed push fails
 	//             the write request (data is still committed locally);
@@ -96,6 +100,45 @@ type InGitDBOptions struct {
 	Remote string `yaml:"remote,omitempty" json:"remote,omitempty"`
 	// Branch to push (default: HEAD — the current branch).
 	Branch string `yaml:"branch,omitempty" json:"branch,omitempty"`
+
+	// GitHub, when set, selects the GitHub backend: records are written
+	// directly to a GitHub repository over the API instead of a local
+	// working tree. storage.path is then unused.
+	GitHub *InGitDBGitHubOptions `yaml:"github,omitempty" json:"github,omitempty"`
+}
+
+// InGitDBGitHubOptions configures the GitHub backend of the inGitDB engine.
+// The access token (a credential) is NEVER stored in the manifest: TokenEnv
+// names the environment variable that holds it.
+type InGitDBGitHubOptions struct {
+	// Owner is the GitHub account or org owning the repo (required).
+	Owner string `yaml:"owner" json:"owner"`
+	// Repo is the repository name (required).
+	Repo string `yaml:"repo" json:"repo"`
+	// Ref is the branch to read and commit to (default "main").
+	Ref string `yaml:"ref,omitempty" json:"ref,omitempty"`
+	// TokenEnv is the environment variable holding the GitHub token
+	// (default "OVDB_GITHUB_TOKEN") — a PAT or app installation token with
+	// contents:write on the repo.
+	TokenEnv string `yaml:"token_env,omitempty" json:"tokenEnv,omitempty"`
+	// APIBaseURL overrides the GitHub API base (for GitHub Enterprise).
+	APIBaseURL string `yaml:"api_base_url,omitempty" json:"apiBaseURL,omitempty"`
+}
+
+// GitRef returns the branch with the default applied.
+func (o *InGitDBGitHubOptions) GitRef() string {
+	if o == nil || o.Ref == "" {
+		return "main"
+	}
+	return o.Ref
+}
+
+// TokenEnvVar returns the env var name holding the token, default applied.
+func (o *InGitDBGitHubOptions) TokenEnvVar() string {
+	if o == nil || o.TokenEnv == "" {
+		return "OVDB_GITHUB_TOKEN"
+	}
+	return o.TokenEnv
 }
 
 // PushMode returns the configured push mode with defaults applied.
@@ -163,7 +206,11 @@ func (m *Manifest) Validate() error {
 	if m.Storage.Engine == "" {
 		return fmt.Errorf("storage.engine is required")
 	}
-	pathless := m.Storage.Engine == "firestore" || m.Storage.Engine == "postgres" || m.Storage.Engine == "mysql"
+	// The inGitDB engine's GitHub backend is also pathless (data lives in the
+	// remote repo, not a local working tree).
+	ingitdbGitHub := m.Storage.Engine == "ingitdb" && m.Storage.InGitDB != nil && m.Storage.InGitDB.GitHub != nil
+	pathless := m.Storage.Engine == "firestore" || m.Storage.Engine == "postgres" ||
+		m.Storage.Engine == "mysql" || ingitdbGitHub
 	if m.Storage.Path == "" && !pathless {
 		return fmt.Errorf("storage.path is required")
 	}
@@ -188,6 +235,14 @@ func (m *Manifest) Validate() error {
 		case "", "none", "sync", "async":
 		default:
 			return fmt.Errorf("storage.ingitdb.push must be one of: none, sync, async; got %q", o.Push)
+		}
+		if gh := o.GitHub; gh != nil {
+			if gh.Owner == "" || gh.Repo == "" {
+				return fmt.Errorf("storage.ingitdb.github requires both owner and repo")
+			}
+			if o.Push != "" {
+				return fmt.Errorf("storage.ingitdb.push does not apply to the github backend (writes commit directly)")
+			}
 		}
 	}
 	if err := m.Schemas.Validate(); err != nil {
