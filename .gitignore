@@ -1,3 +1,6 @@
 /ovdb-data/
 /ovdb-server
 *.log
+*.sqlite
+*.sqlite-journal
+/data/
