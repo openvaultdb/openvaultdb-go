@@ -269,6 +269,60 @@ Content-Type: application/json
 → 501 not_supported   — server started without --data-dir
 ```
 
+## CORS (browser cross-origin access)
+
+Browser clients make cross-origin requests; without CORS headers the browser
+blocks the response. Use `ovdb serve --cors <origin>` to enable CORS support.
+
+### Flag
+
+```
+ovdb serve --cors https://sneat.app --cors http://localhost:4200
+```
+
+- `--cors` is repeatable; comma-separated values in a single flag are accepted:
+  `--cors "https://sneat.app,http://localhost:4200"`
+- `--cors '*'` allows any origin (development only — see threat model).
+- Omitting `--cors` entirely (the default) means no CORS headers are emitted:
+  non-browser clients are completely unaffected.
+
+### Behavior
+
+| Situation | Response |
+|---|---|
+| No `--cors` configured | No CORS headers ever added |
+| `Origin` absent | No CORS headers (non-browser) |
+| `Origin` in allowed list | `Access-Control-Allow-Origin: <origin>`, `Vary: Origin` |
+| `Origin` not in allowed list | No ACAO; request still processed normally |
+| `OPTIONS` preflight from allowed origin | 204 + ACAO + Allow-Methods + Allow-Headers + Max-Age |
+| `OPTIONS` preflight from disallowed origin | 204, no ACAO (browser blocks subsequent request) |
+
+Allowed headers: `Authorization, Content-Type`. Allowed methods: `GET, HEAD,
+POST, PUT, PATCH, DELETE`. Preflight Max-Age: 600 s.
+
+`Access-Control-Allow-Credentials` is never set — bearer tokens travel in the
+`Authorization` header, not cookies.
+
+Preflight `OPTIONS` requests are handled **before** auth middleware, so browsers
+receive a 204 (not 401) even when `--auth` is enabled. Auth is still enforced
+on subsequent non-preflight requests.
+
+### Example (local web app)
+
+Start the server allowing a local Angular dev server:
+
+```sh
+ovdb serve --manifest mydb.yaml --cors http://localhost:4200
+```
+
+Fetch from the browser:
+
+```js
+const resp = await fetch('http://localhost:6832/v1/databases/mydb/records/notes/n1', {
+  headers: { Authorization: 'Bearer ovdb_...' }
+})
+```
+
 ## Explicitly not in MVP
 
 Auth (server binds 127.0.0.1 by default), cursors/offset, projections, group-by,

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,6 +24,7 @@ func newServeCmd() *cobra.Command {
 	var manifests []string
 	var authEnabled bool
 	var ownerToken, authStorePath string
+	var corsOrigins []string
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Run the OpenVaultDB API server",
@@ -106,6 +108,17 @@ created databases persist as manifests in the data-dir and are remounted on rest
 			if dataDir != "" {
 				opts = append(opts, server.WithDataDir(dataDir))
 			}
+			if len(corsOrigins) > 0 {
+				corsCfg := server.ParseCORSOrigins(corsOrigins)
+				if corsCfg != nil {
+					opts = append(opts, server.WithCORS(corsCfg))
+					// Warn when --cors * is combined with --auth=false on a non-loopback addr.
+					if !authEnabled && isNonLoopback(addr) {
+						_, _ = fmt.Fprintln(cmd.OutOrStdout(),
+							"WARNING: --cors * with auth disabled on a non-loopback address allows any browser origin to read and write all data without credentials")
+					}
+				}
+			}
 
 			srv := &http.Server{
 				Addr:              addr,
@@ -139,5 +152,22 @@ created databases persist as manifests in the data-dir and are remounted on rest
 	cmd.Flags().BoolVar(&authEnabled, "auth", false, "require bearer tokens (owner token + app connect flow)")
 	cmd.Flags().StringVar(&ownerToken, "owner-token", "", "owner bearer token (default: $OVDB_OWNER_TOKEN, else generated)")
 	cmd.Flags().StringVar(&authStorePath, "auth-store", "ovdb-auth.json", "path of the persisted app-grants file (tokens stored hashed)")
+	cmd.Flags().StringArrayVar(&corsOrigins, "cors", nil,
+		"allowed CORS origin (repeatable; comma-separated values accepted).\n"+
+			"Examples: --cors https://sneat.app --cors http://localhost:4200\n"+
+			"Use --cors '*' to allow any origin (development only — use with caution on public addresses)")
 	return cmd
+}
+
+// isNonLoopback reports whether addr (host:port) binds to a non-loopback
+// interface.  It is a best-effort heuristic used only for the foot-gun warning.
+func isNonLoopback(addr string) bool {
+	host := addr
+	if i := strings.LastIndex(addr, ":"); i >= 0 {
+		host = addr[:i]
+	}
+	if host == "" || host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		return false
+	}
+	return true
 }

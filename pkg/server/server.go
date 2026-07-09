@@ -22,6 +22,7 @@ type Server struct {
 	createMu sync.Mutex // serializes runtime database creation end-to-end
 
 	authCfg *auth.Config // nil = auth disabled (local-dev default)
+	corsCfg *CORSConfig  // nil = CORS disabled (no headers added)
 	dataDir string       // "" = runtime database creation disabled
 }
 
@@ -32,6 +33,12 @@ type Option func(*Server)
 // every data/admin request must carry the owner token or a scoped app token.
 func WithAuth(cfg *auth.Config) Option {
 	return func(s *Server) { s.authCfg = cfg }
+}
+
+// WithCORS configures CORS header injection for browser clients.
+// A nil cfg disables CORS entirely (zero behavior change, the default).
+func WithCORS(cfg *CORSConfig) Option {
+	return func(s *Server) { s.corsCfg = cfg }
 }
 
 // WithDataDir enables runtime database creation (POST /v1/databases):
@@ -50,9 +57,10 @@ func New(version string, dbs map[string]*core.Database, opts ...Option) *Server 
 	return s
 }
 
-// Handler builds the HTTP handler. With auth enabled the mux is wrapped in
-// the token-validation middleware (Layer 1); handlers enforce capabilities
-// (Layer 2) via authorize().
+// Handler builds the HTTP handler. Middleware order (outermost first):
+//  1. CORS (when --cors is set) — short-circuits preflight OPTIONS before auth
+//  2. Auth (when --auth is set) — Layer-1 token validation
+//  3. Per-handler capability checks — Layer-2
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /.well-known/openvaultdb", s.handleWellKnown)
@@ -65,16 +73,23 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/databases/{db}/batch", s.handleBatch)
 	mux.HandleFunc("POST /v1/databases/{db}/query", s.handleQuery)
 	mux.HandleFunc("POST /v1/databases/{db}/dtql", s.handleDTQL)
-	if s.authCfg == nil {
-		return mux
+	if s.authCfg != nil {
+		mux.HandleFunc("GET /authorize", s.handleAuthorizeGet)
+		mux.HandleFunc("POST /authorize", s.handleAuthorizePost)
+		mux.HandleFunc("POST /token", s.handleToken)
+		mux.HandleFunc("POST /v1/tokens", s.handleTokensCreate)
+		mux.HandleFunc("GET /v1/tokens", s.handleTokensList)
+		mux.HandleFunc("DELETE /v1/tokens/{id}", s.handleTokensRevoke)
 	}
-	mux.HandleFunc("GET /authorize", s.handleAuthorizeGet)
-	mux.HandleFunc("POST /authorize", s.handleAuthorizePost)
-	mux.HandleFunc("POST /token", s.handleToken)
-	mux.HandleFunc("POST /v1/tokens", s.handleTokensCreate)
-	mux.HandleFunc("GET /v1/tokens", s.handleTokensList)
-	mux.HandleFunc("DELETE /v1/tokens/{id}", s.handleTokensRevoke)
-	return s.authCfg.Middleware(mux)
+
+	var h http.Handler = mux
+	if s.authCfg != nil {
+		h = s.authCfg.Middleware(h)
+	}
+	if s.corsCfg != nil {
+		h = corsMiddleware(s.corsCfg, h)
+	}
+	return h
 }
 
 // authorize enforces a capability for the request (Layer 2). Always true

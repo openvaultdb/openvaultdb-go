@@ -165,6 +165,27 @@ validated against a safe pattern before quoting), so record data cannot inject
 SQL.
 
 
+## CORS (2026-07-09)
+
+`ovdb serve --cors <origin>` injects CORS headers for browser clients.
+
+**`--cors '*'` (wildcard) is a foot-gun.** With wildcard CORS and auth disabled
+(`--auth` off, the default) on a non-loopback address, any browser tab on the
+internet can read and write all mounted databases without any credential.  The
+server prints a startup warning when it detects this combination, but does not
+refuse to start — operator intent is respected.
+
+Recommended patterns:
+
+- Local dev: `--cors http://localhost:4200` (explicit port; auth optional)
+- Hosted: `--cors https://sneat.app --auth` (exact origin + bearer tokens)
+- Never: `--cors '*'` on a public address without `--auth`
+
+`Access-Control-Allow-Credentials` is never set; the CORS layer never weakens
+auth on actual (non-preflight) requests — a 401 or 403 will carry the ACAO
+header so the browser can read the error body, but the request is rejected.
+
+
 ## MySQL engine (2026-07-09)
 
 Same posture as the PostgreSQL engine: the DSN carries credentials and is read
