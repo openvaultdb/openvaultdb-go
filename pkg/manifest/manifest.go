@@ -29,9 +29,20 @@ type Database struct {
 
 // Storage selects and configures the storage engine.
 type Storage struct {
-	Engine  string          `yaml:"engine" json:"engine"` // "sqlite" | "ingitdb"
-	Path    string          `yaml:"path" json:"path"`
-	InGitDB *InGitDBOptions `yaml:"ingitdb,omitempty" json:"ingitdb,omitempty"`
+	Engine    string            `yaml:"engine" json:"engine"`                 // "sqlite" | "ingitdb" | "firestore"
+	Path      string            `yaml:"path,omitempty" json:"path,omitempty"` // unused by firestore
+	InGitDB   *InGitDBOptions   `yaml:"ingitdb,omitempty" json:"ingitdb,omitempty"`
+	Firestore *FirestoreOptions `yaml:"firestore,omitempty" json:"firestore,omitempty"`
+}
+
+// FirestoreOptions configures the Firestore engine. Credentials come from
+// Application Default Credentials (or FIRESTORE_EMULATOR_HOST) — manifests
+// never carry secrets.
+type FirestoreOptions struct {
+	// Project is the GCP project id (required).
+	Project string `yaml:"project" json:"project"`
+	// Database is the Firestore database id (default "(default)").
+	Database string `yaml:"database,omitempty" json:"database,omitempty"`
 }
 
 // InGitDBOptions configures inGitDB-specific storage behavior.
@@ -114,8 +125,15 @@ func (m *Manifest) Validate() error {
 	if m.Storage.Engine == "" {
 		return fmt.Errorf("storage.engine is required")
 	}
-	if m.Storage.Path == "" {
+	if m.Storage.Path == "" && m.Storage.Engine != "firestore" {
 		return fmt.Errorf("storage.path is required")
+	}
+	if m.Storage.Engine == "firestore" {
+		if m.Storage.Firestore == nil || m.Storage.Firestore.Project == "" {
+			return fmt.Errorf("storage.firestore.project is required for the firestore engine")
+		}
+	} else if m.Storage.Firestore != nil {
+		return fmt.Errorf("storage.firestore options are only valid with engine 'firestore', got %q", m.Storage.Engine)
 	}
 	if o := m.Storage.InGitDB; o != nil {
 		if m.Storage.Engine != "ingitdb" {

@@ -394,7 +394,9 @@ func (d *Database) validateOps(ctx context.Context, ops []Op) error {
 func (d *Database) ensureCollection(ctx context.Context, collection string, fields map[string]schema.Field) error {
 	modifier, ok := d.db.(ddl.SchemaModifier)
 	if !ok {
-		return fmt.Errorf("driver %s does not implement ddl.SchemaModifier", d.Manifest.Storage.Engine)
+		// Drivers without a DDL surface (Firestore) have implicit
+		// collections — nothing to provision; core still validates modes.
+		return nil
 	}
 	// Every collection gets an "id" string primary-key column: relational
 	// drivers (dalgo2sqlite) store the record key's ID there; for inGitDB it

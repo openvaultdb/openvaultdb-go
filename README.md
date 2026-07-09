@@ -275,6 +275,24 @@ human-readable YAML record files and auto-generated commit messages from OpenVau
 
 ---
 
+### Firestore manifest example
+
+```yaml
+database:
+  id: myapp
+  schema_mode: schemaless   # firestore supports strict | partial | schemaless
+
+storage:
+  engine: firestore
+  firestore:
+    project: my-gcp-project
+    database: ""            # default "(default)"
+```
+
+Credentials come from Application Default Credentials, or set
+`FIRESTORE_EMULATOR_HOST` for the local emulator. Firestore conformance tests
+run when that env var is set (`gcloud emulators firestore start`).
+
 ## MVP boundaries
 
 ### In MVP
