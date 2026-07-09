@@ -57,6 +57,11 @@ ovdb serve --dir ./manifests
 
 The server binds to `127.0.0.1:6832` by default. Override with `--addr`.
 
+Authentication is off by default (local dev). Enable it with `ovdb serve --auth`:
+the owner token is taken from `--owner-token` / `$OVDB_OWNER_TOKEN` (or generated
+and printed), and apps obtain scoped tokens through the consent flow at
+`/authorize` + `/token` — see the Authentication section in [docs/api.md](docs/api.md).
+
 ### 4. Try the API
 
 ```sh

@@ -8,6 +8,7 @@ import (
 
 	"github.com/dal-go/dalgo/dal"
 
+	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 )
 
@@ -46,6 +47,22 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	collection := key.Collection()
+	for cur := key; cur != nil; cur = cur.Parent() {
+		collection = cur.Collection() // root collection scopes the capability
+	}
+	action := ""
+	switch r.Method {
+	case http.MethodGet, http.MethodHead:
+		action = auth.CapRecordsRead
+	case http.MethodPut, http.MethodPost, http.MethodPatch:
+		action = auth.CapRecordsWrite
+	case http.MethodDelete:
+		action = auth.CapRecordsDelete
+	}
+	if action != "" && !s.authorize(w, r, db.ID(), action, collection) {
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		data, err := db.Get(ctx, key)
@@ -138,6 +155,21 @@ func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 		}
 		body.Ops[i].Key = key
 	}
+	// Layer-2 capability check per op: writes and deletes are scoped to each
+	// op's root collection.
+	for i := range body.Ops {
+		root := body.Ops[i].Key
+		for cur := root; cur != nil; cur = cur.Parent() {
+			root = cur
+		}
+		action := auth.CapRecordsWrite
+		if body.Ops[i].Op == "delete" {
+			action = auth.CapRecordsDelete
+		}
+		if !s.authorize(w, r, db.ID(), action, root.Collection()) {
+			return
+		}
+	}
 	applied, err := db.Apply(r.Context(), body.Ops, body.Message)
 	if err != nil {
 		writeMappedError(w, err)
@@ -154,6 +186,9 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	var q core.Query
 	if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body: "+err.Error())
+		return
+	}
+	if !s.authorize(w, r, db.ID(), auth.CapRecordsRead, q.Collection) {
 		return
 	}
 	records, err := db.Execute(r.Context(), q)

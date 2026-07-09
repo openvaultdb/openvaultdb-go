@@ -62,13 +62,16 @@ Planned subcommands:
 | `ovdb import <db> <file>`    | Bulk import from JSON/NDJSON                                            |
 | `ovdb export <db> <col>`     | Export a collection to NDJSON                                           |
 
-### Auth MVP
+### Auth MVP — done (2026-07-09)
 
-Minimal bearer-token authentication: a static token per server configured via environment
-variable or manifest. All requests must present `Authorization: Bearer <token>`. This is the
-minimum needed before exposing `ovdb serve` on any non-loopback interface.
+Shipped as `ovdb serve --auth`: owner bearer token (env/flag/generated) plus an
+OAuth-style connect flow (consent page → one-time code → scoped app token).
+Capability grants follow the spec taxonomy (`records:read` etc.) with optional
+collection scoping and persist with SHA-256 token hashes. Follow-ups: OIDC and
+passkeys per the auth spec, refresh/rotation, a revocation API, CSRF protection
+on the consent form.
 
-See [docs/threat-model.md](threat-model.md) for the full auth requirements.
+See [docs/threat-model.md](threat-model.md) for the current posture.
 
 ---
 

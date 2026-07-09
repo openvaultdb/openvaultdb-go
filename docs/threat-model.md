@@ -113,3 +113,23 @@ will be needed:
   access must be blocked at the routing layer, not relied on by engine-level path validation.
 - **Rate limiting** per client or per database to prevent local DoS.
 - **Audit log**: structured log of all writes, accessible for compliance.
+
+
+## Auth MVP (2026-07-09 update)
+
+`ovdb serve --auth` adds the first authentication layer (still NOT
+production-hosting ready — no TLS, no rate limits, no audit log):
+
+- Owner bearer token (env/flag/generated) for full and admin access;
+  compared in constant time; never persisted.
+- App tokens via consent → one-time code (5 min) → opaque bearer token (1 h).
+  Grants persist with SHA-256 token hashes only (`--auth-store`, mode 0600),
+  so the grants file never contains usable credentials.
+- Capabilities follow the spec taxonomy with optional collection scoping;
+  collection-scoped grants cannot use `/dtql` (target collection unknowable
+  before parsing) and cannot enumerate databases; `/v1/status` redacts the
+  database list for non-owners.
+- Remaining gaps for hosted use: no user identity (OIDC/passkeys per spec),
+  no refresh/rotation, no revocation API (delete entries from the auth-store
+  file and restart), consent page has no CSRF protection (dev-only flow),
+  tokens transit in clear without TLS termination in front.

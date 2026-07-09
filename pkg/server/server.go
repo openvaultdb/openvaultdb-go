@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sort"
 
+	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 )
 
@@ -14,16 +15,33 @@ import (
 type Server struct {
 	version string
 	dbs     map[string]*core.Database
+	authCfg *auth.Config // nil = auth disabled (local-dev default)
+}
+
+// Option configures the Server.
+type Option func(*Server)
+
+// WithAuth enables authentication: the connect flow endpoints are served and
+// every data/admin request must carry the owner token or a scoped app token.
+func WithAuth(cfg *auth.Config) Option {
+	return func(s *Server) { s.authCfg = cfg }
 }
 
 // New creates a Server over mounted databases keyed by database id.
-func New(version string, dbs map[string]*core.Database) *Server {
-	return &Server{version: version, dbs: dbs}
+func New(version string, dbs map[string]*core.Database, opts ...Option) *Server {
+	s := &Server{version: version, dbs: dbs}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
-// Handler builds the HTTP handler.
+// Handler builds the HTTP handler. With auth enabled the mux is wrapped in
+// the token-validation middleware (Layer 1); handlers enforce capabilities
+// (Layer 2) via authorize().
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /.well-known/openvaultdb", s.handleWellKnown)
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	mux.HandleFunc("GET /v1/databases", s.handleDatabases)
 	mux.HandleFunc("GET /v1/databases/{db}", s.handleDatabase)
@@ -32,7 +50,37 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/databases/{db}/batch", s.handleBatch)
 	mux.HandleFunc("POST /v1/databases/{db}/query", s.handleQuery)
 	mux.HandleFunc("POST /v1/databases/{db}/dtql", s.handleDTQL)
-	return mux
+	if s.authCfg == nil {
+		return mux
+	}
+	mux.HandleFunc("GET /authorize", s.handleAuthorizeGet)
+	mux.HandleFunc("POST /authorize", s.handleAuthorizePost)
+	mux.HandleFunc("POST /token", s.handleToken)
+	return s.authCfg.Middleware(mux)
+}
+
+// authorize enforces a capability for the request (Layer 2). Always true
+// when auth is disabled. Writes the 403 response when denied.
+func (s *Server) authorize(w http.ResponseWriter, r *http.Request, databaseID, action, collection string) bool {
+	if s.authCfg == nil {
+		return true
+	}
+	if auth.FromRequest(r).Allows(databaseID, action, collection) {
+		return true
+	}
+	writeError(w, http.StatusForbidden, "forbidden",
+		"token does not grant "+action+" on database "+databaseID)
+	return false
+}
+
+// isOwner reports whether the request is made with the owner token (or auth
+// is disabled, in which case every caller has owner-level access).
+func (s *Server) isOwner(r *http.Request) bool {
+	if s.authCfg == nil {
+		return true
+	}
+	p := auth.FromRequest(r)
+	return p != nil && p.Owner
 }
 
 func (s *Server) db(w http.ResponseWriter, r *http.Request) *core.Database {
@@ -55,14 +103,22 @@ func (s *Server) databaseIDs() []string {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"name":      "OpenVaultDB",
-		"version":   s.version,
-		"databases": s.databaseIDs(),
-	})
+	status := map[string]any{
+		"name":    "OpenVaultDB",
+		"version": s.version,
+	}
+	// The database list is owner-level information once auth is on.
+	if s.isOwner(r) {
+		status["databases"] = s.databaseIDs()
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 func (s *Server) handleDatabases(w http.ResponseWriter, r *http.Request) {
+	if !s.isOwner(r) {
+		writeError(w, http.StatusForbidden, "forbidden", "owner token required")
+		return
+	}
 	type dbInfo struct {
 		ID         string `json:"id"`
 		Engine     string `json:"engine"`
@@ -85,6 +141,9 @@ func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
 	if db == nil {
 		return
 	}
+	if !s.authorize(w, r, db.ID(), auth.CapCollectionsRead, "") {
+		return
+	}
 	collections, err := db.Collections(r.Context())
 	if err != nil {
 		writeMappedError(w, err)
@@ -101,6 +160,9 @@ func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleInferredSchema(w http.ResponseWriter, r *http.Request) {
 	db := s.db(w, r)
 	if db == nil {
+		return
+	}
+	if !s.authorize(w, r, db.ID(), auth.CapSchemaRead, "") {
 		return
 	}
 	snapshot := db.InferredSnapshot()
