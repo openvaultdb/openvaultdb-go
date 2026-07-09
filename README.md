@@ -341,6 +341,43 @@ manifest: `export OVDB_MYSQL_DSN='user:pass@tcp(host:3306)/db?parseTime=true'`.
 Conformance tests run when `DALGO2MYSQL_TEST_DSN` points at a reachable MySQL
 (e.g. `docker run -e MYSQL_ROOT_PASSWORD=… -e MYSQL_DATABASE=ovdb -p 3306:3306 mysql:8`).
 
+### GitHub-backed inGitDB manifest example
+
+Write records straight to a GitHub repo (no local working tree; one commit per
+batch):
+
+```yaml
+database:
+  id: myapp
+  schema_mode: strict     # github backend: strict | partial
+
+storage:
+  engine: ingitdb
+  ingitdb:
+    github:
+      owner: my-user-or-org
+      repo: my-data-repo
+      ref: main                 # branch (default main)
+      token_env: OVDB_GITHUB_TOKEN
+
+schemas:
+  collections:
+    contacts:
+      fields:
+        title: {type: string, required: true}
+```
+
+Provide a token with `contents:write` on the repo in the environment, never
+the manifest: `export OVDB_GITHUB_TOKEN=ghp_...`. The branch must already
+exist (the tree writer commits onto it). Conformance runs when
+`OVDB_GH_TEST_REPO` (owner/repo) + `OVDB_GITHUB_TOKEN` point at a throwaway repo.
+
+### Cloud-managed PostgreSQL / MySQL
+
+The `postgres` and `mysql` engines connect to managed cloud databases — Amazon
+RDS & Aurora, Azure Database for PostgreSQL/MySQL, Google Cloud SQL — unchanged:
+point the DSN env var at the cloud endpoint with TLS. No new engine required.
+
 ## MVP boundaries
 
 ### In MVP

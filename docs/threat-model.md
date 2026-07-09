@@ -155,3 +155,17 @@ from the environment variable named by `storage.mysql.dsn_env` (default
 (`tls=true` or a custom TLS config) for non-local servers. ovdb issues only
 parameterized statements; identifiers are validated against a safe pattern
 before backtick-quoting, so record data cannot inject SQL.
+
+
+## GitHub-backed inGitDB (2026-07-09)
+
+The GitHub access token is a credential and is read from the environment
+variable named by `storage.ingitdb.github.token_env` (default
+`OVDB_GITHUB_TOKEN`), never from the manifest. Scope the token to
+`contents:write` on the single target repo (a fine-grained PAT or a GitHub App
+installation token) — a broadly-scoped classic PAT would let a compromised
+ovdb write to every repo the token can reach. Data written to the repo is
+plaintext and, if the repo is public or later made public, world-readable
+(same consideration as any inGitDB repo). Each write batch is one commit, so
+the full history — including deleted records — is retained and pushed to
+GitHub.

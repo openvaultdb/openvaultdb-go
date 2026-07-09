@@ -43,10 +43,17 @@ func File(manifestPath string) (*core.Database, error) {
 		}
 		cataloguePath = storagePath + ".inferred.json"
 	case "ingitdb":
-		if db, modes, err = openInGitDB(storagePath); err != nil {
-			return nil, fmt.Errorf("%s: %w", manifestPath, err)
+		if m.Storage.InGitDB != nil && m.Storage.InGitDB.GitHub != nil {
+			if db, modes, err = openInGitDBGitHub(m); err != nil {
+				return nil, fmt.Errorf("%s: %w", manifestPath, err)
+			}
+			cataloguePath = filepath.Join(baseDir, m.Database.ID+".inferred.json")
+		} else {
+			if db, modes, err = openInGitDB(storagePath); err != nil {
+				return nil, fmt.Errorf("%s: %w", manifestPath, err)
+			}
+			cataloguePath = filepath.Join(storagePath, ".ovdb", "inferred-schema.json")
 		}
-		cataloguePath = filepath.Join(storagePath, ".ovdb", "inferred-schema.json")
 	case "firestore":
 		if db, modes, err = openFirestore(m.Storage.Firestore); err != nil {
 			return nil, fmt.Errorf("%s: %w", manifestPath, err)
