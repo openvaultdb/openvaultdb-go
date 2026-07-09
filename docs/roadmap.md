@@ -123,10 +123,15 @@ emulator when `FIRESTORE_EMULATOR_HOST` is set.
 
 ### More engines (assessed 2026-07-09)
 
-- **PostgreSQL** — in progress: `dalgo2postgres` wrapper over dalgo2sql
-  (pgx, Postgres DDL dialect, information_schema introspection); strict mode
-  first, JSONB document-column mode as a follow-up that could make Postgres
-  the first SQL engine with all three modes. MySQL is cheap after it.
+- **PostgreSQL** — done (2026-07-09): `dalgo2postgres` v0.1.1 (pgx, Postgres
+  DDL dialect, information_schema introspection) mounted in ovdb; strict mode,
+  DSN from env. Full dalgo conformance green against PostgreSQL 17. Two dalgo
+  upstream additions made it work: `dalgo2sql` v0.9.0 `PlaceholderDialect`
+  (Postgres `$N` markers) and bracket-ident stripping. Follow-ups: JSONB
+  document-column mode (→ partial/schemaless, would make Postgres the first
+  SQL engine with all three modes); case-preserving identifiers (needs dalgo
+  core to quote column identifiers in structured-query rendering). MySQL is
+  cheap after this via the same dalgo2sql base.
 - **Embedded KV (Badger/BuntDB)** — dalgo drivers exist but target dalgo
   v0.24; modernize upstream first. Value: embedded schemaless without git.
 - **Redis** — not planned as a storage engine (ephemeral-by-default fits

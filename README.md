@@ -293,6 +293,30 @@ Credentials come from Application Default Credentials, or set
 `FIRESTORE_EMULATOR_HOST` for the local emulator. Firestore conformance tests
 run when that env var is set (`gcloud emulators firestore start`).
 
+### PostgreSQL manifest example
+
+```yaml
+database:
+  id: myapp
+  schema_mode: strict     # postgres: strict only in MVP
+
+storage:
+  engine: postgres
+  postgres:
+    dsn_env: OVDB_POSTGRES_DSN   # env var holding the DSN (default shown)
+
+schemas:
+  collections:
+    contacts:
+      fields:
+        title: {type: string, required: true}
+```
+
+Set the connection string in the environment, never the manifest:
+`export OVDB_POSTGRES_DSN='postgres://user:pass@host:5432/db?sslmode=require'`.
+Conformance tests run when `DALGO2POSTGRES_TEST_DSN` points at a reachable
+PostgreSQL (e.g. `docker run -e POSTGRES_PASSWORD=… -p 5432:5432 postgres:17`).
+
 ## MVP boundaries
 
 ### In MVP

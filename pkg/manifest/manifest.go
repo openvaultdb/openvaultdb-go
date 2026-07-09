@@ -29,10 +29,11 @@ type Database struct {
 
 // Storage selects and configures the storage engine.
 type Storage struct {
-	Engine    string            `yaml:"engine" json:"engine"`                 // "sqlite" | "ingitdb" | "firestore"
-	Path      string            `yaml:"path,omitempty" json:"path,omitempty"` // unused by firestore
+	Engine    string            `yaml:"engine" json:"engine"`                 // "sqlite" | "ingitdb" | "firestore" | "postgres"
+	Path      string            `yaml:"path,omitempty" json:"path,omitempty"` // unused by firestore/postgres
 	InGitDB   *InGitDBOptions   `yaml:"ingitdb,omitempty" json:"ingitdb,omitempty"`
 	Firestore *FirestoreOptions `yaml:"firestore,omitempty" json:"firestore,omitempty"`
+	Postgres  *PostgresOptions  `yaml:"postgres,omitempty" json:"postgres,omitempty"`
 }
 
 // FirestoreOptions configures the Firestore engine. Credentials come from
@@ -43,6 +44,24 @@ type FirestoreOptions struct {
 	Project string `yaml:"project" json:"project"`
 	// Database is the Firestore database id (default "(default)").
 	Database string `yaml:"database,omitempty" json:"database,omitempty"`
+}
+
+// PostgresOptions configures the PostgreSQL engine. The connection string
+// (which carries credentials) is NEVER stored in the manifest: DSNEnv names
+// the environment variable that holds it.
+type PostgresOptions struct {
+	// DSNEnv is the environment variable holding the Postgres DSN
+	// (default "OVDB_POSTGRES_DSN"), e.g.
+	// postgres://user:pass@host:5432/db?sslmode=require.
+	DSNEnv string `yaml:"dsn_env,omitempty" json:"dsnEnv,omitempty"`
+}
+
+// DSNEnvVar returns the env var name holding the DSN, with the default applied.
+func (o *PostgresOptions) DSNEnvVar() string {
+	if o == nil || o.DSNEnv == "" {
+		return "OVDB_POSTGRES_DSN"
+	}
+	return o.DSNEnv
 }
 
 // InGitDBOptions configures inGitDB-specific storage behavior.
@@ -125,7 +144,8 @@ func (m *Manifest) Validate() error {
 	if m.Storage.Engine == "" {
 		return fmt.Errorf("storage.engine is required")
 	}
-	if m.Storage.Path == "" && m.Storage.Engine != "firestore" {
+	pathless := m.Storage.Engine == "firestore" || m.Storage.Engine == "postgres"
+	if m.Storage.Path == "" && !pathless {
 		return fmt.Errorf("storage.path is required")
 	}
 	if m.Storage.Engine == "firestore" {
@@ -134,6 +154,9 @@ func (m *Manifest) Validate() error {
 		}
 	} else if m.Storage.Firestore != nil {
 		return fmt.Errorf("storage.firestore options are only valid with engine 'firestore', got %q", m.Storage.Engine)
+	}
+	if m.Storage.Postgres != nil && m.Storage.Engine != "postgres" {
+		return fmt.Errorf("storage.postgres options are only valid with engine 'postgres', got %q", m.Storage.Engine)
 	}
 	if o := m.Storage.InGitDB; o != nil {
 		if m.Storage.Engine != "ingitdb" {

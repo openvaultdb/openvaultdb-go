@@ -6,6 +6,7 @@ require (
 	cloud.google.com/go/firestore v1.22.0
 	github.com/dal-go/dalgo v0.62.10
 	github.com/dal-go/dalgo2firestore v0.9.0
+	github.com/dal-go/dalgo2postgres v0.1.1
 	github.com/ingitdb/dalgo2ingitdb v0.2.0
 	github.com/ingitdb/ingitdb-go/ingitdb v0.0.1
 	github.com/spf13/cobra v1.10.2
@@ -29,6 +30,10 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.17 // indirect
 	github.com/googleapis/gax-go/v2 v2.22.0 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/pgx/v5 v5.10.0 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
@@ -64,7 +69,7 @@ require (
 	github.com/RoaringBitmap/roaring/v2 v2.19.0 // indirect
 	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	github.com/dal-go/dalgo2openvaultdb v0.1.0
-	github.com/dal-go/dalgo2sql v0.8.0
+	github.com/dal-go/dalgo2sql v0.9.0
 	github.com/dal-go/dalgo2sqlite v0.0.17
 	github.com/gofrs/flock v0.13.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect

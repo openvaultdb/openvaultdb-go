@@ -60,6 +60,7 @@ github.com/dal-go/dalgo2openvaultdb   — DALgo driver speaking the HTTP API
 | ingitdb   | github.com/ingitdb/dalgo2ingitdb   | strict, partial, schemaless   |
 | sqlite    | github.com/dal-go/dalgo2sqlite     | strict (MVP choice, not a permanent limitation) |
 | firestore | github.com/dal-go/dalgo2firestore  | strict, partial, schemaless   |
+| postgres  | github.com/dal-go/dalgo2postgres   | strict (MVP; JSONB doc-column mode → all three, roadmap) |
 
 ### inGitDB (reference engine)
 
@@ -95,6 +96,19 @@ back from SQLite's 0/1 integers on reads.
 project/database ids, never credentials. Firestore collections are implicit
 (no DDL to provision); all three schema modes are enforced by ovdb core
 above the driver. The inferred catalogue persists next to the manifest.
+
+### PostgreSQL
+
+`dalgo2postgres` (pgx, pure Go) over `dalgo2sql` — the second relational
+engine. The DSN (which carries credentials) comes from the environment
+variable named by `storage.postgres.dsn_env` (default `OVDB_POSTGRES_DSN`);
+manifests never carry secrets. Strict mode only in MVP, like SQLite (records
+map to relational columns; a JSONB document-column mode enabling
+partial/schemaless is on the roadmap and would make Postgres the first SQL
+engine with all three modes). PostgreSQL folds identifiers to lower case, so
+collection and field names are stored lower-cased; ovdb restores declared
+field-name case on read (see `coerceToSchema`) so strict validation and
+clients see faithful names.
 
 ## Schema modes
 

@@ -143,6 +143,21 @@ func (d *Database) coerceToSchema(collection string, data map[string]any) map[st
 	if col == nil || data == nil {
 		return data
 	}
+	// Restore declared field-name case. Some engines fold identifiers to a
+	// canonical case on write (PostgreSQL lower-cases them), so a record read
+	// back can carry differently-cased keys than the schema declares. Rename
+	// them to the declared case so downstream validation and clients see
+	// faithful field names.
+	lowerToDeclared := make(map[string]string, len(col.Fields))
+	for name := range col.Fields {
+		lowerToDeclared[strings.ToLower(name)] = name
+	}
+	for key := range data {
+		if declared, ok := lowerToDeclared[strings.ToLower(key)]; ok && declared != key {
+			data[declared] = data[key]
+			delete(data, key)
+		}
+	}
 	for name, f := range col.Fields {
 		if f.Type != schema.TypeBoolean {
 			continue
