@@ -4,3 +4,4 @@
 *.sqlite
 *.sqlite-journal
 /data/
+.worktrees/
