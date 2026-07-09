@@ -55,10 +55,11 @@ github.com/dal-go/dalgo2openvaultdb   — DALgo driver speaking the HTTP API
 
 ## Engines (DALgo drivers)
 
-| Engine  | Driver                          | Schema modes (MVP)             |
-|---------|--------------------------------|--------------------------------|
-| ingitdb | github.com/ingitdb/dalgo2ingitdb | strict, partial, schemaless   |
-| sqlite  | github.com/dal-go/dalgo2sqlite   | strict (MVP choice, not a permanent limitation) |
+| Engine    | Driver                             | Schema modes                  |
+|-----------|------------------------------------|-------------------------------|
+| ingitdb   | github.com/ingitdb/dalgo2ingitdb   | strict, partial, schemaless   |
+| sqlite    | github.com/dal-go/dalgo2sqlite     | strict (MVP choice, not a permanent limitation) |
+| firestore | github.com/dal-go/dalgo2firestore  | strict, partial, schemaless   |
 
 ### inGitDB (reference engine)
 
@@ -86,6 +87,14 @@ tables at open. Strict-only in MVP because partial/schemaless need
 inferred-schema-driven column evolution (roadmap). The `id` column is treated
 as implicitly declared by validation, and declared boolean fields are coerced
 back from SQLite's 0/1 integers on reads.
+
+### Firestore
+
+`dalgo2firestore` over Application Default Credentials (or
+`FIRESTORE_EMULATOR_HOST` for local development) — manifests carry only the
+project/database ids, never credentials. Firestore collections are implicit
+(no DDL to provision); all three schema modes are enforced by ovdb core
+above the driver. The inferred catalogue persists next to the manifest.
 
 ## Schema modes
 
@@ -180,7 +189,7 @@ In: `ovdb` CLI + `serve`, minimal HTTP API, SQLite strict engine, inGitDB
 strict/partial/schemaless engine, manifest (incl. push policy), inferred
 schema catalogue, DTQL pass-through, dalgo2openvaultdb, Sneat CLI validation.
 
-Out (see docs/roadmap.md): Firestore engine mount, hosted service, billing,
+Out (see docs/roadmap.md): hosted service, billing,
 auth, GraphSpec/ModelSpec, GraphQL, admin UI, replication/sync, migrations,
 SQLite partial/schemaless, cursors/offset/projections/group-by over the wire,
 update preconditions, cross-request transaction isolation.

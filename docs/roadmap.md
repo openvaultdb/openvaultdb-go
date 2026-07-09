@@ -112,14 +112,27 @@ Support multiple users sharing one `ovdb serve` instance with isolated databases
 - Per-tenant auth tokens.
 - Filesystem isolation: each tenant's databases under a separate directory subtree.
 
-### Firestore engine via dalgo2firestore
+### Firestore engine via dalgo2firestore — done (2026-07-09)
 
-Adding Firestore as a storage engine would be straightforward by design: engines are `dal.DB`
-drivers plus a schema-mode capability declaration. `dalgo2firestore` already implements `dal.DB`.
-Mount it the same way as inGitDB. Schemaless mode maps naturally (Firestore is natively
-schemaless). The primary work is manifest schema design for Firestore connection config and
-ensuring the `ddl.SchemaModifier` interface is satisfied (or skipped — Firestore does not
-require collection definitions).
+Shipped exactly as predicted by the design: a ~35-line mount over
+`dalgo2firestore` v0.9.0 (which gained bare-map record support upstream),
+manifest `storage.firestore: {project, database}` with credentials from ADC /
+`FIRESTORE_EMULATOR_HOST`, all three schema modes enforced by core, DDL
+provisioning skipped (collections are implicit). Conformance runs against the
+emulator when `FIRESTORE_EMULATOR_HOST` is set.
+
+### More engines (assessed 2026-07-09)
+
+- **PostgreSQL** — in progress: `dalgo2postgres` wrapper over dalgo2sql
+  (pgx, Postgres DDL dialect, information_schema introspection); strict mode
+  first, JSONB document-column mode as a follow-up that could make Postgres
+  the first SQL engine with all three modes. MySQL is cheap after it.
+- **Embedded KV (Badger/BuntDB)** — dalgo drivers exist but target dalgo
+  v0.24; modernize upstream first. Value: embedded schemaless without git.
+- **Redis** — not planned as a storage engine (ephemeral-by-default fits
+  poorly with user-owned/portable/versioned data); relevant later as a
+  cache/materialized-read tier or change-notification pub/sub in front of
+  engines.
 
 ---
 

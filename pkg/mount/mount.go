@@ -47,8 +47,15 @@ func File(manifestPath string) (*core.Database, error) {
 			return nil, fmt.Errorf("%s: %w", manifestPath, err)
 		}
 		cataloguePath = filepath.Join(storagePath, ".ovdb", "inferred-schema.json")
+	case "firestore":
+		if db, modes, err = openFirestore(m.Storage.Firestore); err != nil {
+			return nil, fmt.Errorf("%s: %w", manifestPath, err)
+		}
+		// Firestore has no local data directory; the inferred catalogue
+		// lives next to the manifest.
+		cataloguePath = filepath.Join(baseDir, m.Database.ID+".inferred.json")
 	default:
-		return nil, fmt.Errorf("%s: unknown storage engine %q (supported: sqlite, ingitdb)",
+		return nil, fmt.Errorf("%s: unknown storage engine %q (supported: sqlite, ingitdb, firestore)",
 			manifestPath, m.Storage.Engine)
 	}
 

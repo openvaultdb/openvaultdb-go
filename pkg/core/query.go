@@ -101,7 +101,9 @@ func (d *Database) Execute(ctx context.Context, q Query) ([]Record, error) {
 		query = builder.SelectKeysOnly(reflect.String)
 	} else {
 		query = builder.SelectIntoRecord(func() dal.Record {
-			return dal.NewRecordWithData(dal.NewKeyWithID(q.Collection, ""), map[string]any{})
+			// Canonical factory shape (matches the dalgo end2end suite):
+			// an incomplete string-ID key — readers fill the ID.
+			return dal.NewRecordWithIncompleteKey(q.Collection, reflect.String, map[string]any{})
 		})
 	}
 	records, err := d.executeDalQuery(ctx, query, q.Collection, q.KeysOnly)
