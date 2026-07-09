@@ -127,13 +127,21 @@ emulator when `FIRESTORE_EMULATOR_HOST` is set.
   DDL dialect, information_schema introspection) mounted in ovdb; strict mode,
   DSN from env. Full dalgo conformance green against PostgreSQL 17. Two dalgo
   upstream additions made it work: `dalgo2sql` v0.9.0 `PlaceholderDialect`
-  (Postgres `$N` markers) and bracket-ident stripping. Follow-ups: JSONB
-  document-column mode (→ partial/schemaless, would make Postgres the first
-  SQL engine with all three modes); case-preserving identifiers (needs dalgo
-  core to quote column identifiers in structured-query rendering). MySQL is
-  done (2026-07-09): dalgo2mysql over the same dalgo2sql base, needing
-  no dalgo2sql change (MySQL uses `?` placeholders and preserves identifier
-  case). Six green engine/mode configurations now.
+  (Postgres `$N` markers) and bracket-ident stripping. The SQL engines stay
+  strict-only: the document/partial/schemaless story is inGitDB's job (it is
+  the JSON store), so a JSONB/JSON document-column mode is deliberately NOT
+  pursued. Remaining follow-up: case-preserving identifiers (needs dalgo core
+  to quote column identifiers in structured-query rendering). MySQL is done
+  (2026-07-09): dalgo2mysql over the same dalgo2sql base, needing no dalgo2sql
+  change (MySQL uses `?` placeholders and preserves identifier case).
+- **Cloud databases** — managed PostgreSQL/MySQL (Amazon RDS & Aurora, Azure
+  Database for PostgreSQL/MySQL, Google Cloud SQL) already work through the
+  existing `dalgo2postgres`/`dalgo2mysql` engines: point the DSN at the cloud
+  endpoint with TLS. Genuinely new engines to build: Azure SQL / SQL Server
+  (relational — `dalgo2mssql` over dalgo2sql; notably dalgo's native query
+  String() already emits T-SQL `[brackets]` + `SELECT TOP`), and cloud NoSQL
+  (Amazon DynamoDB, Azure Cosmos DB — full `dal.DB` drivers like
+  dalgo2firestore, testable via DynamoDB Local / the Cosmos emulator).
 - **Embedded KV (Badger/BuntDB)** — dalgo drivers exist but target dalgo
   v0.24; modernize upstream first. Value: embedded schemaless without git.
 - **Redis** — not planned as a storage engine (ephemeral-by-default fits
