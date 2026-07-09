@@ -133,3 +133,15 @@ production-hosting ready — no TLS, no rate limits, no audit log):
   no refresh/rotation, no revocation API (delete entries from the auth-store
   file and restart), consent page has no CSRF protection (dev-only flow),
   tokens transit in clear without TLS termination in front.
+
+
+## PostgreSQL engine (2026-07-09)
+
+The Postgres DSN carries credentials and is read from the environment variable
+named by `storage.postgres.dsn_env` (default `OVDB_POSTGRES_DSN`) — never from
+the manifest. Use `sslmode=require` (or stronger) for non-local servers; the
+DSN, and thus the password, is visible to anything that can read the ovdb
+process environment. ovdb opens exactly one connection pool per mounted
+Postgres database and issues only parameterized statements (identifiers are
+validated against a safe pattern before quoting), so record data cannot inject
+SQL.
