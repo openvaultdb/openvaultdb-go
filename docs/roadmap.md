@@ -68,8 +68,21 @@ Shipped as `ovdb serve --auth`: owner bearer token (env/flag/generated) plus an
 OAuth-style connect flow (consent page → one-time code → scoped app token).
 Capability grants follow the spec taxonomy (`records:read` etc.) with optional
 collection scoping and persist with SHA-256 token hashes. Follow-ups: OIDC and
-passkeys per the auth spec, refresh/rotation, a revocation API, CSRF protection
-on the consent form.
+passkeys per the auth spec, refresh/rotation, CSRF protection on the consent form.
+
+### Token admin API + revocation — done (2026-07-09)
+
+`POST /v1/tokens`, `GET /v1/tokens`, `DELETE /v1/tokens/{id}` — owner-only
+HTTP API for creating revocable scoped tokens without the consent-page flow
+and for immediately revoking them without restarting the server. Each grant
+carries a short random `id` and optional `label`; `revokedAt` is persisted as
+an audit trail (revoked grants are never pruned). The `ovdb token` CLI group
+(`create`, `list`, `revoke`) wraps the API for operator use. Grant model
+extended: `id`, `label`, `revokedAt` fields added with full backward
+compatibility — existing `ovdb-auth.json` files without these fields load
+correctly (missing IDs are synthesized from the token hash prefix). Zero
+`expiresAt` now means "never expires" (admin-created tokens). Follow-ups:
+OIDC and passkeys, refresh/rotation, CSRF protection on the consent form.
 
 See [docs/threat-model.md](threat-model.md) for the current posture.
 

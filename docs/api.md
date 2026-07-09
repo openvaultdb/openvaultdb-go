@@ -172,6 +172,59 @@ from:
   name: spaces
 ```
 
+## Token Admin API (owner only)
+
+These endpoints are only available when auth is enabled (`ovdb serve --auth`).
+All three require the owner token. App tokens get `403 forbidden`.
+This is how you create revocable scoped tokens for applications without running
+the consent flow — and how you revoke them without restarting the server.
+
+```
+POST /v1/tokens
+Authorization: Bearer <owner-token>
+Content-Type: application/json
+{
+  "label":        "optional display name",
+  "databaseId":   "mydb",         // required; must be a mounted database
+  "capabilities": ["records:read", "records:write"],  // required; validated server-side
+  "expiresIn":    "720h"          // optional Go duration; omit = never expires
+}
+→ 201 {
+    "id":           "598e4e3f0dea7be1",    // short unique identifier
+    "token":        "ovdb_...",             // SECRET — returned ONCE, never stored
+    "label":        "...",
+    "databaseId":   "mydb",
+    "capabilities": ["records:read", "records:write"],
+    "issuedAt":     "2026-07-09T00:00:00Z",
+    "expiresAt":    "2026-08-08T00:00:00Z"  // omitted when never expires
+  }
+→ 400 bad_request  — missing/invalid databaseId, unknown capability, bad expiresIn
+→ 401/403          — missing/invalid owner token
+
+GET /v1/tokens
+Authorization: Bearer <owner-token>
+→ 200 {"tokens": [{
+    "id":           "...",
+    "label":        "...",
+    "databaseId":   "...",
+    "capabilities": [...],
+    "issuedAt":     "...",
+    "expiresAt":    "...",  // omitted when never expires
+    "revokedAt":    "..."   // omitted when not revoked
+  }, ...]}
+  (token secrets are never included in list output)
+
+DELETE /v1/tokens/{id}
+Authorization: Bearer <owner-token>
+→ 200 {id, label, databaseId, capabilities, issuedAt, [expiresAt], revokedAt}
+→ 404 not_found    — unknown id
+→ 401/403          — missing/invalid owner token
+  (revoking an already-revoked token is idempotent — 200)
+```
+
+The revoked grant stays persisted for the audit trail. Revocation takes effect
+immediately on the running server — no restart required.
+
 ## Explicitly not in MVP
 
 Auth (server binds 127.0.0.1 by default), cursors/offset, projections, group-by,

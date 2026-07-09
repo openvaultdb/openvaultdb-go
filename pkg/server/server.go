@@ -56,6 +56,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /authorize", s.handleAuthorizeGet)
 	mux.HandleFunc("POST /authorize", s.handleAuthorizePost)
 	mux.HandleFunc("POST /token", s.handleToken)
+	mux.HandleFunc("POST /v1/tokens", s.handleTokensCreate)
+	mux.HandleFunc("GET /v1/tokens", s.handleTokensList)
+	mux.HandleFunc("DELETE /v1/tokens/{id}", s.handleTokensRevoke)
 	return s.authCfg.Middleware(mux)
 }
 

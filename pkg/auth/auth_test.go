@@ -1,6 +1,9 @@
 package auth
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -96,6 +99,9 @@ func TestStore_CodeExchangeAndPersistence(t *testing.T) {
 	if grant.TokenHash == token || grant.TokenHash != HashToken(token) {
 		t.Fatal("stored hash must be the SHA-256 of the token, not the token")
 	}
+	if grant.ID == "" {
+		t.Fatal("ExchangeCode must populate grant ID")
+	}
 
 	// One-time use.
 	if _, _, err = s.ExchangeCode("code1", "app1"); err == nil {
@@ -124,10 +130,207 @@ func TestStore_CodeExchangeAndPersistence(t *testing.T) {
 		t.Fatal("grant must survive reload")
 	}
 
-	// Expired grants are dropped.
+	// Expired grants are dropped on Lookup.
 	g := s2.Lookup(token)
 	g.ExpiresAt = time.Now().Add(-time.Minute)
 	if s2.Lookup(token) != nil {
 		t.Fatal("expired grant must not resolve")
 	}
 }
+
+// TestStore_BackwardCompatLoad ensures grants persisted without the ID field
+// (old format) load correctly: a stable synthetic ID is derived from the hash.
+func TestStore_BackwardCompatLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	// Write legacy grant JSON without id/label/revokedAt fields.
+	legacy := `[{
+		"tokenHash": "abc123def456abc123def456abc123de",
+		"principalType": "application",
+		"principalId": "old-app",
+		"databaseId": "mydb",
+		"capabilities": [{"action": "records:read"}],
+		"issuedAt": "2026-01-01T00:00:00Z",
+		"expiresAt": "2099-01-01T00:00:00Z"
+	}]`
+	if err := writeFileAtomic(path, []byte(legacy)); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenStore(path)
+	if err != nil {
+		t.Fatalf("OpenStore with legacy JSON: %v", err)
+	}
+	grants := s.ListGrants()
+	if len(grants) != 1 {
+		t.Fatalf("want 1 grant, got %d", len(grants))
+	}
+	if grants[0].ID == "" {
+		t.Fatal("legacy grant must get a synthesized ID on load")
+	}
+	// Synthesized ID = first 12 chars of token hash.
+	if want := "abc123def456"; grants[0].ID != want {
+		t.Errorf("synthesized ID = %q, want %q", grants[0].ID, want)
+	}
+}
+
+// writeFileAtomic is a helper used only in tests.
+func writeFileAtomic(path string, data []byte) error {
+	tmp := path + ".tmp"
+	if err := writeFile(tmp, data); err != nil {
+		return err
+	}
+	return rename(tmp, path)
+}
+
+// TestStore_ZeroExpiryNeverExpires checks that a grant with zero ExpiresAt
+// never expires and is correctly loaded from disk.
+func TestStore_ZeroExpiryNeverExpires(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	s, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := &Grant{
+		DatabaseID:   "db1",
+		Capabilities: []Capability{{Action: CapRecordsRead}},
+		// ExpiresAt left as zero value = never expires
+	}
+	if err = s.CreateGrant(g, tok); err != nil {
+		t.Fatal(err)
+	}
+	if g.ExpiresAt != (time.Time{}) {
+		t.Fatalf("ExpiresAt should remain zero, got %v", g.ExpiresAt)
+	}
+	// Lookup must succeed now.
+	if s.Lookup(tok) == nil {
+		t.Fatal("zero-expiry grant must resolve")
+	}
+	// Simulate time passing far into the future.
+	far := time.Now().Add(100 * 365 * 24 * time.Hour)
+	if g.Expired(far) {
+		t.Fatal("zero-expiry grant must not expire even far in the future")
+	}
+	// Reload from disk: grant must survive.
+	s2, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s2.Lookup(tok) == nil {
+		t.Fatal("zero-expiry grant must survive reload")
+	}
+}
+
+// TestStore_RevokedLookupRejected checks that a revoked token cannot be used.
+func TestStore_RevokedLookupRejected(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	s, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := &Grant{
+		DatabaseID:   "db1",
+		Capabilities: []Capability{{Action: CapRecordsRead}},
+	}
+	if err = s.CreateGrant(g, tok); err != nil {
+		t.Fatal(err)
+	}
+	// Token resolves before revocation.
+	if s.Lookup(tok) == nil {
+		t.Fatal("must resolve before revocation")
+	}
+	// Revoke.
+	rg, ok := s.RevokeGrant(g.ID)
+	if !ok {
+		t.Fatal("RevokeGrant: not found")
+	}
+	if rg.RevokedAt == nil {
+		t.Fatal("RevokedAt must be set after revocation")
+	}
+	// Token must no longer resolve.
+	if s.Lookup(tok) != nil {
+		t.Fatal("revoked grant must not resolve")
+	}
+	// Revoking again is idempotent (200 / true, not error).
+	if _, ok2 := s.RevokeGrant(g.ID); !ok2 {
+		t.Fatal("double revocation must succeed (idempotent)")
+	}
+}
+
+// TestStore_CreateListRevokePersistence is an end-to-end round-trip.
+func TestStore_CreateListRevokePersistence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	s, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tokens []string
+	for i := 0; i < 3; i++ {
+		tok, err := NewToken()
+		if err != nil {
+			t.Fatal(err)
+		}
+		g := &Grant{
+			Label:        fmt.Sprintf("token-%d", i),
+			DatabaseID:   "db1",
+			Capabilities: []Capability{{Action: CapRecordsRead}},
+		}
+		if err = s.CreateGrant(g, tok); err != nil {
+			t.Fatalf("CreateGrant %d: %v", i, err)
+		}
+		tokens = append(tokens, tok)
+	}
+	grants := s.ListGrants()
+	if len(grants) != 3 {
+		t.Fatalf("ListGrants: want 3, got %d", len(grants))
+	}
+	// Revoke the second token.
+	id := grants[1].ID
+	if _, ok := s.RevokeGrant(id); !ok {
+		t.Fatal("revoke failed")
+	}
+	// Reload and check persistence.
+	s2, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// All 3 grants persisted (revoked one kept for audit).
+	grants2 := s2.ListGrants()
+	if len(grants2) != 3 {
+		t.Fatalf("after reload: want 3 grants (revoked kept), got %d", len(grants2))
+	}
+	// Token 1 resolves, token 2 (revoked) does not, token 3 resolves.
+	if s2.Lookup(tokens[0]) == nil {
+		t.Fatal("token 0 must resolve")
+	}
+	if s2.Lookup(tokens[1]) != nil {
+		t.Fatal("revoked token must not resolve after reload")
+	}
+	if s2.Lookup(tokens[2]) == nil {
+		t.Fatal("token 2 must resolve")
+	}
+	// Unknown id returns false.
+	if _, ok := s2.RevokeGrant("nonexistent"); ok {
+		t.Fatal("revoking unknown ID must return false")
+	}
+}
+
+// writeFile / rename are thin wrappers so tests can write files without
+// depending on os directly (keeps the test helpers internal).
+func writeFile(path string, data []byte) error {
+	return os.WriteFile(path, data, 0o600)
+}
+
+func rename(old, new string) error { return os.Rename(old, new) }
+
+// ensure imported packages are used
+var (
+	_ = json.Marshal
+	_ = fmt.Sprintf
+)

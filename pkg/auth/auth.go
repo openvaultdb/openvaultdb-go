@@ -98,17 +98,34 @@ func (c Capability) String() string {
 // Grant is one issued application token: the token itself is NOT stored —
 // only its SHA-256 hex — so the grants file never holds usable credentials.
 type Grant struct {
+	ID            string       `json:"id"`              // short random identifier (8 hex bytes)
+	Label         string       `json:"label,omitempty"` // human display name
 	TokenHash     string       `json:"tokenHash"`
 	PrincipalType string       `json:"principalType"` // "application" (MVP)
 	PrincipalID   string       `json:"principalId"`   // client_id
 	DatabaseID    string       `json:"databaseId"`
 	Capabilities  []Capability `json:"capabilities"`
 	IssuedAt      time.Time    `json:"issuedAt"`
-	ExpiresAt     time.Time    `json:"expiresAt"`
+	ExpiresAt     time.Time    `json:"expiresAt,omitempty"` // zero = never expires
+	RevokedAt     *time.Time   `json:"revokedAt,omitempty"`
 }
 
-// Expired reports whether the grant is past its expiry.
-func (g *Grant) Expired(now time.Time) bool { return now.After(g.ExpiresAt) }
+// Expired reports whether the grant is past its expiry. A zero ExpiresAt never expires.
+func (g *Grant) Expired(now time.Time) bool {
+	return !g.ExpiresAt.IsZero() && now.After(g.ExpiresAt)
+}
+
+// Revoked reports whether the grant has been revoked.
+func (g *Grant) Revoked() bool { return g.RevokedAt != nil }
+
+// NewGrantID generates a short random grant identifier (8 random hex bytes = 16 hex chars).
+func NewGrantID() (string, error) {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("failed to generate grant id: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
 
 // Principal is the authenticated caller attached to a request context.
 type Principal struct {

@@ -115,6 +115,17 @@ will be needed:
 - **Audit log**: structured log of all writes, accessible for compliance.
 
 
+## Token Admin + Revocation (2026-07-09 update)
+
+`POST/GET/DELETE /v1/tokens` — owner-token-authorized admin API for creating
+and revoking scoped application tokens without the consent flow. Revocation
+takes effect immediately in memory and is persisted to the auth-store file
+(`--auth-store`, mode 0600). Revoked grants are kept in the file with a
+`revokedAt` timestamp for the audit trail — they are never used for
+authentication. Token hashes are the only credential in the file; the raw
+token secret appears only in the `POST /v1/tokens` response and is never
+stored. Non-owner callers (app tokens or unauthenticated) get 403/401.
+
 ## Auth MVP (2026-07-09 update)
 
 `ovdb serve --auth` adds the first authentication layer (still NOT
@@ -130,8 +141,7 @@ production-hosting ready — no TLS, no rate limits, no audit log):
   before parsing) and cannot enumerate databases; `/v1/status` redacts the
   database list for non-owners.
 - Remaining gaps for hosted use: no user identity (OIDC/passkeys per spec),
-  no refresh/rotation, no revocation API (delete entries from the auth-store
-  file and restart), consent page has no CSRF protection (dev-only flow),
+  no refresh/rotation, consent page has no CSRF protection (dev-only flow),
   tokens transit in clear without TLS termination in front.
 
 

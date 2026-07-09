@@ -30,6 +30,7 @@ func main() {
 		newStatusCmd(),
 		newDatabasesCmd(),
 		newVersionCmd(),
+		newTokenCmd(),
 	)
 	if err := root.Execute(); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "Error:", err)
