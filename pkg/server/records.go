@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/dal-go/dalgo/dal"
+	"github.com/dal-go/record"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
@@ -17,7 +17,7 @@ import (
 // survive as data rather than path separators. Segments are unescaped
 // individually and validated (no empty, "." or ".." segments — path
 // traversal safety).
-func parseRecordKey(r *http.Request) (*dal.Key, error) {
+func parseRecordKey(r *http.Request) (*record.Key, error) {
 	escaped := r.URL.EscapedPath()
 	idx := strings.Index(escaped, "/records/")
 	if idx < 0 {
@@ -32,7 +32,7 @@ func parseRecordKey(r *http.Request) (*dal.Key, error) {
 
 // parseKeyPath parses a dal-escaped key path ("collection/id[/sub/id...]")
 // into a dalgo key.
-func parseKeyPath(raw string) (*dal.Key, error) {
+func parseKeyPath(raw string) (*record.Key, error) {
 	return core.ParseKeyPath(raw)
 }
 

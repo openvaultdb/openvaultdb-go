@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/dal-go/dalgo/dal"
-	"github.com/dal-go/dalgo/update"
+	"github.com/dal-go/record/update"
 )
 
 // toDalUpdates converts wire update ops into dalgo update.Update values so
