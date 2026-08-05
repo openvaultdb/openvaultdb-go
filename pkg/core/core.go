@@ -18,6 +18,7 @@ import (
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/dalgo/dbschema"
 	"github.com/dal-go/dalgo/ddl"
+	"github.com/dal-go/record"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/inferred"
 	"github.com/openvaultdb/openvaultdb-go/pkg/manifest"
@@ -119,16 +120,16 @@ func (d *Database) InferredSnapshot() *inferred.Snapshot {
 }
 
 // Get returns record data or ErrNotFound.
-func (d *Database) Get(ctx context.Context, key *dal.Key) (map[string]any, error) {
+func (d *Database) Get(ctx context.Context, key *record.Key) (map[string]any, error) {
 	data := map[string]any{}
-	record := dal.NewRecordWithData(key, data)
-	if err := d.db.Get(ctx, record); err != nil {
-		if dal.IsNotFound(err) {
+	rec := record.NewRecordWithData(key, data)
+	if err := d.db.Get(ctx, rec); err != nil {
+		if record.IsNotFound(err) {
 			return nil, fmt.Errorf("%w: %s", ErrNotFound, key.String())
 		}
 		return nil, err
 	}
-	if !record.Exists() {
+	if !rec.Exists() {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, key.String())
 	}
 	return d.coerceToSchema(key.Collection(), data), nil
@@ -173,13 +174,13 @@ func (d *Database) coerceToSchema(collection string, data map[string]any) map[st
 }
 
 // Exists reports whether the record exists.
-func (d *Database) Exists(ctx context.Context, key *dal.Key) (bool, error) {
+func (d *Database) Exists(ctx context.Context, key *record.Key) (bool, error) {
 	return d.db.Exists(ctx, key)
 }
 
 // Collections lists collections known to the driver.
 func (d *Database) Collections(ctx context.Context) ([]string, error) {
-	reader, ok := d.db.(dbschema.SchemaReader)
+	reader, ok := dal.As[dbschema.SchemaReader](d.db)
 	if !ok {
 		return nil, nil
 	}
@@ -202,7 +203,7 @@ func (d *Database) Close() error { return nil }
 // Op is one operation of a write batch, in wire format (see docs/api.md).
 type Op struct {
 	Op      string         `json:"op"` // set | insert | update | delete
-	Key     *dal.Key       `json:"-"`
+	Key     *record.Key    `json:"-"`
 	KeyPath string         `json:"key"`
 	Data    map[string]any `json:"data,omitempty"`
 	Updates []UpdateOp     `json:"updates,omitempty"`
@@ -266,15 +267,15 @@ func (d *Database) Apply(ctx context.Context, ops []Op, message string) (int, er
 			dk := op.Key
 			switch op.Op {
 			case "set":
-				record := dal.NewRecordWithData(dk, op.Data)
-				record.SetError(nil)
-				if err = tx.Set(ctx, record); err != nil {
+				rec := record.NewRecordWithData(dk, op.Data)
+				rec.SetError(nil)
+				if err = tx.Set(ctx, rec); err != nil {
 					return fmt.Errorf("failed to set %s: %w", op.Key.String(), err)
 				}
 			case "insert":
-				record := dal.NewRecordWithData(dk, op.Data)
-				record.SetError(nil)
-				if err = tx.Insert(ctx, record); err != nil {
+				rec := record.NewRecordWithData(dk, op.Data)
+				rec.SetError(nil)
+				if err = tx.Insert(ctx, rec); err != nil {
 					return fmt.Errorf("failed to insert %s: %w", op.Key.String(), err)
 				}
 			case "update":
@@ -337,7 +338,7 @@ func (d *Database) validateOps(ctx context.Context, ops []Op) error {
 	stage := map[string]*stagedState{}
 	leafByKey := map[string]string{}
 
-	load := func(key *dal.Key) (*stagedState, error) {
+	load := func(key *record.Key) (*stagedState, error) {
 		ks := key.String()
 		if st, ok := stage[ks]; ok {
 			return st, nil
@@ -407,7 +408,7 @@ func (d *Database) validateOps(ctx context.Context, ops []Op) error {
 // and drivers pass undeclared fields through while OpenVaultDB validates
 // modes above the driver.
 func (d *Database) ensureCollection(ctx context.Context, collection string, fields map[string]schema.Field) error {
-	modifier, ok := d.db.(ddl.SchemaModifier)
+	modifier, ok := dal.As[ddl.SchemaModifier](d.db)
 	if !ok {
 		// Drivers without a DDL surface (Firestore) have implicit
 		// collections — nothing to provision; core still validates modes.

@@ -48,7 +48,9 @@ func openInGitDBGitHub(m *manifest.Manifest) (dal.DB, []schema.Mode, error) {
 		return nil, nil, fmt.Errorf("failed to open GitHub-backed inGitDB %s/%s@%s: %w",
 			gh.Owner, gh.Repo, gh.GitRef(), err)
 	}
-	return db, []schema.Mode{schema.ModeStrict, schema.ModePartial}, nil
+	// BatchingGitHubDB is a dal.Backend (unsealed); openInGitDBGitHub's
+	// contract returns a sealed dal.DB, so wrap it.
+	return dal.NewDB(db), []schema.Mode{schema.ModeStrict, schema.ModePartial}, nil
 }
 
 // buildInGitDBDefinition constructs an in-memory inGitDB Definition from the

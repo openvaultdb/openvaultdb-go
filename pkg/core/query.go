@@ -10,6 +10,7 @@ import (
 
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/dalgo/dtql"
+	"github.com/dal-go/record"
 )
 
 // Query is a structured query in the JSON wire format (see docs/api.md).
@@ -40,7 +41,7 @@ type OrderBy struct {
 
 // Record is one query result.
 type Record struct {
-	Key  *dal.Key
+	Key  *record.Key
 	Data map[string]any
 }
 
@@ -100,10 +101,10 @@ func (d *Database) Execute(ctx context.Context, q Query) ([]Record, error) {
 	if q.KeysOnly {
 		query = builder.SelectKeysOnly(reflect.String)
 	} else {
-		query = builder.SelectIntoRecord(func() dal.Record {
+		query = builder.SelectIntoRecord(func() record.Record {
 			// Canonical factory shape (matches the dalgo end2end suite):
 			// an incomplete string-ID key — readers fill the ID.
-			return dal.NewRecordWithIncompleteKey(q.Collection, reflect.String, map[string]any{})
+			return record.NewRecordWithIncompleteKey(q.Collection, reflect.String, map[string]any{})
 		})
 	}
 	records, err := d.executeDalQuery(ctx, query, q.Collection, q.KeysOnly)
@@ -164,7 +165,7 @@ func (d *Database) executeDalQuery(ctx context.Context, query dal.StructuredQuer
 		// roadmap upstream improvement.
 		if collection != "" && (out.Key == nil || fmt.Sprintf("%v", out.Key.ID) == "") {
 			if id, ok := data["id"].(string); ok && id != "" {
-				out.Key = dal.NewKeyWithID(collection, id)
+				out.Key = record.NewKeyWithID(collection, id)
 			}
 		}
 		if !keysOnly {
