@@ -23,6 +23,14 @@ sneat-cli → Sneat facades → DALgo → dalgo2openvaultdb → OpenVaultDB HTTP
 
 ### 1. Install
 
+macOS/Linux, via Homebrew (signed and notarized on macOS):
+
+```sh
+brew install --cask openvaultdb/tap/ovdb
+```
+
+Or with Go:
+
 ```sh
 go install github.com/openvaultdb/openvaultdb-go/cmd/ovdb@latest
 ```

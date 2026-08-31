@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'go.*'
+      - '**/*.go'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    branches:
+      - '**'
+    paths:
+      - 'go.*'
+      - '**/*.go'
+      - '.github/workflows/*.yml'
+
+jobs:
+  strongo_workflow:
+    permissions:
+      contents: write
+    # Pinned to an exact tag, not the moving @v1 (being retired): @v1 served
+    # a stale release.yml missing the macOS notarization gate, which is
+    # exactly how that gate went silently missing on other repos in this
+    # fleet. Pin exactly, and bump deliberately alongside release.yml's pin.
+    uses: strongo/cicd/.github/workflows/workflow.yml@v1.14.15
+    secrets:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    with:
+      # Every dependency here is public (dal-go/*, ingitdb/*, cloud.google.com,
+      # etc.) — no GOPRIVATE needed.
+      cgo_enabled: false
+      # Version bump + release happen in release.yml (continuous delivery on
+      # push to main). This workflow only builds/lints/tests — disable its
+      # bump so it does not create a competing tag. Without this, CI would
+      # cut a tag itself, release.yml would then find nothing new to
+      # publish on its own run, and exit green having published nothing —
+      # the exact bug that bit sneat-cli.
+      disable-version-bumping: true
+      code_coverage: true
+      # Measured via `go test ./... -coverprofile=... -covermode=atomic` on
+      # this branch: 48.4% total (statements). Set just below that so the
+      # floor holds today without failing on day one; raise it deliberately
+      # as coverage improves.
+      min_test_coverage_percent: 48.0

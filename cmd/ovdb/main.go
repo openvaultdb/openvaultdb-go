@@ -4,36 +4,49 @@
 package main
 
 import (
-	"fmt"
+	"context"
 	"os"
 
+	"charm.land/fang/v2"
 	"github.com/spf13/cobra"
-)
 
-// Version is the ovdb CLI/server version (overridable via ldflags).
-var Version = "0.1.0-dev"
+	"github.com/strongo/buildinfo"
+	"github.com/strongo/buildinfo/fangcmd"
+)
 
 // DefaultAddr is the default listen/connect address. Local-first: binds to
 // loopback unless explicitly overridden ("6832" spells OVDB on a phone keypad).
 const DefaultAddr = "127.0.0.1:6832"
 
+// version is this build's resolved bare semver, used by subcommands (serve)
+// that need to report it. Set once in main, before the command tree runs;
+// see github.com/strongo/buildinfo for how it is resolved (link-time -X
+// stamping, falling back to runtime/debug.ReadBuildInfo()).
+var version string
+
 func main() {
+	info := buildinfo.Get("ovdb")
+	version = info.Short()
+
 	root := &cobra.Command{
-		Use:           "ovdb",
-		Short:         "OpenVaultDB — user-owned, portable databases with pluggable engines",
-		SilenceUsage:  true,
-		SilenceErrors: true,
+		Use:   "ovdb",
+		Short: "OpenVaultDB — user-owned, portable databases with pluggable engines",
 	}
 	root.AddCommand(
 		newServeCmd(),
 		newInitCmd(),
 		newStatusCmd(),
 		newDatabasesCmd(),
-		newVersionCmd(),
 		newTokenCmd(),
 	)
-	if err := root.Execute(); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, "Error:", err)
+
+	// fangcmd.Wire adds the `version` subcommand (printing info.Long()) and
+	// returns the fang.Option(s) that make --version/-v print info.Short() —
+	// the same resolved Info, so the two surfaces can't disagree. fang.Execute
+	// also sets SilenceUsage/SilenceErrors and prints a styled error itself,
+	// so main does not need to do either.
+	opts := fangcmd.Wire(root, info)
+	if err := fang.Execute(context.Background(), root, opts...); err != nil {
 		os.Exit(1)
 	}
 }

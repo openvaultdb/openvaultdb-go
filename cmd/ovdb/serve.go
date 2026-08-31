@@ -122,12 +122,12 @@ created databases persist as manifests in the data-dir and are remounted on rest
 
 			srv := &http.Server{
 				Addr:              addr,
-				Handler:           server.New(Version, dbs, opts...).Handler(),
+				Handler:           server.New(version, dbs, opts...).Handler(),
 				ReadHeaderTimeout: 10 * time.Second,
 			}
 			errCh := make(chan error, 1)
 			go func() { errCh <- srv.ListenAndServe() }()
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "OpenVaultDB %s serving on http://%s\n", Version, addr)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "OpenVaultDB %s serving on http://%s\n", version, addr)
 
 			sigCh := make(chan os.Signal, 1)
 			signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)

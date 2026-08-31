@@ -1,0 +1,82 @@
+name: Release
+
+# Continuous delivery: every merge to `main` runs the shared strongo/cicd
+# release workflow, which bumps the version from conventional commits and
+# releases it — all in one run. Pushing an explicit `vX.Y.Z` tag also works
+# and releases that exact version (the shared workflow skips the bump on a
+# tag ref). A docs/chore-only merge cuts no tag and publishes nothing.
+#
+# This repo is ALSO a Go library (github.com/openvaultdb/openvaultdb-go), so
+# every tag cut here is a library release too — not just a CLI build.
+#
+# openvaultdb-go is pre-1.0: allow_major_version_bump stays false, so a stray
+# `feat!:` is CAPPED to a minor bump instead of jumping to v1. Cut v1.0.0
+# deliberately by pushing that tag.
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# One release at a time; a second push queues instead of racing the first.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build + release (GitHub release, Homebrew cask)
+    # Pinned to an immutable tag rather than the floating `v1` of
+    # strongo/cicd. This is load-bearing, not cosmetic: `@v1` DEFINES the
+    # require_notarized_macos input below but does not contain the
+    # macos_signing_preflight/verify-and-promote job(s) that input is
+    # supposed to gate — on `@v1` the gate silently no-ops, and a
+    # stale/revoked Apple credential would ship an unsigned darwin binary via
+    # the Homebrew cask with no failure anywhere. v1.14.15 verified (by
+    # reading strongo/cicd's release.yml at that tag) to define and enforce
+    # require_notarized_macos. Bump this pin deliberately, and re-verify the
+    # gate is still wired, rather than tracking `@v1`.
+    uses: strongo/cicd/.github/workflows/release.yml@v1.14.15
+    permissions:
+      contents: write
+    with:
+      # Must be >= go.mod's `go`/toolchain directive. The shared release
+      # job runs its `go mod tidy` before-hook under this setup-go version
+      # with GOTOOLCHAIN=local, so a lower value fails with
+      # "go.mod requires go >= 1.27.0" before the build ever starts.
+      go_version: '1.27.0'
+      # Pre-1.0: cap an accidental major (feat!:) to a minor bump. Cut
+      # v1.0.0 only by pushing that tag explicitly.
+      allow_major_version_bump: false
+      # Block publication unless the macOS build is genuinely signed,
+      # notarized, AND executable. Without this the verify-and-promote gate
+      # never runs: specscore-cli v0.37.10 shipped a binary macOS SIGKILLs,
+      # with a green release. See https://github.com/strongo/cicd/issues/66
+      require_notarized_macos: true
+    secrets:
+      # Cross-repo PAT for the Homebrew tap (openvaultdb/homebrew-tap) — the
+      # default GITHUB_TOKEN can't push to a different repo.
+      #
+      # NOT YET CREATED. The owner must add this secret at the
+      # openvaultdb org (or this repo) before merging/releasing: an org- or
+      # repo-level Actions secret named OPENVAULTDB_GORELEASER_GITHUB_TOKEN,
+      # holding a PAT (classic or fine-grained) with push access to
+      # openvaultdb/homebrew-tap. Until it exists, the GitHub release itself
+      # still succeeds (binaries upload fine), but the Homebrew cask publish
+      # step fails and `brew install --cask openvaultdb/tap/ovdb` stays
+      # broken.
+      GORELEASER_GITHUB_TOKEN: ${{ secrets.OPENVAULTDB_GORELEASER_GITHUB_TOKEN }}
+      # macOS signing + notarization. These activate the `notarize:` block in
+      # .goreleaser.yaml (gated on MACOS_SIGN_P12 being set). Already
+      # provisioned at the openvaultdb org for all five secrets below.
+      MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+      MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+      NOTARIZE_ISSUER_ID: ${{ secrets.NOTARIZE_ISSUER_ID }}
+      NOTARIZE_KEY_ID: ${{ secrets.NOTARIZE_KEY_ID }}
+      NOTARIZE_KEY: ${{ secrets.NOTARIZE_KEY }}
