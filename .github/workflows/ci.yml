@@ -13,15 +13,22 @@ jobs:
   strongo_workflow:
     permissions:
       contents: write
-    uses: strongo/cicd/.github/workflows/workflow.yml@v1.14.15
+    uses: strongo/cicd/.github/workflows/workflow.yml@v1.14.17
 
     secrets:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     with:
-      # v0.1.0 was tagged by hand so the openvaultdb/ovdb CLI could pin an
-      # exact version; auto-tagging here would surprise that consumer.
-      disable-version-bumping: true
+      # Auto-tag on main, same as dal-go/dalgo. The earlier reasoning here
+      # ("v0.1.0 was hand-tagged so openvaultdb/ovdb could pin an exact
+      # version; auto-tagging would surprise that consumer") does not hold:
+      # ovdb pins v0.1.0 in its go.mod, and Go modules only move on an
+      # explicit bump, so a new tag upstream cannot surprise it. Leaving
+      # bumping disabled had a real cost -- the HTTP-500-on-every-write fix
+      # in #13 landed on main with no tag, so it could not reach the CLI at
+      # all until someone hand-tagged, which is exactly the manual step
+      # releases are supposed to have stopped needing.
+      disable-version-bumping: false
       # Pure-Go stack (modernc.org/sqlite) — no C toolchain needed.
       cgo_enabled: false
       # Measured total (go test ./... -coverprofile + go tool cover -func) was
