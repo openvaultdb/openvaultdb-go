@@ -41,7 +41,6 @@ worked around (see "Upstream contributions" below).
 
 ```text
 github.com/openvaultdb/openvaultdb-go
-  cmd/ovdb          — CLI (`serve`, `init`, `status`, `databases`, `token`, `version`)
   pkg/manifest      — database manifest (id, schema mode, engine config, schemas, push policy)
   pkg/schema        — schema modes + record validation
   pkg/inferred      — inferred schema catalogue (observed fields)
@@ -50,6 +49,7 @@ github.com/openvaultdb/openvaultdb-go
   pkg/server        — HTTP API handlers
   conformance/      — official dalgo end2end suite over the full stack
 
+github.com/openvaultdb/ovdb           — CLI (`serve`, `init`, `status`, `databases`, `token`, `version`)
 github.com/dal-go/dalgo2openvaultdb   — DALgo driver speaking the HTTP API
 ```
 

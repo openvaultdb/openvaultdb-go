@@ -19,21 +19,23 @@ sneat-cli → Sneat facades → DALgo → dalgo2openvaultdb → OpenVaultDB HTTP
 
 ---
 
+This repository is the OpenVaultDB **library** — `pkg/*` (manifest, schema,
+core, mount, server) plus the `conformance` suite. The `ovdb` CLI (`serve`,
+`init`, `status`, `databases`, `token`, `version`) has moved to its own repo,
+[github.com/openvaultdb/ovdb](https://github.com/openvaultdb/ovdb).
+
 ## Quickstart
 
-### 1. Install
+### 1. Install the CLI
 
 ```sh
-go install github.com/openvaultdb/openvaultdb-go/cmd/ovdb@latest
+go install github.com/openvaultdb/ovdb@latest
 ```
 
-Or build from source:
-
-```sh
-git clone https://github.com/openvaultdb/openvaultdb-go
-cd openvaultdb
-go build ./cmd/ovdb
-```
+Or build it from source — see
+[github.com/openvaultdb/ovdb](https://github.com/openvaultdb/ovdb) for
+instructions. That repo pins an exact tagged version of this library
+(currently `v0.1.0`).
 
 ### 2. Create a manifest
 
