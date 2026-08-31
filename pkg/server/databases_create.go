@@ -138,22 +138,6 @@ func (s *Server) mintDatabaseToken(r *http.Request, databaseID, label string) (s
 	return token, &tr, nil
 }
 
-// provisionedCommitterName and provisionedCommitterEmail are the repo-local
-// git identity stamped on every database directory this server provisions.
-// dalgo2ingitdb commits each write batch with `git commit` (see
-// gitCommitPaths in github.com/ingitdb/dalgo2ingitdb), which fails with
-// "empty ident name ... not allowed" on any host that has no ambient
-// user.name/user.email — every fresh GitHub Actions runner and, more to the
-// point, every fresh production host, since nothing else in this server ever
-// configures git. Setting these as LOCAL (per-repository, not --global)
-// config right after `git init` makes a provisioned database self-sufficient
-// regardless of the operator's environment, without touching global git
-// config or a real person's commit identity.
-const (
-	provisionedCommitterName  = "OpenVaultDB"
-	provisionedCommitterEmail = "ovdb@localhost"
-)
-
 // provisionDatabase creates <dataDir>/<id>/ (git init, best-effort), writes
 // <dataDir>/<id>.yaml (an inGitDB schemaless manifest — the persisted record
 // that lets a restart rescan remount the database), and mounts it live.
@@ -164,13 +148,13 @@ func provisionDatabase(dataDir, id string) (*core.Database, error) {
 	}
 	// git init so the inGitDB directory is a repository from the start
 	// (commit history per write batch). The dalgo2ingitdb driver itself works
-	// on a plain directory, so a missing git binary is not fatal.
+	// on a plain directory, so a missing git binary is not fatal. The local
+	// git identity dalgo2ingitdb's commits need is NOT stamped here: the
+	// mount.File call below mounts this same directory through
+	// openInGitDB, which ensures it (see mount.ensureGitIdentity) — the one
+	// place that covers this create path and every later remount alike.
 	if _, err := os.Stat(filepath.Join(dbDir, ".git")); os.IsNotExist(err) {
 		_ = exec.Command("git", "-C", dbDir, "init", "-q").Run()
-		// Best-effort, same as git init above: on a host with no git binary
-		// these are no-ops, and dalgo2ingitdb tolerates a plain directory.
-		_ = exec.Command("git", "-C", dbDir, "config", "user.name", provisionedCommitterName).Run()
-		_ = exec.Command("git", "-C", dbDir, "config", "user.email", provisionedCommitterEmail).Run()
 	}
 	manifestPath := filepath.Join(dataDir, id+".yaml")
 	manifestYAML := fmt.Sprintf(
