@@ -96,6 +96,12 @@ func openInGitDB(dir string) (dal.DB, []schema.Mode, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, nil, fmt.Errorf("failed to create inGitDB directory %s: %w", dir, err)
 	}
+	// Best-effort: make dir self-sufficient for the commits dalgo2ingitdb
+	// makes on every write, regardless of how dir came to be a git
+	// repository or whether this is a fresh create or a remount. See
+	// ensureGitIdentity for why this must live here rather than only at
+	// creation time.
+	ensureGitIdentity(dir)
 	db, err := dalgo2ingitdb.NewDatabase(dir, validator.NewCollectionsReader())
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open inGitDB at %s: %w", dir, err)
