@@ -1,0 +1,30 @@
+name: Go CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - '**'
+
+jobs:
+
+  strongo_workflow:
+    permissions:
+      contents: write
+    uses: strongo/cicd/.github/workflows/workflow.yml@v1.14.15
+
+    secrets:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    with:
+      # v0.1.0 was tagged by hand so the openvaultdb/ovdb CLI could pin an
+      # exact version; auto-tagging here would surprise that consumer.
+      disable-version-bumping: true
+      # Pure-Go stack (modernc.org/sqlite) — no C toolchain needed.
+      cgo_enabled: false
+      # Measured total (go test ./... -coverprofile + go tool cover -func) was
+      # 59.3% at the time this floor was set; kept a few points below so the
+      # gate doesn't fail on day one from measurement noise.
+      min_test_coverage_percent: 55
