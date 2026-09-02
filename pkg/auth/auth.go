@@ -112,9 +112,9 @@ type Grant struct {
 	RevokedAt     *time.Time   `json:"revokedAt,omitempty"`
 }
 
-// Expired reports whether the grant is past its expiry. A zero ExpiresAt never expires.
+// Expired reports whether the grant has reached its expiry. A zero ExpiresAt never expires.
 func (g *Grant) Expired(now time.Time) bool {
-	return !g.ExpiresAt.IsZero() && now.After(g.ExpiresAt)
+	return !g.ExpiresAt.IsZero() && !now.Before(g.ExpiresAt)
 }
 
 // Revoked reports whether the grant has been revoked.
