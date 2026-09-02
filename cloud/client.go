@@ -75,6 +75,44 @@ type GetDatabaseResponse struct {
 	Database Database `json:"database"`
 }
 
+// CreateDemoSessionRequest asks OpenVaultDB Cloud to bind a local, loopback
+// Listus database to the caller's dedicated demo Space. OriginToken is a
+// database-scoped secret: callers must never log or persist it.
+type CreateDemoSessionRequest struct {
+	RequestID   string `json:"requestId"`
+	App         string `json:"app"`
+	LocalPort   int    `json:"localPort"`
+	OriginToken string `json:"originToken"`
+}
+
+// DemoSession is the response to creating a demo session. TunnelToken is
+// response-body-only and must be delivered to cloudflared via a protected
+// temporary file, never rendered in a URL or log.
+type DemoSession struct {
+	SessionID   string    `json:"sessionId"`
+	OwnerUserID string    `json:"ownerUserId"`
+	SpaceID     string    `json:"spaceId"`
+	SpaceType   string    `json:"spaceType"`
+	DatabaseID  string    `json:"databaseId"`
+	ExpiresAt   time.Time `json:"expiresAt"`
+	ProxyURL    string    `json:"proxyUrl"`
+	AppURL      string    `json:"appUrl"`
+	TunnelToken string    `json:"tunnelToken,omitempty"`
+}
+
+// DemoSessionMetadata is the safe response returned to a signed-in owner. It
+// deliberately excludes tunnel and origin credentials.
+type DemoSessionMetadata struct {
+	SessionID   string    `json:"sessionId"`
+	OwnerUserID string    `json:"ownerUserId"`
+	SpaceID     string    `json:"spaceId"`
+	SpaceType   string    `json:"spaceType"`
+	DatabaseID  string    `json:"databaseId"`
+	ExpiresAt   time.Time `json:"expiresAt"`
+	ProxyURL    string    `json:"proxyUrl"`
+	AppURL      string    `json:"appUrl"`
+}
+
 // APIError is a structured error returned by the cloud catalogue API.
 // Description is API-provided text. Callers that display it in a terminal or
 // another rendered surface must sanitize it. Arbitrary response bodies are
@@ -260,15 +298,88 @@ func (c *Client) GetDatabase(ctx context.Context, accessToken, id string) (GetDa
 	return response, nil
 }
 
+// CreateDemoSession creates one bounded Listus demo session. The access token
+// must carry the demo:write device scope.
+func (c *Client) CreateDemoSession(ctx context.Context, accessToken string, request CreateDemoSessionRequest) (DemoSession, error) {
+	if err := validateCreateDemoSessionRequest(request); err != nil {
+		return DemoSession{}, err
+	}
+	endpoint := *c.baseURL
+	endpoint.Path = "/api/demo/sessions"
+	body, err := c.postJSON(ctx, endpoint.String(), accessToken, request)
+	if err != nil {
+		return DemoSession{}, err
+	}
+	var response DemoSession
+	if err = json.Unmarshal(body, &response); err != nil {
+		return DemoSession{}, fmt.Errorf("decode cloud demo session: %w", err)
+	}
+	if err = validateDemoSession(response, true); err != nil {
+		return DemoSession{}, err
+	}
+	return response, nil
+}
+
+// EndDemoSession asks Cloud to end the caller's active session. It is safe to
+// call again after a successful end.
+func (c *Client) EndDemoSession(ctx context.Context, accessToken, sessionID string) error {
+	if !isSafeIdentifier(sessionID) {
+		return errors.New("cloud demo session ID must be a URL-safe identifier")
+	}
+	endpoint := *c.baseURL
+	endpoint.Path = "/api/demo/sessions/" + sessionID
+	endpoint.RawPath = "/api/demo/sessions/" + escapePathSegment(sessionID)
+	_, err := c.requestJSON(ctx, http.MethodDelete, endpoint.String(), accessToken, nil)
+	return err
+}
+
+// GetDemoSession returns safe metadata for the caller's active session in a
+// Space. No origin or connector credentials are returned.
+func (c *Client) GetDemoSession(ctx context.Context, accessToken, spaceID string) (DemoSessionMetadata, error) {
+	if !isSafeIdentifier(spaceID) {
+		return DemoSessionMetadata{}, errors.New("cloud demo Space ID must be a URL-safe identifier")
+	}
+	endpoint := *c.baseURL
+	endpoint.Path = "/api/demo/session"
+	endpoint.RawQuery = url.Values{"spaceId": {spaceID}}.Encode()
+	body, err := c.getJSON(ctx, endpoint.String(), accessToken)
+	if err != nil {
+		return DemoSessionMetadata{}, err
+	}
+	var response DemoSessionMetadata
+	if err = json.Unmarshal(body, &response); err != nil {
+		return DemoSessionMetadata{}, fmt.Errorf("decode cloud demo session metadata: %w", err)
+	}
+	if err = validateDemoSessionMetadata(response); err != nil {
+		return DemoSessionMetadata{}, err
+	}
+	return response, nil
+}
+
 func (c *Client) getJSON(ctx context.Context, endpoint, accessToken string) ([]byte, error) {
+	return c.requestJSON(ctx, http.MethodGet, endpoint, accessToken, nil)
+}
+
+func (c *Client) postJSON(ctx context.Context, endpoint, accessToken string, body any) ([]byte, error) {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("encode cloud request: %w", err)
+	}
+	return c.requestJSON(ctx, http.MethodPost, endpoint, accessToken, strings.NewReader(string(encoded)))
+}
+
+func (c *Client) requestJSON(ctx context.Context, method, endpoint, accessToken string, requestBody io.Reader) ([]byte, error) {
 	if strings.TrimSpace(accessToken) == "" {
 		return nil, ErrMissingAccessToken
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	request, err := http.NewRequestWithContext(ctx, method, endpoint, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("build cloud request: %w", err)
 	}
 	request.Header.Set("Accept", "application/json")
+	if requestBody != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
 	request.Header.Set("Authorization", "Bearer "+accessToken)
 	response, err := c.httpClient.Do(request)
 	if err != nil {
@@ -283,6 +394,39 @@ func (c *Client) getJSON(ctx context.Context, endpoint, accessToken string) ([]b
 		return nil, decodeAPIError(response.StatusCode, body)
 	}
 	return body, nil
+}
+
+func validateCreateDemoSessionRequest(request CreateDemoSessionRequest) error {
+	if !isSafeIdentifier(request.RequestID) {
+		return errors.New("cloud demo request ID must be a URL-safe identifier")
+	}
+	if request.App != "listus" {
+		return errors.New("cloud demo app must be listus")
+	}
+	if request.LocalPort < 1 || request.LocalPort > 65535 {
+		return errors.New("cloud demo local port must be between 1 and 65535")
+	}
+	if strings.TrimSpace(request.OriginToken) == "" {
+		return errors.New("cloud demo origin token is required")
+	}
+	return nil
+}
+
+func validateDemoSession(session DemoSession, requireTunnelToken bool) error {
+	if !isSafeIdentifier(session.SessionID) || !isSafeIdentifier(session.OwnerUserID) || !isSafeIdentifier(session.SpaceID) || !isSafeIdentifier(session.DatabaseID) || session.SpaceType == "" || session.ExpiresAt.IsZero() || strings.TrimSpace(session.ProxyURL) == "" || strings.TrimSpace(session.AppURL) == "" {
+		return errors.New("cloud demo session response is missing required metadata")
+	}
+	if requireTunnelToken && strings.TrimSpace(session.TunnelToken) == "" {
+		return errors.New("cloud demo session response is missing tunnel token")
+	}
+	return nil
+}
+
+func validateDemoSessionMetadata(session DemoSessionMetadata) error {
+	if !isSafeIdentifier(session.SessionID) || !isSafeIdentifier(session.OwnerUserID) || !isSafeIdentifier(session.SpaceID) || !isSafeIdentifier(session.DatabaseID) || session.SpaceType == "" || session.ExpiresAt.IsZero() || strings.TrimSpace(session.ProxyURL) == "" || strings.TrimSpace(session.AppURL) == "" {
+		return errors.New("cloud demo session metadata is missing required fields")
+	}
+	return nil
 }
 
 func readBounded(reader io.Reader, limit int64) ([]byte, error) {
