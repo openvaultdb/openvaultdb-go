@@ -413,7 +413,7 @@ func validateCreateDemoSessionRequest(request CreateDemoSessionRequest) error {
 }
 
 func validateDemoSession(session DemoSession, requireTunnelToken bool) error {
-	if !isSafeIdentifier(session.SessionID) || !isSafeIdentifier(session.OwnerUserID) || !isSafeIdentifier(session.SpaceID) || !isSafeIdentifier(session.DatabaseID) || session.SpaceType == "" || session.ExpiresAt.IsZero() || strings.TrimSpace(session.ProxyURL) == "" || strings.TrimSpace(session.AppURL) == "" {
+	if !isSafeIdentifier(session.SessionID) || !isSafeIdentifier(session.OwnerUserID) || !isSafeIdentifier(session.SpaceID) || !isSafeIdentifier(session.DatabaseID) || session.SpaceType == "" || session.ExpiresAt.IsZero() || !isAbsoluteHTTPSURL(session.ProxyURL) || !isAbsoluteHTTPSURL(session.AppURL) {
 		return errors.New("cloud demo session response is missing required metadata")
 	}
 	if requireTunnelToken && strings.TrimSpace(session.TunnelToken) == "" {
@@ -423,10 +423,15 @@ func validateDemoSession(session DemoSession, requireTunnelToken bool) error {
 }
 
 func validateDemoSessionMetadata(session DemoSessionMetadata) error {
-	if !isSafeIdentifier(session.SessionID) || !isSafeIdentifier(session.OwnerUserID) || !isSafeIdentifier(session.SpaceID) || !isSafeIdentifier(session.DatabaseID) || session.SpaceType == "" || session.ExpiresAt.IsZero() || strings.TrimSpace(session.ProxyURL) == "" || strings.TrimSpace(session.AppURL) == "" {
+	if !isSafeIdentifier(session.SessionID) || !isSafeIdentifier(session.OwnerUserID) || !isSafeIdentifier(session.SpaceID) || !isSafeIdentifier(session.DatabaseID) || session.SpaceType == "" || session.ExpiresAt.IsZero() || !isAbsoluteHTTPSURL(session.ProxyURL) || !isAbsoluteHTTPSURL(session.AppURL) {
 		return errors.New("cloud demo session metadata is missing required fields")
 	}
 	return nil
+}
+
+func isAbsoluteHTTPSURL(raw string) bool {
+	value, err := url.Parse(strings.TrimSpace(raw))
+	return err == nil && value.Scheme == "https" && value.Host != "" && value.User == nil && value.RawQuery == "" && value.Fragment == ""
 }
 
 func readBounded(reader io.Reader, limit int64) ([]byte, error) {

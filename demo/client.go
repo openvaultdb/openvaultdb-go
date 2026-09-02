@@ -1,6 +1,6 @@
-// Package demo is the public, dependency-free OpenVaultDB client for bounded
-// local application demos. It keeps control-plane credentials out of the
-// database protocol client and does not import the private OVDB backend.
+// Package demo is the public OpenVaultDB client for bounded local application
+// demos. It has no private-backend dependency and keeps control-plane
+// credentials out of the database protocol client.
 package demo
 
 import (
