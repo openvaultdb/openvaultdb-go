@@ -24,6 +24,25 @@ core, mount, server) plus the `conformance` suite. The `ovdb` CLI (`serve`,
 `init`, `status`, `databases`, `token`, `version`) has moved to its own repo,
 [github.com/openvaultdb/ovdb](https://github.com/openvaultdb/ovdb).
 
+## OpenVaultDB Cloud catalogue client
+
+The dependency-free `cloud` package reads safe registration metadata for
+databases accessible to an authenticated OpenVaultDB Cloud account. It exposes
+only database and Space metadata; it never reads records or credentials.
+
+```go
+client, err := cloud.NewClient("https://cloud.openvaultdb.com")
+if err != nil {
+	return err
+}
+page, err := client.ListDatabases(ctx, accessToken, cloud.ListDatabasesRequest{
+	Space: "personal",
+})
+```
+
+The API requires the explicit `databases:read` scope. The client uses bounded
+JSON responses and never follows authenticated redirects.
+
 ## Quickstart
 
 ### 1. Install the CLI
