@@ -24,14 +24,13 @@ public ones (`/.well-known/openvaultdb`, `/authorize`, `/token`) requires
 `Authorization: Bearer <token>`:
 
 - **Owner token** (`--owner-token` / `$OVDB_OWNER_TOKEN`, generated and
-  printed if unset): full access, including `/v1/databases` and the
-  database list in `/v1/status`.
+  printed if unset): full administrative capability, including `/v1/databases` and the
+  database list in `/v1/status`. Database ACL still applies to data operations.
 - **App tokens** come from the connect flow and are scoped to ONE database
   with capabilities per the spec taxonomy, optionally collection-scoped:
   `records:read`, `records:write:contacts`, `records:delete`,
   `collections:read`, `schema:read`. Reads/queries need `records:read`;
-  `/dtql` needs an UNSCOPED `records:read` (its target collection is known
-  only after deserialization). Missing/invalid token → `401 unauthorized`;
+  `/dtql` accepts a collection-scoped grant after validating its target. Missing/invalid token → `401 unauthorized`;
   insufficient capability → `403 forbidden`.
 
 Connect flow (OAuth-style, dev consent page):
@@ -164,8 +163,18 @@ POST /v1/databases/{db}/dtql        body: a DTQL-YAML document (max 1 MiB)
 ```
 
 DTQL is dalgo's native lossless YAML serialization of `dal.StructuredQuery`
-(`github.com/dal-go/dalgo/dtql`). ovdb deserializes and passes the query straight to the
-driver — authenticate-and-bypass by design. Example:
+(`github.com/dal-go/dalgo/dtql`). OpenVaultDB validates the target, checks token
+capabilities, and executes through the mounted DALgo policy enforcement layers.
+The supported profile is a single unaliased root collection with field projection,
+filtering, ordering, and pagination. Joins, aggregation, cursors, and native queries
+are not supported by this endpoint. Limit defaults to 1000 (maximum 1000), offset
+is at most 10000, execution context deadline is 10 seconds, and result buffering is capped
+at 8 MiB. Rows are filtered before pagination; column restrictions also apply to
+explicit projections, caller filters, and ordering. Denial returns HTTP 403 with
+`error.code: ACCESS_DENIED` and a generic message. The first slice does not expose
+policy diagnostics or implement the full DTQL blocker response contract.
+
+See [local ACL setup and demonstration](layered-acl-implementation.md). Example:
 
 ```yaml
 from:

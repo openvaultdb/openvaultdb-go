@@ -556,9 +556,7 @@ func TestDTQL(t *testing.T) {
 
 	t.Run("ValidDTQL", func(t *testing.T) {
 		// Minimal DTQL YAML: just a from clause selecting all widgets.
-		// Note: DTQL uses SelectIntoRecordset() which leaves IntoRecord()==nil,
-		// so executeDalQuery treats it as keys-only — records carry keys but no
-		// data field. We verify the inserted widget key appears in results.
+		// A decoded DTQL query carries selected data as well as record keys.
 		dtqlDoc := "from:\n  name: widgets\n"
 		req, err := http.NewRequest(http.MethodPost, dtqlURL, strings.NewReader(dtqlDoc))
 		if err != nil {

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/dalgo/dbschema"
 	"github.com/dal-go/dalgo/ddl"
@@ -68,7 +69,10 @@ type Database struct {
 // declared collections are provisioned through the driver's
 // ddl.SchemaModifier, and (for partial/schemaless modes) the inferred schema
 // catalogue is loaded from cataloguePath.
-func Open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, cataloguePath string) (*Database, error) {
+func Open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, cataloguePath string, policies ...access.Policy) (*Database, error) {
+	if m.ACL != nil && m.ACL.Enabled && len(policies) == 0 {
+		return nil, fmt.Errorf("enabled OpenVaultDB ACL requires loaded policies")
+	}
 	mode := m.Database.SchemaMode
 	supported := false
 	for _, sm := range supportedModes {
@@ -100,6 +104,13 @@ func Open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 			return nil, fmt.Errorf("failed to load inferred schema catalogue: %w", err)
 		}
 		d.cat = cat
+	}
+	if len(policies) > 0 {
+		secured, err := access.SecureDB(db, access.WithDatabasePolicies(policies...))
+		if err != nil {
+			return nil, err
+		}
+		d.db = secured
 	}
 	return d, nil
 }

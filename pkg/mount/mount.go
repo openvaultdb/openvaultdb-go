@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/dalgo/dal"
 	"github.com/ingitdb/dalgo2ingitdb"
 	"github.com/ingitdb/ingitdb-go/ingitdb/validator"
@@ -28,6 +29,24 @@ func File(manifestPath string) (*core.Database, error) {
 		return nil, fmt.Errorf("%s: %w", manifestPath, err)
 	}
 	baseDir := filepath.Dir(manifestPath)
+	var policies []access.Policy
+	if m.ACL != nil {
+		if m.ACL.Enabled && m.Storage.Engine != "sqlite" && m.Storage.Engine != "ingitdb" {
+			return nil, fmt.Errorf("%s: file ACL currently supports SQLite and local InGitDB mounts", manifestPath)
+		}
+		if m.ACL.Enabled && m.Storage.InGitDB != nil && m.Storage.InGitDB.GitHub != nil {
+			return nil, fmt.Errorf("%s: file ACL does not yet support the GitHub InGitDB adapter", manifestPath)
+		}
+		config := *m.ACL
+		if config.Database != "" && config.Database != m.Database.ID {
+			return nil, fmt.Errorf("%s: ACL database must match mounted database", manifestPath)
+		}
+		config.Database = m.Database.ID
+		policies, err = access.LoadPolicyFiles(baseDir, config)
+		if err != nil {
+			return nil, fmt.Errorf("%s: load OpenVaultDB policies: %w", manifestPath, err)
+		}
+	}
 	storagePath := m.Storage.Path
 	if !filepath.IsAbs(storagePath) {
 		storagePath = filepath.Join(baseDir, storagePath)
@@ -76,7 +95,7 @@ func File(manifestPath string) (*core.Database, error) {
 			manifestPath, m.Storage.Engine)
 	}
 
-	d, err := core.Open(m, db, modes, cataloguePath)
+	d, err := core.Open(m, db, modes, cataloguePath, policies...)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", manifestPath, err)
 	}
