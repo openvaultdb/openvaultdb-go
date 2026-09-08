@@ -107,7 +107,7 @@ fails closed if resolution fails. Without a resolver, only universally bound
 policies apply; an application token ID is not automatically a human policy ID.
 The token capability check and the data policies must both allow the request.
 
-The first delivery explicitly rejects policy masks and execution-class gates
+The file loader supports scoped collection and field masks. It still rejects execution-class gates
 pending their next work package. It does not silently ignore them. Native SQL,
 GraphQL, stored procedure execution, policy management, full structured blocker
 collection, Explain Access, policy generations, and write-specific E2E acceptance
@@ -202,3 +202,31 @@ For this profile, computed-field dependency authorization is deferred.
 Protected InGitDB reads expose stored values only, including when protection is
 added at OpenVaultDB. Formula values must never derive visible output from
 hidden input fields. Legacy unprotected mounts retain formula evaluation.
+
+
+## Scoped masks
+
+Portable policies may now add a mandatory collection gate:
+
+```yaml
+collectionMask:
+  stages:
+    - include: ["*"]
+    - exclude: ["sys_*"]
+```
+
+An allow rule may use `fieldMask` instead of `fields`, with the same ordered
+stage syntax and dotted field patterns. Adjacent stages of the same action
+merge; a later include restores only names selected by all preceding stages.
+Independent policies and owners continue to intersect.
+
+For nested objects, wildcard reads redact excluded leaves and retain the
+structural parents of restored leaves. Explicit whole-object queries require
+complete subtree coverage. Parent replacement checks removed and retained
+descendants in both images; changing a permitted leaf does not require granting
+its structural parent. Arrays remain opaque and require complete coverage.
+Masked truncate is unsupported. Legacy `fields` matching is unchanged.
+
+Use the DTQL parse/normalize/serialize APIs for portable editing. Legacy DALgo
+serialization refuses policies containing masks rather than dropping them.
+Formatting and comments are not preserved by canonical serialization.
