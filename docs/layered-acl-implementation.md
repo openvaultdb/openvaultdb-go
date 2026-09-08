@@ -165,3 +165,40 @@ SQL adapters retain their existing compiler until separately integrated and test
 Enabling this file-ACL profile on unsupported engines or the GitHub InGitDB adapter
 fails mounting. The query deadline is cooperative: the engine must honor context
 cancellation; it is not a hard process-level CPU or memory sandbox.
+
+## SpecScore implementation tracking
+
+The coordinating plan is DALgo's
+`spec/plans/layered-acl-mvp.md` on the local `layered-acl-query` branch.
+It contains 24 tasks with dependencies, acceptance criteria and validation.
+Use SpecScore task transitions in that worktree; completion records local
+implementation commits and evidence. Publication is a separate final task.
+
+## Supported protected query profile
+
+| Capability | OpenVaultDB DTQL endpoint | SQLite adapter | InGitDB adapter |
+| --- | --- | --- | --- |
+| Source | One unaliased root collection | One unparented CollectionRef | One root collection in this profile |
+| Projection | Named stored fields | Field or bound scalar constant; quoted aliases at adapter level | Stored fields; computed values unavailable in protected reads |
+| Predicate | Structured comparisons, IN, AND/OR | Bound values; field operands; scalar IN members | In-memory structured evaluation |
+| Ordering | Named fields | Quoted field identifiers | In-memory field ordering |
+| Pagination | Default/max limit 1000; offset max 10000 | Bound LIMIT/OFFSET after WHERE | Policy filtering before ordering/pagination |
+| Unsupported endpoint features | Joins, aliases, grouping, functions, cursors, native query text | Unsupported structured sources/expressions fail before execution | Broader legacy adapter features do not expand the HTTP profile |
+| Cancellation | Context deadline 10 seconds | database/sql context propagation | Cooperative checks between read/evaluation phases |
+
+All caller projection, filter and ordering fields must be authorized, including
+fields omitted from output. Trusted policy predicates may refer to protected
+fields. SQLite identifiers use backticks so an unknown field cannot silently
+become a string literal under SQLite's double-quoted-string compatibility mode.
+Malformed non-scalar bound values fail validation before driver execution.
+
+The response buffer is capped at 8 MiB. Neither pagination nor the deadline is a
+hard bound on underlying scan memory or filesystem latency: InGitDB loads stored
+records before filtering, and individual file reads, YAML decoding and sorting
+are cooperative cancellation boundaries. These limits must not be advertised
+as a hard process resource sandbox.
+
+For this profile, computed-field dependency authorization is deferred.
+Protected InGitDB reads expose stored values only, including when protection is
+added at OpenVaultDB. Formula values must never derive visible output from
+hidden input fields. Legacy unprotected mounts retain formula evaluation.
