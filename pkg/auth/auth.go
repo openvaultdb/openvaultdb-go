@@ -18,6 +18,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"github.com/dal-go/dalgo/access"
 	"strings"
 	"time"
 )
@@ -100,16 +101,20 @@ func (c Capability) String() string {
 // Grant is one issued application token: the token itself is NOT stored —
 // only its SHA-256 hex — so the grants file never holds usable credentials.
 type Grant struct {
-	ID            string       `json:"id"`              // short random identifier (8 hex bytes)
-	Label         string       `json:"label,omitempty"` // human display name
-	TokenHash     string       `json:"tokenHash"`
-	PrincipalType string       `json:"principalType"`        // "application" (MVP)
-	PrincipalID   string       `json:"principalId"`          // client_id
-	DatabaseID    string       `json:"databaseId,omitempty"` // "" = server-level grant (e.g. databases:create)
-	Capabilities  []Capability `json:"capabilities"`
-	IssuedAt      time.Time    `json:"issuedAt"`
-	ExpiresAt     time.Time    `json:"expiresAt,omitempty"` // zero = never expires
-	RevokedAt     *time.Time   `json:"revokedAt,omitempty"`
+	// Subject and Actor are provisioned by owner administration. Membership is
+	// resolved per request, never accepted from the token consumer.
+	Subject       *access.PrincipalRef `json:"subject,omitempty"`
+	Actor         *access.PrincipalRef `json:"actor,omitempty"`
+	ID            string               `json:"id"`              // short random identifier (8 hex bytes)
+	Label         string               `json:"label,omitempty"` // human display name
+	TokenHash     string               `json:"tokenHash"`
+	PrincipalType string               `json:"principalType"`        // "application" (MVP)
+	PrincipalID   string               `json:"principalId"`          // client_id
+	DatabaseID    string               `json:"databaseId,omitempty"` // "" = server-level grant (e.g. databases:create)
+	Capabilities  []Capability         `json:"capabilities"`
+	IssuedAt      time.Time            `json:"issuedAt"`
+	ExpiresAt     time.Time            `json:"expiresAt,omitempty"` // zero = never expires
+	RevokedAt     *time.Time           `json:"revokedAt,omitempty"`
 }
 
 // Expired reports whether the grant has reached its expiry. A zero ExpiresAt never expires.
@@ -131,7 +136,7 @@ func NewGrantID() (string, error) {
 
 // Principal is the authenticated caller attached to a request context.
 type Principal struct {
-	Owner bool   // owner token: full access to everything
+	Owner bool   // owner token: administrative capability authority; data ACL still applies
 	Grant *Grant // application grant when Owner is false
 }
 
@@ -182,4 +187,49 @@ func NewToken() (string, error) {
 func HashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
+}
+
+// ValidateIdentity rejects partial or malformed delegation bindings. Legacy
+// client-only grants remain application credentials and never imply a user.
+func (g *Grant) ValidateIdentity() error {
+	if g == nil {
+		return fmt.Errorf("grant is required")
+	}
+	if g.Subject == nil && g.Actor == nil {
+		return nil
+	}
+	if g.Subject == nil || g.Actor == nil {
+		return fmt.Errorf("subject and actor must be supplied together")
+	}
+	if err := g.Subject.Validate(); err != nil {
+		return err
+	}
+	if err := g.Actor.Validate(); err != nil {
+		return err
+	}
+	if g.Actor.Kind == access.PrincipalKindUser {
+		return fmt.Errorf("grant actor must be a registered application, service or agent")
+	}
+	return nil
+}
+
+func cloneGrant(g *Grant) *Grant {
+	if g == nil {
+		return nil
+	}
+	copy := *g
+	copy.Capabilities = append([]Capability(nil), g.Capabilities...)
+	if g.Subject != nil {
+		ref := *g.Subject
+		copy.Subject = &ref
+	}
+	if g.Actor != nil {
+		ref := *g.Actor
+		copy.Actor = &ref
+	}
+	if g.RevokedAt != nil {
+		revoked := *g.RevokedAt
+		copy.RevokedAt = &revoked
+	}
+	return &copy
 }

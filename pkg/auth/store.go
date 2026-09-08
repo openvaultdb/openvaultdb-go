@@ -65,6 +65,9 @@ func OpenStore(filePath string) (*Store, error) {
 	}
 	now := time.Now()
 	for _, g := range grants {
+		if err := g.ValidateIdentity(); err != nil {
+			return nil, fmt.Errorf("invalid stored grant identity: %w", err)
+		}
 		// Synthesize a stable ID for legacy grants that pre-date the ID field.
 		if g.ID == "" && len(g.TokenHash) >= 12 {
 			g.ID = g.TokenHash[:12]
@@ -127,8 +130,9 @@ func (s *Store) ExchangeCode(code, clientID string) (token string, g *Grant, err
 		IssuedAt:      now,
 		ExpiresAt:     now.Add(TokenTTL),
 	}
-	s.grants[g.TokenHash] = g
-	s.grantsByID[g.ID] = g
+	stored := cloneGrant(g)
+	s.grants[g.TokenHash] = stored
+	s.grantsByID[g.ID] = stored
 	if err = s.saveLocked(); err != nil {
 		delete(s.grants, g.TokenHash)
 		delete(s.grantsByID, g.ID)
@@ -142,6 +146,9 @@ func (s *Store) ExchangeCode(code, clientID string) (token string, g *Grant, err
 // (zero = never expires) before calling. On success g.ID, g.TokenHash,
 // g.IssuedAt, g.PrincipalType are filled in.
 func (s *Store) CreateGrant(g *Grant, token string) error {
+	if err := g.ValidateIdentity(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id, err := NewGrantID()
@@ -151,9 +158,14 @@ func (s *Store) CreateGrant(g *Grant, token string) error {
 	g.ID = id
 	g.TokenHash = HashToken(token)
 	g.PrincipalType = "application"
+	if g.Actor != nil {
+		g.PrincipalType = string(g.Actor.Kind)
+		g.PrincipalID = g.Actor.ID
+	}
 	g.IssuedAt = time.Now().UTC()
-	s.grants[g.TokenHash] = g
-	s.grantsByID[g.ID] = g
+	stored := cloneGrant(g)
+	s.grants[g.TokenHash] = stored
+	s.grantsByID[g.ID] = stored
 	if err = s.saveLocked(); err != nil {
 		delete(s.grants, g.TokenHash)
 		delete(s.grantsByID, g.ID)
@@ -169,7 +181,7 @@ func (s *Store) ListGrants() []*Grant {
 	defer s.mu.Unlock()
 	out := make([]*Grant, 0, len(s.grants))
 	for _, g := range s.grants {
-		out = append(out, g)
+		out = append(out, cloneGrant(g))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].IssuedAt.Before(out[j].IssuedAt)
@@ -192,7 +204,7 @@ func (s *Store) RevokeGrant(id string) (*Grant, bool) {
 		g.RevokedAt = &now
 		_ = s.saveLocked() // best-effort; revocation is in-memory even if persist fails
 	}
-	return g, true
+	return cloneGrant(g), true
 }
 
 // Lookup resolves a bearer token to its grant, or nil when unknown, expired, or revoked.
@@ -203,7 +215,7 @@ func (s *Store) Lookup(token string) *Grant {
 	if !ok || g.Expired(time.Now()) || g.Revoked() {
 		return nil
 	}
-	return g
+	return cloneGrant(g)
 }
 
 // saveLocked persists grants atomically (temp file + rename). Callers hold mu.

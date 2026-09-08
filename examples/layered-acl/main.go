@@ -26,8 +26,9 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:8899", "HTTP listen address")
 	flag.Parse()
 	token := os.Getenv("OVDB_OWNER_TOKEN")
-	if token == "" {
-		log.Fatal("set OVDB_OWNER_TOKEN to a demo bearer token")
+	queryToken := os.Getenv("OVDB_QUERY_TOKEN")
+	if token == "" || queryToken == "" || token == queryToken {
+		log.Fatal("set distinct OVDB_OWNER_TOKEN and OVDB_QUERY_TOKEN credentials")
 	}
 	if *dir == "" {
 		var err error
@@ -64,10 +65,26 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	handler := server.New("layered-acl-demo", dbs, server.WithAuth(&auth.Config{OwnerToken: token, Store: store}), server.WithPrincipalResolver(func(context.Context, *auth.Principal) (access.Principal, error) {
-		// Demo-only mapping: the authenticated owner has the reader role. The
-		// token's administrative powers do not bypass either database's policies.
-		return access.Principal{Roles: []string{"reader"}}, nil
+	subject := access.PrincipalRef{Realm: "local-demo", Kind: access.PrincipalKindUser, ID: "demo-user"}
+	actor := access.PrincipalRef{Realm: "local-demo", Kind: access.PrincipalKindApplication, ID: "datatug-demo"}
+	if *reuse && store.Lookup(queryToken) == nil {
+		log.Fatal("query credential is missing, expired or revoked; reuse does not issue credentials")
+	}
+	if store.Lookup(queryToken) == nil {
+		// This fixture server hosts exactly two databases. The query credential
+		// has only customer-read capability, intersected with each owner's policy.
+		if err := store.CreateGrant(&auth.Grant{Subject: &subject, Actor: &actor, Capabilities: []auth.Capability{{Action: auth.CapRecordsRead, Collection: "customers"}}}, queryToken); err != nil {
+			log.Fatal(err)
+		}
+	}
+	handler := server.New("layered-acl-demo", dbs, server.WithAuth(&auth.Config{OwnerToken: token, Store: store}), server.WithGrantIdentity(server.GrantIdentityConfig{
+		Bootstrap: access.PrincipalRef{Realm: "local-demo", Kind: access.PrincipalKindService, ID: "demo-bootstrap"},
+		Resolve: func(_ context.Context, ref access.PrincipalRef) (server.Membership, error) {
+			if ref == subject {
+				return server.Membership{Roles: []string{"reader"}, Revision: "fixture-1"}, nil
+			}
+			return server.Membership{}, nil
+		},
 	})).Handler()
 	log.Printf("fixtures: %s; DTQL: http://%s/v1/databases/{ingitdb,sqlite}/dtql", *dir, *listen)
 	srv := &http.Server{Addr: *listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second}
@@ -140,7 +157,7 @@ schemas:
 	if err := write(dir, policyPath, policy(engine, "ireland", "country", "IE")); err != nil {
 		return err
 	}
-	if err := write(dir, name, manifest+fmt.Sprintf("acl:\n  enabled: true\n  policies: [%s]\n", policyPath)); err != nil {
+	if err := write(dir, name, manifest+fmt.Sprintf("acl:\n  enabled: true\n  realm: local-demo\n  policies: [%s]\n", policyPath)); err != nil {
 		return err
 	}
 	if engine == "ingitdb" {
@@ -148,7 +165,7 @@ schemas:
 		if err := write(root, "tenant.yaml", policy(engine, "tenant-a", "tenant", "A")); err != nil {
 			return err
 		}
-		return write(root, "manifest.yaml", "enabled: true\ndatabase: ingitdb\npolicies: [tenant.yaml]\n")
+		return write(root, "manifest.yaml", "enabled: true\nrealm: local-demo\ndatabase: ingitdb\npolicies: [tenant.yaml]\n")
 	}
 	return nil
 }
