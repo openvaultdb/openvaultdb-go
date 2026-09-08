@@ -101,7 +101,7 @@ schemas:
 			upper := aclPolicy("upper-private", "country", "IE")
 			if profile.masks {
 				upper = strings.Replace(upper, "fields: [id, name]", "fieldMask: {stages: [{include: ['*']}, {exclude: [tenant, country, secret]}]}", 1)
-				upper += "collectionMask: {stages: [{include: ['*']}, {exclude: ['sys_*']}]}\n"
+				upper += "collectionMask: {stages: [{include: ['*']}, {exclude: ['sys_*']}]}\nexecution: {allow: [{class: dtql}]}\n"
 			}
 			aclWriteFile(t, filepath.Join(dir, "upper.yaml"), upper)
 			manifestText += "acl:\n  enabled: true\n  policies: [upper.yaml]\n"
@@ -257,4 +257,21 @@ acl:
 	if len(result.Records) != 1 || result.Records[0].Data["name"] != nil || strings.Contains(body, "protected-input") {
 		t.Fatalf("computed value escaped upper policy: %s", body)
 	}
+	aclWriteFile(t, filepath.Join(dir, "upper.yaml"), aclPolicy("upper", "country", "IE")+"execution: {allow: []}\n")
+	deniedDB, err := mount.File(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deniedServer := httptest.NewServer(server.New("test", map[string]*core.Database{"crm": deniedDB},
+		server.WithAuth(&auth.Config{OwnerToken: ownerToken}),
+		server.WithPrincipalResolver(func(context.Context, *auth.Principal) (access.Principal, error) {
+			return access.Principal{Roles: []string{"reader"}}, nil
+		}),
+	).Handler())
+	defer deniedServer.Close()
+	status, body = request(t, deniedServer, http.MethodPost, "/v1/databases/crm/dtql", ownerToken, "from: {name: customers}\n")
+	if status != http.StatusForbidden {
+		t.Fatalf("execution gate: %d %s", status, body)
+	}
+
 }
