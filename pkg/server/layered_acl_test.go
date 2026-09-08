@@ -60,8 +60,12 @@ bindings:
 // A real HTTP server, token store, file-backed engines, and owner policy files.
 // The first two rows distinguish upper/lower restrictions and pagination order.
 func TestLayeredACL_DTQL(t *testing.T) {
-	for _, engine := range []string{"ingitdb", "sqlite"} {
-		t.Run(engine, func(t *testing.T) {
+	for _, profile := range []struct {
+		engine string
+		masks  bool
+	}{{"ingitdb", false}, {"sqlite", false}, {"ingitdb", true}, {"sqlite", true}} {
+		engine := profile.engine
+		t.Run(fmt.Sprintf("%s/masks=%t", engine, profile.masks), func(t *testing.T) {
 			dir := t.TempDir()
 			manifestPath := filepath.Join(dir, "db.yaml")
 			storagePath := "data"
@@ -94,7 +98,12 @@ schemas:
 					t.Fatal(err)
 				}
 			}
-			aclWriteFile(t, filepath.Join(dir, "upper.yaml"), aclPolicy("upper-private", "country", "IE"))
+			upper := aclPolicy("upper-private", "country", "IE")
+			if profile.masks {
+				upper = strings.Replace(upper, "fields: [id, name]", "fieldMask: {stages: [{include: ['*']}, {exclude: [tenant, country, secret]}]}", 1)
+				upper += "collectionMask: {stages: [{include: ['*']}, {exclude: ['sys_*']}]}\n"
+			}
+			aclWriteFile(t, filepath.Join(dir, "upper.yaml"), upper)
 			manifestText += "acl:\n  enabled: true\n  policies: [upper.yaml]\n"
 			aclWriteFile(t, manifestPath, manifestText)
 			if engine == "ingitdb" {
