@@ -107,8 +107,7 @@ fails closed if resolution fails. Without a resolver, only universally bound
 policies apply; an application token ID is not automatically a human policy ID.
 The token capability check and the data policies must both allow the request.
 
-The file loader supports scoped collection and field masks. It still rejects execution-class gates
-pending their next work package. It does not silently ignore them. Native SQL,
+The file loader supports scoped collection/field masks and execution-class gates. Native SQL,
 GraphQL, stored procedure execution, policy management, full structured blocker
 collection, Explain Access, policy generations, and write-specific E2E acceptance
 remain later work. Policy viewer/editor is excluded from MVP by user direction.
@@ -230,3 +229,19 @@ Masked truncate is unsupported. Legacy `fields` matching is unchanged.
 Use the DTQL parse/normalize/serialize APIs for portable editing. Legacy DALgo
 serialization refuses policies containing masks rather than dropping them.
 Formatting and comments are not preserved by canonical serialization.
+
+
+## Execution surfaces
+
+`execution: {allow: [{class: dtql}]}` permits the typed DTQL surface and
+excludes native SQL, native GraphQL and procedure targets at this policy gate.
+An explicitly empty allow array denies every surface; omission adds no gate.
+Database action, table, row, column and lower-owner restrictions still apply.
+
+Secure sessions classify structured queries as DTQL before adapter compilation.
+Opaque query text cannot be relabeled DTQL. Pure policy assessment can supply a
+typed `ExecutionTarget` for a namespaced procedure and evaluate scoped masks
+such as `User_*` or include `*` / exclude `sys_*`. This does not authorize an
+execution path: native/procedure effects remain unsupported by the protected
+HTTP profile. The transport rejects unrecognized execution labels as unknown
+DTQL fields.
