@@ -2,11 +2,13 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"reflect"
 	"sort"
+	"time"
 
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/dalgo/dtql"
@@ -122,22 +124,80 @@ func (d *Database) Execute(ctx context.Context, q Query) ([]Record, error) {
 	return records, nil
 }
 
-// ExecuteDTQL deserializes a DTQL-YAML document (dalgo's native query
-// serialization) and passes it straight through to the driver — ovdb's job
-// is only to (in the future) authenticate it.
-func (d *Database) ExecuteDTQL(ctx context.Context, doc []byte) ([]Record, error) {
+// ErrInvalidDTQL identifies invalid or unsupported DTQL query shapes.
+var ErrInvalidDTQL = errors.New("invalid or unsupported DTQL query")
+
+// ParseDTQL validates the server's bounded single-collection query profile.
+// The returned collection is suitable for checking the token's capabilities.
+func ParseDTQL(doc []byte) (dal.StructuredQuery, string, error) {
 	query, err := dtql.Deserialize(doc)
 	if err != nil {
-		return nil, fmt.Errorf("invalid DTQL document: %w", err)
+		return nil, "", fmt.Errorf("%w: %v", ErrInvalidDTQL, err)
 	}
-	collection := ""
-	if from := query.From(); from != nil {
-		if named, ok := from.Base().(interface{ Name() string }); ok {
-			collection = named.Name()
+	collection, err := validateDTQL(query)
+	return query, collection, err
+}
+
+func validateDTQL(query dal.StructuredQuery) (string, error) {
+	if query == nil || query.From() == nil || len(query.From().Joins()) != 0 {
+		return "", fmt.Errorf("%w: one root collection is required", ErrInvalidDTQL)
+	}
+	source, ok := query.From().Base().(dal.CollectionRef)
+	if !ok || source.Parent() != nil || source.Alias() != "" || source.Name() == "" {
+		return "", fmt.Errorf("%w: one unaliased root collection is required", ErrInvalidDTQL)
+	}
+	if len(query.GroupBy()) != 0 || query.Having() != nil || query.StartFrom() != "" || query.StartAfter() != "" {
+		return "", fmt.Errorf("%w: aggregation and cursors are not supported", ErrInvalidDTQL)
+	}
+	if query.Limit() < 0 || query.Limit() > 1000 || query.Offset() < 0 || query.Offset() > 10000 {
+		return "", fmt.Errorf("%w: limit must be 0..1000 and offset 0..10000", ErrInvalidDTQL)
+	}
+	for _, column := range query.Columns() {
+		field, ok := column.Expression.(dal.FieldRef)
+		if !ok || column.Alias != "" || field.Source() != "" {
+			return "", fmt.Errorf("%w: only unaliased field columns are supported", ErrInvalidDTQL)
 		}
 	}
-	keysOnly := query.IntoRecord() == nil
-	return d.executeDalQuery(ctx, query, collection, keysOnly)
+	return source.Name(), nil
+}
+
+// ExecuteDTQL runs DTQL through the same secured DALgo handle as record reads.
+func (d *Database) ExecuteDTQL(ctx context.Context, doc []byte) ([]Record, error) {
+	query, _, err := ParseDTQL(doc)
+	if err != nil {
+		return nil, err
+	}
+	return d.ExecuteDTQLQuery(ctx, query)
+}
+
+type boundedDTQL struct{ dal.StructuredQuery }
+
+// DTQL describes projection, not a Go record factory. A nil factory from the
+// decoder is not a keys-only request; install the factory needed by drivers.
+func (q boundedDTQL) IntoRecord() record.Record {
+	return record.NewRecordWithIncompleteKey(q.From().Base().Name(), reflect.String, map[string]any{})
+}
+
+func (q boundedDTQL) IDKind() reflect.Kind { return reflect.String }
+
+func (q boundedDTQL) String() string { return dal.QueryString(q) }
+
+func (q boundedDTQL) Limit() int {
+	if q.StructuredQuery.Limit() == 0 {
+		return 1000
+	}
+	return q.StructuredQuery.Limit()
+}
+
+// ExecuteDTQLQuery executes an already parsed query after validating its shape.
+func (d *Database) ExecuteDTQLQuery(ctx context.Context, query dal.StructuredQuery) ([]Record, error) {
+	collection, err := validateDTQL(query)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	return d.executeDalQuery(ctx, boundedDTQL{query}, collection, false)
 }
 
 func (d *Database) executeDalQuery(ctx context.Context, query dal.StructuredQuery, collection string, keysOnly bool) ([]Record, error) {
@@ -147,7 +207,11 @@ func (d *Database) executeDalQuery(ctx context.Context, query dal.StructuredQuer
 	}
 	defer func() { _ = reader.Close() }()
 	var records []Record
+	var bytesRead int
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		rec, nextErr := reader.Next()
 		// dal.ErrNoMoreRecords wraps io.EOF; some drivers (dalgo2sql) return
 		// raw io.EOF — checking io.EOF covers both.
@@ -170,6 +234,17 @@ func (d *Database) executeDalQuery(ctx context.Context, query dal.StructuredQuer
 		}
 		if !keysOnly {
 			out.Data = d.coerceToSchema(collection, data)
+		}
+		if out.Key == nil {
+			return nil, fmt.Errorf("query result has no record key")
+		}
+		encoded, err := json.Marshal(out.Data)
+		if err != nil {
+			return nil, err
+		}
+		bytesRead += len(encoded) + len(out.Key.String())
+		if bytesRead > 8<<20 {
+			return nil, fmt.Errorf("query result exceeds 8 MiB buffer limit")
 		}
 		records = append(records, out)
 	}
