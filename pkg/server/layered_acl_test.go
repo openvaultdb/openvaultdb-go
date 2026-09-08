@@ -193,3 +193,59 @@ schemas:
 		})
 	}
 }
+
+// An upper-only policy must not expose a computed field derived from a denied
+// stored field merely because the backend has no owner ACL manifest.
+func TestLayeredACL_UpperOnlySuppressesInGitDBDerivedValues(t *testing.T) {
+	dir := t.TempDir()
+	aclWriteFile(t, filepath.Join(dir, "data", ".ingitdb", "root-collections.yaml"), "customers: customers\n")
+	aclWriteFile(t, filepath.Join(dir, "data", "customers", ".collection", "definition.yaml"), `id: customers
+record_file:
+  name: "{key}.yaml"
+  format: yaml
+  type: map[string]any
+columns:
+  country: {type: string}
+  secret: {type: string}
+  name:
+    type: string
+    formula: 'secret + "-derived"'
+`)
+	aclWriteFile(t, filepath.Join(dir, "data", "customers", "$records", "01.yaml"), "country: IE\nsecret: protected-input\n")
+	aclWriteFile(t, filepath.Join(dir, "upper.yaml"), aclPolicy("upper", "country", "IE"))
+	path := filepath.Join(dir, "db.yaml")
+	aclWriteFile(t, path, `database:
+  id: crm
+  schema_mode: schemaless
+storage:
+  engine: ingitdb
+  path: data
+acl:
+  enabled: true
+  policies: [upper.yaml]
+`)
+	db, err := mount.File(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(server.New("test", map[string]*core.Database{"crm": db},
+		server.WithAuth(&auth.Config{OwnerToken: ownerToken}),
+		server.WithPrincipalResolver(func(context.Context, *auth.Principal) (access.Principal, error) {
+			return access.Principal{Roles: []string{"reader"}}, nil
+		}),
+	).Handler())
+	defer ts.Close()
+	status, body := request(t, ts, http.MethodPost, "/v1/databases/crm/dtql", ownerToken, "from: {name: customers}\ncolumns: [{field: name}]\n")
+	if status != http.StatusOK {
+		t.Fatalf("%d: %s", status, body)
+	}
+	var result struct {
+		Records []struct{ Data map[string]any }
+	}
+	if err := json.Unmarshal([]byte(body), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Records) != 1 || result.Records[0].Data["name"] != nil || strings.Contains(body, "protected-input") {
+		t.Fatalf("computed value escaped upper policy: %s", body)
+	}
+}

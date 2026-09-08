@@ -68,7 +68,11 @@ func File(manifestPath string) (*core.Database, error) {
 			}
 			cataloguePath = filepath.Join(baseDir, m.Database.ID+".inferred.json")
 		} else {
-			if db, modes, err = openInGitDB(storagePath); err != nil {
+			var options []dalgo2ingitdb.DatabaseOption
+			if len(policies) > 0 {
+				options = append(options, dalgo2ingitdb.WithStoredOnlyReads())
+			}
+			if db, modes, err = openInGitDB(storagePath, options...); err != nil {
 				return nil, fmt.Errorf("%s: %w", manifestPath, err)
 			}
 			cataloguePath = filepath.Join(storagePath, ".ovdb", "inferred-schema.json")
@@ -111,7 +115,7 @@ func File(manifestPath string) (*core.Database, error) {
 // published dalgo2ingitdb driver. inGitDB is the reference engine and
 // supports all schema modes: schemaless works because core auto-creates
 // collection definitions on first write via the driver's ddl.SchemaModifier.
-func openInGitDB(dir string) (dal.DB, []schema.Mode, error) {
+func openInGitDB(dir string, options ...dalgo2ingitdb.DatabaseOption) (dal.DB, []schema.Mode, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, nil, fmt.Errorf("failed to create inGitDB directory %s: %w", dir, err)
 	}
@@ -121,7 +125,7 @@ func openInGitDB(dir string) (dal.DB, []schema.Mode, error) {
 	// ensureGitIdentity for why this must live here rather than only at
 	// creation time.
 	ensureGitIdentity(dir)
-	db, err := dalgo2ingitdb.NewDatabase(dir, validator.NewCollectionsReader())
+	db, err := dalgo2ingitdb.NewDatabase(dir, validator.NewCollectionsReader(), options...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open inGitDB at %s: %w", dir, err)
 	}
