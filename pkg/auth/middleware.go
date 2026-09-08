@@ -10,7 +10,7 @@ import (
 // Config is the server-side auth configuration. A nil *Config means auth is
 // disabled (the local-dev default documented in the threat model).
 type Config struct {
-	// OwnerToken grants full access to everything, including admin endpoints.
+	// OwnerToken grants administrative capabilities; database policies still apply.
 	OwnerToken string
 	// Store holds application grants and pending authorization codes.
 	Store *Store
@@ -55,10 +55,12 @@ func (cfg *Config) Middleware(next http.Handler) http.Handler {
 				context.WithValue(r.Context(), contextKey{}, &Principal{Owner: true})))
 			return
 		}
-		if g := cfg.Store.Lookup(token); g != nil {
-			next.ServeHTTP(w, r.WithContext(
-				context.WithValue(r.Context(), contextKey{}, &Principal{Grant: g})))
-			return
+		if cfg.Store != nil {
+			if g := cfg.Store.Lookup(token); g != nil {
+				next.ServeHTTP(w, r.WithContext(
+					context.WithValue(r.Context(), contextKey{}, &Principal{Grant: g})))
+				return
+			}
 		}
 		unauthorized(w, "invalid or expired token")
 	})

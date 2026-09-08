@@ -38,22 +38,23 @@ delivery does not imply that those later work packages are implemented.
 
 The example starts an authenticated server over both real engines, seeds three
 customers, and activates policies after seeding. It requires a fresh directory.
-It maps the authenticated demo actor to the `reader` role in trusted server
-configuration. The bearer token still cannot bypass data policies.
+It binds the query credential to a stable typed demo user and DataTug actor,
+then resolves the user’s `reader` role in trusted server configuration.
 
 From this OpenVaultDB worktree:
 
 ```sh
 export GOWORK=/tmp/layered-acl-query-local.work
 export OVDB_OWNER_TOKEN="$(openssl rand -hex 24)"
+export OVDB_QUERY_TOKEN="$(openssl rand -hex 24)"
 go run ./examples/layered-acl -dir /tmp/my-fresh-acl-demo -listen 127.0.0.1:8899
 ```
 
-In another terminal with the same token:
+In another terminal with the same query token:
 
 ```sh
 curl -sS http://127.0.0.1:8899/v1/databases/ingitdb/dtql \
-  -H "Authorization: Bearer $OVDB_OWNER_TOKEN" \
+  -H "Authorization: Bearer $OVDB_QUERY_TOKEN" \
   --data-binary 'from: {name: customers}
 orderBy: [{field: name}]
 limit: 1'
@@ -65,7 +66,7 @@ OpenVaultDB's Ireland policy both apply. Replace `ingitdb` in the URL with
 requires Ireland and it has no additional tenant policy. Neither returns
 `tenant`, `country`, or `secret`. Adding `columns: [{field: secret}]` returns 403.
 
-The example leaves its files for inspection. Restart with the same `-dir`, `-reuse`, and token environment to remount the
+The example leaves its files for inspection. Restart with the same `-dir`, `-reuse`, and both token environment variables to remount the
 generated manifests without reseeding. The normal OVDB mount API also reuses them. Policies are immutable snapshots
 until remount; this delivery does not provide live reload or policy editing.
 
@@ -245,3 +246,31 @@ such as `User_*` or include `*` / exclude `sys_*`. This does not authorize an
 execution path: native/procedure effects remain unsupported by the protected
 HTTP profile. The transport rejects unrecognized execution labels as unknown
 DTQL fields.
+
+## Typed identity and current memberships
+
+Set `acl.realm` at each owner (and `realm` in the InGitDB owner manifest).
+Policies keep stable binding IDs in that realm; the realm is owner configuration,
+not an OAuth provider subject or a new policy-text attribute.
+
+Owner token administration accepts `subject` and `actor` references containing
+`realm`, `kind`, and `id`. Both must be supplied together. Grants persist those
+references alongside the existing hashed credential, database scope and
+capabilities. Legacy client-only grants remain application identities.
+The store returns defensive grant copies so resolver code cannot mutate
+persisted delegation accidentally.
+
+Configure `server.WithGrantIdentity` with a bootstrap reference from persistent
+host configuration and a current `MembershipResolver`. The callback runs on
+every authenticated request and returns current role/group IDs and a membership
+revision. Resolution failure denies access. Subject policy and actor token
+capabilities must both allow the operation; owner administrative capabilities
+do not bypass data ACL. A service cannot match a human binding with the same ID.
+
+Hosted deployments retain the established Sneat/Firebase UID and existing
+provider-binding infrastructure. Several provider credentials may resolve to
+the same stable subject; no provider tokens or linking secrets belong in
+policy files. This task provides the trusted mapping contract and credential
+tests, not a new OAuth issuance/linking service. DataTug’s actual OVDB connection
+transport remains task 21; it must use the provisioned credential and cannot
+supply trusted roles or substitute an arbitrary subject.

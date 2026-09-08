@@ -99,6 +99,12 @@ func (s *Server) Handler() http.Handler {
 			actor := auth.FromRequest(r)
 			if actor != nil {
 				principal, err := s.principalResolver(r.Context(), actor)
+				if err == nil && principal.Subject != nil {
+					err = principal.Subject.Validate()
+				}
+				if err == nil && principal.Actor != nil {
+					err = principal.Actor.Validate()
+				}
 				if err != nil {
 					writeError(w, http.StatusForbidden, "ACCESS_DENIED", "principal resolution failed")
 					return
