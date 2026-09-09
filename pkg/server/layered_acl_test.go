@@ -152,6 +152,22 @@ schemas:
 				if len(result.Records) != 1 || !strings.HasSuffix(result.Records[0].Key, "/"+want) || result.Records[0].Data["name"] != "Customer "+want {
 					t.Fatalf("wrong filtered/paged data: %s", body)
 				}
+				pageStatus, pageBody := request(t, ts, http.MethodPost, "/v1/databases/crm/dtql", token, query+"offset: 1\n")
+				var page struct {
+					Records []struct {
+						Key string `json:"key"`
+					} `json:"records"`
+				}
+				if pageStatus != 200 || json.Unmarshal([]byte(pageBody), &page) != nil {
+					t.Fatalf("offset query: %d %s", pageStatus, pageBody)
+				}
+				if engine == "ingitdb" {
+					if len(page.Records) != 0 {
+						t.Fatalf("offset must skip the only authorized row: %s", pageBody)
+					}
+				} else if len(page.Records) != 1 || !strings.HasSuffix(page.Records[0].Key, "/03") {
+					t.Fatalf("offset must return second authorized row: %s", pageBody)
+				}
 
 				projectedStatus, projectedBody := request(t, ts, http.MethodPost, "/v1/databases/crm/dtql", token, query+"columns: [{field: name}]\n")
 				if projectedStatus != http.StatusOK {
