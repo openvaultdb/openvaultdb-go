@@ -216,3 +216,84 @@ func TestProtectedHTTPReadInspectUpdate(t *testing.T) {
 		})
 	}
 }
+
+// Exact-field evidence must select the same conditional field rule as an
+// ordinary point read; a permissive alternative for another row is insufficient.
+func TestProtectedHTTPEvidenceConditionalFieldFallback(t *testing.T) {
+	for _, engine := range []string{"sqlite", "ingitdb"} {
+		t.Run(engine, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "db.yaml")
+			storage := "data"
+			if engine == "sqlite" {
+				storage = "data.sqlite"
+			}
+			manifest := fmt.Sprintf("database: {id: crm, schema_mode: strict}\nstorage: {engine: %s, path: %s}\nschemas:\n  collections:\n    customers:\n      fields:\n        name: {type: string}\n        country: {type: string}\n        secret: {type: string}\n", engine, storage)
+			aclWriteFile(t, path, manifest)
+			seed, err := mount.File(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i, country := range []string{"IE", "US"} {
+				_, err = seed.Apply(context.Background(), []core.Op{{Op: "insert", Key: record.NewKeyWithID("customers", fmt.Sprint(i)), Data: map[string]any{"name": "Visible", "country": country, "secret": "protected-value"}}}, "seed")
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err = seed.Close(); err != nil {
+				t.Fatal(err)
+			}
+			policy := `apiVersion: dtql.org/access/v1
+kind: AccessPolicy
+metadata: {name: conditional-fields}
+target: {database: crm}
+composition: dalgo-hierarchical-v1
+default: deny
+scopes:
+  - path: /customers/*
+    rules:
+      - id: domestic
+        effect: allow
+        operations: [get]
+        fields: [name, secret]
+        where:
+          op: "=="
+          left: {field: country}
+          right: {value: IE}
+      - id: fallback
+        effect: allow
+        operations: [get]
+        fields: [name]
+`
+			aclWriteFile(t, filepath.Join(dir, "upper.yaml"), policy)
+			aclWriteFile(t, path, manifest+"acl: {enabled: true, policies: [upper.yaml]}\n")
+			if engine == "ingitdb" {
+				owner := filepath.Join(dir, "data", ".ingitdb", "access")
+				aclWriteFile(t, filepath.Join(owner, "manifest.yaml"), "enabled: true\ndatabase: crm\npolicies: [lower.yaml]\n")
+				aclWriteFile(t, filepath.Join(owner, "lower.yaml"), policy)
+			}
+			db, err := mount.File(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			ts := httptest.NewServer(server.New("test", map[string]*core.Database{"crm": db}, server.WithAuth(&auth.Config{OwnerToken: ownerToken})).Handler())
+			defer ts.Close()
+			for _, id := range []string{"0", "1"} {
+				status, body := request(t, ts, "GET", "/v1/databases/crm/records/customers/"+id, ownerToken, "")
+				if status != 200 || !strings.Contains(body, "Visible") || strings.Contains(body, "protected-value") != (id == "0") {
+					t.Fatalf("ordinary read %s: %d %s", id, status, body)
+				}
+				input, _ := json.Marshal(map[string]any{"apiVersion": az.APIVersion, "resource": az.Resource{DatabaseID: "crm", Path: "/customers/" + id}, "requiredFields": [][]string{{"secret"}}})
+				status, body = request(t, ts, "POST", "/v1/databases/crm/access/evidence", ownerToken, string(input))
+				if id == "0" {
+					if status != 200 || !strings.Contains(body, "protected-value") {
+						t.Fatalf("authorized evidence: %d %s", status, body)
+					}
+				} else if status != 404 || strings.Contains(body, "protected-value") || strings.Contains(body, `"state":"absent"`) {
+					t.Fatalf("fallback disclosed forbidden evidence: %d %s", status, body)
+				}
+			}
+		})
+	}
+}
