@@ -76,3 +76,8 @@ DALgo's final standalone command was
 `GOWORK=off wb run -- go vet ./...`. The repository's existing gate reports
 100.0% for each package and total coverage. This is the tool-reported percentage,
 with its normal rounding; no threshold, exclusion, or hook bypass changed.
+
+The integrated DALgo source `2e3a58c` (including fetched main's transaction
+identity changes and the plan metadata correction) independently passes the
+same standalone pre-push gate. Its full `GOWORK=off go test -race ./... -p=2`
+also passes in the compiler container through WB with normal admission.
