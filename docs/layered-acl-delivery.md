@@ -1,8 +1,8 @@
 # Coordinated ACL delivery
 
 Status: provider implementation wave waits for DALgo's unchanged coverage gate.
-The approved DTQL specification packet has landed; implementation modules have
-not yet been published.
+The approved DTQL specification packet and independent HTTP adapter fix have
+landed. The main ACL provider/consumer wave is not yet published.
 
 The [WB graph](layered-acl-release-graph.json) records the six Go repositories
 and their fetched main-branch dependencies. It also identifies the nested SQL
@@ -52,6 +52,15 @@ exact-head validation. A green old source commit alone is not a merge receipt.
 
 | Repository | Result | Exact evidence |
 | --- | --- | --- |
-| datatug/dtql | Landed; canonical main synchronized | `c2d048784ef982a0533b1cdfb912f13182ba6b53`; WB receipt `merge-datatug-dtql-main-af26ed96bb47-f7a9cf2ed0f7`; authoritative unprotected direct route, no applicable checks confirmed by stable reread |
+| datatug/dtql | Landed and cleaned; canonical main synchronized | `c2d048784ef982a0533b1cdfb912f13182ba6b53`; WB receipt `merge-datatug-dtql-main-af26ed96bb47-f7a9cf2ed0f7`; authoritative unprotected direct route, no applicable checks confirmed by stable reread |
 
 No Go provider release is claimed by the DTQL documentation landing.
+
+The independent HTTP adapter fix landed at
+`cacd422564fc27844b989e1c80eb96320ce4af4b` through WB receipt
+`merge-dal-go-dalgo2openvaultdb-main-8d8affc8e30d-faa17cb17b4b`. Canonical main is
+synchronized; [exact-head CI](https://github.com/dal-go/dalgo2openvaultdb/actions/runs/34350377697)
+passed lint and build/test, with version bump intentionally skipped. Go resolves
+the immutable commit as `v0.3.2-0.20260909113030-cacd422564fc`. Consumer pins
+will change once alongside the other ready providers. Its worktree remains in
+the local workspace until that convergence, then WB cleanup can finish.
