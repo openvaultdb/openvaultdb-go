@@ -429,7 +429,11 @@ func validField(field []string) bool {
 		return false
 	}
 	for _, p := range field {
-		if !validSegment(p) {
+		// Dots delimit nested fields in the portable policy model. A literal
+		// dot inside one physical segment would alias a different path after
+		// policy matching joins/splits the segments. Resource/row IDs retain
+		// their separate grammar and may contain dots.
+		if !validSegment(p) || strings.Contains(p, ".") {
 			return false
 		}
 	}
