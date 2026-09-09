@@ -6,8 +6,8 @@ InGitDB and SQLite databases,
 with database-owned policies enforced using DALgo. Policy viewer and editor
 are excluded from MVP.
 
-Work is coordinated locally on `layered-acl-query` worktrees in DALgo,
-dalgo2ingitdb, and openvaultdb-go. Local dependency wiring is used during
+Work is coordinated locally in DALgo, dalgo2sql, dalgo2ingitdb,
+dalgo2openvaultdb, openvaultdb-go, DataTug CLI and DataTug apps worktrees. Local dependency wiring is used during
 integration; publication and remote merges are deferred.
 
 ## First delivery acceptance
@@ -70,8 +70,8 @@ requires Ireland and it has no additional tenant policy. Neither returns
 `tenant`, `country`, or `secret`. Adding `columns: [{field: secret}]` returns 403.
 
 The example leaves its files for inspection. Restart with the same `-dir`, `-reuse`, and both token environment variables to remount the
-generated manifests without reseeding. The normal OVDB mount API also reuses them. Policies are immutable snapshots
-until remount; this delivery does not provide live reload or policy editing.
+generated manifests without reseeding. The normal OVDB mount API also reuses them. Flat-file policies are immutable until remount. Generation-backed owners support
+trusted embedded publication/reload as described below; no policy UI is included.
 
 ## Configure policies on an existing mount
 
@@ -97,7 +97,8 @@ The policy syntax is demonstrated by `examples/layered-acl/main.go`. Supported
 policies use `dtql.org/access/v1`, `dalgo-hierarchical-v1`, default deny, path
 scopes, row conditions, field allow-lists, and optional user/role/group bindings.
 Visibility defaults to public; private is accepted and retained internally.
-All HTTP ACL failures use generic diagnostics in this slice.
+HTTP failures return structured owner/policy diagnostics where authorized, with
+generic redacted denial for protected row facts and private policy details.
 
 No ACL configuration preserves legacy behavior. A present configuration requires
 an explicit enabled flag. An enabled configuration with missing or invalid
@@ -111,10 +112,10 @@ fails closed if resolution fails. Without a resolver, only universally bound
 policies apply; an application token ID is not automatically a human policy ID.
 The token capability check and the data policies must both allow the request.
 
-The file loader supports scoped collection/field masks and execution-class gates. Native SQL,
-GraphQL, stored procedure execution, policy management, full structured blocker
-collection, Explain Access, policy generations, and write-specific E2E acceptance
-remain later work. Policy viewer/editor is excluded from MVP by user direction.
+The file loader supports scoped collection/field masks and execution-class gates.
+Explain Access, bounded blocker collection, owner generations and protected UPDATE
+are implemented. Native SQL/GraphQL/procedure execution and policy UI/HTTP CRUD
+remain outside this protected MVP profile.
 
 ## Local dependency wiring
 
@@ -129,9 +130,11 @@ The workspace contains these `layered-acl-query` worktrees:
 - `dal-go/dalgo2sql`
 - `ingitdb/dalgo2ingitdb`
 - `openvaultdb/openvaultdb-go`
+- `dal-go/dalgo2openvaultdb`
+- `datatug/datatug-cli`
 
 The current workspace is `/tmp/layered-acl-query-local.work`. For another checkout,
-create an external workspace with `go work init` and `go work use` for those four
+create an external workspace with `go work init` and `go work use` for those six
 module directories, then set `GOWORK` to its absolute path. Do not run `go mod tidy`
 or `go get` against the linked workspace. A provider-first release/version update
 is still required before ordinary CI or an unlinked checkout can build this slice.
@@ -274,9 +277,8 @@ Hosted deployments retain the established Sneat/Firebase UID and existing
 provider-binding infrastructure. Several provider credentials may resolve to
 the same stable subject; no provider tokens or linking secrets belong in
 policy files. This task provides the trusted mapping contract and credential
-tests, not a new OAuth issuance/linking service. DataTug’s actual OVDB connection
-transport remains task 21; it must use the provisioned credential and cannot
-supply trusted roles or substitute an arbitrary subject.
+tests, not a new OAuth issuance/linking service. DataTug’s implemented connection transport uses the provisioned server-side
+credential and cannot supply trusted roles or substitute an arbitrary subject.
 
 ## Filesystem owner generations
 
@@ -442,3 +444,11 @@ booleans from integers using trusted schema typing; selecting stored boolean
 values is unaffected. Custom policy callbacks must explicitly declare pure
 inspection support to participate in plan/inspect/sample. Unmarked callbacks
 remain usable for real enforcement but are not replayed for diagnostics.
+
+
+## Final verification and review
+
+See [acceptance evidence](layered-acl-acceptance.md) and the
+[final review record](layered-acl-review/report.md) for exact reviewed revisions,
+independent findings, remediation commits and outstanding delivery gates.
+A passing linked-workspace test is not publication or remote merge evidence.

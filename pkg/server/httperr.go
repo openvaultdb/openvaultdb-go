@@ -34,6 +34,17 @@ func writeMappedError(w http.ResponseWriter, err error) {
 	case errors.Is(err, access.ErrAccessDenied):
 		// Do not reflect evaluator text: it may contain private predicate values,
 		// policy paths, or protected row facts.
+		decisions := access.DecisionsFromError(err)
+		unsupported := len(decisions) > 0
+		for _, decision := range decisions {
+			if decision.Code != access.CodeEnforcementUnsupported {
+				unsupported = false
+			}
+		}
+		if unsupported {
+			writeError(w, http.StatusUnprocessableEntity, "authorization_unsupported", "operation is unsupported by the enforcement profile")
+			return
+		}
 		writeError(w, http.StatusForbidden, "ACCESS_DENIED", "access denied")
 	case errors.Is(err, core.ErrInvalidDTQL):
 		writeError(w, http.StatusBadRequest, "invalid_dtql", err.Error())
