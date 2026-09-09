@@ -65,3 +65,20 @@ passed lint and build/test, with version bump intentionally skipped. Go resolves
 the immutable commit as `v0.3.2-0.20260909113030-cacd422564fc`. Consumer pins
 will change once alongside the other ready providers. Its worktree remains in
 the local workspace until that convergence, then WB cleanup can finish.
+
+## DALgo receipt recovery
+
+The main DALgo delivery attempt is preserved in receipt
+`merge-dal-go-dalgo-main-e3e63fce3822-3fc819a37a2c`. Its original source identity
+is recorded in `source_refreshes`; a subsequent source refresh resolved an
+overlapping test-file addition. Candidate code validation passed, then SpecScore
+identified a stale plan frontmatter status. The source owner corrected that
+metadata and the integrated source at `2e3a58c` passes the standalone coverage
+gate (reported 100.0%).
+
+WB 0.120.4 still rejects audited supersession because the conflict recovery
+path compares the operation identity only with the refreshed source set. The
+original receipt, candidate and source remain intact. A narrow WB regression
+fix is being prepared; no receipt edits, guard overrides or unreceipted push
+have been used. Provider publication remains pending until recovery and exact
+candidate validation succeed.
