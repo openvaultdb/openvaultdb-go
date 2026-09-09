@@ -5,6 +5,7 @@
 package mount
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 	"github.com/openvaultdb/openvaultdb-go/pkg/manifest"
+	"github.com/openvaultdb/openvaultdb-go/pkg/policystore"
 	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 )
 
@@ -30,6 +32,7 @@ func File(manifestPath string) (*core.Database, error) {
 	}
 	baseDir := filepath.Dir(manifestPath)
 	var policies []access.Policy
+	var controller *policystore.Controller
 	if m.ACL != nil {
 		if m.ACL.Enabled && m.Storage.Engine != "sqlite" && m.Storage.Engine != "ingitdb" {
 			return nil, fmt.Errorf("%s: file ACL currently supports SQLite and local InGitDB mounts", manifestPath)
@@ -42,7 +45,22 @@ func File(manifestPath string) (*core.Database, error) {
 			return nil, fmt.Errorf("%s: ACL database must match mounted database", manifestPath)
 		}
 		config.Database = m.Database.ID
-		policies, err = access.LoadPolicyFiles(baseDir, config)
+		if m.ACLStore != nil {
+			root := m.ACLStore.Path
+			if !filepath.IsAbs(root) {
+				root = filepath.Join(baseDir, root)
+			}
+			store, openErr := policystore.Open(root, policystore.Owner{Enabled: true, Database: config.Database, Realm: config.Realm})
+			if openErr != nil {
+				return nil, openErr
+			}
+			controller, err = policystore.NewController(context.Background(), store)
+			if err == nil {
+				policies, err = controller.Policies(context.Background())
+			}
+		} else {
+			policies, err = access.LoadPolicyFiles(baseDir, config)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("%s: load OpenVaultDB policies: %w", manifestPath, err)
 		}
@@ -99,7 +117,12 @@ func File(manifestPath string) (*core.Database, error) {
 			manifestPath, m.Storage.Engine)
 	}
 
-	d, err := core.Open(m, db, modes, cataloguePath, policies...)
+	var d *core.Database
+	if controller != nil {
+		d, err = core.OpenWithPolicyController(m, db, modes, cataloguePath, controller)
+	} else {
+		d, err = core.Open(m, db, modes, cataloguePath, policies...)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", manifestPath, err)
 	}
