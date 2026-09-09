@@ -23,25 +23,27 @@ func TestNormalizeInspect(t *testing.T) {
 
 func TestRejectAmbiguousAuthorizationRequests(t *testing.T) {
 	cases := map[string]string{
-		"duplicate":            strings.Replace(inspect, `"mode":"inspect"`, `"mode":"inspect","mode":"plan"`, 1),
-		"case alias":           strings.Replace(inspect, `"mode"`, `"Mode"`, 1),
-		"unknown":              strings.Replace(inspect, `"mode":"inspect"`, `"mode":"inspect","effectivePrincipal":{}`, 1),
-		"execution":            strings.Replace(inspect, `"mode":"inspect"`, `"mode":"execution"`, 1),
-		"missing value":        strings.Replace(inspect, `,"value":null`, "", 1),
-		"null subject":         strings.Replace(inspect, `"mode":"inspect"`, `"mode":"inspect","subject":null`, 1),
-		"null changes":         strings.Replace(inspect, `[{"op":"set","path":["name"],"value":null}]`, `null`, 1),
-		"wrong database":       strings.Replace(inspect, `"databaseId":"crm"`, `"databaseId":"other"`, 1),
-		"path alias":           strings.Replace(inspect, `/customers/101`, `/customers/../101`, 1),
-		"encoded alias":        strings.Replace(inspect, `/customers/101`, `/customers/%31%30%31`, 1),
-		"row mismatch":         strings.Replace(inspect, `"path":"/customers/101"`, `"path":"/customers/101","rowId":"102"`, 1),
-		"columns mismatch":     strings.Replace(inspect, `"path":"/customers/101"`, `"path":"/customers/101","columns":[["secret"]]`, 1),
-		"table inspect":        strings.Replace(inspect, `/customers/101`, `/customers`, 1),
-		"unknown execution":    strings.Replace(inspect, `"dtql"`, `"native"`, 1),
-		"callable absent":      strings.Replace(inspect, `"dtql"`, `"stored_procedure"`, 1),
-		"duplicate changes":    strings.Replace(inspect, `{"op":"set","path":["name"],"value":null}`, `{"op":"set","path":["name"],"value":null},{"op":"set","path":["name"],"value":"Ada"}`, 1),
-		"parent child changes": strings.Replace(inspect, `{"op":"set","path":["name"],"value":null}`, `{"op":"set","path":["name"],"value":{}},{"op":"set","path":["name","first"],"value":"Ada"}`, 1),
-		"two documents":        inspect + inspect,
-		"wrong scalar":         strings.Replace(inspect, `"id":"u1"`, `"id":1`, 1),
+		"duplicate":             strings.Replace(inspect, `"mode":"inspect"`, `"mode":"inspect","mode":"plan"`, 1),
+		"case alias":            strings.Replace(inspect, `"mode"`, `"Mode"`, 1),
+		"unknown":               strings.Replace(inspect, `"mode":"inspect"`, `"mode":"inspect","effectivePrincipal":{}`, 1),
+		"execution":             strings.Replace(inspect, `"mode":"inspect"`, `"mode":"execution"`, 1),
+		"missing value":         strings.Replace(inspect, `,"value":null`, "", 1),
+		"null subject":          strings.Replace(inspect, `"mode":"inspect"`, `"mode":"inspect","subject":null`, 1),
+		"null changes":          strings.Replace(inspect, `[{"op":"set","path":["name"],"value":null}]`, `null`, 1),
+		"wrong database":        strings.Replace(inspect, `"databaseId":"crm"`, `"databaseId":"other"`, 1),
+		"path alias":            strings.Replace(inspect, `/customers/101`, `/customers/../101`, 1),
+		"encoded alias":         strings.Replace(inspect, `/customers/101`, `/customers/%31%30%31`, 1),
+		"row mismatch":          strings.Replace(inspect, `"path":"/customers/101"`, `"path":"/customers/101","rowId":"102"`, 1),
+		"columns mismatch":      strings.Replace(inspect, `"path":"/customers/101"`, `"path":"/customers/101","columns":[["secret"]]`, 1),
+		"table inspect":         strings.Replace(inspect, `/customers/101`, `/customers`, 1),
+		"unknown execution":     strings.Replace(inspect, `"dtql"`, `"native"`, 1),
+		"callable absent":       strings.Replace(inspect, `"dtql"`, `"stored_procedure"`, 1),
+		"duplicate changes":     strings.Replace(inspect, `{"op":"set","path":["name"],"value":null}`, `{"op":"set","path":["name"],"value":null},{"op":"set","path":["name"],"value":"Ada"}`, 1),
+		"dotted physical field": strings.Replace(inspect, `["name"]`, `["address.city"]`, 1),
+		"dotted column":         strings.Replace(inspect, `"path":"/customers/101"`, `"path":"/customers/101","columns":[["address.city"]]`, 1),
+		"parent child changes":  strings.Replace(inspect, `{"op":"set","path":["name"],"value":null}`, `{"op":"set","path":["name"],"value":{}},{"op":"set","path":["name","first"],"value":"Ada"}`, 1),
+		"two documents":         inspect + inspect,
+		"wrong scalar":          strings.Replace(inspect, `"id":"u1"`, `"id":1`, 1),
 	}
 	for name, input := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -49,6 +51,18 @@ func TestRejectAmbiguousAuthorizationRequests(t *testing.T) {
 				t.Fatal("accepted invalid request")
 			}
 		})
+	}
+}
+
+func TestNestedFieldAndDottedRowIdentityRemainDistinct(t *testing.T) {
+	input := strings.Replace(inspect, `["name"]`, `["address","city"]`, 1)
+	input = strings.Replace(input, `/customers/101`, `/customers/user.101`, 1)
+	request, err := Parse([]byte(input), "crm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Operations[0].Resource.RowID != "user.101" || len(request.Operations[0].Resource.Columns[0]) != 2 {
+		t.Fatal("normalization confused row identity with nested field segments")
 	}
 }
 
