@@ -274,3 +274,46 @@ policy files. This task provides the trusted mapping contract and credential
 tests, not a new OAuth issuance/linking service. DataTug’s actual OVDB connection
 transport remains task 21; it must use the provisioned credential and cannot
 supply trusted roles or substitute an arbitrary subject.
+
+## Filesystem owner generations
+
+OpenVaultDB supports an opt-in generation store:
+
+```yaml
+acl:
+  enabled: true
+  realm: local
+acl_store:
+  path: .ovdb/access
+```
+
+The path is relative to the mount manifest. Do not combine it with flat
+`acl.policies`. An enabled generation mount requires a valid active pointer;
+an absent or corrupt generation fails closed.
+
+Trusted embedded administration uses `policystore.Open` and `Store.Activate`
+to bootstrap a complete policy set. Mounted owners expose `PublishPolicies`
+and `ReloadPolicies`; these methods have no public data-route authority.
+Publishing compares the expected internal generation revision, validates the
+complete candidate, synchronizes immutable files, then atomically replaces
+the active pointer. No-op content reuses a verified generation. Errors after
+pointer publication are uncertain publication; the controller reloads the
+authoritative pointer before allowing further admissions, or fails closed.
+
+The internal revision covers the entire owner/configuration set. Individual
+document revisions cover only canonical policy bytes. Changing a private
+document does not change an unchanged public document's revision. Ordinary
+clients must never receive the internal generation revision.
+
+Each operation resolves one immutable policy snapshot; a DALgo transaction
+pins one snapshot. Explicit reload updates existing mounted handles. External
+filesystem administration requires reload/reconnect; it does not implicitly
+change a running controller. Policy/data write admission coordination and
+final generation validation are completed by task 17, not inferred from
+snapshot pinning alone.
+
+Validation includes process termination before/after pointer publication,
+CAS conflicts, corrupt and missing references, duplicate/symlink pointers,
+unchanged public document revisions, and a real HTTP query that changes from
+allowed to denied on publication and remains denied after remount. Retention
+of inactive generations is operator follow-up.
