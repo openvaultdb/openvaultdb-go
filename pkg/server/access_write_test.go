@@ -197,6 +197,22 @@ func TestProtectedHTTPReadInspectUpdate(t *testing.T) {
 					t.Fatalf("probe %s %v %s", id, err, body)
 				}
 			}
+			if engine == "sqlite" {
+				unsupportedStatus, unsupportedBody := request(t, ts, "POST", "/v1/databases/crm/dtql", ownerToken, "from: {name: customers}\ncolumns: [{field: name}]\nwhere: {op: '==', left: {field: name}, right: {value: true}}\n")
+				if unsupportedStatus != 422 || !strings.Contains(unsupportedBody, `"code":"authorization_unsupported"`) {
+					t.Fatalf("unsupported typed query %d %s", unsupportedStatus, unsupportedBody)
+				}
+			}
+			reconnected, err := mount.File(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			readCtx := access.WithPrincipal(context.Background(), access.Principal{Roles: []string{"reader"}})
+			persisted, err := reconnected.ExecuteDTQL(readCtx, []byte("from: {name: customers}\ncolumns: [{field: name}]\n"))
+			if err != nil || len(persisted) != 1 || persisted[0].Data["name"] != "Changed" {
+				t.Fatalf("remounted protected update %v %v", persisted, err)
+			}
+
 		})
 	}
 }

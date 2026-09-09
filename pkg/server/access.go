@@ -464,6 +464,12 @@ func (s *Server) writeQueryAuthorizationError(w http.ResponseWriter, r *http.Req
 	status, code := http.StatusForbidden, "access_denied"
 	if result.Result == az.OutcomeIndeterminate {
 		status, code = http.StatusServiceUnavailable, "authorization_unavailable"
+		for _, decision := range access.DecisionsFromError(executionErr) {
+			if decision.Code == access.CodeEnforcementUnsupported {
+				status, code = 422, "authorization_unsupported"
+				break
+			}
+		}
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, status, errorBody{Error: errorDetail{Code: code, RequestID: result.RequestID, Authorization: &result}})

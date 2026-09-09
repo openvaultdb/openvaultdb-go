@@ -1,7 +1,8 @@
-# Layered ACL query implementation
+# Layered ACL MVP integration
 
-Implementation was approved on 2026-09-08. The first delivery is real DTQL
-queries over HTTP through OpenVaultDB to local InGitDB and SQLite databases,
+Implementation was approved on 2026-09-08. The implemented vertical slice runs real DTQL
+queries, protected UPDATE and Explain Access through OpenVaultDB to local
+InGitDB and SQLite databases,
 with database-owned policies enforced using DALgo. Policy viewer and editor
 are excluded from MVP.
 
@@ -22,9 +23,8 @@ integration; publication and remote merges are deferred.
 - Return safe authorization errors without exposing private policy contents.
 
 The approved architecture and reviewed contracts are in the DTQL repository's
-`design/layered-acl` packet on the local `layered-acl-design` branch. Subsequent
-write and Explain Access work continues from those contracts; this first query
-delivery does not imply that those later work packages are implemented.
+`design/layered-acl` packet on the local `layered-acl-design` branch. Write and Explain Access implementation follows those contracts. The
+sections below describe the current protected profile and validation evidence.
 
 ## Progress
 
@@ -33,6 +33,9 @@ delivery does not imply that those later work packages are implemented.
 - Real HTTP read/probe/remount tests pass for InGitDB and SQLite.
 - Explicit projection retains row identity; SQL translation and pagination regressions pass.
 - Standalone authenticated HTTP demo passed before and after remount.
+- Protected HTTP inspect/evidence/UPDATE/CAS/sample and multi-owner blocker tests pass.
+- DataTug browser-to-daemon-to-OpenVaultDB read/Explain/write/reread passes on both engines.
+- Independent final review, coverage gates and coordinated publication remain delivery work.
 
 ## Run the local demonstration
 
