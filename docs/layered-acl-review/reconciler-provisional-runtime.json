@@ -1,0 +1,86 @@
+{
+  "duration_api_ms": 220721,
+  "total_cost_usd": 0.7437484,
+  "usage": {
+    "input_tokens": 36,
+    "cache_creation_input_tokens": 72293,
+    "cache_read_input_tokens": 1279532,
+    "output_tokens": 19706,
+    "output_tokens_details": {
+      "thinking_tokens": 9016
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 72293,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 7343,
+        "cache_read_input_tokens": 100295,
+        "cache_creation_input_tokens": 363,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 363
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 1458,
+      "outputTokens": 16,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.001538,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "thinkingTokens": 0,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty",
+      "costBasis": "list"
+    },
+    "claude-sonnet-5": {
+      "inputTokens": 36,
+      "outputTokens": 19706,
+      "cacheReadInputTokens": 1279532,
+      "cacheCreationInputTokens": 72293,
+      "webSearchRequests": 0,
+      "costUSD": 0.7422104,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "thinkingTokens": 9016,
+      "canonicalModel": "claude-sonnet-5",
+      "provider": "firstParty",
+      "costBasis": "list"
+    }
+  },
+  "permission_denials": [
+    {
+      "tool_name": "Read",
+      "tool_use_id": "toolu_01Bbw8A4sqQyRoJekqwDAXLt",
+      "tool_input": {
+        "file_path": "/tmp/layered-acl-review-20260909-v1/REVIEW.md"
+      }
+    },
+    {
+      "tool_name": "Read",
+      "tool_use_id": "toolu_014m6tYeqTYF6LmeMCK1Rzmi",
+      "tool_input": {
+        "file_path": "/tmp/layered-acl-review-20260909-v1/manifest.json"
+      }
+    }
+  ],
+  "is_error": false,
+  "num_turns": 33,
+  "duration_ms": 220210
+}

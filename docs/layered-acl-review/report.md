@@ -1,6 +1,7 @@
 # Layered ACL final implementation review
 
-Status: in progress. No final approval, publication or merge is claimed.
+Status: both blind reviews and independent reconciliation submitted. Remediation
+closure and repository gates remain in progress; no publication or merge is claimed.
 
 Both reviewers receive the same immutable [manifest](manifest.json) and
 [rubric](rubric.md), with earlier review material removed from the input.
@@ -16,13 +17,15 @@ code included in the original blind review.
 - [Opus](opus.md): submitted seven findings and one contract ambiguity. The
   two blocking findings independently confirm ASTRA-B-001 and ASTRA-B-002.
   Actual runtime selected claude-opus-5, with a small Haiku helper charge.
-- Separate Sonnet reconciliation started after both submissions in a fresh
-  read-only agent session. Classification and value conclusions remain pending.
+- [Independent Sonnet reconciliation](reconciliation-verified.md) confirms all
+  numbered findings and identifies A1 as an implementation defect against the
+  approved contract. Its closure assessment uses the fixed remediation snapshot;
+  subsequent commits are recorded below.
 
 ## Remediation record
 
-Acceptance here is the implementation owner's provisional assessment; the
-independent reconciler will assess the findings and closure evidence.
+The reconciler accepted all numbered findings. The table below records current
+implementation closure separately from the immutable snapshot it assessed.
 
 | Finding | Action | Evidence |
 | --- | --- | --- |
@@ -40,19 +43,35 @@ predicate profile instead of treating it as an unexplained denial.
 
 ## Usage and value metrics
 
-| Reviewer/run | Input/output/total tokens | Cost | Elapsed | Accepted / unique / high-value findings |
+| Run | Tokens: input including cache / output / total | Runtime list-price cost | Elapsed | Accepted / unique numbered findings |
 | --- | --- | --- | --- | --- |
-| Astra B | Not available from collaboration API | Not available | Exact duration not available | Pending reconciliation; 6 provisionally accepted, including 4 high |
-| Opus rejected attempts | 0 / 0 / 0 reported | $0 reported | Initial API response 495 ms | No review produced |
-| Opus after reset | 19,379,740 input including cache; 53,404 output; 19,433,144 total, all runtime models | $14.246995 reported list-price usage | 979.527 seconds | Pending reconciliation |
-| Reconciler | Running; actual JSON pending | Pending | Pending | Not applicable |
+| Astra B | Unavailable | Unavailable | Unavailable | 6 / 4; two unique high |
+| Opus | 19,379,740 / 53,404 / 19,433,144 | $14.246995 | 979.527 seconds | 7 / 5; zero unique high; A1 separately accepted |
+| Reconciler provisional | 1,353,319 / 19,722 / 1,373,041 | $0.7437484 | 220.21 seconds | Not applicable |
+| Reconciler verified | 4,128,007 / 29,482 / 4,157,489 | $1.6723536 | 368.672 seconds | Not applicable |
 
-Overlap percentage, cost per accepted/unique finding, incremental second-review
-value and whether either reviewer alone would have sufficed are pending. Missing
-telemetry will remain explicitly unavailable; no price or token estimates are
-substituted for measured billing. Conclusions will be evidence from this project,
-not a universal model ranking.
+Two duplicate mechanisms among eleven distinct numbered findings give 18.18%
+Jaccard overlap. Opus cost about $2.04 per accepted numbered finding and $2.85
+per unique numbered finding. These counts exclude its separately accepted A1
+contract observation; including it would change the denominator. No Astra cost
+per finding or monetary comparison is measurable from available telemetry.
 
+Astra added two unique high-severity fixes (numeric query semantics and owner
+activation concurrency) and two medium client fixes. Opus added pagination,
+new-row admission, path normalization and diagnostic conformance findings.
+Opus alone missed material defects in this packet; both reviews added useful
+coverage. Use both for security-sensitive changes of this kind, and choose a
+single focused review for lower-risk work where appropriate. This is evidence
+from one project, with unequal experiment tooling, not a universal model ranking
+or a demonstrated cost-optimal choice.
+
+The first reconciliation could not read the sibling baseline directory. A fresh
+independent verification received the same baseline copied into its readable
+input directory. Both raw reports and usage records are retained. The verified
+report corrects the first report's missing-test claims, A1 framing, and arithmetic.
+One sentence in verified section9 mistakenly calls R1/R2 the only high/critical
+items; its own crosswalk correctly also rates R3/R4 high. Use the crosswalk for
+severity counts. Root's later finding ROOT-002 was not a reviewer contribution.
 
 ## Further findings and closure
 
@@ -61,11 +80,12 @@ not a universal model ranking.
 | Opus F1/F2 | Same mechanisms as ASTRA-B-002/001; fixed | InGitDB3229699, DALgo6ef1e00; HTTP evidence regression OVDBe75f9d0 |
 | Opus F3 ignored InGitDB offset | Accept/fixed | InGitDB3604dab and OVDB0718d7c; filtering/order/offset/limit and remount regressions pass |
 | Opus F4 new-row Where incorrectly overrides Check | Accept/fixed | DALgocc16e7d; Insert and missing Set distinct Where/Check regressions |
-| Opus F5 ambiguous physical dotted fields | Investigation active | Shared normalizer/storage boundary audit; do not change dotted row IDs indiscriminately |
+| Opus F5 ambiguous physical dotted fields | Accept/fixed | OVDB9d86678; concrete field segments reject literal dots, nested segment arrays and dotted row IDs stay valid |
 | Opus F6 callable-mask failure classified as execution class | Accept/fixed | DALgocc16e7d; class/namespace/name distinction and plan regression |
-| Opus F7 opaque composite failure reason | Pending reconciliation | Denial already fails closed; assess exact unsupported vs excluded distinction |
-| Opus A1 allowed execution with enforced restrictions | Pending reconciliation | Compare approved C2 prose and schema with implementation validator; do not presume a new contract decision is necessary |
+| Opus F7 opaque composite failure reason | Accept/fixed | DALgoce68a45; shared write field checks distinguish unsupported composite coverage from definite exclusion, paired regressions |
+| Opus A1 allowed execution with enforced restrictions | Accept/fixed | DALgocb67d4f and Apps5ebb264; success permits fully enforced restrictions, rejects outstanding obligations/blockers; client tests/lint pass |
 | ROOT-001 direct DALgo write wrapper drops assessed blockers | Accept/fixed | DALgo23f487d preserves ordered Decisions with legacy first Decision |
+| ROOT-002 InGitDB query evaluator differs from policy evaluator | Accept/fixed | InGitDBffb1f12; shared condeval replaces legacy coercion; real query/point regressions cover numeric/text, boolean/text, nested fields, missing/null, IN, ordered comparisons and filtering before limit; full suite passes84.7% |
 
 [Runtime telemetry](opus-runtime.json) and [normalized metrics](metrics.json)
 retain actual counters. Input totals include repeated cached contexts, not unique
