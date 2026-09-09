@@ -105,8 +105,119 @@
     "Input totals count repeated cache reads; they are not unique prompt text or unique source tokens."
   ],
   "reconciler": {
-    "model": null,
-    "costUSD": null,
-    "usage": null
+    "runs": [
+      {
+        "run": "provisional",
+        "models": {
+          "claude-haiku-4-5-20251001": {
+            "inputTokens": 1458,
+            "outputTokens": 16,
+            "cacheReadInputTokens": 0,
+            "cacheCreationInputTokens": 0,
+            "webSearchRequests": 0,
+            "costUSD": 0.001538,
+            "contextWindow": 200000,
+            "maxOutputTokens": 32000,
+            "thinkingTokens": 0,
+            "canonicalModel": "claude-haiku-4-5",
+            "provider": "firstParty",
+            "costBasis": "list"
+          },
+          "claude-sonnet-5": {
+            "inputTokens": 36,
+            "outputTokens": 19706,
+            "cacheReadInputTokens": 1279532,
+            "cacheCreationInputTokens": 72293,
+            "webSearchRequests": 0,
+            "costUSD": 0.7422104,
+            "contextWindow": 1000000,
+            "maxOutputTokens": 64000,
+            "thinkingTokens": 9016,
+            "canonicalModel": "claude-sonnet-5",
+            "provider": "firstParty",
+            "costBasis": "list"
+          }
+        },
+        "inputTokensIncludingCache": 1353319,
+        "outputTokensAllModels": 19722,
+        "totalTokensIncludingCacheAllModels": 1373041,
+        "costUSD": 0.7437484,
+        "elapsedMs": 220210,
+        "turns": 33,
+        "permissionDenials": [
+          {
+            "tool_name": "Read",
+            "tool_use_id": "toolu_01Bbw8A4sqQyRoJekqwDAXLt",
+            "tool_input": {
+              "file_path": "/tmp/layered-acl-review-20260909-v1/REVIEW.md"
+            }
+          },
+          {
+            "tool_name": "Read",
+            "tool_use_id": "toolu_014m6tYeqTYF6LmeMCK1Rzmi",
+            "tool_input": {
+              "file_path": "/tmp/layered-acl-review-20260909-v1/manifest.json"
+            }
+          }
+        ]
+      },
+      {
+        "run": "verified",
+        "models": {
+          "claude-haiku-4-5-20251001": {
+            "inputTokens": 1818,
+            "outputTokens": 15,
+            "cacheReadInputTokens": 0,
+            "cacheCreationInputTokens": 0,
+            "webSearchRequests": 0,
+            "costUSD": 0.001893,
+            "contextWindow": 200000,
+            "maxOutputTokens": 32000,
+            "thinkingTokens": 0,
+            "canonicalModel": "claude-haiku-4-5",
+            "provider": "firstParty",
+            "costBasis": "list"
+          },
+          "claude-sonnet-5": {
+            "inputTokens": 64,
+            "outputTokens": 29467,
+            "cacheReadInputTokens": 3981273,
+            "cacheCreationInputTokens": 144852,
+            "webSearchRequests": 0,
+            "costUSD": 1.6704606000000002,
+            "contextWindow": 1000000,
+            "maxOutputTokens": 64000,
+            "thinkingTokens": 11762,
+            "canonicalModel": "claude-sonnet-5",
+            "provider": "firstParty",
+            "costBasis": "list"
+          }
+        },
+        "inputTokensIncludingCache": 4128007,
+        "outputTokensAllModels": 29482,
+        "totalTokensIncludingCacheAllModels": 4157489,
+        "costUSD": 1.6723535999999999,
+        "elapsedMs": 368672,
+        "turns": 57,
+        "permissionDenials": []
+      }
+    ],
+    "totalCostUSD": 2.416102,
+    "costBasis": "CLI-reported list-price usage, not an invoice; includes corrective verification pass"
+  },
+  "findingCounts": {
+    "astraAcceptedNumbered": 6,
+    "astraUniqueNumbered": 4,
+    "astraUniqueHigh": 2,
+    "opusAcceptedNumbered": 7,
+    "opusUniqueNumbered": 5,
+    "opusUniqueHigh": 0,
+    "opusAdditionalAcceptedContractDefect": 1,
+    "sharedNumbered": 2,
+    "unionNumbered": 11,
+    "numberedJaccardOverlapPercent": 18.181818181818183,
+    "opusCostPerAcceptedNumbered": 2.0352849999999996,
+    "opusCostPerUniqueNumbered": 2.849398999999999,
+    "notes": "A1 is separately tracked; denominator deliberately counts numbered findings only. Astra costs unavailable."
   }
 }

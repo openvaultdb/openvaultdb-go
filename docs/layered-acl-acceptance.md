@@ -1,6 +1,6 @@
 # Layered ACL MVP acceptance evidence
 
-Status: implemented locally; final reviews, coverage and publication gates are
+Status: implemented locally; review fixes, coverage and publication gates are
 still active in DALgo's `spec/plans/layered-acl-mvp.md` (tasks 22–24).
 Policy viewer/editor is excluded by approved scope.
 
@@ -20,6 +20,7 @@ Policy viewer/editor is excluded by approved scope.
 | Nested updates preserve authorization pre-image | InGitDB `TestProtectedNestedOwnershipCannotRewritePreImage`, map evidence tests | Pass |
 | Concurrent publication cannot undo revocation | InGitDB `TestMountedReloadCannotReinstallRevokedGeneration` | Pass |
 | Numeric query/evaluator agreement before limit | SQL `TestSQLiteNumericPolicyConformanceBeforeLimit` | Pass |
+| InGitDB query/point predicate agreement | InGitDB `ffb1f12`, `TestProtectedQueryPredicateMatchesPointAuthorization`: numeric/text, boolean/text, missing/null, nested fields, IN and ordering | Pass; denied rows removed before limit |
 | Policies and writes survive remount/reconnect | Protected HTTP remount tests | Pass |
 | Browser→daemon→OVDB→engine read/Explain/evidence/UPDATE/reread | DataTug Playwright `openvaultdb` project | 2/2 pass |
 | Browser holds no source credential, removes launch fragment, cannot redirect proxy | DataTug real-stack tests and proxy unit tests | Pass |
@@ -39,7 +40,7 @@ committed. Final ordinary module builds must run against published dependencies.
 | --- | --- | --- |
 | DALgo | Legacy packages and DTQL reach 100%; security regression and access tests pass | Access coverage to unchanged 100% gate; all other packages now 100% |
 | dalgo2sql | Full suite and vet pass after `4bb140a`; coverage 90.1% >=90% | Published dependencies/unlinked build |
-| dalgo2ingitdb | Full suite after `3229699`: 84.7%; focused ownership/evidence/reload tests pass with race detector in compiler container | Published dependencies/unlinked build; gate is 80% |
+| dalgo2ingitdb | Full suite after `ffb1f12`: 84.7%; focused ownership/evidence/reload tests pass with race detector in compiler container | Published dependencies/unlinked build; gate is 80% |
 | dalgo2openvaultdb | Full suite after `cacd422` passes | Published dependency/unlinked build |
 | OpenVaultDB | Full suite and HTTP conformance pass after error-mapping fix; coverage 60.6% | Published dependency/unlinked build; gate is 55% |
 | DataTug CLI | Full CGO suite passes in isolated compiler container; coverage 59.1% >=55.5% | Published dependencies/unlinked verification |
