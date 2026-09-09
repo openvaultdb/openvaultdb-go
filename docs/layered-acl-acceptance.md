@@ -44,9 +44,10 @@ committed. Final ordinary module builds must run against published dependencies.
 | dalgo2openvaultdb | Full suite after `cacd422` passes | Published dependency/unlinked build |
 | OpenVaultDB | Full suite and HTTP conformance pass after error-mapping fix; coverage 60.6% | Published dependency/unlinked build; gate is 55% |
 | DataTug CLI | Full CGO suite passes in isolated compiler container; coverage 59.1% >=55.5% | Published dependencies/unlinked verification |
-| DataTug apps | 22 unit tests, lint, production build, real browser 2/2 | Unlinked dependency/release integration |
+| DataTug apps | 26 unit tests, lint, production build, real browser 2/2 at Apps5ebb264 | Unlinked dependency/release integration |
 
-No remote CI, release or merge receipt is represented by this local evidence.
+These test rows record local evidence. Remote delivery receipts are tracked
+separately in `layered-acl-delivery.md`.
 
 
 The isolated local image `layered-acl-go-cgo:local` supplied GCC/libc headers

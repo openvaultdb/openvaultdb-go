@@ -452,3 +452,8 @@ See [acceptance evidence](layered-acl-acceptance.md) and the
 [final review record](layered-acl-review/report.md) for exact reviewed revisions,
 independent findings, remediation commits and outstanding delivery gates.
 A passing linked-workspace test is not publication or remote merge evidence.
+
+Protected InGitDB query predicates use DALgo's shared evaluator for typed scalar,
+nested-field and missing-versus-null semantics. Synthetic `$id` predicates fail
+with the unsupported-profile contract; use a concrete resource path for exact-key
+access. `$id` ordering remains available for deterministic top-N sampling.

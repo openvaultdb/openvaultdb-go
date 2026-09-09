@@ -93,3 +93,18 @@ source text. The CLI cost is a list-price estimate from its runtime, not proof o
 an incremental subscription charge. Astra had read-only executable experiments
 available and used one; Opus used only Read/Glob/Grep. This tool difference limits
 any model-only interpretation of the results.
+
+## Focused post-review predicate follow-up
+
+Astra B independently reviewed InGitDB `ffb1f12`, ran the conformance cases,
+and identified ASTRA-B-D1 (medium): synthetic `$id` injection in query predicates
+differed from stored-field point evaluation. Accepted and fixed in `3b86e58`: the
+protected profile rejects `$id` and `$id.*` predicates before record reads with
+`dal.ErrNotSupported`. Exact resource paths and deterministic `$id` ordering
+remain available; no synthetic value enters a stored policy image. Tests cover
+both absent and conflicting stored `$id` values. Astra B source-reviewed the
+follow-up and reported D1 closed with no blockers; it did not rerun tests.
+
+This was a sequential delta review, not part of the original blind comparison.
+Its tokens/cost/elapsed telemetry is unavailable and its finding is excluded
+from the original review overlap and value counts.
