@@ -1,7 +1,8 @@
 # Coordinated ACL delivery
 
-Status: queued behind final review closure and required coverage. No pushes,
-merges or releases have been performed for this implementation.
+Status: provider implementation wave waits for DALgo's unchanged coverage gate.
+The approved DTQL specification packet has landed; implementation modules have
+not yet been published.
 
 The [WB graph](layered-acl-release-graph.json) records the six Go repositories
 and their fetched main-branch dependencies. It also identifies the nested SQL
@@ -46,3 +47,11 @@ used.
 The source branches may be behind moving default branches. WB prepares isolated
 integration candidates against freshly fetched targets and owns conflict and
 exact-head validation. A green old source commit alone is not a merge receipt.
+
+## Observed delivery receipts
+
+| Repository | Result | Exact evidence |
+| --- | --- | --- |
+| datatug/dtql | Landed; canonical main synchronized | `c2d048784ef982a0533b1cdfb912f13182ba6b53`; WB receipt `merge-datatug-dtql-main-af26ed96bb47-f7a9cf2ed0f7`; authoritative unprotected direct route, no applicable checks confirmed by stable reread |
+
+No Go provider release is claimed by the DTQL documentation landing.
