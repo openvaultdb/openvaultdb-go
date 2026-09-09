@@ -1,6 +1,7 @@
 # Coordinated ACL delivery
 
-Status: provider implementation wave waits for DALgo's unchanged coverage gate.
+Status: DALgo's standalone gate passes; provider-first implementation delivery
+is ready to proceed.
 The approved DTQL specification packet and independent HTTP adapter fix have
 landed. The main ACL provider/consumer wave is not yet published.
 

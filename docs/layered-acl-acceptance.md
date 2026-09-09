@@ -1,7 +1,7 @@
 # Layered ACL MVP acceptance evidence
 
-Status: implemented locally; review fixes, coverage and publication gates are
-still active in DALgo's `spec/plans/layered-acl-mvp.md` (tasks 22–24).
+Status: implementation, review fixes and local gates pass; publication and
+unlinked consumer verification remain active in DALgo's `spec/plans/layered-acl-mvp.md` (tasks 22–24).
 Policy viewer/editor is excluded by approved scope.
 
 ## Vertical slice
@@ -38,7 +38,7 @@ committed. Final ordinary module builds must run against published dependencies.
 
 | Repository | Verification | Remaining |
 | --- | --- | --- |
-| DALgo | Legacy packages and DTQL reach 100%; security regression and access tests pass | Access coverage to unchanged 100% gate; all other packages now 100% |
+| DALgo | `GOWORK=off` full pre-push coverage gate reports100.0%; standalone vet passes at `f4f8955` | Provider publication and consumer convergence |
 | dalgo2sql | Full suite and vet pass after `4bb140a`; coverage 90.1% >=90%; nested `end2end` and `end2end/sqlite` CGO suites pass | Published dependencies/unlinked build |
 | dalgo2ingitdb | Full suite after `ffb1f12`: 84.7%; focused ownership/evidence/reload tests pass with race detector in compiler container | Published dependencies/unlinked build; gate is 80% |
 | dalgo2openvaultdb | Full suite after `cacd422` passes | Published dependency/unlinked build |
@@ -70,3 +70,9 @@ SQL's separate `end2end` module was tested using an isolated
 module. Its repository-internal parent replace was preserved. Both packages
 passed in the compiler container through normal WB admission; no tracked
 dependency files changed for this check.
+
+DALgo's final standalone command was
+`GOWORK=off wb run -- sh .githooks/pre-push`, followed by
+`GOWORK=off wb run -- go vet ./...`. The repository's existing gate reports
+100.0% for each package and total coverage. This is the tool-reported percentage,
+with its normal rounding; no threshold, exclusion, or hook bypass changed.
