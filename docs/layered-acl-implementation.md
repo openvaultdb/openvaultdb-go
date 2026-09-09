@@ -429,3 +429,13 @@ The local example now provisions customer read/write credentials and policies
 for both engines. Secrets remain environment variables. Reusing fixtures does
 not silently expand an existing grant: create a fresh fixture for the write
 example, or update its credential through authorized owner administration.
+
+
+SQLite structured filters explicitly use binary text comparison without column
+value affinity, and ordered comparisons guard compatible storage scalar types.
+Schema-defined NOCASE cannot widen an ACL predicate before the limit. Boolean
+SQL predicates are unsupported until the adapter can distinguish logical
+booleans from integers using trusted schema typing; selecting stored boolean
+values is unaffected. Custom policy callbacks must explicitly declare pure
+inspection support to participate in plan/inspect/sample. Unmarked callbacks
+remain usable for real enforcement but are not replayed for diagnostics.

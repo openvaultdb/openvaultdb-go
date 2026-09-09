@@ -90,6 +90,9 @@ func (s *Server) projectInspection(r *http.Request, db *core.Database, request a
 					continue
 				}
 				matched = true
+				if pa.Decision.Code == access.CodeSourceUnavailable || pa.Decision.Code == access.CodeConfigurationInvalid {
+					layer.ACLState = "unavailable"
+				}
 				decisionOutcome := az.OutcomeAllow
 				if !pa.Decision.Allowed {
 					decisionOutcome = az.OutcomeDeny
@@ -174,16 +177,25 @@ func redactPoint(result *az.Result, id string) {
 		}
 	}
 	result.Blockers = append(blockers, az.Blocker{OperationID: id, Code: az.CodeAccessDenied, Scope: az.ScopeOperation})
-	for i := range result.Layers {
-		decisions := result.Layers[i].Decisions[:0]
-		for _, d := range result.Layers[i].Decisions {
-			if d.OperationID != id {
-				decisions = append(decisions, d)
+	layers := result.Layers[:0]
+	for _, layer := range result.Layers {
+		decisions := layer.Decisions[:0]
+		for _, decision := range layer.Decisions {
+			if decision.OperationID != id {
+				decisions = append(decisions, decision)
 			}
 		}
-		result.Layers[i].Decisions = decisions
-		result.Layers[i].Result = az.OutcomeDeny
+		if len(decisions) == 0 {
+			continue
+		}
+		layer.Decisions = decisions
+		layer.Result = az.OutcomeAllow
+		for _, decision := range decisions {
+			layer.Result = reduceOutcome(layer.Result, decision.Result)
+		}
+		layers = append(layers, layer)
 	}
+	result.Layers = layers
 	result.Result = az.OutcomeDeny
 	result.Allowed = false
 	result.Coverage.Disclosure = az.DisclosureRedacted
@@ -246,6 +258,8 @@ func (s *Server) inspectAccess(w http.ResponseWriter, r *http.Request, db *core.
 
 func writeProtectedFailure(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, access.ErrDataRevisionConflict):
+		writeError(w, 409, "data_revision_conflict", "record changed; reload before retrying")
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		writeError(w, 503, "authorization_unavailable", "authorization deadline exceeded")
 	case errors.Is(err, errProtectedUnsupported):

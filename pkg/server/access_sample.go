@@ -55,9 +55,21 @@ func (s *Server) sampleAccess(w http.ResponseWriter, r *http.Request, db *core.D
 		code := az.CodeEvaluationFailed
 		reason := "source_unavailable"
 		if errors.Is(selectionErr, access.ErrAccessDenied) {
-			result.Result = az.OutcomeDeny
-			code = az.CodeAccessDenied
-			reason = "evidence_not_authorized"
+			decisions := access.DecisionsFromError(selectionErr)
+			definitive := len(decisions) == 0
+			for _, decision := range decisions {
+				if !decision.Allowed && !decision.Code.IsIndeterminate() {
+					definitive = true
+				}
+			}
+			if definitive {
+				result.Result = az.OutcomeDeny
+				code = az.CodeAccessDenied
+				reason = "evidence_not_authorized"
+			} else {
+				code = az.CodeEnforcementUnsupported
+				reason = "unsupported"
+			}
 		}
 		result.Coverage.Evaluation = az.EvaluationPartial
 		result.Coverage.Disclosure = az.DisclosureRedacted

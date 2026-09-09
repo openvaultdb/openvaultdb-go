@@ -100,6 +100,10 @@ func write(root, name, text string) error {
 }
 
 func policy(database, name, field, value string) string {
+	fields := "id, name"
+	if database == "ingitdb" {
+		fields += ", $id"
+	}
 	return fmt.Sprintf(`apiVersion: dtql.org/access/v1
 kind: AccessPolicy
 metadata: {name: %s}
@@ -117,10 +121,10 @@ ruleSets:
             op: "=="
             left: {field: %s}
             right: {value: %s}
-          fields: [id, name, $id]
+          fields: [%s]
 bindings:
   roles: {reader: [reader]}
-`, name, database, field, value)
+`, name, database, field, value, fields)
 }
 
 func seed(dir, engine string) error {
