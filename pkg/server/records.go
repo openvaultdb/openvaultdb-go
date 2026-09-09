@@ -49,6 +49,9 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	if db.HasAccessPolicies() {
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	collection := key.Collection()
 	for cur := key; cur != nil; cur = cur.Parent() {
 		collection = cur.Collection() // root collection scopes the capability

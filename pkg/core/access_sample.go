@@ -88,6 +88,9 @@ func (d *Database) SelectAccessSample(ctx context.Context, query dal.StructuredQ
 					return nil, fmt.Errorf("mandatory policy source unavailable")
 				}
 				for _, policy := range owner.Policies {
+					if !access.CanInspectPolicy(policy) {
+						return nil, &access.DeniedError{Decision: access.Decision{Code: access.CodeEnforcementUnsupported, Scope: access.DecisionScopeOperation}}
+					}
 					policies = append(policies, requesterPolicy{Policy: policy, principal: requester})
 				}
 			}

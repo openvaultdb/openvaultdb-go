@@ -49,7 +49,9 @@ func TestProtectedHTTPReadInspectUpdate(t *testing.T) {
 			policy := func(name, field, value string) string {
 				text := strings.Replace(aclPolicy(name, field, value), "visibility: private", "visibility: public", 1)
 				text = strings.Replace(text, "operations: [query, get]", "operations: [query, get, update]", 1)
-				text = strings.Replace(text, "fields: [id, name]", "fields: [id, name, $id]", 1)
+				if engine == "ingitdb" {
+					text = strings.Replace(text, "fields: [id, name]", "fields: [id, name, $id]", 1)
+				}
 				return text
 			}
 			aclWriteFile(t, filepath.Join(dir, "upper.yaml"), policy("upper", "country", "IE"))
@@ -69,6 +71,13 @@ func TestProtectedHTTPReadInspectUpdate(t *testing.T) {
 				return capability == auth.CapAccessDiagnostics
 			})).Handler())
 			defer ts.Close()
+			// The browser's initial query has no projection; engine-specific
+			// key-order grants must not become nonexistent SQL data columns.
+			initialStatus, initialBody := request(t, ts, "POST", "/v1/databases/crm/dtql", ownerToken, "from: {name: customers}\nlimit: 20\n")
+			if initialStatus != 200 || !strings.Contains(initialBody, "Original") {
+				t.Fatalf("browser query %d %s", initialStatus, initialBody)
+			}
+
 			updateOp := api.Operation{ID: "u1", Action: "update", Resource: az.Resource{DatabaseID: "crm", Path: "/customers/01"}, ExecutionClass: az.ExecutionDTQL, Mutation: &api.Mutation{Changes: []api.Change{{Op: "set", Path: []string{"name"}, Value: json.RawMessage(`"Changed"`)}}}}
 			call := func(method, path, content string, body any) (int, string) {
 				t.Helper()
@@ -168,6 +177,16 @@ func TestProtectedHTTPReadInspectUpdate(t *testing.T) {
 
 			// Hidden and nonexistent row probes have identical safe denial shape.
 			for _, id := range []string{"02", "missing"} {
+				getStatus, getBody := request(t, ts, "GET", "/v1/databases/crm/records/customers/"+id, ownerToken, "")
+				if getStatus != 404 || !strings.Contains(getBody, `"code":"resource_unavailable"`) {
+					t.Fatalf("get probe %s %d %s", id, getStatus, getBody)
+				}
+				evRequest := map[string]any{"apiVersion": az.APIVersion, "resource": az.Resource{DatabaseID: "crm", Path: "/customers/" + id}, "requiredFields": [][]string{{"name"}}}
+				evStatus, evBody := call("POST", "/v1/databases/crm/access/evidence", "application/json", evRequest)
+				if evStatus != 404 || !strings.Contains(evBody, `"code":"resource_unavailable"`) {
+					t.Fatalf("evidence probe %s %d %s", id, evStatus, evBody)
+				}
+
 				inspect.Operations[0].Resource.Path = "/customers/" + id
 				status, body = call("POST", "/v1/databases/crm/access/evaluate", "application/json", inspect)
 				if status != 200 {
