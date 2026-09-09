@@ -308,12 +308,124 @@ clients must never receive the internal generation revision.
 Each operation resolves one immutable policy snapshot; a DALgo transaction
 pins one snapshot. Explicit reload updates existing mounted handles. External
 filesystem administration requires reload/reconnect; it does not implicitly
-change a running controller. Policy/data write admission coordination and
-final generation validation are completed by task 17, not inferred from
-snapshot pinning alone.
+change a running controller. Protected writes acquire the storage transaction before immutable policy leases,
+and retain every lease until storage commit/rollback finishes. Owner publication
+cannot activate a new policy during that boundary.
 
 Validation includes process termination before/after pointer publication,
 CAS conflicts, corrupt and missing references, duplicate/symlink pointers,
 unchanged public document revisions, and a real HTTP query that changes from
 allowed to denied on publication and remains denied after remount. Retention
 of inactive generations is operator follow-up.
+
+## Authorization transport checkpoint
+
+`POST /v1/databases/{db}/access/evaluate` accepts the frozen C2 request JSON.
+It supports metadata-only `plan`, explicit-key `inspect`, and bounded `sample`
+through capable local SQLite/InGitDB mounts. The request normalizer is shared
+with protected write ingress. It rejects
+duplicate/case-aliased/unknown JSON keys, conflicting path identifiers,
+overlapping updates, unsupported parameter binding, and request limits before
+evaluation. It never reads a row to construct a plan.
+
+DALgo implements the common wire contract in `dtql/authorization` (the
+cycle-safe equivalent of the design's proposed `access/contract` location).
+`access.AssessPlan` shares collection/evaluation machinery with enforcement.
+The HTTP projection retains owner conjunctions and portable source predicates
+where authorized, without exposing resolved principal variables. Private
+policies are coalesced into owner summaries; document revisions are visible
+only with authorized references. Bounded overflow returns incomplete,
+non-authorizing diagnostics. Reconstructed real-query failure diagnostics
+explicitly remain partial until the admission coordinator can retain the
+original pinned execution assessment.
+
+`WithOwnerAuthorization` binds each owner's diagnostic authority independently.
+The default bootstrap/token authority applies to OpenVaultDB only. Lower-owner
+administration and key-scoped protected inspection require explicit trusted
+owner bindings. Policy administration does not imply permission to inspect
+unreadable rows. `WithAccessInstanceID` supplies a persistent deployment ID.
+
+`GET /access/layers` and `GET /access/policies?layerId=...` expose authorized
+metadata only. No policy viewer/editor or HTTP policy mutations are enabled.
+Custom policies without publishable document metadata retain their mandatory
+owner representation. No host file paths, private generation revisions, or
+raw evaluator exceptions are part of these responses.
+
+Verification: strict request validation, real InGitDB/SQLite plan and query
+tests, public-reference/private-policy separation, hidden query-field denial,
+and the existing identity/reload/server suites. The protected HTTP test also proves read/inspect/UPDATE agreement, whole-record
+CAS, no dry-run mutation, key-safe sampling and multiple owner blockers.
+
+
+## Protected HTTP operations
+
+`POST /v1/databases/{db}/access/evidence` takes
+`{apiVersion,resource,requiredFields}`. It requires ordinary data read authority
+for every requested field at every owner. Returned fields distinguish present
+(including null) from absent; withheld fields never masquerade as absent. A
+successful response contains an opaque whole-record `dataRevision`, with no
+raw hidden image. Policy-admin authority grants no evidence bypass.
+
+`PATCH /v1/databases/{db}/records/{table}/{id}` with content type
+`application/vnd.dtql.operation+json` accepts a normalized C2 operation:
+
+```json
+{
+  "id": "u1",
+  "action": "update",
+  "resource": {"databaseId": "crm", "path": "/customers/01"},
+  "executionClass": "dtql",
+  "mutation": {
+    "changes": [{"op": "set", "path": ["name"], "value": "Updated"}],
+    "ifDataRevision": "<revision from evidence>"
+  }
+}
+```
+
+The URL and operation must name the same record. Candidate schema validation,
+row/column checks and revision preconditions use one private storage boundary.
+Success is `{authorization,dataRevision}` after commit. A readable stale
+revision returns 409 `data_revision_conflict`; retry requires fresh evidence.
+A write-only actor may execute an authorized normalized operation, but cannot
+obtain row evidence or hidden denial facts. DataTug's selected-row editor
+always obtains fresh evidence and supplies the revision.
+
+SQLite uses `BEGIN IMMEDIATE`; InGitDB uses its repository lock and rollback
+journal. Whole-image revisions are HMACs with a random per-mount secret, so
+hidden low-entropy values cannot be guessed from a public digest. Reconnection
+invalidates old revisions conservatively. DALgo supports bounded atomic point
+operation batches internally; this HTTP MVP advertises only one-row normalized
+UPDATE. Legacy dynamic write/batch ingress returns 422 on the protected profile.
+No speculative write is used to implement a dry run.
+
+Private images never leave the coordinator. Missing, denied and non-disclosable
+point diagnostics use a generic redacted denial with explicitly unavailable
+row evidence. Owner-authorized diagnostics can retain each independently
+blocking policy reference and exact changed column paths. Actual token data
+capabilities remain required in addition to all owner ACL policies.
+
+Sampling applies the target's and actual requester's read restrictions before
+pagination, then rechecks visibility inside inspection. Any changed visibility
+aborts row diagnostics rather than exposing a revoked key. Ordering ends in
+SQLite's configured `id` primary key or InGitDB's `$id` key expression (not an
+ordinary stored `id` field). The read policies must authorize the ordering
+reference. N is at most 100, offset is unsupported, and a completed all-allow or
+empty sample remains conditional with `allowed:false` and `exhaustive:false`.
+
+## Supported-profile limits
+
+Protected SQLite point operations require a real table with a single TEXT
+primary key and supported scalar columns. Generated/default columns, triggers,
+foreign keys, CHECK clauses and explicit collations are conservatively
+unsupported. Ambiguous key collations must not bypass unique-target checks.
+Row-dependent malformed data produces incomplete safe assessment, never an
+empty authoritative image. InGitDB rejects unsupported computed/transform/FK
+profiles before protected execution. Provision schema before activating ACL;
+filtered schema discovery is currently 422 instead of revealing unfiltered
+names. Native SQL/GraphQL/procedure execution, policy UI/HTTP CRUD, external
+ACL services and long-running logical transactions are excluded.
+
+The local example now provisions customer read/write credentials and policies
+for both engines. Secrets remain environment variables. Reusing fixtures does
+not silently expand an existing grant: create a fresh fixture for the write
+example, or update its credential through authorized owner administration.

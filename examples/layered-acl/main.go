@@ -72,8 +72,8 @@ func main() {
 	}
 	if store.Lookup(queryToken) == nil {
 		// This fixture server hosts exactly two databases. The query credential
-		// has only customer-read capability, intersected with each owner's policy.
-		if err := store.CreateGrant(&auth.Grant{Subject: &subject, Actor: &actor, Capabilities: []auth.Capability{{Action: auth.CapRecordsRead, Collection: "customers"}}}, queryToken); err != nil {
+		// has customer read/write capability, intersected with each owner's policy.
+		if err := store.CreateGrant(&auth.Grant{Subject: &subject, Actor: &actor, Capabilities: []auth.Capability{{Action: auth.CapRecordsRead, Collection: "customers"}, {Action: auth.CapRecordsWrite, Collection: "customers"}, {Action: auth.CapAccessDiagnostics, Collection: "customers"}}}, queryToken); err != nil {
 			log.Fatal(err)
 		}
 	}
@@ -112,12 +112,12 @@ ruleSets:
       rules:
         - id: visible-customers
           effect: allow
-          operations: [query, get]
+          operations: [query, get, update]
           where:
             op: "=="
             left: {field: %s}
             right: {value: %s}
-          fields: [id, name]
+          fields: [id, name, $id]
 bindings:
   roles: {reader: [reader]}
 `, name, database, field, value)

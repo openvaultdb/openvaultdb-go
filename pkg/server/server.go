@@ -23,10 +23,13 @@ type Server struct {
 
 	createMu sync.Mutex // serializes runtime database creation end-to-end
 
-	authCfg           *auth.Config // nil = auth disabled (local-dev default)
-	corsCfg           *CORSConfig  // nil = CORS disabled (no headers added)
-	dataDir           string       // "" = runtime database creation disabled
-	principalResolver PrincipalResolver
+	authCfg             *auth.Config // nil = auth disabled (local-dev default)
+	corsCfg             *CORSConfig  // nil = CORS disabled (no headers added)
+	dataDir             string       // "" = runtime database creation disabled
+	principalResolver   PrincipalResolver
+	accessAuthorization OwnerAuthorization
+	explainResolver     MembershipResolver
+	accessInstance      string
 }
 
 // Option configures the Server.
@@ -62,7 +65,7 @@ func WithDataDir(dir string) Option {
 
 // New creates a Server over mounted databases keyed by database id.
 func New(version string, dbs map[string]*core.Database, opts ...Option) *Server {
-	s := &Server{version: version, dbs: dbs}
+	s := &Server{version: version, dbs: dbs, accessInstance: "local"}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -85,6 +88,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/databases/{db}/batch", s.handleBatch)
 	mux.HandleFunc("POST /v1/databases/{db}/query", s.handleQuery)
 	mux.HandleFunc("POST /v1/databases/{db}/dtql", s.handleDTQL)
+	mux.HandleFunc("POST /v1/databases/{db}/access/evaluate", s.handleAccessEvaluate)
+	mux.HandleFunc("POST /v1/databases/{db}/access/evidence", s.handleAccessEvidence)
+	mux.HandleFunc("GET /v1/databases/{db}/access/layers", s.handleAccessLayers)
+	mux.HandleFunc("GET /v1/databases/{db}/access/policies", s.handleAccessPolicies)
 	if s.authCfg != nil {
 		mux.HandleFunc("GET /authorize", s.handleAuthorizeGet)
 		mux.HandleFunc("POST /authorize", s.handleAuthorizePost)
@@ -221,6 +228,10 @@ func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, db.ID(), auth.CapCollectionsRead, "") {
 		return
 	}
+	if db.HasAccessPolicies() {
+		writeError(w, 422, "authorization_unsupported", "filtered schema discovery is unavailable for this profile")
+		return
+	}
 	collections, err := db.Collections(r.Context())
 	if err != nil {
 		writeMappedError(w, err)
@@ -240,6 +251,10 @@ func (s *Server) handleInferredSchema(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.authorize(w, r, db.ID(), auth.CapSchemaRead, "") {
+		return
+	}
+	if db.HasAccessPolicies() {
+		writeError(w, 422, "authorization_unsupported", "filtered schema discovery is unavailable for this profile")
 		return
 	}
 	snapshot := db.InferredSnapshot()

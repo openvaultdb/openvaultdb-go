@@ -1,10 +1,14 @@
 package server
 
 import (
+	"errors"
 	"io"
 	"net/http"
 
+	"github.com/dal-go/dalgo/access"
+	az "github.com/dal-go/dalgo/dtql/authorization"
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
+	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 )
 
@@ -34,6 +38,11 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 	}
 	records, err := db.ExecuteDTQLQuery(r.Context(), query)
 	if err != nil {
+		if errors.Is(err, access.ErrAccessDenied) {
+			op := api.Operation{ID: "q1", Action: "query", Resource: az.Resource{DatabaseID: db.ID(), Path: "/" + collection, Table: collection}, ExecutionClass: az.ExecutionDTQL, Query: &api.Query{Format: "dtql-yaml", Text: string(doc)}}
+			s.writeQueryAuthorizationError(w, r, db, op, err)
+			return
+		}
 		writeMappedError(w, err)
 		return
 	}

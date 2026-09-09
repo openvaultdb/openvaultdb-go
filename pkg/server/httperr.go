@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/dal-go/dalgo/access"
+	az "github.com/dal-go/dalgo/dtql/authorization"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
@@ -15,8 +16,10 @@ type errorBody struct {
 }
 
 type errorDetail struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code          string     `json:"code"`
+	Message       string     `json:"message,omitempty"`
+	RequestID     string     `json:"requestId,omitempty"`
+	Authorization *az.Result `json:"authorization,omitempty"`
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {

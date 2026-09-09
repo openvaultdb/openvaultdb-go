@@ -55,6 +55,9 @@ type Database struct {
 	db               dal.DB
 	modes            []schema.Mode
 	policyController *policystore.Controller
+	ownerPolicies    access.PolicyProvider
+	lowerPolicies    access.PolicyProvider
+	coordinator      *access.EnforcementCoordinator
 	cat              *inferred.Catalogue // nil in strict mode
 
 	// afterWrite, when set, runs after each successfully applied write batch
@@ -106,6 +109,17 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 		return nil, &ModeCompatibilityError{Engine: m.Storage.Engine, Requested: mode, Supported: supportedModes}
 	}
 	d := &Database{Manifest: m, db: db, modes: supportedModes, policyController: controller}
+	if source, ok := db.(interface {
+		AccessPolicies(context.Context) ([]access.Policy, error)
+	}); ok {
+		d.lowerPolicies = source.AccessPolicies
+	}
+	if controller != nil {
+		d.ownerPolicies = controller.Policies
+	} else if len(policies) > 0 {
+		fixed := append([]access.Policy(nil), policies...)
+		d.ownerPolicies = func(context.Context) ([]access.Policy, error) { return append([]access.Policy(nil), fixed...), nil }
+	}
 	if m.Schemas != nil {
 		ctx := context.Background()
 		names := make([]string, 0, len(m.Schemas.Collections))
@@ -126,12 +140,41 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 		}
 		d.cat = cat
 	}
-	if len(policies) > 0 || controller != nil {
+	if d.HasAccessPolicies() {
+		if factory, ok := db.(interface {
+			ConfigureProtectedAccess(...access.MandatoryParticipant) (dal.DB, *access.EnforcementCoordinator, error)
+		}); ok {
+			var participants []access.MandatoryParticipant
+			if d.ownerPolicies != nil {
+				provider := d.fixedPolicyLease
+				if controller != nil {
+					provider = controller.AcquirePolicyLease
+				}
+				participants = append(participants, access.MandatoryParticipant{LayerID: "openvaultdb", Provider: provider, Validator: d.validateProtectedCandidate})
+			} else {
+				participants = append(participants, access.MandatoryParticipant{LayerID: "openvaultdb", Validator: d.validateProtectedCandidate})
+			}
+			var err error
+			db, d.coordinator, err = factory.ConfigureProtectedAccess(participants...)
+			if err == nil && (db == nil || d.coordinator == nil) {
+				err = fmt.Errorf("protected factory returned incomplete enforcement boundary")
+			}
+			if err != nil {
+				return nil, err
+			}
+			d.db = db
+		}
+	}
+	if d.coordinator == nil && (len(policies) > 0 || controller != nil) {
 		option := access.WithDatabasePolicies(policies...)
 		if controller != nil {
 			option = access.WithDatabasePolicyProvider(controller.Policies)
 		}
-		secured, err := access.SecureDB(db, option)
+		options := []access.DBOption{option}
+		if d.coordinator != nil {
+			options = append(options, access.WithEnforcementCoordinator(d.coordinator))
+		}
+		secured, err := access.SecureDB(db, options...)
 		if err != nil {
 			return nil, err
 		}
