@@ -39,7 +39,7 @@ committed. Final ordinary module builds must run against published dependencies.
 | Repository | Verification | Remaining |
 | --- | --- | --- |
 | DALgo | Legacy packages and DTQL reach 100%; security regression and access tests pass | Access coverage to unchanged 100% gate; all other packages now 100% |
-| dalgo2sql | Full suite and vet pass after `4bb140a`; coverage 90.1% >=90% | Published dependencies/unlinked build |
+| dalgo2sql | Full suite and vet pass after `4bb140a`; coverage 90.1% >=90%; nested `end2end` and `end2end/sqlite` CGO suites pass | Published dependencies/unlinked build |
 | dalgo2ingitdb | Full suite after `ffb1f12`: 84.7%; focused ownership/evidence/reload tests pass with race detector in compiler container | Published dependencies/unlinked build; gate is 80% |
 | dalgo2openvaultdb | Full suite after `cacd422` passes | Published dependency/unlinked build |
 | OpenVaultDB | Full suite and HTTP conformance pass after error-mapping fix; coverage 60.6% | Published dependency/unlinked build; gate is 55% |
@@ -64,3 +64,9 @@ tests, lint and production build through normal WB admission. WB's candidate
 and exact baseline both report the same five pre-existing SpecScore metadata
 errors (stale feature index rows and legacy cross-repository references). These
 are recorded as baseline debt, not claimed fixed or hidden by the ACL tests.
+
+SQL's separate `end2end` module was tested using an isolated
+`/tmp/acl-sql-e2e.work` containing the shared local provider set plus that nested
+module. Its repository-internal parent replace was preserved. Both packages
+passed in the compiler container through normal WB admission; no tracked
+dependency files changed for this check.
