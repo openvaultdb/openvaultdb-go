@@ -1,7 +1,7 @@
 # Coordinated ACL delivery
 
-Status: DALgo's standalone gate passes; provider-first implementation delivery
-is ready to proceed.
+Status: DALgo PR158 is published; CI lint repair and a repository branch-policy
+decision precede provider publication.
 The approved DTQL specification packet and independent HTTP adapter fix have
 landed. The main ACL provider/consumer wave is not yet published.
 
@@ -76,9 +76,51 @@ identified a stale plan frontmatter status. The source owner corrected that
 metadata and the integrated source at `2e3a58c` passes the standalone coverage
 gate (reported 100.0%).
 
-WB 0.120.4 still rejects audited supersession because the conflict recovery
-path compares the operation identity only with the refreshed source set. The
-original receipt, candidate and source remain intact. A narrow WB regression
-fix is being prepared; no receipt edits, guard overrides or unreceipted push
-have been used. Provider publication remains pending until recovery and exact
-candidate validation succeed.
+WB 0.120.4 rejected audited supersession because the conflict recovery path
+compared the operation identity only with the refreshed source set. The narrow
+fix landed in [WB PR469](https://github.com/sneat-dev/wb/pull/469) at
+`90a1f59c445b465de83cc54754c8793ad24c3b32`, released as `v0.121.1`.
+Focused regressions, full orchestrator tests and vet passed; exact candidate
+and post-target CI passed. WB's local merge gate recorded the same
+repository-relocation test failure on candidate and baseline; no gate was
+overridden. The installed Go module resolves the exact merged revision to
+`v0.121.1`.
+
+Audited supersession succeeded, retaining the historical receipt and appending
+its hash-bound acknowledgement. The successor receipt is
+`merge-dal-go-dalgo-main-e3e63fce3822-c23007e4bd4d`. DALgo candidate `2e3a58c`
+passed standalone vet, tests, build and SpecScore and was published in
+[PR158](https://github.com/dal-go/dalgo/pull/158). An interrupted GitHub API read
+was recovered through the same WB prepare/land path. Remote build/tests,
+schema freshness and no-breaking-change checks passed; six stricter remote
+lint findings are being repaired before requesting the policy decision below.
+
+## Required human decision: DALgo strict required checks
+
+The read-only GitHub branch-protection response for `dal-go/dalgo` main on
+2026-09-09 reports `strict: false` with these existing checks, all pinned to
+GitHub App15368:
+
+- `no-breaking-change`
+- `strongo_workflow / Lint`
+- `strongo_workflow / Build & test`
+
+WB refuses automatic PR merging without a nonempty, server-enforced strict
+up-to-date requirement. Recommended change: enable **Require branches to be up
+to date before merging** for this branch, preserving the existing checks and
+their App identities. This strengthens the policy for every future PR to
+DALgo main; it is a repository-administration decision, separate from the
+approved ACL code changes. No branch-protection setting has been changed.
+
+The concrete API payload, after approval and a fresh read confirming the
+same checks, is `{"strict":true}` to
+`PATCH /repos/dal-go/dalgo/branches/main/protection/required_status_checks`.
+Omit `contexts` and `checks` so the existing requirements remain intact.
+Read back the setting and App-pinned checks, then resume the existing WB receipt.
+Alternatively, a repository administrator may merge the green PR manually;
+the agent must still verify the exact landing and finish release/cleanup
+through WB. Do not disable required checks or bypass the WB refusal.
+
+The same read-only classic-protection check found DataTug CLI already strict;
+SQL, InGitDB adapter, OVDB and DataTug apps returned “Branch not protected.”
+Those observations are not substitutes for WB's full ruleset/route evaluation.
