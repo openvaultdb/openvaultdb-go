@@ -12,7 +12,7 @@ Policy viewer/editor is excluded by approved scope.
 | Owner restrictions compose before paging; hidden filter/order/projection rejected | Layered HTTP tests; SQL structured predicate conformance | Pass |
 | Direct InGitDB access retains non-removable owner policies | InGitDB protected profile tests | Pass |
 | Plan/inspect never writes; specific row and bounded top-N diagnostics | Protected HTTP tests; DALgo coordinator tests | Pass |
-| Exact-field evidence respects each deciding row rule | DALgo conditional evidence regression `6ef1e00` | Pass; forbidden field returns no evidence |
+| Exact-field evidence respects each deciding row rule | DALgo `6ef1e00` and `TestProtectedHTTPEvidenceConditionalFieldFallback` on both engines | Pass; forbidden field returns no evidence |
 | Real normalized UPDATE agrees with inspection | Protected HTTP tests for both engines | Pass |
 | One write returns independent owner blockers with provenance | Protected HTTP multi-owner denial | Pass |
 | Hidden/missing point probes redact consistently | Protected HTTP GET/evidence/inspect cases | Pass |
@@ -37,12 +37,21 @@ committed. Final ordinary module builds must run against published dependencies.
 
 | Repository | Verification | Remaining |
 | --- | --- | --- |
-| DALgo | Legacy packages and DTQL reach 100%; security regression and access tests pass | Access and authorization wire package coverage to unchanged 100% gate |
+| DALgo | Legacy packages and DTQL reach 100%; security regression and access tests pass | Access coverage to unchanged 100% gate; all other packages now 100% |
 | dalgo2sql | Full suite and vet pass after `27e1c00` | 90% coverage gate; prior profile 85.4% |
-| dalgo2ingitdb | Full suite after `3229699`: 84.7% | CGO-dependent race run when compiler available; gate is 80% |
+| dalgo2ingitdb | Full suite after `3229699`: 84.7%; focused ownership/evidence/reload tests pass with race detector in compiler container | Published dependencies/unlinked build; gate is 80% |
 | dalgo2openvaultdb | Full suite after `cacd422` passes | Published dependency/unlinked build |
 | OpenVaultDB | Full suite and HTTP conformance pass after error-mapping fix; coverage 60.6% | Published dependency/unlinked build; gate is 55% |
-| DataTug CLI | Focused proxy/config tests pass | Full CGO gate requires C compiler; failed non-CGO profile is not acceptance evidence |
+| DataTug CLI | Full CGO suite passes in isolated compiler container; coverage 59.1% >=55.5% | Published dependencies/unlinked verification |
 | DataTug apps | 22 unit tests, lint, production build, real browser 2/2 | Unlinked dependency/release integration |
 
 No remote CI, release or merge receipt is represented by this local evidence.
+
+
+The isolated local image `layered-acl-go-cgo:local` supplied GCC/libc headers
+for CGO tests without changing the host toolchain. InGitDB's focused race command
+ran through WB without admission overrides. The CLI verification agent reported
+using `WB_ADMISSION_LOAD_FLOOR=100` for its container invocation; this is a
+resource-admission process deviation, not an approved gate change. The complete
+suite result is recorded as observed; subsequent work must respect normal WB
+admission and no coverage threshold was changed.
