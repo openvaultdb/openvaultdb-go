@@ -378,6 +378,17 @@ func writeFile(path string, data []byte) error {
 
 func rename(old, new string) error { return os.Rename(old, new) }
 
+func TestGrantExpiredAtExactDeadline(t *testing.T) {
+	now := time.Date(2026, time.September, 2, 12, 0, 0, 0, time.UTC)
+	grant := &Grant{ExpiresAt: now}
+	if !grant.Expired(now) {
+		t.Fatal("grant must be expired at its exact deadline")
+	}
+	if (&Grant{}).Expired(now) {
+		t.Fatal("zero expiry must not expire")
+	}
+}
+
 // ensure imported packages are used
 var (
 	_ = json.Marshal
