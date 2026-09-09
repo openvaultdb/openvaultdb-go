@@ -57,3 +57,10 @@ using `WB_ADMISSION_LOAD_FLOOR=100` for its container invocation; this is a
 resource-admission process deviation, not an approved gate change. The complete
 suite result is recorded as observed; subsequent work must respect normal WB
 admission and no coverage threshold was changed.
+
+DataTug's integrated candidate `e45adcdc7ff4480a8b63a7e3fc52c63090106220`
+(source `5ebb264` onto fetched main `96e7374`) separately passes 26 unit
+tests, lint and production build through normal WB admission. WB's candidate
+and exact baseline both report the same five pre-existing SpecScore metadata
+errors (stale feature index rows and legacy cross-repository references). These
+are recorded as baseline debt, not claimed fixed or hidden by the ACL tests.
