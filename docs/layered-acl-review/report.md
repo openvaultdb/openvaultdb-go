@@ -108,3 +108,11 @@ follow-up and reported D1 closed with no blockers; it did not rerun tests.
 This was a sequential delta review, not part of the original blind comparison.
 Its tokens/cost/elapsed telemetry is unavailable and its finding is excluded
 from the original review overlap and value counts.
+
+A separate coverage advisory suggested deeply nested constants/scopes could
+marshal successfully and fail only during decoding. Experiments on the actual
+Go toolchain rejected both shapes during marshaling instead. The decoder error
+check remains; the test was renamed for accuracy in DALgo `f95561e`. This
+unconfirmed advisory is not one of the original numbered review findings and
+is excluded from their counts. It reinforces the need to test source-reading
+claims against the actual toolchain.
