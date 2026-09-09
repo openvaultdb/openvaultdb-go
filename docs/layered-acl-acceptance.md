@@ -38,7 +38,7 @@ committed. Final ordinary module builds must run against published dependencies.
 | Repository | Verification | Remaining |
 | --- | --- | --- |
 | DALgo | Legacy packages and DTQL reach 100%; security regression and access tests pass | Access coverage to unchanged 100% gate; all other packages now 100% |
-| dalgo2sql | Full suite and vet pass after `27e1c00` | 90% coverage gate; prior profile 85.4% |
+| dalgo2sql | Full suite and vet pass after `4bb140a`; coverage 90.1% >=90% | Published dependencies/unlinked build |
 | dalgo2ingitdb | Full suite after `3229699`: 84.7%; focused ownership/evidence/reload tests pass with race detector in compiler container | Published dependencies/unlinked build; gate is 80% |
 | dalgo2openvaultdb | Full suite after `cacd422` passes | Published dependency/unlinked build |
 | OpenVaultDB | Full suite and HTTP conformance pass after error-mapping fix; coverage 60.6% | Published dependency/unlinked build; gate is 55% |
