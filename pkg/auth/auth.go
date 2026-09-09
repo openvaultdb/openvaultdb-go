@@ -26,21 +26,31 @@ import (
 // Actions an application capability can name (subset of the spec taxonomy
 // that is meaningful against the MVP API surface).
 const (
-	CapRecordsRead     = "records:read"   // GET/HEAD records, /query, /dtql
-	CapRecordsWrite    = "records:write"  // PUT/POST/PATCH records, batch set/insert/update
-	CapRecordsDelete   = "records:delete" // DELETE records, batch delete
-	CapCollectionsRead = "collections:read"
-	CapSchemaRead      = "schema:read"      // inferred-schema endpoint
-	CapDatabasesCreate = "databases:create" // POST /v1/databases (server-level)
+	CapRecordsRead            = "records:read"   // GET/HEAD records, /query, /dtql
+	CapRecordsWrite           = "records:write"  // PUT/POST/PATCH records, batch set/insert/update
+	CapRecordsDelete          = "records:delete" // DELETE records, batch delete
+	CapCollectionsRead        = "collections:read"
+	CapSchemaRead             = "schema:read"      // inferred-schema endpoint
+	CapDatabasesCreate        = "databases:create" // POST /v1/databases (server-level)
+	CapPoliciesDiscover       = "policies:discover"
+	CapPoliciesList           = "policies:list"
+	CapPoliciesRead           = "policies:read"
+	CapPoliciesAdmin          = "policies:admin"
+	CapAccessExplain          = "access:explain"
+	CapAccessSimulate         = "access:simulate"
+	CapAccessDiagnostics      = "access:diagnostics"
+	CapAccessInspectProtected = "access:inspect-protected"
 )
 
 var knownCapabilities = map[string]bool{
-	CapRecordsRead:     true,
-	CapRecordsWrite:    true,
-	CapRecordsDelete:   true,
-	CapCollectionsRead: true,
-	CapSchemaRead:      true,
-	CapDatabasesCreate: true,
+	CapRecordsRead:      true,
+	CapRecordsWrite:     true,
+	CapRecordsDelete:    true,
+	CapCollectionsRead:  true,
+	CapSchemaRead:       true,
+	CapDatabasesCreate:  true,
+	CapPoliciesDiscover: true, CapPoliciesList: true, CapPoliciesRead: true, CapPoliciesAdmin: true,
+	CapAccessExplain: true, CapAccessSimulate: true, CapAccessDiagnostics: true, CapAccessInspectProtected: true,
 }
 
 // Capability is one parsed grant entry: an action, optionally scoped to a

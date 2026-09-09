@@ -201,7 +201,11 @@ func (d *Database) ExecuteDTQLQuery(ctx context.Context, query dal.StructuredQue
 }
 
 func (d *Database) executeDalQuery(ctx context.Context, query dal.StructuredQuery, collection string, keysOnly bool) ([]Record, error) {
-	reader, err := d.db.ExecuteQueryToRecordsReader(ctx, query)
+	return d.executeDalQueryOn(ctx, d.db, query, collection, keysOnly)
+}
+
+func (d *Database) executeDalQueryOn(ctx context.Context, db dal.DB, query dal.StructuredQuery, collection string, keysOnly bool) ([]Record, error) {
+	reader, err := db.ExecuteQueryToRecordsReader(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query collection %q: %w", collection, err)
 	}

@@ -29,7 +29,7 @@ type GrantIdentityConfig struct {
 // typed subject/actor propagation and current membership resolution; it does
 // not validate arbitrary external bearer tokens or create an identity store.
 func WithGrantIdentity(config GrantIdentityConfig) Option {
-	return WithPrincipalResolver(func(ctx context.Context, authenticated *auth.Principal) (access.Principal, error) {
+	resolve := WithPrincipalResolver(func(ctx context.Context, authenticated *auth.Principal) (access.Principal, error) {
 		if err := config.Bootstrap.Validate(); err != nil {
 			return access.Principal{}, err
 		}
@@ -64,4 +64,5 @@ func WithGrantIdentity(config GrantIdentityConfig) Option {
 		}
 		return access.Principal{Subject: &subject, Actor: &actor, Roles: membership.Roles, Groups: membership.Groups, MembershipRevision: membership.Revision}, nil
 	})
+	return func(s *Server) { resolve(s); s.explainResolver = config.Resolve }
 }

@@ -86,7 +86,7 @@ func File(manifestPath string) (*core.Database, error) {
 			}
 			cataloguePath = filepath.Join(baseDir, m.Database.ID+".inferred.json")
 		} else {
-			var options []dalgo2ingitdb.DatabaseOption
+			options := []dalgo2ingitdb.DatabaseOption{dalgo2ingitdb.WithProtectedProfile()}
 			if len(policies) > 0 {
 				options = append(options, dalgo2ingitdb.WithStoredOnlyReads())
 			}
