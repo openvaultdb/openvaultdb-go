@@ -1,7 +1,7 @@
 # Coordinated ACL delivery
 
-Status: DALgo PR158 is published; CI lint repair and a repository branch-policy
-decision precede provider publication.
+Status: DALgo PR158 is green; a repository branch-policy decision precedes
+provider publication. SpecScore remains23/24 complete, with delivery in progress.
 The approved DTQL specification packet and independent HTTP adapter fix have
 landed. The main ACL provider/consumer wave is not yet published.
 
@@ -92,8 +92,27 @@ its hash-bound acknowledgement. The successor receipt is
 passed standalone vet, tests, build and SpecScore and was published in
 [PR158](https://github.com/dal-go/dalgo/pull/158). An interrupted GitHub API read
 was recovered through the same WB prepare/land path. Remote build/tests,
-schema freshness and no-breaking-change checks passed; six stricter remote
-lint findings are being repaired before requesting the policy decision below.
+schema freshness and no-breaking-change checks passed. The six stricter remote
+lint findings were repaired in `c8adfb6781756938250573e7da531cee02ce9418`.
+Standalone golangci-lint reports zero issues, access tests pass, and SpecScore
+reports zero violations. The same PR now carries this exact head; its
+[remote lint and build/test run](https://github.com/dal-go/dalgo/actions/runs/34360498361)
+passes, alongside schema freshness and no-breaking-change. Release-only jobs
+are skipped on the PR as configured.
+
+A repeated incomplete JSON response while WB looked up the newly published
+head left the successor receipt in `land/conflict` without its PR reference.
+GitHub independently confirms PR158 at the exact published head and all checks
+terminal. Preserve that receipt and PR; reconcile the interrupted publication
+through supported WB recovery before resuming automated delivery. No receipt
+has been edited by hand. The branch-policy refusal below is independently
+verified and still requires a human decision even after receipt recovery.
+
+WB PR469's source and candidate were retired through audited cleanup. Its
+merge receipt is complete after a hash-bound missing-cleanup acknowledgement
+corroborated both absent assets and the exact landing. The original source had
+been rebased before publication, so GitHub could not look up that unpublished
+source SHA during automatic PR reconciliation.
 
 ## Required human decision: DALgo strict required checks
 

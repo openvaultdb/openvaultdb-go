@@ -81,3 +81,8 @@ The integrated DALgo source `2e3a58c` (including fetched main's transaction
 identity changes and the plan metadata correction) independently passes the
 same standalone pre-push gate. Its full `GOWORK=off go test -race ./... -p=2`
 also passes in the compiler container through WB with normal admission.
+
+DALgo PR158 at `c8adfb6781756938250573e7da531cee02ce9418` also passes remote
+reusable lint and build/test, schema freshness and no-breaking-change checks.
+The six remote lint findings were corrected without changing authorization
+semantics. This is PR validation, not a main-branch landing or provider release.
