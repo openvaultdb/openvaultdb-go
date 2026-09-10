@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"github.com/dal-go/dalgo/access"
 	"net/http"
 	"time"
 
@@ -10,23 +11,27 @@ import (
 
 // tokenCreateRequest is the body for POST /v1/tokens.
 type tokenCreateRequest struct {
-	Label        string   `json:"label"`
-	DatabaseID   string   `json:"databaseId"`
-	Capabilities []string `json:"capabilities"`
-	ExpiresIn    string   `json:"expiresIn,omitempty"` // Go duration string; omit = never
+	Subject      *access.PrincipalRef `json:"subject,omitempty"`
+	Actor        *access.PrincipalRef `json:"actor,omitempty"`
+	Label        string               `json:"label"`
+	DatabaseID   string               `json:"databaseId"`
+	Capabilities []string             `json:"capabilities"`
+	ExpiresIn    string               `json:"expiresIn,omitempty"` // Go duration string; omit = never
 }
 
 // tokenResponse is the response for POST /v1/tokens (includes secret) and
 // individual entries in GET /v1/tokens (secret omitted — Token field is empty).
 type tokenResponse struct {
-	ID           string     `json:"id"`
-	Token        string     `json:"token,omitempty"` // only in create response
-	Label        string     `json:"label,omitempty"`
-	DatabaseID   string     `json:"databaseId,omitempty"` // "" = server-level grant
-	Capabilities []string   `json:"capabilities"`
-	IssuedAt     time.Time  `json:"issuedAt"`
-	ExpiresAt    *time.Time `json:"expiresAt,omitempty"`
-	RevokedAt    *time.Time `json:"revokedAt,omitempty"`
+	Subject      *access.PrincipalRef `json:"subject,omitempty"`
+	Actor        *access.PrincipalRef `json:"actor,omitempty"`
+	ID           string               `json:"id"`
+	Token        string               `json:"token,omitempty"` // only in create response
+	Label        string               `json:"label,omitempty"`
+	DatabaseID   string               `json:"databaseId,omitempty"` // "" = server-level grant
+	Capabilities []string             `json:"capabilities"`
+	IssuedAt     time.Time            `json:"issuedAt"`
+	ExpiresAt    *time.Time           `json:"expiresAt,omitempty"`
+	RevokedAt    *time.Time           `json:"revokedAt,omitempty"`
 }
 
 func grantToResponse(g *auth.Grant, secret string) tokenResponse {
@@ -34,7 +39,7 @@ func grantToResponse(g *auth.Grant, secret string) tokenResponse {
 	for i, c := range g.Capabilities {
 		caps[i] = c.String()
 	}
-	r := tokenResponse{
+	r := tokenResponse{Subject: g.Subject, Actor: g.Actor,
 		ID:           g.ID,
 		Token:        secret,
 		Label:        g.Label,
@@ -100,11 +105,15 @@ func (s *Server) handleTokensCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "failed to generate token: "+err.Error())
 		return
 	}
-	g := &auth.Grant{
+	g := &auth.Grant{Subject: req.Subject, Actor: req.Actor,
 		Label:        req.Label,
 		DatabaseID:   req.DatabaseID,
 		Capabilities: caps,
 		ExpiresAt:    expiresAt,
+	}
+	if err := g.ValidateIdentity(); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid subject or actor binding")
+		return
 	}
 	if err = s.authCfg.Store.CreateGrant(g, token); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "failed to persist grant: "+err.Error())

@@ -5,18 +5,17 @@ import (
 	"net/http"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
+	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 )
 
-// handleDTQL accepts a DTQL-YAML document (dalgo's native lossless
-// serialization of dal.StructuredQuery) and passes it through to the
-// database's DALgo driver. ovdb's role here is routing (and, in the future,
-// authentication) — not query evaluation.
+// handleDTQL authenticates a bounded DTQL query and executes it through the
+// mounted database's secured DALgo handle.
 func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 	db := s.db(w, r)
 	if db == nil {
 		return
 	}
-	doc, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	doc, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "failed to read body: "+err.Error())
 		return
@@ -25,14 +24,15 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "body must contain a DTQL YAML document")
 		return
 	}
-	// DTQL's target collection is only known after deserialization, which
-	// happens inside core — so authorization here requires an UNSCOPED
-	// records:read grant (or the owner token); collection-scoped grants must
-	// use /query, where the collection is explicit.
-	if !s.authorize(w, r, db.ID(), auth.CapRecordsRead, "") {
+	query, collection, err := core.ParseDTQL(doc)
+	if err != nil {
+		writeMappedError(w, err)
 		return
 	}
-	records, err := db.ExecuteDTQL(r.Context(), doc)
+	if !s.authorize(w, r, db.ID(), auth.CapRecordsRead, collection) {
+		return
+	}
+	records, err := db.ExecuteDTQLQuery(r.Context(), query)
 	if err != nil {
 		writeMappedError(w, err)
 		return

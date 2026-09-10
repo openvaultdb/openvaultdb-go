@@ -3,11 +3,13 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sort"
 	"sync"
 
+	"github.com/dal-go/dalgo/access"
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 )
@@ -21,13 +23,23 @@ type Server struct {
 
 	createMu sync.Mutex // serializes runtime database creation end-to-end
 
-	authCfg *auth.Config // nil = auth disabled (local-dev default)
-	corsCfg *CORSConfig  // nil = CORS disabled (no headers added)
-	dataDir string       // "" = runtime database creation disabled
+	authCfg           *auth.Config // nil = auth disabled (local-dev default)
+	corsCfg           *CORSConfig  // nil = CORS disabled (no headers added)
+	dataDir           string       // "" = runtime database creation disabled
+	principalResolver PrincipalResolver
 }
 
 // Option configures the Server.
 type Option func(*Server)
+
+// PrincipalResolver maps an authenticated actor to current internal identity
+// and memberships. Implementations are trusted server configuration; callers
+// cannot supply roles, groups, or policy variables in a DTQL request.
+type PrincipalResolver func(context.Context, *auth.Principal) (access.Principal, error)
+
+func WithPrincipalResolver(resolve PrincipalResolver) Option {
+	return func(s *Server) { s.principalResolver = resolve }
+}
 
 // WithAuth enables authentication: the connect flow endpoints are served and
 // every data/admin request must carry the owner token or a scoped app token.
@@ -82,7 +94,26 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("DELETE /v1/tokens/{id}", s.handleTokensRevoke)
 	}
 
-	var h http.Handler = mux
+	var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.principalResolver != nil {
+			actor := auth.FromRequest(r)
+			if actor != nil {
+				principal, err := s.principalResolver(r.Context(), actor)
+				if err == nil && principal.Subject != nil {
+					err = principal.Subject.Validate()
+				}
+				if err == nil && principal.Actor != nil {
+					err = principal.Actor.Validate()
+				}
+				if err != nil {
+					writeError(w, http.StatusForbidden, "ACCESS_DENIED", "principal resolution failed")
+					return
+				}
+				r = r.WithContext(access.WithPrincipal(r.Context(), principal))
+			}
+		}
+		mux.ServeHTTP(w, r)
+	})
 	if s.authCfg != nil {
 		h = s.authCfg.Middleware(h)
 	}

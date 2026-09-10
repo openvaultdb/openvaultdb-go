@@ -38,7 +38,7 @@ func openSQLite(path string, m *manifest.Manifest) (dal.DB, []schema.Mode, error
 		}
 	}
 	db, err := dalgo2sqlite.NewDatabaseWithOptions(path, dal.NewSchema(nil, nil),
-		dalgo2sql.DbOptions{Recordsets: recordsets})
+		dalgo2sql.DbOptions{Recordsets: recordsets, StructuredQueryDialect: "sqlite"})
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open SQLite at %s: %w", path, err)
 	}

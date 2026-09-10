@@ -180,9 +180,11 @@ func TestStore_CodeExchangeAndPersistence(t *testing.T) {
 	}
 
 	// Expired grants are dropped on Lookup.
-	g := s2.Lookup(token)
-	g.ExpiresAt = time.Now().Add(-time.Minute)
-	if s2.Lookup(token) != nil {
+	expired := &Grant{PrincipalID: "expired-app", DatabaseID: "db1", Capabilities: caps, ExpiresAt: time.Now().Add(-time.Minute)}
+	if err := s2.CreateGrant(expired, "expired-token"); err != nil {
+		t.Fatal(err)
+	}
+	if s2.Lookup("expired-token") != nil {
 		t.Fatal("expired grant must not resolve")
 	}
 }

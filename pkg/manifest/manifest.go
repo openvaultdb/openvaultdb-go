@@ -7,9 +7,11 @@ package manifest
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 
+	"github.com/dal-go/dalgo/access"
 	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 	"gopkg.in/yaml.v3"
 )
@@ -19,6 +21,9 @@ type Manifest struct {
 	Database Database        `yaml:"database" json:"database"`
 	Storage  Storage         `yaml:"storage" json:"storage"`
 	Schemas  *schema.Schemas `yaml:"schemas,omitempty" json:"schemas,omitempty"`
+	// ACL policies belong to this OpenVaultDB mount. Files resolve relative to
+	// the manifest directory; underlying engines retain their own policies.
+	ACL *access.FilePolicyConfig `yaml:"acl,omitempty" json:"acl,omitempty"`
 }
 
 // Database identifies the logical database and its schema mode.
@@ -195,6 +200,25 @@ func Parse(b []byte) (*Manifest, error) {
 	dec.KnownFields(true)
 	if err := dec.Decode(&m); err != nil {
 		return nil, fmt.Errorf("failed to parse manifest YAML: %w", err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		return nil, fmt.Errorf("manifest must contain exactly one YAML document")
+	}
+	var document map[string]yaml.Node
+	if err := yaml.Unmarshal(b, &document); err != nil {
+		return nil, err
+	}
+	if acl, present := document["acl"]; present {
+		explicitMode := false
+		for i := 0; acl.Kind == yaml.MappingNode && i+1 < len(acl.Content); i += 2 {
+			if acl.Content[i].Value == "enabled" && acl.Content[i+1].Tag == "!!bool" {
+				explicitMode = true
+			}
+		}
+		if !explicitMode {
+			return nil, fmt.Errorf("acl requires an explicit boolean enabled setting")
+		}
 	}
 	if err := m.Validate(); err != nil {
 		return nil, err
