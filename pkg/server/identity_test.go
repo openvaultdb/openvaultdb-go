@@ -30,8 +30,7 @@ schemas:
         name: {type: string}
 `
 	aclWriteFile(t, path, manifest)
-	db, err := mount.File(path)
-	if err != nil {
+	if _, err := mount.File(path); err != nil {
 		t.Fatal(err)
 	}
 	policy := `apiVersion: dtql.org/access/v1
@@ -50,7 +49,7 @@ bindings:
 	aclWriteFile(t, filepath.Join(dir, "policy.yaml"), policy)
 	aclWriteFile(t, filepath.Join(dir, "membership.yaml"), strings.Replace(strings.Replace(policy, "name: humans", "name: memberships", 1), "users: {same-id: [read]}", "roles: {reader: [read]}", 1))
 	aclWriteFile(t, path, manifest+"acl: {enabled: true, realm: local, policies: [policy.yaml, membership.yaml]}\n")
-	db, err = mount.File(path)
+	db, err := mount.File(path)
 	if err != nil {
 		t.Fatal(err)
 	}
