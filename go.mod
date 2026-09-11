@@ -75,7 +75,7 @@ require (
 	github.com/RoaringBitmap/roaring/v2 v2.27.0 // indirect
 	github.com/bits-and-blooms/bitset v1.24.6 // indirect
 	github.com/dal-go/dalgo2openvaultdb v0.3.2-0.20260909113030-cacd422564fc
-	github.com/dal-go/dalgo2sql v0.13.2-0.20260911172220-befa1baaf609
+	github.com/dal-go/dalgo2sql v0.13.2-0.20260911180835-12f461ad4443
 	github.com/dal-go/dalgo2sqlite v0.1.8
 	github.com/gofrs/flock v0.13.0
 	github.com/ingitdb/dalgo2ingitdb4github v0.2.3
