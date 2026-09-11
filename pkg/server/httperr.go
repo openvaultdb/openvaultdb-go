@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/dal-go/dalgo/access"
+	az "github.com/dal-go/dalgo/dtql/authorization"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
@@ -15,8 +16,10 @@ type errorBody struct {
 }
 
 type errorDetail struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code          string     `json:"code"`
+	Message       string     `json:"message,omitempty"`
+	RequestID     string     `json:"requestId,omitempty"`
+	Authorization *az.Result `json:"authorization,omitempty"`
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
@@ -31,6 +34,17 @@ func writeMappedError(w http.ResponseWriter, err error) {
 	case errors.Is(err, access.ErrAccessDenied):
 		// Do not reflect evaluator text: it may contain private predicate values,
 		// policy paths, or protected row facts.
+		decisions := access.DecisionsFromError(err)
+		unsupported := len(decisions) > 0
+		for _, decision := range decisions {
+			if decision.Code != access.CodeEnforcementUnsupported {
+				unsupported = false
+			}
+		}
+		if unsupported {
+			writeError(w, http.StatusUnprocessableEntity, "authorization_unsupported", "operation is unsupported by the enforcement profile")
+			return
+		}
 		writeError(w, http.StatusForbidden, "ACCESS_DENIED", "access denied")
 	case errors.Is(err, core.ErrInvalidDTQL):
 		writeError(w, http.StatusBadRequest, "invalid_dtql", err.Error())

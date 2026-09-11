@@ -1,12 +1,13 @@
-# Layered ACL query implementation
+# Layered ACL MVP integration
 
-Implementation was approved on 2026-09-08. The first delivery is real DTQL
-queries over HTTP through OpenVaultDB to local InGitDB and SQLite databases,
+Implementation was approved on 2026-09-08. The implemented vertical slice runs real DTQL
+queries, protected UPDATE and Explain Access through OpenVaultDB to local
+InGitDB and SQLite databases,
 with database-owned policies enforced using DALgo. Policy viewer and editor
 are excluded from MVP.
 
-Work is coordinated locally on `layered-acl-query` worktrees in DALgo,
-dalgo2ingitdb, and openvaultdb-go. Local dependency wiring is used during
+Work is coordinated locally in DALgo, dalgo2sql, dalgo2ingitdb,
+dalgo2openvaultdb, openvaultdb-go, DataTug CLI and DataTug apps worktrees. Local dependency wiring is used during
 integration; publication and remote merges are deferred.
 
 ## First delivery acceptance
@@ -22,9 +23,8 @@ integration; publication and remote merges are deferred.
 - Return safe authorization errors without exposing private policy contents.
 
 The approved architecture and reviewed contracts are in the DTQL repository's
-`design/layered-acl` packet on the local `layered-acl-design` branch. Subsequent
-write and Explain Access work continues from those contracts; this first query
-delivery does not imply that those later work packages are implemented.
+`design/layered-acl` packet on the local `layered-acl-design` branch. Write and Explain Access implementation follows those contracts. The
+sections below describe the current protected profile and validation evidence.
 
 ## Progress
 
@@ -33,6 +33,9 @@ delivery does not imply that those later work packages are implemented.
 - Real HTTP read/probe/remount tests pass for InGitDB and SQLite.
 - Explicit projection retains row identity; SQL translation and pagination regressions pass.
 - Standalone authenticated HTTP demo passed before and after remount.
+- Protected HTTP inspect/evidence/UPDATE/CAS/sample and multi-owner blocker tests pass.
+- DataTug browser-to-daemon-to-OpenVaultDB read/Explain/write/reread passes on both engines.
+- Independent final review, coverage gates and coordinated publication remain delivery work.
 
 ## Run the local demonstration
 
@@ -67,8 +70,8 @@ requires Ireland and it has no additional tenant policy. Neither returns
 `tenant`, `country`, or `secret`. Adding `columns: [{field: secret}]` returns 403.
 
 The example leaves its files for inspection. Restart with the same `-dir`, `-reuse`, and both token environment variables to remount the
-generated manifests without reseeding. The normal OVDB mount API also reuses them. Policies are immutable snapshots
-until remount; this delivery does not provide live reload or policy editing.
+generated manifests without reseeding. The normal OVDB mount API also reuses them. Flat-file policies are immutable until remount. Generation-backed owners support
+trusted embedded publication/reload as described below; no policy UI is included.
 
 ## Configure policies on an existing mount
 
@@ -94,7 +97,8 @@ The policy syntax is demonstrated by `examples/layered-acl/main.go`. Supported
 policies use `dtql.org/access/v1`, `dalgo-hierarchical-v1`, default deny, path
 scopes, row conditions, field allow-lists, and optional user/role/group bindings.
 Visibility defaults to public; private is accepted and retained internally.
-All HTTP ACL failures use generic diagnostics in this slice.
+HTTP failures return structured owner/policy diagnostics where authorized, with
+generic redacted denial for protected row facts and private policy details.
 
 No ACL configuration preserves legacy behavior. A present configuration requires
 an explicit enabled flag. An enabled configuration with missing or invalid
@@ -108,10 +112,10 @@ fails closed if resolution fails. Without a resolver, only universally bound
 policies apply; an application token ID is not automatically a human policy ID.
 The token capability check and the data policies must both allow the request.
 
-The file loader supports scoped collection/field masks and execution-class gates. Native SQL,
-GraphQL, stored procedure execution, policy management, full structured blocker
-collection, Explain Access, policy generations, and write-specific E2E acceptance
-remain later work. Policy viewer/editor is excluded from MVP by user direction.
+The file loader supports scoped collection/field masks and execution-class gates.
+Explain Access, bounded blocker collection, owner generations and protected UPDATE
+are implemented. Native SQL/GraphQL/procedure execution and policy UI/HTTP CRUD
+remain outside this protected MVP profile.
 
 ## Local dependency wiring
 
@@ -126,9 +130,11 @@ The workspace contains these `layered-acl-query` worktrees:
 - `dal-go/dalgo2sql`
 - `ingitdb/dalgo2ingitdb`
 - `openvaultdb/openvaultdb-go`
+- `dal-go/dalgo2openvaultdb`
+- `datatug/datatug-cli`
 
 The current workspace is `/tmp/layered-acl-query-local.work`. For another checkout,
-create an external workspace with `go work init` and `go work use` for those four
+create an external workspace with `go work init` and `go work use` for those six
 module directories, then set `GOWORK` to its absolute path. Do not run `go mod tidy`
 or `go get` against the linked workspace. A provider-first release/version update
 is still required before ordinary CI or an unlinked checkout can build this slice.
@@ -271,6 +277,183 @@ Hosted deployments retain the established Sneat/Firebase UID and existing
 provider-binding infrastructure. Several provider credentials may resolve to
 the same stable subject; no provider tokens or linking secrets belong in
 policy files. This task provides the trusted mapping contract and credential
-tests, not a new OAuth issuance/linking service. DataTug’s actual OVDB connection
-transport remains task 21; it must use the provisioned credential and cannot
-supply trusted roles or substitute an arbitrary subject.
+tests, not a new OAuth issuance/linking service. DataTug’s implemented connection transport uses the provisioned server-side
+credential and cannot supply trusted roles or substitute an arbitrary subject.
+
+## Filesystem owner generations
+
+OpenVaultDB supports an opt-in generation store:
+
+```yaml
+acl:
+  enabled: true
+  realm: local
+acl_store:
+  path: .ovdb/access
+```
+
+The path is relative to the mount manifest. Do not combine it with flat
+`acl.policies`. An enabled generation mount requires a valid active pointer;
+an absent or corrupt generation fails closed.
+
+Trusted embedded administration uses `policystore.Open` and `Store.Activate`
+to bootstrap a complete policy set. Mounted owners expose `PublishPolicies`
+and `ReloadPolicies`; these methods have no public data-route authority.
+Publishing compares the expected internal generation revision, validates the
+complete candidate, synchronizes immutable files, then atomically replaces
+the active pointer. No-op content reuses a verified generation. Errors after
+pointer publication are uncertain publication; the controller reloads the
+authoritative pointer before allowing further admissions, or fails closed.
+
+The internal revision covers the entire owner/configuration set. Individual
+document revisions cover only canonical policy bytes. Changing a private
+document does not change an unchanged public document's revision. Ordinary
+clients must never receive the internal generation revision.
+
+Each operation resolves one immutable policy snapshot; a DALgo transaction
+pins one snapshot. Explicit reload updates existing mounted handles. External
+filesystem administration requires reload/reconnect; it does not implicitly
+change a running controller. Protected writes acquire the storage transaction before immutable policy leases,
+and retain every lease until storage commit/rollback finishes. Owner publication
+cannot activate a new policy during that boundary.
+
+Validation includes process termination before/after pointer publication,
+CAS conflicts, corrupt and missing references, duplicate/symlink pointers,
+unchanged public document revisions, and a real HTTP query that changes from
+allowed to denied on publication and remains denied after remount. Retention
+of inactive generations is operator follow-up.
+
+## Authorization transport checkpoint
+
+`POST /v1/databases/{db}/access/evaluate` accepts the frozen C2 request JSON.
+It supports metadata-only `plan`, explicit-key `inspect`, and bounded `sample`
+through capable local SQLite/InGitDB mounts. The request normalizer is shared
+with protected write ingress. It rejects
+duplicate/case-aliased/unknown JSON keys, conflicting path identifiers,
+overlapping updates, unsupported parameter binding, and request limits before
+evaluation. It never reads a row to construct a plan.
+
+DALgo implements the common wire contract in `dtql/authorization` (the
+cycle-safe equivalent of the design's proposed `access/contract` location).
+`access.AssessPlan` shares collection/evaluation machinery with enforcement.
+The HTTP projection retains owner conjunctions and portable source predicates
+where authorized, without exposing resolved principal variables. Private
+policies are coalesced into owner summaries; document revisions are visible
+only with authorized references. Bounded overflow returns incomplete,
+non-authorizing diagnostics. Reconstructed real-query failure diagnostics
+explicitly remain partial until the admission coordinator can retain the
+original pinned execution assessment.
+
+`WithOwnerAuthorization` binds each owner's diagnostic authority independently.
+The default bootstrap/token authority applies to OpenVaultDB only. Lower-owner
+administration and key-scoped protected inspection require explicit trusted
+owner bindings. Policy administration does not imply permission to inspect
+unreadable rows. `WithAccessInstanceID` supplies a persistent deployment ID.
+
+`GET /access/layers` and `GET /access/policies?layerId=...` expose authorized
+metadata only. No policy viewer/editor or HTTP policy mutations are enabled.
+Custom policies without publishable document metadata retain their mandatory
+owner representation. No host file paths, private generation revisions, or
+raw evaluator exceptions are part of these responses.
+
+Verification: strict request validation, real InGitDB/SQLite plan and query
+tests, public-reference/private-policy separation, hidden query-field denial,
+and the existing identity/reload/server suites. The protected HTTP test also proves read/inspect/UPDATE agreement, whole-record
+CAS, no dry-run mutation, key-safe sampling and multiple owner blockers.
+
+
+## Protected HTTP operations
+
+`POST /v1/databases/{db}/access/evidence` takes
+`{apiVersion,resource,requiredFields}`. It requires ordinary data read authority
+for every requested field at every owner. Returned fields distinguish present
+(including null) from absent; withheld fields never masquerade as absent. A
+successful response contains an opaque whole-record `dataRevision`, with no
+raw hidden image. Policy-admin authority grants no evidence bypass.
+
+`PATCH /v1/databases/{db}/records/{table}/{id}` with content type
+`application/vnd.dtql.operation+json` accepts a normalized C2 operation:
+
+```json
+{
+  "id": "u1",
+  "action": "update",
+  "resource": {"databaseId": "crm", "path": "/customers/01"},
+  "executionClass": "dtql",
+  "mutation": {
+    "changes": [{"op": "set", "path": ["name"], "value": "Updated"}],
+    "ifDataRevision": "<revision from evidence>"
+  }
+}
+```
+
+The URL and operation must name the same record. Candidate schema validation,
+row/column checks and revision preconditions use one private storage boundary.
+Success is `{authorization,dataRevision}` after commit. A readable stale
+revision returns 409 `data_revision_conflict`; retry requires fresh evidence.
+A write-only actor may execute an authorized normalized operation, but cannot
+obtain row evidence or hidden denial facts. DataTug's selected-row editor
+always obtains fresh evidence and supplies the revision.
+
+SQLite uses `BEGIN IMMEDIATE`; InGitDB uses its repository lock and rollback
+journal. Whole-image revisions are HMACs with a random per-mount secret, so
+hidden low-entropy values cannot be guessed from a public digest. Reconnection
+invalidates old revisions conservatively. DALgo supports bounded atomic point
+operation batches internally; this HTTP MVP advertises only one-row normalized
+UPDATE. Legacy dynamic write/batch ingress returns 422 on the protected profile.
+No speculative write is used to implement a dry run.
+
+Private images never leave the coordinator. Missing, denied and non-disclosable
+point diagnostics use a generic redacted denial with explicitly unavailable
+row evidence. Owner-authorized diagnostics can retain each independently
+blocking policy reference and exact changed column paths. Actual token data
+capabilities remain required in addition to all owner ACL policies.
+
+Sampling applies the target's and actual requester's read restrictions before
+pagination, then rechecks visibility inside inspection. Any changed visibility
+aborts row diagnostics rather than exposing a revoked key. Ordering ends in
+SQLite's configured `id` primary key or InGitDB's `$id` key expression (not an
+ordinary stored `id` field). The read policies must authorize the ordering
+reference. N is at most 100, offset is unsupported, and a completed all-allow or
+empty sample remains conditional with `allowed:false` and `exhaustive:false`.
+
+## Supported-profile limits
+
+Protected SQLite point operations require a real table with a single TEXT
+primary key and supported scalar columns. Generated/default columns, triggers,
+foreign keys, CHECK clauses and explicit collations are conservatively
+unsupported. Ambiguous key collations must not bypass unique-target checks.
+Row-dependent malformed data produces incomplete safe assessment, never an
+empty authoritative image. InGitDB rejects unsupported computed/transform/FK
+profiles before protected execution. Provision schema before activating ACL;
+filtered schema discovery is currently 422 instead of revealing unfiltered
+names. Native SQL/GraphQL/procedure execution, policy UI/HTTP CRUD, external
+ACL services and long-running logical transactions are excluded.
+
+The local example now provisions customer read/write credentials and policies
+for both engines. Secrets remain environment variables. Reusing fixtures does
+not silently expand an existing grant: create a fresh fixture for the write
+example, or update its credential through authorized owner administration.
+
+
+SQLite structured filters explicitly use binary text comparison without column
+value affinity, and ordered comparisons guard compatible storage scalar types.
+Schema-defined NOCASE cannot widen an ACL predicate before the limit. Boolean
+SQL predicates are unsupported until the adapter can distinguish logical
+booleans from integers using trusted schema typing; selecting stored boolean
+values is unaffected. Custom policy callbacks must explicitly declare pure
+inspection support to participate in plan/inspect/sample. Unmarked callbacks
+remain usable for real enforcement but are not replayed for diagnostics.
+
+
+## Final verification and review
+
+See [acceptance evidence](layered-acl-acceptance.md) and the
+[final review record](layered-acl-review/report.md) for exact reviewed revisions,
+independent findings, remediation commits and outstanding delivery gates.
+A passing linked-workspace test is not publication or remote merge evidence.
+
+Protected InGitDB query predicates use DALgo's shared evaluator for typed scalar,
+nested-field and missing-versus-null semantics. Synthetic `$id` predicates fail
+with the unsupported-profile contract; use a concrete resource path for exact-key
+access. `$id` ordering remains available for deterministic top-N sampling.

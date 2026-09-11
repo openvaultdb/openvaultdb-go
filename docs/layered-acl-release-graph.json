@@ -1,0 +1,239 @@
+{
+  "schema_version": 1,
+  "ecosystem": "go",
+  "base_ref": "main",
+  "filters": {
+    "dependencies": [
+      "github.com/dal-go/dalgo",
+      "github.com/dal-go/dalgo2openvaultdb",
+      "github.com/dal-go/dalgo2sql",
+      "github.com/ingitdb/dalgo2ingitdb"
+    ]
+  },
+  "summary": {
+    "repositories": 6,
+    "modules": 7,
+    "requirements": 12,
+    "internal_requirements": 12,
+    "external_dependencies": 0,
+    "selections": 10,
+    "ambiguous_providers": 0
+  },
+  "order": {
+    "layers": [
+      {
+        "index": 0,
+        "repositories": [
+          "dal-go/dalgo"
+        ]
+      },
+      {
+        "index": 1,
+        "repositories": [
+          "dal-go/dalgo2openvaultdb",
+          "dal-go/dalgo2sql",
+          "ingitdb/dalgo2ingitdb"
+        ]
+      },
+      {
+        "index": 2,
+        "repositories": [
+          "datatug/datatug-cli",
+          "openvaultdb/openvaultdb-go"
+        ]
+      }
+    ]
+  },
+  "repositories": [
+    {
+      "slug": "dal-go/dalgo",
+      "organization": "dal-go",
+      "modules": [
+        "github.com/dal-go/dalgo"
+      ]
+    },
+    {
+      "slug": "dal-go/dalgo2openvaultdb",
+      "organization": "dal-go",
+      "modules": [
+        "github.com/dal-go/dalgo2openvaultdb"
+      ]
+    },
+    {
+      "slug": "dal-go/dalgo2sql",
+      "organization": "dal-go",
+      "modules": [
+        "github.com/dal-go/dalgo2sql",
+        "github.com/dal-go/dalgo2sql/end2end"
+      ]
+    },
+    {
+      "slug": "datatug/datatug-cli",
+      "organization": "datatug",
+      "modules": [
+        "github.com/datatug/datatug-cli"
+      ]
+    },
+    {
+      "slug": "ingitdb/dalgo2ingitdb",
+      "organization": "ingitdb",
+      "modules": [
+        "github.com/ingitdb/dalgo2ingitdb"
+      ]
+    },
+    {
+      "slug": "openvaultdb/openvaultdb-go",
+      "organization": "openvaultdb",
+      "modules": [
+        "github.com/openvaultdb/openvaultdb-go"
+      ]
+    }
+  ],
+  "modules": [
+    {
+      "path": "github.com/dal-go/dalgo",
+      "repository": "dal-go/dalgo",
+      "manifest": "go.mod"
+    },
+    {
+      "path": "github.com/dal-go/dalgo2openvaultdb",
+      "repository": "dal-go/dalgo2openvaultdb",
+      "manifest": "go.mod"
+    },
+    {
+      "path": "github.com/dal-go/dalgo2sql",
+      "repository": "dal-go/dalgo2sql",
+      "manifest": "go.mod"
+    },
+    {
+      "path": "github.com/dal-go/dalgo2sql/end2end",
+      "repository": "dal-go/dalgo2sql",
+      "manifest": "end2end/go.mod"
+    },
+    {
+      "path": "github.com/datatug/datatug-cli",
+      "repository": "datatug/datatug-cli",
+      "manifest": "go.mod"
+    },
+    {
+      "path": "github.com/ingitdb/dalgo2ingitdb",
+      "repository": "ingitdb/dalgo2ingitdb",
+      "manifest": "go.mod"
+    },
+    {
+      "path": "github.com/openvaultdb/openvaultdb-go",
+      "repository": "openvaultdb/openvaultdb-go",
+      "manifest": "go.mod"
+    }
+  ],
+  "requirements": [
+    {
+      "dependency": "github.com/dal-go/dalgo",
+      "version": "v0.64.4",
+      "consumer_module": "github.com/openvaultdb/openvaultdb-go",
+      "consumer_repository": "openvaultdb/openvaultdb-go",
+      "manifest": "go.mod",
+      "provider_module": "github.com/dal-go/dalgo",
+      "provider_repository": "dal-go/dalgo"
+    },
+    {
+      "dependency": "github.com/dal-go/dalgo",
+      "version": "v0.66.1",
+      "consumer_module": "github.com/dal-go/dalgo2openvaultdb",
+      "consumer_repository": "dal-go/dalgo2openvaultdb",
+      "manifest": "go.mod",
+      "provider_module": "github.com/dal-go/dalgo",
+      "provider_repository": "dal-go/dalgo"
+    },
+    {
+      "dependency": "github.com/dal-go/dalgo",
+      "version": "v0.74.1",
+      "consumer_module": "github.com/ingitdb/dalgo2ingitdb",
+      "consumer_repository": "ingitdb/dalgo2ingitdb",
+      "manifest": "go.mod",
+      "provider_module": "github.com/dal-go/dalgo",
+      "provider_repository": "dal-go/dalgo"
+    },
+    {
+      "dependency": "github.com/dal-go/dalgo",
+      "version": "v0.79.5",
+      "consumer_module": "github.com/dal-go/dalgo2sql",
+      "consumer_repository": "dal-go/dalgo2sql",
+      "manifest": "go.mod",
+      "provider_module": "github.com/dal-go/dalgo",
+      "provider_repository": "dal-go/dalgo"
+    },
+    {
+      "dependency": "github.com/dal-go/dalgo",
+      "version": "v0.79.5",
+      "consumer_module": "github.com/dal-go/dalgo2sql/end2end",
+      "consumer_repository": "dal-go/dalgo2sql",
+      "manifest": "end2end/go.mod",
+      "provider_module": "github.com/dal-go/dalgo",
+      "provider_repository": "dal-go/dalgo"
+    },
+    {
+      "dependency": "github.com/dal-go/dalgo",
+      "version": "v0.79.5",
+      "consumer_module": "github.com/datatug/datatug-cli",
+      "consumer_repository": "datatug/datatug-cli",
+      "manifest": "go.mod",
+      "provider_module": "github.com/dal-go/dalgo",
+      "provider_repository": "dal-go/dalgo"
+    },
+    {
+      "dependency": "github.com/dal-go/dalgo2openvaultdb",
+      "version": "v0.3.0",
+      "consumer_module": "github.com/openvaultdb/openvaultdb-go",
+      "consumer_repository": "openvaultdb/openvaultdb-go",
+      "manifest": "go.mod",
+      "provider_module": "github.com/dal-go/dalgo2openvaultdb",
+      "provider_repository": "dal-go/dalgo2openvaultdb"
+    },
+    {
+      "dependency": "github.com/dal-go/dalgo2sql",
+      "version": "v0.10.3",
+      "consumer_module": "github.com/openvaultdb/openvaultdb-go",
+      "consumer_repository": "openvaultdb/openvaultdb-go",
+      "manifest": "go.mod",
+      "provider_module": "github.com/dal-go/dalgo2sql",
+      "provider_repository": "dal-go/dalgo2sql"
+    },
+    {
+      "dependency": "github.com/dal-go/dalgo2sql",
+      "version": "v0.11.4",
+      "consumer_module": "github.com/datatug/datatug-cli",
+      "consumer_repository": "datatug/datatug-cli",
+      "manifest": "go.mod",
+      "provider_module": "github.com/dal-go/dalgo2sql",
+      "provider_repository": "dal-go/dalgo2sql"
+    },
+    {
+      "dependency": "github.com/dal-go/dalgo2sql",
+      "version": "v0.9.6",
+      "consumer_module": "github.com/dal-go/dalgo2sql/end2end",
+      "consumer_repository": "dal-go/dalgo2sql",
+      "manifest": "end2end/go.mod",
+      "provider_module": "github.com/dal-go/dalgo2sql",
+      "provider_repository": "dal-go/dalgo2sql"
+    },
+    {
+      "dependency": "github.com/ingitdb/dalgo2ingitdb",
+      "version": "v0.2.4",
+      "consumer_module": "github.com/openvaultdb/openvaultdb-go",
+      "consumer_repository": "openvaultdb/openvaultdb-go",
+      "manifest": "go.mod",
+      "provider_module": "github.com/ingitdb/dalgo2ingitdb",
+      "provider_repository": "ingitdb/dalgo2ingitdb"
+    },
+    {
+      "dependency": "github.com/ingitdb/dalgo2ingitdb",
+      "version": "v0.3.5",
+      "consumer_module": "github.com/datatug/datatug-cli",
+      "consumer_repository": "datatug/datatug-cli",
+      "manifest": "go.mod",
+      "provider_module": "github.com/ingitdb/dalgo2ingitdb",
+      "provider_repository": "ingitdb/dalgo2ingitdb"
+    }
+  ]
+}

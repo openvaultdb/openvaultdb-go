@@ -72,8 +72,8 @@ func main() {
 	}
 	if store.Lookup(queryToken) == nil {
 		// This fixture server hosts exactly two databases. The query credential
-		// has only customer-read capability, intersected with each owner's policy.
-		if err := store.CreateGrant(&auth.Grant{Subject: &subject, Actor: &actor, Capabilities: []auth.Capability{{Action: auth.CapRecordsRead, Collection: "customers"}}}, queryToken); err != nil {
+		// has customer read/write capability, intersected with each owner's policy.
+		if err := store.CreateGrant(&auth.Grant{Subject: &subject, Actor: &actor, Capabilities: []auth.Capability{{Action: auth.CapRecordsRead, Collection: "customers"}, {Action: auth.CapRecordsWrite, Collection: "customers"}, {Action: auth.CapAccessDiagnostics, Collection: "customers"}}}, queryToken); err != nil {
 			log.Fatal(err)
 		}
 	}
@@ -100,6 +100,10 @@ func write(root, name, text string) error {
 }
 
 func policy(database, name, field, value string) string {
+	fields := "id, name"
+	if database == "ingitdb" {
+		fields += ", $id"
+	}
 	return fmt.Sprintf(`apiVersion: dtql.org/access/v1
 kind: AccessPolicy
 metadata: {name: %s}
@@ -112,15 +116,15 @@ ruleSets:
       rules:
         - id: visible-customers
           effect: allow
-          operations: [query, get]
+          operations: [query, get, update]
           where:
             op: "=="
             left: {field: %s}
             right: {value: %s}
-          fields: [id, name]
+          fields: [%s]
 bindings:
   roles: {reader: [reader]}
-`, name, database, field, value)
+`, name, database, field, value, fields)
 }
 
 func seed(dir, engine string) error {

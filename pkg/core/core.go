@@ -23,6 +23,7 @@ import (
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/inferred"
 	"github.com/openvaultdb/openvaultdb-go/pkg/manifest"
+	"github.com/openvaultdb/openvaultdb-go/pkg/policystore"
 	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 )
 
@@ -50,10 +51,14 @@ func (e *ModeCompatibilityError) Error() string {
 // Database is one mounted logical database: a DALgo driver plus mode
 // enforcement.
 type Database struct {
-	Manifest *manifest.Manifest
-	db       dal.DB
-	modes    []schema.Mode
-	cat      *inferred.Catalogue // nil in strict mode
+	Manifest         *manifest.Manifest
+	db               dal.DB
+	modes            []schema.Mode
+	policyController *policystore.Controller
+	ownerPolicies    access.PolicyProvider
+	lowerPolicies    access.PolicyProvider
+	coordinator      *access.EnforcementCoordinator
+	cat              *inferred.Catalogue // nil in strict mode
 
 	// afterWrite, when set, runs after each successfully applied write batch
 	// (e.g. git push for inGitDB-backed databases). A returned error is
@@ -70,7 +75,26 @@ type Database struct {
 // ddl.SchemaModifier, and (for partial/schemaless modes) the inferred schema
 // catalogue is loaded from cataloguePath.
 func Open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, cataloguePath string, policies ...access.Policy) (*Database, error) {
-	if m.ACL != nil && m.ACL.Enabled && len(policies) == 0 {
+	return open(m, db, supportedModes, cataloguePath, nil, policies...)
+}
+
+// OpenWithPolicyController mounts an immutable owner generation provider.
+// The controller's publication APIs remain trusted owner-administration APIs.
+func OpenWithPolicyController(m *manifest.Manifest, db dal.DB, modes []schema.Mode, cataloguePath string, controller *policystore.Controller) (*Database, error) {
+	if controller == nil {
+		return nil, fmt.Errorf("policy controller required")
+	}
+	snapshot, err := controller.Snapshot()
+	if err != nil {
+		return nil, err
+	}
+	if m.ACL == nil || !m.ACL.Enabled || snapshot.Owner.Database != m.Database.ID || snapshot.Owner.Realm != m.ACL.Realm {
+		return nil, fmt.Errorf("policy store owner does not match mount")
+	}
+	return open(m, db, modes, cataloguePath, controller)
+}
+func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, cataloguePath string, controller *policystore.Controller, policies ...access.Policy) (*Database, error) {
+	if m.ACL != nil && m.ACL.Enabled && len(policies) == 0 && controller == nil {
 		return nil, fmt.Errorf("enabled OpenVaultDB ACL requires loaded policies")
 	}
 	mode := m.Database.SchemaMode
@@ -84,7 +108,18 @@ func Open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 	if !supported {
 		return nil, &ModeCompatibilityError{Engine: m.Storage.Engine, Requested: mode, Supported: supportedModes}
 	}
-	d := &Database{Manifest: m, db: db, modes: supportedModes}
+	d := &Database{Manifest: m, db: db, modes: supportedModes, policyController: controller}
+	if source, ok := db.(interface {
+		AccessPolicies(context.Context) ([]access.Policy, error)
+	}); ok {
+		d.lowerPolicies = source.AccessPolicies
+	}
+	if controller != nil {
+		d.ownerPolicies = controller.Policies
+	} else if len(policies) > 0 {
+		fixed := append([]access.Policy(nil), policies...)
+		d.ownerPolicies = func(context.Context) ([]access.Policy, error) { return append([]access.Policy(nil), fixed...), nil }
+	}
 	if m.Schemas != nil {
 		ctx := context.Background()
 		names := make([]string, 0, len(m.Schemas.Collections))
@@ -105,8 +140,41 @@ func Open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 		}
 		d.cat = cat
 	}
-	if len(policies) > 0 {
-		secured, err := access.SecureDB(db, access.WithDatabasePolicies(policies...))
+	if d.HasAccessPolicies() {
+		if factory, ok := db.(interface {
+			ConfigureProtectedAccess(...access.MandatoryParticipant) (dal.DB, *access.EnforcementCoordinator, error)
+		}); ok {
+			var participants []access.MandatoryParticipant
+			if d.ownerPolicies != nil {
+				provider := d.fixedPolicyLease
+				if controller != nil {
+					provider = controller.AcquirePolicyLease
+				}
+				participants = append(participants, access.MandatoryParticipant{LayerID: "openvaultdb", Provider: provider, Validator: d.validateProtectedCandidate})
+			} else {
+				participants = append(participants, access.MandatoryParticipant{LayerID: "openvaultdb", Validator: d.validateProtectedCandidate})
+			}
+			var err error
+			db, d.coordinator, err = factory.ConfigureProtectedAccess(participants...)
+			if err == nil && (db == nil || d.coordinator == nil) {
+				err = fmt.Errorf("protected factory returned incomplete enforcement boundary")
+			}
+			if err != nil {
+				return nil, err
+			}
+			d.db = db
+		}
+	}
+	if d.coordinator == nil && (len(policies) > 0 || controller != nil) {
+		option := access.WithDatabasePolicies(policies...)
+		if controller != nil {
+			option = access.WithDatabasePolicyProvider(controller.Policies)
+		}
+		options := []access.DBOption{option}
+		if d.coordinator != nil {
+			options = append(options, access.WithEnforcementCoordinator(d.coordinator))
+		}
+		secured, err := access.SecureDB(db, options...)
 		if err != nil {
 			return nil, err
 		}
@@ -494,4 +562,19 @@ func dbschemaType(t schema.FieldType) dbschema.Type {
 	default: // object, array, any — stored as-is; declared as string
 		return dbschema.String
 	}
+}
+
+// ReloadPolicies reloads this owner's committed generation. It is an embedded
+// owner-administration API; no data endpoint grants this authority.
+func (d *Database) ReloadPolicies(ctx context.Context) (policystore.Snapshot, error) {
+	if d.policyController == nil {
+		return policystore.Snapshot{}, fmt.Errorf("mount has no generation policy store")
+	}
+	return d.policyController.Reload(ctx)
+}
+func (d *Database) PublishPolicies(ctx context.Context, expected string, documents []access.DTQLDocument) (policystore.Snapshot, error) {
+	if d.policyController == nil {
+		return policystore.Snapshot{}, fmt.Errorf("mount has no generation policy store")
+	}
+	return d.policyController.Activate(ctx, expected, documents)
 }

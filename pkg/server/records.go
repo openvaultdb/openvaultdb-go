@@ -2,7 +2,9 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/dal-go/dalgo/access"
 	"net/http"
 	"strings"
 
@@ -47,6 +49,9 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	if db.HasAccessPolicies() {
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	collection := key.Collection()
 	for cur := key; cur != nil; cur = cur.Parent() {
 		collection = cur.Collection() // root collection scopes the capability
@@ -63,10 +68,18 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 	if action != "" && !s.authorize(w, r, db.ID(), action, collection) {
 		return
 	}
+	if db.Coordinator() != nil && (r.Method == http.MethodPut || r.Method == http.MethodPost || r.Method == http.MethodDelete || r.Method == http.MethodPatch && strings.Split(r.Header.Get("Content-Type"), ";")[0] != "application/vnd.dtql.operation+json") {
+		writeError(w, 422, "authorization_unsupported", "this mount requires normalized protected operations")
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		data, err := db.Get(ctx, key)
 		if err != nil {
+			if db.HasAccessPolicies() && (errors.Is(err, access.ErrAccessDenied) || errors.Is(err, core.ErrNotFound)) {
+				writeUnavailablePoint(w, db, key, "get")
+				return
+			}
 			writeMappedError(w, err)
 			return
 		}
@@ -102,6 +115,10 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(okStatus)
 	case http.MethodPatch:
+		if strings.Split(r.Header.Get("Content-Type"), ";")[0] == "application/vnd.dtql.operation+json" {
+			s.handleProtectedUpdate(w, r, db, key)
+			return
+		}
 		var body struct {
 			Updates []core.UpdateOp `json:"updates"`
 		}
@@ -132,6 +149,10 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 	db := s.db(w, r)
 	if db == nil {
+		return
+	}
+	if db.Coordinator() != nil {
+		writeError(w, 422, "authorization_unsupported", "legacy batches are unavailable on this protected profile")
 		return
 	}
 	var body struct {

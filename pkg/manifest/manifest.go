@@ -23,7 +23,13 @@ type Manifest struct {
 	Schemas  *schema.Schemas `yaml:"schemas,omitempty" json:"schemas,omitempty"`
 	// ACL policies belong to this OpenVaultDB mount. Files resolve relative to
 	// the manifest directory; underlying engines retain their own policies.
-	ACL *access.FilePolicyConfig `yaml:"acl,omitempty" json:"acl,omitempty"`
+	ACLStore *PolicyStoreConfig       `yaml:"acl_store,omitempty" json:"aclStore,omitempty"`
+	ACL      *access.FilePolicyConfig `yaml:"acl,omitempty" json:"acl,omitempty"`
+}
+
+// PolicyStoreConfig selects immutable owner generations instead of flat policy files.
+type PolicyStoreConfig struct {
+	Path string `yaml:"path" json:"path"`
 }
 
 // Database identifies the logical database and its schema mode.
@@ -230,6 +236,12 @@ func Parse(b []byte) (*Manifest, error) {
 // engine/schema-mode compatibility — that is engine capability knowledge and
 // is enforced when the database is opened (see pkg/core).
 func (m *Manifest) Validate() error {
+	if m.ACLStore != nil {
+		if m.ACL == nil || !m.ACL.Enabled || m.ACLStore.Path == "" || len(m.ACL.Policies) > 0 {
+			return fmt.Errorf("acl_store requires enabled acl, a path, and no flat policies")
+		}
+	}
+
 	if m.Database.ID == "" {
 		return fmt.Errorf("database.id is required")
 	}

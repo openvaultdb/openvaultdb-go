@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/dalgo2sql"
 	"github.com/dal-go/dalgo2sqlite"
@@ -42,5 +43,19 @@ func openSQLite(path string, m *manifest.Manifest) (dal.DB, []schema.Mode, error
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open SQLite at %s: %w", path, err)
 	}
-	return db, []schema.Mode{schema.ModeStrict}, nil
+	return &sqliteMount{Database: db}, []schema.Mode{schema.ModeStrict}, nil
+}
+
+// The SQLite driver embeds dal.DB, so explicitly forward the trusted mount
+// factory; core subsequently retains only its secured result.
+type sqliteMount struct{ *dalgo2sqlite.Database }
+
+func (s *sqliteMount) ConfigureProtectedAccess(participants ...access.MandatoryParticipant) (dal.DB, *access.EnforcementCoordinator, error) {
+	factory, ok := s.DB.(interface {
+		ConfigureProtectedAccess(...access.MandatoryParticipant) (dal.DB, *access.EnforcementCoordinator, error)
+	})
+	if !ok {
+		return nil, nil, fmt.Errorf("SQLite protected storage unavailable")
+	}
+	return factory.ConfigureProtectedAccess(participants...)
 }

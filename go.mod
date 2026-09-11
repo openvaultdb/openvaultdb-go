@@ -11,8 +11,8 @@ require (
 	github.com/dal-go/dalgo2mysql v0.2.0
 	github.com/dal-go/dalgo2postgres v0.2.0
 	github.com/dal-go/record v0.1.3
-	github.com/ingitdb/dalgo2ingitdb v0.4.0
-	github.com/ingitdb/ingitdb-go/ingitdb v0.5.2
+	github.com/ingitdb/dalgo2ingitdb v0.5.0
+	github.com/ingitdb/ingitdb-go/ingitdb v0.6.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -74,10 +74,10 @@ require (
 require (
 	github.com/RoaringBitmap/roaring/v2 v2.27.0 // indirect
 	github.com/bits-and-blooms/bitset v1.24.6 // indirect
-	github.com/dal-go/dalgo2openvaultdb v0.3.0
-	github.com/dal-go/dalgo2sql v0.12.0
-	github.com/dal-go/dalgo2sqlite v0.1.3
-	github.com/gofrs/flock v0.13.0 // indirect
+	github.com/dal-go/dalgo2openvaultdb v0.3.2-0.20260909113030-cacd422564fc
+	github.com/dal-go/dalgo2sql v0.14.0
+	github.com/dal-go/dalgo2sqlite v0.1.8
+	github.com/gofrs/flock v0.13.0
 	github.com/ingitdb/dalgo2ingitdb4github v0.2.3
 	github.com/ingr-io/ingr-go v0.0.2 // indirect
 	github.com/mschoch/smat v0.2.0 // indirect

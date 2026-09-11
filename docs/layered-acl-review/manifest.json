@@ -1,0 +1,47 @@
+{
+  "createdAt": "2026-09-09T11:11:07.264381+00:00",
+  "repositories": [
+    {
+      "name": "dalgo",
+      "source": "/home/ai/projects/dal-go/dalgo/.worktrees/layered-acl-query",
+      "commit": "b5bae9bfd26e06f302403c030ed2019c6e19f9b7",
+      "archiveSHA256": "3580e2f201ed6495fa82bc4058f441ee6d2a38db74fe19c2ca4020b0aa9abed6"
+    },
+    {
+      "name": "dalgo2sql",
+      "source": "/home/ai/projects/dal-go/dalgo2sql/.worktrees/layered-acl-query",
+      "commit": "c33f81faf93b83bf710914b582fd963d3d20bb34",
+      "archiveSHA256": "48a437a8d2035aa1f2f11fcbe5624043385e953bcfc87381cf5765a4ea001ebd"
+    },
+    {
+      "name": "dalgo2ingitdb",
+      "source": "/home/ai/projects/ingitdb/dalgo2ingitdb/.worktrees/layered-acl-query",
+      "commit": "5f5fbd32c4fbd98537dcf9f309f304fa67c87bdf",
+      "archiveSHA256": "91c61fc55c7356f0737b869c961c4531a628f4665c2959142c046c103084cd22"
+    },
+    {
+      "name": "openvaultdb-go",
+      "source": "/home/ai/projects/openvaultdb/openvaultdb-go/.worktrees/layered-acl-query",
+      "commit": "fb60391daee28e2565c1b6287fccf817b7470b30",
+      "archiveSHA256": "0a55fd8eef6bf21db2b2cf93247ca44e2bf1175c6cc8e6b51477b84e9d14b9df"
+    },
+    {
+      "name": "datatug-cli",
+      "source": "/home/ai/projects/datatug/datatug-cli/.worktrees/datatug-layered-acl-query",
+      "commit": "a7e1f62ceea2048050314da435588d8d0ae19b0d",
+      "archiveSHA256": "91d714bf621fa13993c59833d7c35e11d870624b4a02b3a1530035144ce2fa6c"
+    },
+    {
+      "name": "datatug-apps",
+      "source": "/home/ai/projects/datatug/datatug-apps/.worktrees/datatug-apps-layered-acl-query",
+      "commit": "0bf58fcbae12e3ea1219b952b5465bb29d104821",
+      "archiveSHA256": "1571ee23f12050569a2a5d3dc61a07d89959ad7138f1e54b4a995def82ebc1c0"
+    },
+    {
+      "name": "dtql",
+      "source": "/home/ai/projects/datatug/dtql/.worktrees/layered-acl-design",
+      "commit": "c2d048784ef982a0533b1cdfb912f13182ba6b53",
+      "archiveSHA256": "c33acde835f7231001f2a58ce9645d43fabe7b1a6c60925c306a1f55d1a53a85"
+    }
+  ]
+}
