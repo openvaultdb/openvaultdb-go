@@ -25,13 +25,19 @@ The former DataTug worktrees were discarded by WB on September 11 at
 contract conflicts documented in datatug/datatug
 `spec/research/2026-09-09-layered-acl-reconciliation.md`: authentication,
 API envelopes, source targeting, settings ownership and URL conventions.
-The attempted replays were aborted without changing main or the preserved
-remote branches. DataTug integration awaits a decision on reconciling those
-contracts within task 24; the superseded routes will not be restored silently.
+The old replays were aborted; task 24 now reconciles the source with the current
+catalog resolver, fixed secureread session and existing query error envelope.
+[DataTug CLI #237](https://github.com/datatug/datatug-cli/pull/237) proves real
+remote DTQL reads against SQLite and InGitDB with policies, preserves structured
+owner denials and retains the bounded SDK. The app companion displays blocker
+codes in the existing query page. Original heads are preserved at each repo's
+`recovery/acl-task21-original`. Browser write/Explain convergence with the lead's
+current API remains an explicit acceptance item; SDK methods are not a browser
+E2E receipt.
 
 Local unlinked validation: DALgo 100.0% coverage and SpecScore 0 violations;
 SQL 90.6%; InGitDB 84.8%; OpenVaultDB 59.7%, including conformance and
-protected writes. SQL's nested CGO E2E is blocked locally by missing gcc.
+protected writes. SQL's nested CGO E2E now passes using a temporary rootless GCC toolchain.
 Local ownership and Work Logs refreshed; fleet remote claim refresh/release
 is unavailable because the configured WB HTTP hub does not support claims.
 
