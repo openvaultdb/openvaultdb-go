@@ -89,7 +89,7 @@ func TestProtectedHTTPReadInspectUpdate(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer resp.Body.Close()
+				defer func() { _ = resp.Body.Close() }()
 				raw, _ := io.ReadAll(resp.Body)
 				return resp.StatusCode, string(raw)
 			}
@@ -276,7 +276,7 @@ scopes:
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			ts := httptest.NewServer(server.New("test", map[string]*core.Database{"crm": db}, server.WithAuth(&auth.Config{OwnerToken: ownerToken})).Handler())
 			defer ts.Close()
 			for _, id := range []string{"0", "1"} {

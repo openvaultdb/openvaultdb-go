@@ -127,7 +127,7 @@ func (s *Store) read(name string, limit int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	// Reject symlinks in every component, including generation directories.
 	parts := strings.Split(filepath.ToSlash(name), "/")
 	for i := range parts {
@@ -153,7 +153,7 @@ func (s *Store) read(name string, limit int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	opened, err := file.Stat()
 	if err != nil || !os.SameFile(before, opened) {
 		return nil, fmt.Errorf("generation member changed while opening")
@@ -228,7 +228,7 @@ func syncDir(path string) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	return file.Sync()
 }
 func writeSync(path string, data []byte) error {
@@ -237,11 +237,11 @@ func writeSync(path string, data []byte) error {
 		return err
 	}
 	if _, err = file.Write(data); err != nil {
-		file.Close()
+		_ = file.Close()
 		return err
 	}
 	if err = file.Sync(); err != nil {
-		file.Close()
+		_ = file.Close()
 		return err
 	}
 	return file.Close()
@@ -278,9 +278,9 @@ func (s *Store) Activate(ctx context.Context, expected string, documents []acces
 		}
 		return Snapshot{}, fmt.Errorf("publication lock unavailable")
 	}
-	defer lock.Unlock()
+	defer func() { _ = lock.Unlock() }()
 	current, err := s.Load(ctx)
-	if err != nil && !(expected == "" && errors.Is(err, os.ErrNotExist)) {
+	if err != nil && (expected != "" || !errors.Is(err, os.ErrNotExist)) {
 		return Snapshot{}, err
 	}
 	// A missing generation referenced by an existing active pointer must not
@@ -338,7 +338,7 @@ func (s *Store) Activate(ctx context.Context, expected string, documents []acces
 		if err != nil {
 			return Snapshot{}, err
 		}
-		defer os.RemoveAll(stage)
+		defer func() { _ = os.RemoveAll(stage) }()
 		if err = os.Mkdir(filepath.Join(stage, "policies"), 0700); err != nil {
 			return Snapshot{}, err
 		}
@@ -384,13 +384,13 @@ func (s *Store) Activate(ctx context.Context, expected string, documents []acces
 		return Snapshot{}, err
 	}
 	tempPath := temp.Name()
-	defer os.Remove(tempPath)
+	defer func() { _ = os.Remove(tempPath) }()
 	if _, err = temp.Write(activeData); err != nil {
-		temp.Close()
+		_ = temp.Close()
 		return Snapshot{}, err
 	}
 	if err = temp.Sync(); err != nil {
-		temp.Close()
+		_ = temp.Close()
 		return Snapshot{}, err
 	}
 	if err = temp.Close(); err != nil {

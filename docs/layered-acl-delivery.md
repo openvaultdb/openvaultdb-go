@@ -1,9 +1,39 @@
 # Coordinated ACL delivery
 
-Status: DALgo PR158 is green; a repository branch-policy decision precedes
-provider publication. SpecScore remains23/24 complete, with delivery in progress.
-The approved DTQL specification packet and independent HTTP adapter fix have
-landed. The main ACL provider/consumer wave is not yet published.
+Status (2026-09-11): task 24 remains in progress. DALgo PR158 landed at
+`8dece8b` and released `v0.80.0`; the prior strict-check question was approved
+and resolved. The historical observations below describe the September 9 run
+and are not current blockers.
+
+The resumed publication wave rebases the existing implementation onto current
+origin/main and opens review PRs. The lead Claude session reviews every PR.
+The agent lands only dal-go/*, ingitdb/* and openvaultdb/* after that review
+passes, using `wb pr land --approved-by <review comment URL>`; the lead owns
+DataTug landing. No policy viewing/editing is included.
+
+Current review PRs: [DALgo #159](https://github.com/dal-go/dalgo/pull/159),
+[SQL #181](https://github.com/dal-go/dalgo2sql/pull/181),
+[InGitDB #9](https://github.com/ingitdb/dalgo2ingitdb/pull/9).
+OpenVaultDB uses immutable reachable adapter commit pseudo-versions for
+unlinked review validation. After provider landing, converge to observed
+release tags on the same consumer PR before landing; do not hand-tag.
+
+The former DataTug worktrees were discarded by WB on September 11 at
+16:46–16:47 UTC. Their retained commits were recovered to origin branches
+`feat/layered-acl-query`. Clean replacement worktrees are at each repository's
+`.worktrees/acl24-datatug-publication`. Replay exposed the deliberate
+contract conflicts documented in datatug/datatug
+`spec/research/2026-09-09-layered-acl-reconciliation.md`: authentication,
+API envelopes, source targeting, settings ownership and URL conventions.
+The attempted replays were aborted without changing main or the preserved
+remote branches. DataTug integration awaits a decision on reconciling those
+contracts within task 24; the superseded routes will not be restored silently.
+
+Local unlinked validation: DALgo 100.0% coverage and SpecScore 0 violations;
+SQL 90.6%; InGitDB 84.8%; OpenVaultDB 59.7%, including conformance and
+protected writes. SQL's nested CGO E2E is blocked locally by missing gcc.
+Local ownership and Work Logs refreshed; fleet remote claim refresh/release
+is unavailable because the configured WB HTTP hub does not support claims.
 
 The [WB graph](layered-acl-release-graph.json) records the six Go repositories
 and their fetched main-branch dependencies. It also identifies the nested SQL
@@ -114,7 +144,7 @@ corroborated both absent assets and the exact landing. The original source had
 been rebased before publication, so GitHub could not look up that unpublished
 source SHA during automatic PR reconciliation.
 
-## Required human decision: DALgo strict required checks
+## Historical resolved decision: DALgo strict required checks
 
 The read-only GitHub branch-protection response for `dal-go/dalgo` main on
 2026-09-09 reports `strict: false` with these existing checks, all pinned to

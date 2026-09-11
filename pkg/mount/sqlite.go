@@ -51,7 +51,7 @@ func openSQLite(path string, m *manifest.Manifest) (dal.DB, []schema.Mode, error
 type sqliteMount struct{ *dalgo2sqlite.Database }
 
 func (s *sqliteMount) ConfigureProtectedAccess(participants ...access.MandatoryParticipant) (dal.DB, *access.EnforcementCoordinator, error) {
-	factory, ok := s.Database.DB.(interface {
+	factory, ok := s.DB.(interface {
 		ConfigureProtectedAccess(...access.MandatoryParticipant) (dal.DB, *access.EnforcementCoordinator, error)
 	})
 	if !ok {

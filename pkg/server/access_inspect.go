@@ -152,7 +152,7 @@ func (s *Server) projectInspection(r *http.Request, db *core.Database, request a
 		}
 		// A successful write may be authorized without read permission. A dry run
 		// does not get that exception: it cannot disclose a hidden row's existence.
-		if !details && !(request.Mode == az.ModeExecution && result.Operations[i].Result == az.OutcomeAllow) {
+		if !details && (request.Mode != az.ModeExecution || result.Operations[i].Result != az.OutcomeAllow) {
 			redactPoint(&result, op.ID)
 		}
 		result.Result = reduceOutcome(result.Result, result.Operations[i].Result)
@@ -398,7 +398,6 @@ func (s *Server) handleAccessEvidence(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
-	r = r.WithContext(ctx)
 	var evidence []access.AuthorizedPointEvidence
 	err = coordinator.WithinInspection(ctx, []access.ProtectedOperation{internal}, func(session access.InspectionSession) error {
 		var err error
