@@ -179,3 +179,31 @@ through WB. Do not disable required checks or bypass the WB refusal.
 The same read-only classic-protection check found DataTug CLI already strict;
 SQL, InGitDB adapter, OVDB and DataTug apps returned “Branch not protected.”
 Those observations are not substitutes for WB's full ruleset/route evaluation.
+
+## Independent review and landing update — 2026-09-11
+
+The user authorized lower-layer landing after independent AI approval. The
+[full static review](reviews/2026-09-11-acl24-review.md) records one confirmed
+contract defect and one defensive schema concern; both were addressed and the
+final code changes approved. Independent runtime validation was not performed
+by that reviewer; implementation tests and exact-head CI remain separate gates.
+Actual review tokens and monetary cost were unavailable. One reviewer covered
+all six repositories; no second-review cost or overlap comparison is claimed.
+
+DALgo #159 landed at `8c129ef778b298557fa681a47cb0f55c1795de37`, tag `v0.80.1`.
+SQL #181 landed at `b499a0170222a28cf1b756d46c6f2fa333573ac8`, tag `v0.14.0`.
+InGitDB #9 landed at `a153d6465fdb846cee4c728ed1469ec9a0d80c90`, tag `v0.5.0`.
+All three canonical clones were synchronized by WB; all three post-target CI
+receipts passed. The SQL and InGitDB landed trees equal their reviewed source
+trees. This PR now uses those tags; the resolved module graph differs only in
+those two version labels. DALgo stays on compatible `v0.80.0` (the subsequent
+patch changed documentation only). The HTTP adapter remains pinned to published
+main commit `cacd422564fc`; no release tag for that commit is available and none
+was fabricated.
+
+Strict up-to-date, App-pinned lint/build checks were enabled on the previously
+unprotected SQL, InGitDB and OpenVaultDB main branches. No checks were bypassed.
+DataTug CLI #237 and apps #138 are independently reviewed and remain lead-owned
+for landing. Their current scope and the remaining browser write/Explain and
+final task-24 receipts are unchanged. Remote WB claim cleanup remains unsupported
+by the configured HTTP hub; local landed worktree cleanup is performed by WB.
