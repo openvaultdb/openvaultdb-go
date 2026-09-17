@@ -11,7 +11,7 @@ require (
 	github.com/dal-go/dalgo2mysql v0.2.0
 	github.com/dal-go/dalgo2postgres v0.2.0
 	github.com/dal-go/record v0.1.3
-	github.com/ingitdb/dalgo2ingitdb v0.5.0
+	github.com/ingitdb/dalgo2ingitdb v0.6.1
 	github.com/ingitdb/ingitdb-go/ingitdb v0.6.0
 	gopkg.in/yaml.v3 v3.0.1
 )
