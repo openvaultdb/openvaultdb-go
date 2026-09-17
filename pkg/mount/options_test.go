@@ -25,19 +25,25 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 	return string(out)
 }
 
-// treeDigest lists every file under dir (including .git internals except the
-// index, which `git status` itself may refresh) with its content hash.
+// treeDigest lists every file under dir outside .git with its content hash.
+// .git internals are not compared: git itself changes them outside any
+// connect (e.g. a detached auto-maintenance run spawned by the seeding
+// commit removes .git/objects/maintenance.lock later); the git-side contract
+// is asserted via `git status --porcelain` and .git/config instead.
 func treeDigest(t *testing.T, dir string) string {
 	t.Helper()
 	var lines []string
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil {
 			return err
 		}
-		rel, _ := filepath.Rel(dir, path)
-		if rel == filepath.Join(".git", "index") {
+		if d.IsDir() {
+			if d.Name() == ".git" {
+				return filepath.SkipDir
+			}
 			return nil
 		}
+		rel, _ := filepath.Rel(dir, path)
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return err
@@ -60,7 +66,7 @@ func onlyGlobalGitIdentity(t *testing.T, dir string) {
 		unsetEnvForTest(t, k)
 	}
 	globalConfig := filepath.Join(dir, "gitconfig")
-	if err := os.WriteFile(globalConfig, []byte("[user]\n\tname = Global User\n\temail = global@example.com\n[init]\n\tdefaultBranch = main\n"), 0o644); err != nil {
+	if err := os.WriteFile(globalConfig, []byte("[user]\n\tname = Global User\n\temail = global@example.com\n[init]\n\tdefaultBranch = main\n[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
