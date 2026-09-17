@@ -30,7 +30,7 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 	}
 	query, collection, err := core.ParseDTQL(doc)
 	if err != nil {
-		writeMappedError(w, err)
+		s.writeMappedError(w, r, err)
 		return
 	}
 	if !s.authorize(w, r, db.ID(), auth.CapRecordsRead, collection) {
@@ -43,7 +43,7 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 			s.writeQueryAuthorizationError(w, r, db, op, err)
 			return
 		}
-		writeMappedError(w, err)
+		s.writeMappedError(w, r, err)
 		return
 	}
 	type recordOut struct {

@@ -47,18 +47,36 @@ type Record struct {
 	Data map[string]any
 }
 
+// ErrInvalidQuery identifies a structurally invalid wire query (mapped to
+// HTTP 400).
+var ErrInvalidQuery = errors.New("invalid query")
+
+// Target validates the query's collection name and parent path and returns
+// the parsed parent key (nil for a root-collection query) and the root
+// collection that scopes it: the parent's root when a parent is given.
+func (q Query) Target() (parent *record.Key, rootCollection string, err error) {
+	if err = ValidateCollectionName(q.Collection); err != nil {
+		return nil, "", fmt.Errorf("query: collection: %w", err)
+	}
+	if q.Parent == "" {
+		return nil, q.Collection, nil
+	}
+	if parent, err = ParseKeyPath(q.Parent); err != nil {
+		return nil, "", fmt.Errorf("query: parent: %w", err)
+	}
+	return parent, RootCollection(parent), nil
+}
+
 // Execute translates the wire query to dal.StructuredQuery and runs it on
-// the driver.
+// the driver. Result keys are full paths from the database root: records of
+// a nested collection carry their parent key.
 func (d *Database) Execute(ctx context.Context, q Query) ([]Record, error) {
-	if q.Collection == "" {
-		return nil, fmt.Errorf("query: collection is required")
+	parentKey, _, err := q.Target()
+	if err != nil {
+		return nil, err
 	}
 	collectionRef := dal.NewRootCollectionRef(q.Collection, "")
-	if q.Parent != "" {
-		parentKey, err := ParseKeyPath(q.Parent)
-		if err != nil {
-			return nil, fmt.Errorf("query: invalid parent key %q: %w", q.Parent, err)
-		}
+	if parentKey != nil {
 		collectionRef = dal.NewCollectionRef(q.Collection, "", parentKey)
 	}
 	var builder dal.IQueryBuilder = dal.From(collectionRef).NewQuery()
@@ -81,7 +99,7 @@ func (d *Database) Execute(ctx context.Context, q Query) ([]Record, error) {
 		case "array-contains-any":
 			builder = builder.WhereArrayContainsAny(f.Field, f.Value)
 		default:
-			return nil, fmt.Errorf("query: unknown filter op %q", f.Op)
+			return nil, fmt.Errorf("%w: unknown filter op %q", ErrInvalidQuery, f.Op)
 		}
 	}
 	for _, ob := range q.OrderBy {
@@ -112,6 +130,16 @@ func (d *Database) Execute(ctx context.Context, q Query) ([]Record, error) {
 	records, err := d.executeDalQuery(ctx, query, q.Collection, q.KeysOnly)
 	if err != nil {
 		return nil, err
+	}
+	if parentKey != nil {
+		// Some drivers (dalgo2ingitdb) return subcollection keys without
+		// their parent; re-root them so clients get a key that round-trips
+		// through /records.
+		for i := range records {
+			if k := records[i].Key; k.Parent() == nil {
+				records[i].Key = record.NewKeyWithParentAndID(parentKey, k.Collection(), k.ID)
+			}
+		}
 	}
 	if sortKeysInCore {
 		sort.Slice(records, func(i, j int) bool {
@@ -157,6 +185,9 @@ func validateDTQL(query dal.StructuredQuery) (string, error) {
 		if !ok || column.Alias != "" || field.Source() != "" {
 			return "", fmt.Errorf("%w: only unaliased field columns are supported", ErrInvalidDTQL)
 		}
+	}
+	if err := ValidateCollectionName(source.Name()); err != nil {
+		return "", err
 	}
 	return source.Name(), nil
 }

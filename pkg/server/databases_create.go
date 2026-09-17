@@ -72,7 +72,7 @@ func (s *Server) handleDatabaseCreate(w http.ResponseWriter, r *http.Request) {
 
 	db, err := provisionDatabase(s.dataDir, req.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		s.writeInternalError(w, r, err.Error(), err)
 		return
 	}
 
@@ -96,7 +96,7 @@ func (s *Server) handleDatabaseCreate(w http.ResponseWriter, r *http.Request) {
 	if !s.isOwner(r) {
 		token, tokenResp, err := s.mintDatabaseToken(r, req.ID, req.Label)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal", err.Error())
+			s.writeInternalError(w, r, err.Error(), err)
 			return
 		}
 		tokenResp.Token = token

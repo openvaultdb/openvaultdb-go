@@ -7,14 +7,20 @@ small: just enough for DALgo-backed Sneat CRUD validation. Versioned under `/v1`
 
 - **Record key path** `{key...}`: DALgo key path `collection/id[/subcollection/subid...]`,
   exactly as produced by `dal.Key.String()` (IDs percent-encode `. $ # [ ] /`). The server
-  splits the *escaped* path on `/` and unescapes each segment. Segments must be non-empty
-  and must not be `.` or `..`.
+  splits the *escaped* path on `/` and unescapes each segment. Each decoded segment must be
+  non-empty, must not be `.` or `..`, must not contain control characters (U+0000–U+001F,
+  U+007F), and must not contain a `.` or `..` component between `/` or `\` separators
+  (e.g. an id `%2E%2E%2F%2E%2E%2Fp2`, decoded `../../p2`, is rejected). The same rule applies
+  to batch `key`s, query `collection`/`parent` and DTQL collection names, on every engine.
+  Capabilities scope the key's (or query parent's) root collection.
 - **Record body**: the record's data as a JSON object.
 - **Errors**: non-2xx responses carry `{"error": {"code": "<machine-code>", "message": "..."}}`.
   - `404 not_found` — record or database missing
   - `409 already_exists` — insert conflict
   - `422 schema_validation` — strict/partial mode validation failure
-  - `400 bad_request` — malformed key/body/query
+  - `400 invalid_key` — malformed or unsafe key, collection name or parent path
+  - `400 bad_request` — malformed body/query
+  - `500 internal` — unexpected server/engine error (details are logged server-side, not returned)
   - `501 not_supported` — operation not in MVP
 
 ## Authentication (optional, `ovdb serve --auth`)
@@ -149,6 +155,10 @@ body:
 }
 → 200 {"records":[{"key":"contacts/c1","data":{...}}, ...]}               // data omitted when keysOnly
 ```
+
+Result keys are full key paths from the database root: a query with `"parent":"lists/to-buy"`
+on `items` returns `lists/to-buy/items/x` (not `items/x`), usable as-is with `/records`.
+With a `parent`, the read capability is checked on the parent's root collection (`lists`).
 
 Supported `op`: `==`, `<`, `<=`, `>`, `>=`, `in`, `array-contains`, `array-contains-any`.
 Queries translate 1:1 to `dal.StructuredQuery` and execute on the DALgo driver's own

@@ -17,17 +17,18 @@ import (
 // parseRecordKey extracts the record key from the escaped URL path so that
 // percent-encoded characters inside IDs (dal.EscapeID encodes `. $ # [ ] /`)
 // survive as data rather than path separators. Segments are unescaped
-// individually and validated (no empty, "." or ".." segments — path
-// traversal safety).
+// individually and validated after decoding (core.ValidateSegment: no empty,
+// "." or ".." segments, no decoded "../" components, no control characters —
+// path traversal safety on every engine). Errors wrap core.ErrInvalidKey.
 func parseRecordKey(r *http.Request) (*record.Key, error) {
 	escaped := r.URL.EscapedPath()
 	idx := strings.Index(escaped, "/records/")
 	if idx < 0 {
-		return nil, fmt.Errorf("record key missing in path")
+		return nil, fmt.Errorf("%w: record key missing in path", core.ErrInvalidKey)
 	}
 	raw := strings.TrimSuffix(escaped[idx+len("/records/"):], "/")
 	if raw == "" {
-		return nil, fmt.Errorf("record key missing in path")
+		return nil, fmt.Errorf("%w: record key missing in path", core.ErrInvalidKey)
 	}
 	return parseKeyPath(raw)
 }
@@ -45,17 +46,16 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 	}
 	key, err := parseRecordKey(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		writeError(w, http.StatusBadRequest, "invalid_key", err.Error())
 		return
 	}
 	ctx := r.Context()
 	if db.HasAccessPolicies() {
 		w.Header().Set("Cache-Control", "no-store")
 	}
-	collection := key.Collection()
-	for cur := key; cur != nil; cur = cur.Parent() {
-		collection = cur.Collection() // root collection scopes the capability
-	}
+	// The root collection of the validated key scopes the capability: it is
+	// the same key the driver writes, so an id cannot redirect the write.
+	collection := core.RootCollection(key)
 	action := ""
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
@@ -80,7 +80,7 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 				writeUnavailablePoint(w, db, key, "get")
 				return
 			}
-			writeMappedError(w, err)
+			s.writeMappedError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"key": key.String(), "data": data})
@@ -110,7 +110,7 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 			okStatus = http.StatusCreated
 		}
 		if _, err := db.Apply(ctx, []core.Op{{Op: opName, Key: key, Data: body.Data}}, ""); err != nil {
-			writeMappedError(w, err)
+			s.writeMappedError(w, r, err)
 			return
 		}
 		w.WriteHeader(okStatus)
@@ -131,13 +131,13 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, err := db.Apply(ctx, []core.Op{{Op: "update", Key: key, Updates: body.Updates}}, ""); err != nil {
-			writeMappedError(w, err)
+			s.writeMappedError(w, r, err)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	case http.MethodDelete:
 		if _, err := db.Apply(ctx, []core.Op{{Op: "delete", Key: key}}, ""); err != nil {
-			writeMappedError(w, err)
+			s.writeMappedError(w, r, err)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -170,7 +170,7 @@ func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 	for i := range body.Ops {
 		key, err := parseKeyPath(body.Ops[i].KeyPath)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "bad_request",
+			writeError(w, http.StatusBadRequest, "invalid_key",
 				fmt.Sprintf("op %d: invalid key %q: %v", i, body.Ops[i].KeyPath, err))
 			return
 		}
@@ -179,21 +179,17 @@ func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 	// Layer-2 capability check per op: writes and deletes are scoped to each
 	// op's root collection.
 	for i := range body.Ops {
-		root := body.Ops[i].Key
-		for cur := root; cur != nil; cur = cur.Parent() {
-			root = cur
-		}
 		action := auth.CapRecordsWrite
 		if body.Ops[i].Op == "delete" {
 			action = auth.CapRecordsDelete
 		}
-		if !s.authorize(w, r, db.ID(), action, root.Collection()) {
+		if !s.authorize(w, r, db.ID(), action, core.RootCollection(body.Ops[i].Key)) {
 			return
 		}
 	}
 	applied, err := db.Apply(r.Context(), body.Ops, body.Message)
 	if err != nil {
-		writeMappedError(w, err)
+		s.writeMappedError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"applied": applied})
@@ -209,12 +205,19 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body: "+err.Error())
 		return
 	}
-	if !s.authorize(w, r, db.ID(), auth.CapRecordsRead, q.Collection) {
+	// A subcollection query is scoped by its parent's root collection, not by
+	// the (possibly same-named) leaf collection.
+	_, scope, err := q.Target()
+	if err != nil {
+		s.writeMappedError(w, r, err)
+		return
+	}
+	if !s.authorize(w, r, db.ID(), auth.CapRecordsRead, scope) {
 		return
 	}
 	records, err := db.Execute(r.Context(), q)
 	if err != nil {
-		writeMappedError(w, err)
+		s.writeMappedError(w, r, err)
 		return
 	}
 	type recordOut struct {
