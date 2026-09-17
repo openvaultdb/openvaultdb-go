@@ -5,6 +5,8 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"sync"
@@ -18,8 +20,12 @@ import (
 type Server struct {
 	version string
 
-	mu  sync.RWMutex // guards dbs — databases can be mounted at runtime
+	mu  sync.RWMutex // guards dbs and inflight — databases can be mounted at runtime
 	dbs map[string]*core.Database
+	// inflight counts requests using each mounted database, so Unmount can
+	// drain them before closing it.
+	inflight   map[*core.Database]*sync.WaitGroup
+	inflightMu sync.Mutex // guards inflight writes made under s.mu.RLock
 
 	createMu sync.Mutex // serializes runtime database creation end-to-end
 
@@ -65,11 +71,135 @@ func WithDataDir(dir string) Option {
 
 // New creates a Server over mounted databases keyed by database id.
 func New(version string, dbs map[string]*core.Database, opts ...Option) *Server {
-	s := &Server{version: version, dbs: dbs, accessInstance: "local"}
+	if dbs == nil {
+		dbs = map[string]*core.Database{}
+	}
+	s := &Server{version: version, dbs: dbs, inflight: map[*core.Database]*sync.WaitGroup{}, accessInstance: "local"}
 	for _, opt := range opts {
 		opt(s)
 	}
 	return s
+}
+
+// ErrDatabaseMounted is returned by Mount when a database with the same id is
+// already mounted.
+var ErrDatabaseMounted = errors.New("database already mounted")
+
+// ErrDatabaseNotMounted is returned by Unmount for an unknown database id.
+var ErrDatabaseNotMounted = errors.New("database not mounted")
+
+// Mount starts serving db at runtime. It fails with ErrDatabaseMounted when
+// its id is taken; the server owns db once Mount succeeds.
+func (s *Server) Mount(db *core.Database) error {
+	if db == nil {
+		return errors.New("mount: nil database")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, taken := s.dbs[db.ID()]; taken {
+		return fmt.Errorf("%w: %s", ErrDatabaseMounted, db.ID())
+	}
+	s.dbs[db.ID()] = db
+	return nil
+}
+
+// Unmount stops serving database id: new requests get 404 at once, requests
+// already using it run to completion, then the database is closed, releasing
+// its engine resources (e.g. the SQLite file handle). The Close error, if
+// any, is returned; the database is unmounted either way. It waits for
+// in-flight requests without limit; see UnmountContext.
+func (s *Server) Unmount(id string) error {
+	return s.UnmountContext(context.Background(), id)
+}
+
+// UnmountContext is Unmount with a bound on the wait for in-flight requests.
+// If ctx ends first, the database stays unrouted, requests in flight keep
+// running, Close runs in the background once they finish (its error is
+// dropped), and ctx.Err() is returned.
+func (s *Server) UnmountContext(ctx context.Context, id string) error {
+	s.mu.Lock()
+	db, ok := s.dbs[id]
+	if !ok {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: %s", ErrDatabaseNotMounted, id)
+	}
+	delete(s.dbs, id)
+	wg := s.inflight[db]
+	delete(s.inflight, db)
+	s.mu.Unlock()
+	// Safe: no lease can be added after the db left the map (acquire holds
+	// s.mu.RLock across lookup and Add).
+	drained := make(chan struct{})
+	closeErr := make(chan error, 1)
+	go func() {
+		if wg != nil {
+			wg.Wait()
+		}
+		close(drained)
+		closeErr <- db.Close()
+	}()
+	select {
+	case <-drained:
+		return <-closeErr
+	case <-ctx.Done():
+		select {
+		case <-drained: // drained concurrently: finish synchronously
+			return <-closeErr
+		default:
+			return ctx.Err()
+		}
+	}
+}
+
+// leases records the in-flight counts a request holds; released when the
+// request's handler returns.
+type leases struct {
+	mu   sync.Mutex
+	done []func()
+}
+
+type leasesKey struct{}
+
+func (l *leases) release() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, done := range l.done {
+		done()
+	}
+	l.done = nil
+}
+
+// acquire returns the mounted database id and, when r carries a lease holder
+// (every request routed by Handler does), counts r as in flight on it.
+func (s *Server) acquire(r *http.Request, id string) *core.Database {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	db := s.dbs[id]
+	if db == nil {
+		return nil
+	}
+	if l, ok := r.Context().Value(leasesKey{}).(*leases); ok {
+		wg := s.inflightFor(db)
+		wg.Add(1)
+		l.mu.Lock()
+		l.done = append(l.done, wg.Done)
+		l.mu.Unlock()
+	}
+	return db
+}
+
+// inflightFor returns db's in-flight counter, creating it on first use.
+// Callers hold s.mu.RLock; inflightMu serializes concurrent readers, and
+// Unmount's exclusive s.mu.Lock excludes them all.
+func (s *Server) inflightFor(db *core.Database) *sync.WaitGroup {
+	s.inflightMu.Lock()
+	defer s.inflightMu.Unlock()
+	wg := s.inflight[db]
+	if wg == nil {
+		wg = &sync.WaitGroup{}
+		s.inflight[db] = wg
+	}
+	return wg
 }
 
 // Handler builds the HTTP handler. Middleware order (outermost first):
@@ -119,7 +249,9 @@ func (s *Server) Handler() http.Handler {
 				r = r.WithContext(access.WithPrincipal(r.Context(), principal))
 			}
 		}
-		mux.ServeHTTP(w, r)
+		held := &leases{}
+		defer held.release()
+		mux.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), leasesKey{}, held)))
 	})
 	if s.authCfg != nil {
 		h = s.authCfg.Middleware(h)
@@ -156,7 +288,7 @@ func (s *Server) isOwner(r *http.Request) bool {
 
 func (s *Server) db(w http.ResponseWriter, r *http.Request) *core.Database {
 	id := r.PathValue("db")
-	db := s.getDB(id)
+	db := s.acquire(r, id)
 	if db == nil {
 		writeError(w, http.StatusNotFound, "not_found", "database not found: "+id)
 		return nil
