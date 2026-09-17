@@ -7,6 +7,7 @@ package mount
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,9 +24,31 @@ import (
 	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 )
 
+// Options tunes how FileWithOptions mounts a database. The zero value is the
+// behaviour of File.
+type Options struct {
+	// CatalogueDir, when set, is where the inferred-schema catalogue lives,
+	// as <CatalogueDir>/<database id>.inferred.json, for every engine —
+	// instead of the default next to (or inside) the user's storage
+	// (<file>.inferred.json, <folder>/.ovdb/inferred-schema.json).
+	CatalogueDir string
+	// SkipGitIdentity disables stamping a repo-local git identity on a local
+	// inGitDB folder (see ensureGitIdentity), so mounting leaves .git/config
+	// untouched. Commits then rely on the host's own git identity.
+	SkipGitIdentity bool
+}
+
 // File mounts one database from a manifest file. Relative storage paths are
 // resolved against the manifest file's directory.
 func File(manifestPath string) (*core.Database, error) {
+	return FileWithOptions(manifestPath, Options{})
+}
+
+// FileWithOptions is File with mount Options. With CatalogueDir set outside
+// the storage and SkipGitIdentity true, mounting an existing local inGitDB
+// folder or SQLite file adds or changes nothing in it (writes made later
+// through the database still land in the storage, as they must).
+func FileWithOptions(manifestPath string, opts Options) (*core.Database, error) {
 	m, err := manifest.Load(manifestPath)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", manifestPath, err)
@@ -73,6 +96,7 @@ func File(manifestPath string) (*core.Database, error) {
 	var db dal.DB
 	var modes []schema.Mode
 	var cataloguePath string
+	var closeClient func() error // engine resources the dal.DB does not own
 	switch m.Storage.Engine {
 	case "sqlite":
 		if db, modes, err = openSQLite(storagePath, m); err != nil {
@@ -90,13 +114,13 @@ func File(manifestPath string) (*core.Database, error) {
 			if len(policies) > 0 {
 				options = append(options, dalgo2ingitdb.WithStoredOnlyReads())
 			}
-			if db, modes, err = openInGitDB(storagePath, options...); err != nil {
+			if db, modes, err = openInGitDB(storagePath, !opts.SkipGitIdentity, options...); err != nil {
 				return nil, fmt.Errorf("%s: %w", manifestPath, err)
 			}
 			cataloguePath = filepath.Join(storagePath, ".ovdb", "inferred-schema.json")
 		}
 	case "firestore":
-		if db, modes, err = openFirestore(m.Storage.Firestore); err != nil {
+		if db, modes, closeClient, err = openFirestore(m.Storage.Firestore); err != nil {
 			return nil, fmt.Errorf("%s: %w", manifestPath, err)
 		}
 		// Firestore has no local data directory; the inferred catalogue
@@ -117,6 +141,10 @@ func File(manifestPath string) (*core.Database, error) {
 			manifestPath, m.Storage.Engine)
 	}
 
+	if opts.CatalogueDir != "" {
+		cataloguePath = filepath.Join(opts.CatalogueDir, m.Database.ID+".inferred.json")
+	}
+
 	var d *core.Database
 	if controller != nil {
 		d, err = core.OpenWithPolicyController(m, db, modes, cataloguePath, controller)
@@ -124,11 +152,20 @@ func File(manifestPath string) (*core.Database, error) {
 		d, err = core.Open(m, db, modes, cataloguePath, policies...)
 	}
 	if err != nil {
+		// core does not take ownership on failure: release the driver.
+		if closer, ok := db.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		if closeClient != nil {
+			_ = closeClient()
+		}
 		return nil, fmt.Errorf("%s: %w", manifestPath, err)
 	}
+	d.OnClose(closeClient)
 	if m.Storage.Engine == "ingitdb" {
-		if hook := newGitPushHook(storagePath, m.Storage.InGitDB); hook != nil {
+		if hook, stop := newGitPushHook(storagePath, m.Storage.InGitDB); hook != nil {
 			d.SetAfterWrite(hook)
+			d.OnClose(stop)
 		}
 	}
 	return d, nil
@@ -138,7 +175,7 @@ func File(manifestPath string) (*core.Database, error) {
 // published dalgo2ingitdb driver. inGitDB is the reference engine and
 // supports all schema modes: schemaless works because core auto-creates
 // collection definitions on first write via the driver's ddl.SchemaModifier.
-func openInGitDB(dir string, options ...dalgo2ingitdb.DatabaseOption) (dal.DB, []schema.Mode, error) {
+func openInGitDB(dir string, gitIdentity bool, options ...dalgo2ingitdb.DatabaseOption) (dal.DB, []schema.Mode, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, nil, fmt.Errorf("failed to create inGitDB directory %s: %w", dir, err)
 	}
@@ -146,8 +183,11 @@ func openInGitDB(dir string, options ...dalgo2ingitdb.DatabaseOption) (dal.DB, [
 	// makes on every write, regardless of how dir came to be a git
 	// repository or whether this is a fresh create or a remount. See
 	// ensureGitIdentity for why this must live here rather than only at
-	// creation time.
-	ensureGitIdentity(dir)
+	// creation time. Skipped when connecting a user's folder must not
+	// change it (Options.SkipGitIdentity).
+	if gitIdentity {
+		ensureGitIdentity(dir)
+	}
 	db, err := dalgo2ingitdb.NewDatabase(dir, validator.NewCollectionsReader(), options...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open inGitDB at %s: %w", dir, err)
@@ -156,8 +196,49 @@ func openInGitDB(dir string, options ...dalgo2ingitdb.DatabaseOption) (dal.DB, [
 }
 
 // Dir mounts every *.yaml / *.yml manifest found directly in dir,
-// keyed by database id.
+// keyed by database id. It fails on the first manifest that does not mount;
+// see DirReport for a scan that tolerates broken manifests.
 func Dir(dir string) (map[string]*core.Database, error) {
+	paths, err := manifestPaths(dir)
+	if err != nil {
+		return nil, err
+	}
+	dbs := map[string]*core.Database{}
+	for _, path := range paths {
+		db, err := mountUnique(path, dbs)
+		if err != nil {
+			closeAll(dbs)
+			return nil, err
+		}
+		dbs[db.ID()] = db
+	}
+	return dbs, nil
+}
+
+// DirReport mounts every *.yaml / *.yml manifest found directly in dir, like
+// Dir, but one manifest that fails to mount does not stop the others. It
+// returns the mounted databases keyed by database id and the failures keyed by
+// manifest path. The error result is non-nil only when dir itself cannot be
+// read.
+func DirReport(dir string) (map[string]*core.Database, map[string]error, error) {
+	paths, err := manifestPaths(dir)
+	if err != nil {
+		return nil, nil, err
+	}
+	dbs := map[string]*core.Database{}
+	failures := map[string]error{}
+	for _, path := range paths {
+		db, err := mountUnique(path, dbs)
+		if err != nil {
+			failures[path] = err
+			continue
+		}
+		dbs[db.ID()] = db
+	}
+	return dbs, failures, nil
+}
+
+func manifestPaths(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read manifests directory %s: %w", dir, err)
@@ -173,16 +254,25 @@ func Dir(dir string) (map[string]*core.Database, error) {
 		}
 	}
 	sort.Strings(paths)
-	dbs := map[string]*core.Database{}
-	for _, path := range paths {
-		db, err := File(path)
-		if err != nil {
-			return nil, err
-		}
-		if _, dup := dbs[db.ID()]; dup {
-			return nil, fmt.Errorf("%s: duplicate database id %q", path, db.ID())
-		}
-		dbs[db.ID()] = db
+	return paths, nil
+}
+
+// mountUnique mounts path and rejects (closing it again) a database whose id
+// is already in dbs.
+func mountUnique(path string, dbs map[string]*core.Database) (*core.Database, error) {
+	db, err := File(path)
+	if err != nil {
+		return nil, err
 	}
-	return dbs, nil
+	if _, dup := dbs[db.ID()]; dup {
+		_ = db.Close()
+		return nil, fmt.Errorf("%s: duplicate database id %q", path, db.ID())
+	}
+	return db, nil
+}
+
+func closeAll(dbs map[string]*core.Database) {
+	for _, db := range dbs {
+		_ = db.Close()
+	}
 }

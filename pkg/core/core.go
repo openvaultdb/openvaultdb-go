@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"sync"
@@ -68,6 +69,12 @@ type Database struct {
 	// mu serializes writes: dalgo2ingitdb is single-writer and SQLite is
 	// effectively so; reads may run concurrently with each other.
 	mu sync.Mutex
+
+	// closers release engine resources (the raw driver's handle, clients
+	// owned by the mount); run once, in reverse registration order, by Close.
+	closers   []func() error
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // Open validates driver/schema-mode compatibility and prepares the database:
@@ -109,6 +116,11 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 		return nil, &ModeCompatibilityError{Engine: m.Storage.Engine, Requested: mode, Supported: supportedModes}
 	}
 	d := &Database{Manifest: m, db: db, modes: supportedModes, policyController: controller}
+	// Retain the raw driver's Close: protected/secured wrappers installed
+	// below replace d.db but share the driver's underlying handle.
+	if closer, ok := db.(io.Closer); ok {
+		d.closers = append(d.closers, closer.Close)
+	}
 	if source, ok := db.(interface {
 		AccessPolicies(context.Context) ([]access.Policy, error)
 	}); ok {
@@ -275,9 +287,33 @@ func (d *Database) Collections(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
-// Close is a no-op today: DALgo drivers used by ovdb hold no long-lived
-// resources that dal.DB exposes a close for.
-func (d *Database) Close() error { return nil }
+// OnClose registers fn to run when the database is closed, after resources
+// registered later (reverse order). Mounts use it for resources the dal.DB
+// driver does not own, e.g. a Firestore client.
+func (d *Database) OnClose(fn func() error) {
+	if fn != nil {
+		d.closers = append(d.closers, fn)
+	}
+}
+
+// Close releases the engine resources behind the database: it propagates to
+// the underlying DALgo driver when that driver implements io.Closer (SQLite,
+// PostgreSQL, MySQL) and runs callbacks registered with OnClose. It is
+// idempotent; later calls return the first call's result. Callers must stop
+// using the database before closing it (the server drains in-flight requests
+// first, see server.Unmount).
+func (d *Database) Close() error {
+	d.closeOnce.Do(func() {
+		var errs []error
+		for i := len(d.closers) - 1; i >= 0; i-- {
+			if err := d.closers[i](); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		d.closeErr = errors.Join(errs...)
+	})
+	return d.closeErr
+}
 
 // Op is one operation of a write batch, in wire format (see docs/api.md).
 type Op struct {

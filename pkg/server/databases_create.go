@@ -76,9 +76,11 @@ func (s *Server) handleDatabaseCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.Lock()
-	s.dbs[req.ID] = db
-	s.mu.Unlock()
+	if err = s.Mount(db); err != nil {
+		_ = db.Close()
+		writeError(w, http.StatusConflict, "already_exists", "database already exists: "+req.ID)
+		return
+	}
 
 	resp := databaseCreateResponse{
 		Database: databaseInfo{
