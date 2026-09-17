@@ -52,22 +52,28 @@ func treeDigest(t *testing.T, dir string) string {
 	return strings.Join(lines, "\n")
 }
 
+// onlyGlobalGitIdentity leaves git with only a global identity: no env
+// identity, a temp global config file under dir.
+func onlyGlobalGitIdentity(t *testing.T, dir string) {
+	t.Helper()
+	for _, k := range []string{"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"} {
+		unsetEnvForTest(t, k)
+	}
+	globalConfig := filepath.Join(dir, "gitconfig")
+	if err := os.WriteFile(globalConfig, []byte("[user]\n\tname = Global User\n\temail = global@example.com\n[init]\n\tdefaultBranch = main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+}
+
 // TestFileWithOptions_ConnectLeavesGitRepoUntouched verifies
 // database-setup-and-providers#ac:connect-leaves-folder-untouched at the
 // mount layer: connecting an existing inGitDB git repository that has
 // records and only a global git identity adds or changes no file in it.
 func TestFileWithOptions_ConnectLeavesGitRepoUntouched(t *testing.T) {
 	root := t.TempDir()
-	// Only a global identity: no env identity, a temp global config file.
-	for _, k := range []string{"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"} {
-		unsetEnvForTest(t, k)
-	}
-	globalConfig := filepath.Join(root, "gitconfig")
-	if err := os.WriteFile(globalConfig, []byte("[user]\n\tname = Global User\n\temail = global@example.com\n[init]\n\tdefaultBranch = main\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
-	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	onlyGlobalGitIdentity(t, root)
 
 	repo := filepath.Join(root, "repo")
 	if err := os.MkdirAll(repo, 0o755); err != nil {
@@ -227,5 +233,45 @@ func TestDirReport_DuplicateID(t *testing.T) {
 	dup := failures[filepath.Join(dir, "b.yml")]
 	if len(dbs) != 1 || dup == nil || !strings.Contains(dup.Error(), "duplicate database id") {
 		t.Errorf("dbs = %v, failures = %v; want a.yaml mounted and b.yml a duplicate", dbs, failures)
+	}
+}
+
+func TestDirReportWithOptions_CataloguesOutsideStorage(t *testing.T) {
+	dir := t.TempDir()
+	onlyGlobalGitIdentity(t, t.TempDir())
+	catalogues := filepath.Join(dir, "catalogues")
+	for _, id := range []string{"one", "two"} {
+		body := "database:\n  id: " + id + "\n  schema_mode: schemaless\nstorage:\n  engine: ingitdb\n  path: ./" + id + "\n"
+		if err := os.WriteFile(filepath.Join(dir, id+".yaml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(dir, id), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		gitOut(t, filepath.Join(dir, id), "init", "-q")
+	}
+	dbs, failures, err := DirReportWithOptions(dir, Options{CatalogueDir: catalogues, SkipGitIdentity: true})
+	if err != nil || len(failures) != 0 || len(dbs) != 2 {
+		t.Fatalf("DirReportWithOptions = %v, %v, %v", dbs, failures, err)
+	}
+	ctx := context.Background()
+	for id, db := range dbs {
+		t.Cleanup(func() { _ = db.Close() })
+		key, err := core.ParseKey("notes", "n1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = db.Apply(ctx, []core.Op{{Op: "insert", Key: key, Data: map[string]any{"db": id}}}, "w"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = os.Stat(filepath.Join(catalogues, id+".inferred.json")); err != nil {
+			t.Errorf("%s: catalogue not in CatalogueDir: %v", id, err)
+		}
+		if _, err = os.Stat(filepath.Join(dir, id, ".ovdb")); !os.IsNotExist(err) {
+			t.Errorf("%s: .ovdb written into storage: %v", id, err)
+		}
+		if _, err = exec.Command("git", "-C", filepath.Join(dir, id), "config", "--local", "--get", "user.email").Output(); err == nil {
+			t.Errorf("%s: git identity stamped despite SkipGitIdentity", id)
+		}
 	}
 }

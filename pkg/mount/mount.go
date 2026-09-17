@@ -205,7 +205,7 @@ func Dir(dir string) (map[string]*core.Database, error) {
 	}
 	dbs := map[string]*core.Database{}
 	for _, path := range paths {
-		db, err := mountUnique(path, dbs)
+		db, err := mountUnique(path, dbs, Options{})
 		if err != nil {
 			closeAll(dbs)
 			return nil, err
@@ -221,6 +221,14 @@ func Dir(dir string) (map[string]*core.Database, error) {
 // manifest path. The error result is non-nil only when dir itself cannot be
 // read.
 func DirReport(dir string) (map[string]*core.Database, map[string]error, error) {
+	return DirReportWithOptions(dir, Options{})
+}
+
+// DirReportWithOptions is DirReport mounting each manifest with
+// FileWithOptions, e.g. so a registry scan never writes into user storage.
+// Catalogues in Options.CatalogueDir are per database id and cannot collide
+// (duplicate ids are rejected).
+func DirReportWithOptions(dir string, opts Options) (map[string]*core.Database, map[string]error, error) {
 	paths, err := manifestPaths(dir)
 	if err != nil {
 		return nil, nil, err
@@ -228,7 +236,7 @@ func DirReport(dir string) (map[string]*core.Database, map[string]error, error) 
 	dbs := map[string]*core.Database{}
 	failures := map[string]error{}
 	for _, path := range paths {
-		db, err := mountUnique(path, dbs)
+		db, err := mountUnique(path, dbs, opts)
 		if err != nil {
 			failures[path] = err
 			continue
@@ -259,8 +267,8 @@ func manifestPaths(dir string) ([]string, error) {
 
 // mountUnique mounts path and rejects (closing it again) a database whose id
 // is already in dbs.
-func mountUnique(path string, dbs map[string]*core.Database) (*core.Database, error) {
-	db, err := File(path)
+func mountUnique(path string, dbs map[string]*core.Database, opts Options) (*core.Database, error) {
+	db, err := FileWithOptions(path, opts)
 	if err != nil {
 		return nil, err
 	}

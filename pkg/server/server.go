@@ -106,8 +106,17 @@ func (s *Server) Mount(db *core.Database) error {
 // Unmount stops serving database id: new requests get 404 at once, requests
 // already using it run to completion, then the database is closed, releasing
 // its engine resources (e.g. the SQLite file handle). The Close error, if
-// any, is returned; the database is unmounted either way.
+// any, is returned; the database is unmounted either way. It waits for
+// in-flight requests without limit; see UnmountContext.
 func (s *Server) Unmount(id string) error {
+	return s.UnmountContext(context.Background(), id)
+}
+
+// UnmountContext is Unmount with a bound on the wait for in-flight requests.
+// If ctx ends first, the database stays unrouted, requests in flight keep
+// running, Close runs in the background once they finish (its error is
+// dropped), and ctx.Err() is returned.
+func (s *Server) UnmountContext(ctx context.Context, id string) error {
 	s.mu.Lock()
 	db, ok := s.dbs[id]
 	if !ok {
@@ -120,10 +129,26 @@ func (s *Server) Unmount(id string) error {
 	s.mu.Unlock()
 	// Safe: no lease can be added after the db left the map (acquire holds
 	// s.mu.RLock across lookup and Add).
-	if wg != nil {
-		wg.Wait()
+	drained := make(chan struct{})
+	closeErr := make(chan error, 1)
+	go func() {
+		if wg != nil {
+			wg.Wait()
+		}
+		close(drained)
+		closeErr <- db.Close()
+	}()
+	select {
+	case <-drained:
+		return <-closeErr
+	case <-ctx.Done():
+		select {
+		case <-drained: // drained concurrently: finish synchronously
+			return <-closeErr
+		default:
+			return ctx.Err()
+		}
 	}
-	return db.Close()
 }
 
 // leases records the in-flight counts a request holds; released when the
