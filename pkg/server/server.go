@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"sync"
@@ -36,6 +37,7 @@ type Server struct {
 	accessAuthorization OwnerAuthorization
 	explainResolver     MembershipResolver
 	accessInstance      string
+	logger              *slog.Logger // internal errors; defaults to slog.Default()
 }
 
 // Option configures the Server.
@@ -48,6 +50,16 @@ type PrincipalResolver func(context.Context, *auth.Principal) (access.Principal,
 
 func WithPrincipalResolver(resolve PrincipalResolver) Option {
 	return func(s *Server) { s.principalResolver = resolve }
+}
+
+// WithLogger sets the logger internal (HTTP 500) errors are reported to.
+// A nil logger keeps the default, slog.Default().
+func WithLogger(logger *slog.Logger) Option {
+	return func(s *Server) {
+		if logger != nil {
+			s.logger = logger
+		}
+	}
 }
 
 // WithAuth enables authentication: the connect flow endpoints are served and
@@ -74,7 +86,7 @@ func New(version string, dbs map[string]*core.Database, opts ...Option) *Server 
 	if dbs == nil {
 		dbs = map[string]*core.Database{}
 	}
-	s := &Server{version: version, dbs: dbs, inflight: map[*core.Database]*sync.WaitGroup{}, accessInstance: "local"}
+	s := &Server{version: version, dbs: dbs, inflight: map[*core.Database]*sync.WaitGroup{}, accessInstance: "local", logger: slog.Default()}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -366,7 +378,7 @@ func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
 	}
 	collections, err := db.Collections(r.Context())
 	if err != nil {
-		writeMappedError(w, err)
+		s.writeMappedError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

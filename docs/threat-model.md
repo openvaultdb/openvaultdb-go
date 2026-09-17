@@ -31,18 +31,21 @@ engine.
   load time). IDs used in URL routing are checked against this same constraint; an unknown ID
   returns 404, never a filesystem probe.
 - **Key segments** (collection names and record IDs) are percent-decoded individually, then
-  checked: empty string, `.`, and `..` are all rejected with HTTP 400. Absolute path components
-  cannot appear because segments are not joined as filesystem paths — they are passed to the
-  DALgo driver as typed key components.
+  checked (`core.ValidateSegment`): empty string, `.`, `..`, control characters, and any `.`/`..`
+  component between decoded `/` or `\` separators are rejected with HTTP 400 `invalid_key`.
+  This applies to record URLs (all methods), batch keys, query collection/parent and DTQL
+  collection names. File-backed drivers (dalgo2ingitdb) *do* join key components into
+  filesystem paths, so an escaped id like `%2E%2E%2F%2E%2E%2Fsecrets%2F%24records%2Fs1` once
+  escaped its collection and bypassed per-collection capability scoping; the boundary check is
+  defense in depth alongside the driver fix.
+- **Capability scope** is checked on the root collection of the same parsed key the driver
+  receives (for queries: the parent key's root collection).
 - **Storage paths** in manifests are resolved relative to the manifest file's directory;
   absolute paths in the manifest are accepted. The server does not sanitise manifest paths
   (manifests are operator-controlled, not user-supplied).
 
-No known path traversal vectors remain, but the mitigations above assume the DALgo drivers
-themselves do not perform unsafe path construction from key components. `dalgo2ingitdb` stores
-records at `<collection>/<id>.yaml` derived from the key, using the ID directly as a filename.
-IDs that contain `/` after percent-decoding would be rejected by the key parser before reaching
-the driver.
+IDs may legitimately contain an escaped `/` (e.g. `foo%2Fbar`); only relative components are
+rejected, so drivers must still treat IDs as untrusted when building paths.
 
 ## Accidental data exposure
 

@@ -133,7 +133,7 @@ func (s *Server) handleAuthorizePost(w http.ResponseWriter, r *http.Request) {
 	}
 	code, err := newAuthCode()
 	if err != nil {
-		writeMappedError(w, err)
+		s.writeMappedError(w, r, err)
 		return
 	}
 	s.authCfg.Store.PutCode(code, cv.ClientID, cv.RedirectURI, cv.DatabaseID, cv.Capabilities)

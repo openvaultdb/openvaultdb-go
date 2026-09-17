@@ -102,7 +102,7 @@ func (s *Server) handleTokensCreate(w http.ResponseWriter, r *http.Request) {
 
 	token, err := auth.NewToken()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "failed to generate token: "+err.Error())
+		s.writeInternalError(w, r, "failed to generate token: "+err.Error(), err)
 		return
 	}
 	g := &auth.Grant{Subject: req.Subject, Actor: req.Actor,
@@ -116,7 +116,7 @@ func (s *Server) handleTokensCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err = s.authCfg.Store.CreateGrant(g, token); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "failed to persist grant: "+err.Error())
+		s.writeInternalError(w, r, "failed to persist grant: "+err.Error(), err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, grantToResponse(g, token))

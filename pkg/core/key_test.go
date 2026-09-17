@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 )
@@ -182,4 +183,85 @@ func TestParseKeyPath(t *testing.T) {
 			t.Error("expected error for empty middle segment")
 		}
 	})
+}
+
+// ---------- Key segment validation (path-traversal repros) ----------
+
+func TestParseKeyPath_RejectsTraversalAndControlSegments(t *testing.T) {
+	for _, raw := range []string{
+		// Exact repro strings: escaped separators decode to traversal.
+		"items/%2E%2E%2F%2E%2E%2Fp2",
+		"items/%2E%2E%2F.git%2Fhooks%2Fpre-commit",
+		"notes/%2E%2E%2F%2E%2E%2Fsecrets%2F%24records%2Fs1",
+		"items/%2E",
+		"items/%2E%2E",
+		"%2E%2E/id",
+		"%2E%2E%2Fsecrets/id",
+		"items/a%2F%2E%2E%2Fb",
+		"items/a%5C..%5Cb",
+		"items/..%5Cb",
+		"lists/%2E%2E/items/x",
+		"lists/l1/%2E%2E%2Fsecrets/x",
+		"items/a%00b",
+		"items/a%0Ab",
+		"items/a%1Fb",
+		"items/a%7Fb",
+		"it%09ems/x",
+		"items/",
+		"items/%",
+		"items/%2F",
+		"items/%5C%2F",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			_, err := ParseKeyPath(raw)
+			if err == nil {
+				t.Fatalf("ParseKeyPath(%q) accepted a traversal/control key", raw)
+			}
+			if !errors.Is(err, ErrInvalidKey) {
+				t.Errorf("ParseKeyPath(%q) error %v does not wrap ErrInvalidKey", raw, err)
+			}
+		})
+	}
+}
+
+func TestParseKeyPath_AcceptsDottedAndEscapedIDs(t *testing.T) {
+	for _, raw := range []string{
+		"users/foo%2Fbar",
+		"users/a.b",
+		"users/...",
+		"users/..x",
+		"users/x..",
+		"users/%24records",
+		"lists/to-buy/items/x",
+	} {
+		if _, err := ParseKeyPath(raw); err != nil {
+			t.Errorf("ParseKeyPath(%q): unexpected error %v", raw, err)
+		}
+	}
+}
+
+func TestValidateCollectionName(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ok   bool
+	}{
+		{"notes", true},
+		{"a.b", true},
+		{"", false},
+		{".", false},
+		{"..", false},
+		{"../secrets", false},
+		{"notes/../secrets", false},
+		{`..\secrets`, false},
+		{"a\x00b", false},
+		{"a\x7f", false},
+	} {
+		err := ValidateCollectionName(tc.name)
+		if tc.ok != (err == nil) {
+			t.Errorf("ValidateCollectionName(%q) = %v, want ok=%v", tc.name, err, tc.ok)
+		}
+		if err != nil && !errors.Is(err, ErrInvalidKey) {
+			t.Errorf("ValidateCollectionName(%q) error %v does not wrap ErrInvalidKey", tc.name, err)
+		}
+	}
 }
