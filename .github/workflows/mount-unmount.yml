@@ -1,0 +1,42 @@
+name: Mount/Unmount
+
+# Runtime Mount/Unmount checks the shared Go CI workflow cannot express: the
+# race detector (needs cgo, which the pure-Go CI build disables) over the
+# server's mount tests, and on Windows — where an open file cannot be
+# renamed — proof that Unmount releases the SQLite handle. Path-filtered
+# pushes on any branch, so a pushed work branch is checked before its PR.
+on:
+  push:
+    paths:
+      - 'pkg/core/**'
+      - 'pkg/mount/**'
+      - 'pkg/server/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/mount-unmount.yml'
+  pull_request:
+    branches:
+      - '**'
+
+permissions:
+  contents: read
+
+jobs:
+  mount_unmount:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            run: go test -race -count=1 ./pkg/server/ -run Mount
+          - os: windows-latest
+            run: go test -count=1 ./pkg/server/ -run TestMountUnmount_ReleasesSQLiteFile
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Test
+        run: ${{ matrix.run }}
+        shell: bash
