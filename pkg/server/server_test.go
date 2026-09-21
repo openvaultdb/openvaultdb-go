@@ -128,7 +128,7 @@ func TestGETReadAndQuery(t *testing.T) {
 	readURL := base + "/v1/databases/testdb/read?" + url.Values{"key": {"contacts/c1"}}.Encode()
 	read := doRequest(t, http.MethodGet, readURL, nil)
 	mustStatus(t, read, http.StatusOK)
-	if got := read.Header.Get("Cache-Control"); got != "" {
+	if got := read.Header.Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("GET read Cache-Control = %q", got)
 	}
 	var record map[string]any
@@ -141,7 +141,7 @@ func TestGETReadAndQuery(t *testing.T) {
 	queryURL := base + "/v1/databases/testdb/query?" + url.Values{"q": {q}}.Encode()
 	query := doRequest(t, http.MethodGet, queryURL, nil)
 	mustStatus(t, query, http.StatusOK)
-	if got := query.Header.Get("Cache-Control"); got != "" {
+	if got := query.Header.Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("GET query Cache-Control = %q", got)
 	}
 	var result map[string]any
@@ -208,6 +208,34 @@ func TestReadOnlyCachesGETResponses(t *testing.T) {
 		t.Fatalf("GET read Cache-Control = %q", got)
 	}
 	drainClose(read)
+}
+
+func TestURLReadFormsDefaultToNoStoreBeforeHandler(t *testing.T) {
+	base := startTestServer(t, schemalessManifest)
+	for _, tc := range []struct {
+		name, method, endpoint string
+		status                 int
+	}{
+		{"missing database", http.MethodGet, "/v1/databases/missing/read?" + url.Values{"key": {"contacts/c1"}}.Encode(), http.StatusNotFound},
+		{"HEAD read", http.MethodHead, "/v1/databases/testdb/read?" + url.Values{"key": {"contacts/c1"}}.Encode(), http.StatusNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := doRequest(t, tc.method, base+tc.endpoint, nil)
+			mustStatus(t, resp, tc.status)
+			if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("Cache-Control = %q", got)
+			}
+			drainClose(resp)
+		})
+	}
+
+	authBase := startTestServerWithOptions(t, schemalessManifest, server.WithAuth(&auth.Config{OwnerToken: "owner"}))
+	resp := doRequest(t, http.MethodGet, authBase+"/v1/databases/testdb/query?"+url.Values{"q": {`{"collection":"contacts"}`}}.Encode(), nil)
+	mustStatus(t, resp, http.StatusUnauthorized)
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("auth failure Cache-Control = %q", got)
+	}
+	drainClose(resp)
 }
 
 func TestReadOnlyRejectsOwnerMutations(t *testing.T) {

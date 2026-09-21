@@ -299,10 +299,26 @@ func (s *Server) Handler() http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+	// Default the URL-query read forms to no-store before authentication or
+	// database lookup. A successful public read may replace this with its
+	// configured TTL in cacheReadResponse.
+	next := h
+	h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isReadCacheEndpoint(r) {
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		next.ServeHTTP(w, r)
+	})
 	if s.corsCfg != nil {
 		h = corsMiddleware(s.corsCfg, h)
 	}
 	return h
+}
+
+func isReadCacheEndpoint(r *http.Request) bool {
+	return (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
+		strings.HasPrefix(r.URL.Path, "/v1/databases/") &&
+		(strings.HasSuffix(r.URL.Path, "/read") || strings.HasSuffix(r.URL.Path, "/query"))
 }
 
 // isMutation identifies every mounted route that persists data or changes

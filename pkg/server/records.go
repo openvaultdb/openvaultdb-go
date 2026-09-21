@@ -23,7 +23,6 @@ func (s *Server) handleRead(w http.ResponseWriter, r *http.Request) {
 	if db == nil {
 		return
 	}
-	s.setReadCacheSafety(w, r, db)
 	key, err := parseKeyPath(r.URL.Query().Get("key"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_key", err.Error())
@@ -231,7 +230,6 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	if db == nil {
 		return
 	}
-	s.setReadCacheSafety(w, r, db)
 	var q core.Query
 	if err := decodeQuery(r, &q); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
@@ -297,19 +295,8 @@ func (s *Server) executeQuery(w http.ResponseWriter, r *http.Request, db *core.D
 
 func (s *Server) cacheReadResponse(w http.ResponseWriter, r *http.Request, db *core.Database) {
 	if s.readOnly && s.readCacheTTL > 0 && r.Method == http.MethodGet &&
-		(strings.HasSuffix(r.URL.Path, "/read") || strings.HasSuffix(r.URL.Path, "/query")) &&
+		isReadCacheEndpoint(r) &&
 		s.authCfg == nil && !db.HasAccessPolicies() {
 		w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", int(s.readCacheTTL.Seconds())))
-	}
-}
-
-// setReadCacheSafety prevents a shared or private cache from retaining a
-// response whose contents or visibility can vary by caller. It runs before
-// parsing, authorization, or fetching so errors are covered too.
-func (s *Server) setReadCacheSafety(w http.ResponseWriter, r *http.Request, db *core.Database) {
-	if r.Method == http.MethodGet &&
-		(strings.HasSuffix(r.URL.Path, "/read") || strings.HasSuffix(r.URL.Path, "/query")) &&
-		(s.authCfg != nil || db.HasAccessPolicies()) {
-		w.Header().Set("Cache-Control", "no-store")
 	}
 }

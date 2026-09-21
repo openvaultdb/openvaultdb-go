@@ -168,8 +168,10 @@ The `q` value is the same JSON object accepted by `POST /query`, URL-encoded
 once. It is limited to 1 MiB. Query results remain subject to the server's 8
 MiB result buffer. For a public, unprotected mounted database, embedders can
 set `server.WithReadOnly(true)` plus `server.WithReadCacheTTL(ttl)` to send `Cache-Control: public, max-age=N`
-on successful GET `/read` and GET `/query` responses. Authentication-enabled
-or policy-protected responses are never marked cacheable.
+on successful GET `/read` and GET `/query` responses. These URL-query forms
+default to `Cache-Control: no-store`, including authentication failures,
+missing databases, and HEAD requests. Authentication-enabled or
+policy-protected responses are never marked cacheable.
 
 `server.WithReadOnly(true)` rejects every record, database, and token mutation
 with `403 {"error":{"code":"read_only"...}}`, including mutations authenticated
