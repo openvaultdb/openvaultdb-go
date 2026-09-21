@@ -149,6 +149,40 @@ func TestGETReadAndQuery(t *testing.T) {
 	if len(result["records"].([]any)) != 1 {
 		t.Fatalf("GET query records = %#v", result["records"])
 	}
+
+	head := doRequest(t, http.MethodHead, queryURL, nil)
+	mustStatus(t, head, http.StatusMethodNotAllowed)
+	if got := head.Header.Get("Allow"); got != "GET, POST" {
+		t.Fatalf("HEAD query Allow = %q", got)
+	}
+	drainClose(head)
+}
+
+func TestProtectedGETReadAndQueryAreNeverCacheable(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "db.yaml")
+	manifest := strings.Replace(schemalessManifest, "storage:", "acl:\n  enabled: true\n  policies: [policy.yaml]\nstorage:", 1)
+	aclWriteFile(t, manifestPath, manifest)
+	aclWriteFile(t, filepath.Join(dir, "policy.yaml"), strings.Replace(aclPolicy("public-read", "name", "Alice"), "database: crm", "database: testdb", 1))
+	db, err := mount.File(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ts := httptest.NewServer(server.New("test", map[string]*core.Database{db.ID(): db}, server.WithReadOnly(true), server.WithReadCacheTTL(time.Hour)).Handler())
+	t.Cleanup(ts.Close)
+
+	for _, endpoint := range []string{
+		"/v1/databases/testdb/read?" + url.Values{"key": {"contacts/c1"}}.Encode(),
+		"/v1/databases/testdb/query?" + url.Values{"q": {`{"collection":"contacts"}`}}.Encode(),
+	} {
+		resp := doRequest(t, http.MethodGet, ts.URL+endpoint, nil)
+		if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+			_ = resp.Body.Close()
+			t.Fatalf("GET %s Cache-Control = %q", endpoint, got)
+		}
+		drainClose(resp)
+	}
 }
 
 func TestReadOnlyCachesGETResponses(t *testing.T) {

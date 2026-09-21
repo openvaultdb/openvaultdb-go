@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -23,6 +22,9 @@ func (s *Server) handleRead(w http.ResponseWriter, r *http.Request) {
 	db := s.db(w, r)
 	if db == nil {
 		return
+	}
+	if db.HasAccessPolicies() {
+		w.Header().Set("Cache-Control", "no-store")
 	}
 	key, err := parseKeyPath(r.URL.Query().Get("key"))
 	if err != nil {
@@ -222,9 +224,17 @@ func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodHead {
+		w.Header().Set("Allow", "GET, POST")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
 	db := s.db(w, r)
 	if db == nil {
 		return
+	}
+	if db.HasAccessPolicies() {
+		w.Header().Set("Cache-Control", "no-store")
 	}
 	var q core.Query
 	if err := decodeQuery(r, &q); err != nil {
@@ -246,11 +256,10 @@ func decodeQuery(r *http.Request, q *core.Query) error {
 		}
 		data = []byte(raw[0])
 	} else {
-		var err error
-		data, err = io.ReadAll(http.MaxBytesReader(nil, r.Body, maxQueryRequestBytes))
-		if err != nil {
-			return errors.New("invalid JSON body size")
+		if err := json.NewDecoder(r.Body).Decode(q); err != nil {
+			return fmt.Errorf("invalid JSON body: %w", err)
 		}
+		return nil
 	}
 	if err := json.Unmarshal(data, q); err != nil {
 		return fmt.Errorf("invalid JSON query: %w", err)
