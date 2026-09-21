@@ -10,7 +10,9 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/dal-go/dalgo/access"
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
@@ -30,9 +32,11 @@ type Server struct {
 
 	createMu sync.Mutex // serializes runtime database creation end-to-end
 
-	authCfg             *auth.Config // nil = auth disabled (local-dev default)
-	corsCfg             *CORSConfig  // nil = CORS disabled (no headers added)
-	dataDir             string       // "" = runtime database creation disabled
+	authCfg             *auth.Config  // nil = auth disabled (local-dev default)
+	corsCfg             *CORSConfig   // nil = CORS disabled (no headers added)
+	dataDir             string        // "" = runtime database creation disabled
+	readOnly            bool          // reject all routes that mutate server or database state
+	readCacheTTL        time.Duration // cache lifetime for successful public GET read/query responses; 0 = no cache header
 	principalResolver   PrincipalResolver
 	accessAuthorization OwnerAuthorization
 	explainResolver     MembershipResolver
@@ -79,6 +83,21 @@ func WithCORS(cfg *CORSConfig) Option {
 // under dir, so a restart rescan (mount.Dir) remounts them.
 func WithDataDir(dir string) Option {
 	return func(s *Server) { s.dataDir = dir }
+}
+
+// WithReadOnly makes the entire server read-only. It rejects record, database,
+// and token mutations before authentication or a route handler can cause a
+// side effect. Owner credentials do not bypass this setting.
+func WithReadOnly(readOnly bool) Option {
+	return func(s *Server) { s.readOnly = readOnly }
+}
+
+// WithReadCacheTTL makes successful unauthenticated GET /read and GET /query
+// responses cacheable for ttl when WithReadOnly is also enabled. A non-positive
+// ttl disables the cache header. Protected databases and authentication-enabled
+// servers always remain uncacheable because their response can vary by caller.
+func WithReadCacheTTL(ttl time.Duration) Option {
+	return func(s *Server) { s.readCacheTTL = ttl }
 }
 
 // New creates a Server over mounted databases keyed by database id.
@@ -226,9 +245,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/databases", s.handleDatabaseCreate)
 	mux.HandleFunc("GET /v1/databases/{db}", s.handleDatabase)
 	mux.HandleFunc("GET /v1/databases/{db}/inferred-schema", s.handleInferredSchema)
+	mux.HandleFunc("GET /v1/databases/{db}/read", s.handleRead)
 	mux.HandleFunc("/v1/databases/{db}/records/", s.handleRecord) // GET/HEAD/PUT/POST/PATCH/DELETE
 	mux.HandleFunc("POST /v1/databases/{db}/batch", s.handleBatch)
 	mux.HandleFunc("POST /v1/databases/{db}/query", s.handleQuery)
+	mux.HandleFunc("GET /v1/databases/{db}/query", s.handleQuery)
 	mux.HandleFunc("POST /v1/databases/{db}/dtql", s.handleDTQL)
 	mux.HandleFunc("POST /v1/databases/{db}/access/evaluate", s.handleAccessEvaluate)
 	mux.HandleFunc("POST /v1/databases/{db}/access/evidence", s.handleAccessEvidence)
@@ -268,10 +289,53 @@ func (s *Server) Handler() http.Handler {
 	if s.authCfg != nil {
 		h = s.authCfg.Middleware(h)
 	}
+	if s.readOnly {
+		next := h
+		h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if isMutation(r) {
+				writeError(w, http.StatusForbidden, "read_only", "server is read-only")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+	// Default the URL-query read forms to no-store before authentication or
+	// database lookup. A successful public read may replace this with its
+	// configured TTL in cacheReadResponse.
+	next := h
+	h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isReadCacheEndpoint(r) {
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		next.ServeHTTP(w, r)
+	})
 	if s.corsCfg != nil {
 		h = corsMiddleware(s.corsCfg, h)
 	}
 	return h
+}
+
+func isReadCacheEndpoint(r *http.Request) bool {
+	return (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
+		strings.HasPrefix(r.URL.Path, "/v1/databases/") &&
+		(strings.HasSuffix(r.URL.Path, "/read") || strings.HasSuffix(r.URL.Path, "/query"))
+}
+
+// isMutation identifies every mounted route that persists data or changes
+// server/token state. POST access inspection endpoints deliberately remain
+// available: they only evaluate or inspect existing state.
+func isMutation(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	case http.MethodPost:
+		path := r.URL.Path
+		return path == "/v1/databases" ||
+			path == "/authorize" || path == "/token" || path == "/v1/tokens" ||
+			strings.Contains(path, "/records/") || strings.HasSuffix(path, "/batch")
+	default:
+		return false
+	}
 }
 
 // authorize enforces a capability for the request (Layer 2). Always true

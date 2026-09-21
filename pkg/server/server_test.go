@@ -10,11 +10,15 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/dal-go/record"
+	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 	"github.com/openvaultdb/openvaultdb-go/pkg/mount"
 	"github.com/openvaultdb/openvaultdb-go/pkg/server"
@@ -36,6 +40,10 @@ storage:
 // ingitdb database and registers cleanup via t.Cleanup. It returns the base
 // URL of the server (no trailing slash).
 func startTestServer(t *testing.T, manifestYAML string) string {
+	return startTestServerWithOptions(t, manifestYAML)
+}
+
+func startTestServerWithOptions(t *testing.T, manifestYAML string, opts ...server.Option) string {
 	t.Helper()
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "db.yaml")
@@ -47,7 +55,7 @@ func startTestServer(t *testing.T, manifestYAML string) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	ts := httptest.NewServer(server.New("test", map[string]*core.Database{db.ID(): db}).Handler())
+	ts := httptest.NewServer(server.New("test", map[string]*core.Database{db.ID(): db}, opts...).Handler())
 	t.Cleanup(ts.Close)
 	return ts.URL
 }
@@ -109,6 +117,194 @@ func doRequest(t *testing.T, method, url string, v any) *http.Response {
 		t.Fatalf("do %s %s: %v", method, url, err)
 	}
 	return resp
+}
+
+func TestGETReadAndQuery(t *testing.T) {
+	base := startTestServer(t, schemalessManifest)
+	put := doRequest(t, http.MethodPut, base+"/v1/databases/testdb/records/contacts/c1", map[string]any{"data": map[string]any{"name": "Alice"}})
+	mustStatus(t, put, http.StatusNoContent)
+	drainClose(put)
+
+	readURL := base + "/v1/databases/testdb/read?" + url.Values{"key": {"contacts/c1"}}.Encode()
+	read := doRequest(t, http.MethodGet, readURL, nil)
+	mustStatus(t, read, http.StatusOK)
+	if got := read.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("GET read Cache-Control = %q", got)
+	}
+	var record map[string]any
+	decodeJSON(t, read, &record)
+	if record["key"] != "contacts/c1" {
+		t.Fatalf("GET read key = %#v", record["key"])
+	}
+
+	q := `{"collection":"contacts","where":[{"field":"name","op":"==","value":"Alice"}]}`
+	queryURL := base + "/v1/databases/testdb/query?" + url.Values{"q": {q}}.Encode()
+	query := doRequest(t, http.MethodGet, queryURL, nil)
+	mustStatus(t, query, http.StatusOK)
+	if got := query.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("GET query Cache-Control = %q", got)
+	}
+	var result map[string]any
+	decodeJSON(t, query, &result)
+	if len(result["records"].([]any)) != 1 {
+		t.Fatalf("GET query records = %#v", result["records"])
+	}
+
+	head := doRequest(t, http.MethodHead, queryURL, nil)
+	mustStatus(t, head, http.StatusMethodNotAllowed)
+	if got := head.Header.Get("Allow"); got != "GET, POST" {
+		t.Fatalf("HEAD query Allow = %q", got)
+	}
+	drainClose(head)
+}
+
+func TestProtectedGETReadAndQueryAreNeverCacheable(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "db.yaml")
+	manifest := strings.Replace(schemalessManifest, "storage:", "acl:\n  enabled: true\n  policies: [policy.yaml]\nstorage:", 1)
+	aclWriteFile(t, manifestPath, manifest)
+	aclWriteFile(t, filepath.Join(dir, "policy.yaml"), strings.Replace(aclPolicy("public-read", "name", "Alice"), "database: crm", "database: testdb", 1))
+	db, err := mount.File(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ts := httptest.NewServer(server.New("test", map[string]*core.Database{db.ID(): db}, server.WithReadOnly(true), server.WithReadCacheTTL(time.Hour)).Handler())
+	t.Cleanup(ts.Close)
+
+	for _, endpoint := range []string{
+		"/v1/databases/testdb/read?" + url.Values{"key": {"contacts/c1"}}.Encode(),
+		"/v1/databases/testdb/query?" + url.Values{"q": {`{"collection":"contacts"}`}}.Encode(),
+	} {
+		resp := doRequest(t, http.MethodGet, ts.URL+endpoint, nil)
+		if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+			_ = resp.Body.Close()
+			t.Fatalf("GET %s Cache-Control = %q", endpoint, got)
+		}
+		drainClose(resp)
+	}
+}
+
+func TestReadOnlyCachesGETResponses(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "db.yaml")
+	if err := os.WriteFile(manifestPath, []byte(schemalessManifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	db, err := mount.File(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err = db.Apply(t.Context(), []core.Op{{Op: "set", Key: record.NewKeyWithID("contacts", "c1"), Data: map[string]any{"name": "Alice"}}}, "seed"); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(server.New("test", map[string]*core.Database{db.ID(): db}, server.WithReadOnly(true), server.WithReadCacheTTL(time.Hour)).Handler())
+	t.Cleanup(ts.Close)
+
+	read := doRequest(t, http.MethodGet, ts.URL+"/v1/databases/testdb/read?"+url.Values{"key": {"contacts/c1"}}.Encode(), nil)
+	mustStatus(t, read, http.StatusOK)
+	if got := read.Header.Get("Cache-Control"); got != "public, max-age=3600" {
+		t.Fatalf("GET read Cache-Control = %q", got)
+	}
+	drainClose(read)
+}
+
+func TestURLReadFormsDefaultToNoStoreBeforeHandler(t *testing.T) {
+	base := startTestServer(t, schemalessManifest)
+	for _, tc := range []struct {
+		name, method, endpoint string
+		status                 int
+	}{
+		{"missing database", http.MethodGet, "/v1/databases/missing/read?" + url.Values{"key": {"contacts/c1"}}.Encode(), http.StatusNotFound},
+		{"HEAD read", http.MethodHead, "/v1/databases/testdb/read?" + url.Values{"key": {"contacts/c1"}}.Encode(), http.StatusNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := doRequest(t, tc.method, base+tc.endpoint, nil)
+			mustStatus(t, resp, tc.status)
+			if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("Cache-Control = %q", got)
+			}
+			drainClose(resp)
+		})
+	}
+
+	authBase := startTestServerWithOptions(t, schemalessManifest, server.WithAuth(&auth.Config{OwnerToken: "owner"}))
+	resp := doRequest(t, http.MethodGet, authBase+"/v1/databases/testdb/query?"+url.Values{"q": {`{"collection":"contacts"}`}}.Encode(), nil)
+	mustStatus(t, resp, http.StatusUnauthorized)
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("auth failure Cache-Control = %q", got)
+	}
+	drainClose(resp)
+}
+
+func TestReadOnlyRejectsOwnerMutations(t *testing.T) {
+	const ownerToken = "test-owner"
+	base := startTestServerWithOptions(t, schemalessManifest,
+		server.WithAuth(&auth.Config{OwnerToken: ownerToken}),
+		server.WithReadOnly(true),
+	)
+	for _, tc := range []struct {
+		name, method, path string
+		body               any
+	}{
+		{"record set", http.MethodPut, "/v1/databases/testdb/records/contacts/c1", map[string]any{"data": map[string]any{"name": "Alice"}}},
+		{"database create", http.MethodPost, "/v1/databases", map[string]any{"id": "other"}},
+		{"token mint", http.MethodPost, "/v1/tokens", map[string]any{"databaseId": "testdb", "capabilities": []string{"records:read"}}},
+		{"token revoke", http.MethodDelete, "/v1/tokens/grant-1", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(tc.method, base+tc.path, jsonBody(t, tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer "+ownerToken)
+			if tc.body != nil {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mustStatus(t, resp, http.StatusForbidden)
+			var body map[string]any
+			decodeJSON(t, resp, &body)
+			if body["error"].(map[string]any)["code"] != "read_only" {
+				t.Fatalf("error = %#v", body)
+			}
+		})
+	}
+
+	q := `{"collection":"contacts"}`
+	req, err := http.NewRequest(http.MethodGet, base+"/v1/databases/testdb/query?"+url.Values{"q": {q}}.Encode(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+ownerToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("authenticated response Cache-Control = %q", got)
+	}
+	drainClose(resp)
+
+	read, err := http.NewRequest(http.MethodGet, base+"/v1/databases/testdb/read?"+url.Values{"key": {"contacts/c1"}}.Encode(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read.Header.Set("Authorization", "Bearer "+ownerToken)
+	resp, err = http.DefaultClient.Do(read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusNotFound)
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("authenticated GET read Cache-Control = %q", got)
+	}
+	drainClose(resp)
 }
 
 // ── GET /v1/status ──────────────────────────────────────────────────────────
