@@ -258,8 +258,23 @@ func TestReadOnlyRejectsOwnerMutations(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustStatus(t, resp, http.StatusOK)
-	if got := resp.Header.Get("Cache-Control"); got != "" {
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("authenticated response Cache-Control = %q", got)
+	}
+	drainClose(resp)
+
+	read, err := http.NewRequest(http.MethodGet, base+"/v1/databases/testdb/read?"+url.Values{"key": {"contacts/c1"}}.Encode(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read.Header.Set("Authorization", "Bearer "+ownerToken)
+	resp, err = http.DefaultClient.Do(read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusNotFound)
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("authenticated GET read Cache-Control = %q", got)
 	}
 	drainClose(resp)
 }
