@@ -4,15 +4,36 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/dal-go/dalgo/access"
+	"io"
 	"net/http"
 	"strings"
 
+	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/record"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 )
+
+const maxQueryRequestBytes = 1 << 20
+
+// handleRead is the URL-query form of a record read. key is a complete,
+// escaped record key path (for example, "contacts/c1").
+func (s *Server) handleRead(w http.ResponseWriter, r *http.Request) {
+	db := s.db(w, r)
+	if db == nil {
+		return
+	}
+	key, err := parseKeyPath(r.URL.Query().Get("key"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_key", err.Error())
+		return
+	}
+	if !s.authorize(w, r, db.ID(), auth.CapRecordsRead, core.RootCollection(key)) {
+		return
+	}
+	s.readRecord(w, r, db, key)
+}
 
 // parseRecordKey extracts the record key from the escaped URL path so that
 // percent-encoded characters inside IDs (dal.EscapeID encodes `. $ # [ ] /`)
@@ -74,16 +95,7 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		data, err := db.Get(ctx, key)
-		if err != nil {
-			if db.HasAccessPolicies() && (errors.Is(err, access.ErrAccessDenied) || errors.Is(err, core.ErrNotFound)) {
-				writeUnavailablePoint(w, db, key, "get")
-				return
-			}
-			s.writeMappedError(w, r, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"key": key.String(), "data": data})
+		s.readRecord(w, r, db, key)
 	case http.MethodHead:
 		exists, err := db.Exists(ctx, key)
 		if err != nil || !exists {
@@ -146,6 +158,20 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) readRecord(w http.ResponseWriter, r *http.Request, db *core.Database, key *record.Key) {
+	data, err := db.Get(r.Context(), key)
+	if err != nil {
+		if db.HasAccessPolicies() && (errors.Is(err, access.ErrAccessDenied) || errors.Is(err, core.ErrNotFound)) {
+			writeUnavailablePoint(w, db, key, "get")
+			return
+		}
+		s.writeMappedError(w, r, err)
+		return
+	}
+	s.cacheReadResponse(w, r, db)
+	writeJSON(w, http.StatusOK, map[string]any{"key": key.String(), "data": data})
+}
+
 func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 	db := s.db(w, r)
 	if db == nil {
@@ -201,10 +227,38 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var q core.Query
-	if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body: "+err.Error())
+	if err := decodeQuery(r, &q); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
+	s.executeQuery(w, r, db, q)
+}
+
+func decodeQuery(r *http.Request, q *core.Query) error {
+	var data []byte
+	if r.Method == http.MethodGet {
+		raw, ok := r.URL.Query()["q"]
+		if !ok || len(raw) != 1 || raw[0] == "" {
+			return errors.New(`query parameter "q" is required`)
+		}
+		if len(raw[0]) > maxQueryRequestBytes {
+			return errors.New("query parameter exceeds 1 MiB limit")
+		}
+		data = []byte(raw[0])
+	} else {
+		var err error
+		data, err = io.ReadAll(http.MaxBytesReader(nil, r.Body, maxQueryRequestBytes))
+		if err != nil {
+			return errors.New("invalid JSON body size")
+		}
+	}
+	if err := json.Unmarshal(data, q); err != nil {
+		return fmt.Errorf("invalid JSON query: %w", err)
+	}
+	return nil
+}
+
+func (s *Server) executeQuery(w http.ResponseWriter, r *http.Request, db *core.Database, q core.Query) {
 	// A subcollection query is scoped by its parent's root collection, not by
 	// the (possibly same-named) leaf collection.
 	_, scope, err := q.Target()
@@ -232,5 +286,14 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, ro)
 	}
+	s.cacheReadResponse(w, r, db)
 	writeJSON(w, http.StatusOK, map[string]any{"records": out})
+}
+
+func (s *Server) cacheReadResponse(w http.ResponseWriter, r *http.Request, db *core.Database) {
+	if s.readOnly && s.readCacheTTL > 0 && r.Method == http.MethodGet &&
+		(strings.HasSuffix(r.URL.Path, "/read") || strings.HasSuffix(r.URL.Path, "/query")) &&
+		s.authCfg == nil && !db.HasAccessPolicies() {
+		w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", int(s.readCacheTTL.Seconds())))
+	}
 }

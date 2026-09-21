@@ -20,6 +20,7 @@ small: just enough for DALgo-backed Sneat CRUD validation. Versioned under `/v1`
   - `422 schema_validation` — strict/partial mode validation failure
   - `400 invalid_key` — malformed or unsafe key, collection name or parent path
   - `400 bad_request` — malformed body/query
+  - `403 read_only` — server-wide read-only mode rejected a mutation
   - `500 internal` — unexpected server/engine error (details are logged server-side, not returned)
   - `501 not_supported` — operation not in MVP
 
@@ -83,6 +84,10 @@ GET /v1/databases/{db}/inferred-schema
 GET    /v1/databases/{db}/records/{key...}
 → 200 {"key":"contacts/c1","data":{...}}
 → 404 not_found
+
+GET    /v1/databases/{db}/read?key=<percent-encoded full-key-path>
+→ 200 {"key":"contacts/c1","data":{...}}
+→ 400 invalid_key | 404 not_found
 
 HEAD   /v1/databases/{db}/records/{key...}
 → 200 (exists) | 404
@@ -154,7 +159,22 @@ body:
   "keysOnly": false
 }
 → 200 {"records":[{"key":"contacts/c1","data":{...}}, ...]}               // data omitted when keysOnly
+
+GET /v1/databases/{db}/query?q=<percent-encoded-JSON-query>
+→ 200 {"records":[{"key":"contacts/c1","data":{...}}, ...]}
 ```
+
+The `q` value is the same JSON object accepted by `POST /query`, URL-encoded
+once. It is limited to 1 MiB. Query results remain subject to the server's 8
+MiB result buffer. For a public, unprotected mounted database, embedders can
+set `server.WithReadOnly(true)` plus `server.WithReadCacheTTL(ttl)` to send `Cache-Control: public, max-age=N`
+on successful GET `/read` and GET `/query` responses. Authentication-enabled
+or policy-protected responses are never marked cacheable.
+
+`server.WithReadOnly(true)` rejects every record, database, and token mutation
+with `403 {"error":{"code":"read_only"...}}`, including mutations authenticated
+with the owner token. Read and query endpoints continue to enforce their
+ordinary authentication and database policies.
 
 Result keys are full key paths from the database root: a query with `"parent":"lists/to-buy"`
 on `items` returns `lists/to-buy/items/x` (not `items/x`), usable as-is with `/records`.
