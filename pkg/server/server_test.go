@@ -55,7 +55,9 @@ func startTestServerWithOptions(t *testing.T, manifestYAML string, opts ...serve
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	ts := httptest.NewServer(server.New("test", map[string]*core.Database{db.ID(): db}, opts...).Handler())
+	srv := server.New("test", map[string]*core.Database{db.ID(): db}, opts...)
+	t.Cleanup(srv.CloseSnapshots)
+	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts.URL
 }

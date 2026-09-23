@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,6 +43,12 @@ type Server struct {
 	explainResolver     MembershipResolver
 	accessInstance      string
 	logger              *slog.Logger // internal errors; defaults to slog.Default()
+	snapshotMu          sync.Mutex
+	snapshots           map[string]*querySnapshot // random snapshot id -> disk spool
+	snapshotSlots       int                       // includes captures still being built
+	snapshotDir         string
+	snapshotDirErr      error
+	snapshotKey         [32]byte
 }
 
 // Option configures the Server.
@@ -109,6 +116,10 @@ func New(version string, dbs map[string]*core.Database, opts ...Option) *Server 
 	for _, opt := range opts {
 		opt(s)
 	}
+	s.snapshotDir, s.snapshotDirErr = prepareSnapshotDir()
+	if _, err := rand.Read(s.snapshotKey[:]); err != nil {
+		s.snapshotDirErr = fmt.Errorf("query snapshot token key: %w", err)
+	}
 	return s
 }
 
@@ -158,6 +169,7 @@ func (s *Server) UnmountContext(ctx context.Context, id string) error {
 	wg := s.inflight[db]
 	delete(s.inflight, db)
 	s.mu.Unlock()
+	s.expireSnapshotsForDB(db)
 	// Safe: no lease can be added after the db left the map (acquire holds
 	// s.mu.RLock across lookup and Add).
 	drained := make(chan struct{})

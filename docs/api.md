@@ -194,6 +194,43 @@ POST /v1/databases/{db}/dtql        body: a DTQL-YAML document (max 1 MiB)
 → 200 {"records":[{"key":"...","data":{...}}, ...]}
 ```
 
+For a complete result larger than the ordinary 1000-row/8 MiB response, the
+client can opt into **result snapshot paging** on the same endpoint:
+
+1. Send `OVDB-Page-Size: 1..1000` with a DTQL document whose `limit` and
+   `offset` are zero or omitted. The first request captures the result through
+   one DALgo reader into a private temporary file before returning its first
+   page. A client can show “Preparing source snapshot” while this request is
+   pending.
+2. The response is `{"records":[...],"snapshotToken":"...","nextPageToken":"...","snapshotExpiresAt":"..."}`.
+   The last page omits `nextPageToken`. Each page is at most 7 MiB, even if it
+   contains fewer than `OVDB-Page-Size` rows.
+3. Send the identical DTQL document and page size with
+   `OVDB-Page-Token: <nextPageToken>` for each subsequent page. Tokens are
+   opaque, retryable until expiry, bound to the database and bearer credential, and are
+   never placed in URLs. Continue until `nextPageToken` is absent.
+4. After receiving the last page, or when cancelling the scan, send the same
+   document and page size with `OVDB-Page-Token: <snapshotToken>` and
+   `OVDB-Page-Close: true`. The server returns `204` and immediately releases
+   the snapshot's disk space and capacity slot. Repeating a valid close also
+   returns `204`. Pages requested after close return `410 snapshot_expired`.
+   The `snapshotToken` field is present even when the first page is final.
+
+Pages come from the captured result, so an OVDB write between page requests
+does not change later pages. This contract does not promise a transaction
+across different mounted databases or protect against a source's own external
+writes during its one reader traversal. A capture is capped at 1,000,000 rows,
+512 MiB on disk and 60 seconds. At most two captures/snapshots are active per
+server (1 GiB maximum disk usage). A snapshot expires five minutes after
+capture, on explicit close, on database unmount, or on server shutdown; stale files from a crash
+are swept on startup. Call `Server.CloseSnapshots` after stopping HTTP serving
+and draining requests. `410 snapshot_expired` means the client must restart
+the query. `413 snapshot_too_large`, `503 snapshot_capacity`, and
+`422 snapshot_unsupported` are explicit terminal errors. Policy-protected
+databases currently return `snapshot_unsupported` because cached results
+cannot safely reflect policy changes between pages. Browser CORS preflight
+allows all three paging headers when the origin is allowed.
+
 DTQL is dalgo's native lossless YAML serialization of `dal.StructuredQuery`
 (`github.com/dal-go/dalgo/dtql`). OpenVaultDB validates the target, checks token
 capabilities, and executes through the mounted DALgo policy enforcement layers.
