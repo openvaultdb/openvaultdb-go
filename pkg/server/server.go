@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,6 +48,7 @@ type Server struct {
 	snapshotSlots       int                       // includes captures still being built
 	snapshotDir         string
 	snapshotDirErr      error
+	snapshotKey         [32]byte
 }
 
 // Option configures the Server.
@@ -115,6 +117,9 @@ func New(version string, dbs map[string]*core.Database, opts ...Option) *Server 
 		opt(s)
 	}
 	s.snapshotDir, s.snapshotDirErr = prepareSnapshotDir()
+	if _, err := rand.Read(s.snapshotKey[:]); err != nil {
+		s.snapshotDirErr = fmt.Errorf("query snapshot token key: %w", err)
+	}
 	return s
 }
 

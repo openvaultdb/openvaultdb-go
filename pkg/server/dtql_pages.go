@@ -41,45 +41,48 @@ type querySnapshot struct {
 	actorHash [32]byte
 	pageSize  int
 	id        string
-	secret    [32]byte
 	expiresAt time.Time
 	timer     *time.Timer
 }
 
-func newSnapshotIdentity() (string, [32]byte, error) {
-	var id, secret [32]byte
+func newSnapshotIdentity() (string, error) {
+	var id [32]byte
 	if _, err := rand.Read(id[:]); err != nil {
-		return "", secret, err
+		return "", err
 	}
-	if _, err := rand.Read(secret[:]); err != nil {
-		return "", secret, err
-	}
-	return base64.RawURLEncoding.EncodeToString(id[:]), secret, nil
+	return base64.RawURLEncoding.EncodeToString(id[:]), nil
 }
 
 // A signed offset makes every page token stable and retryable without keeping
-// a token map proportional to the number of pages.
-func pageToken(snap *querySnapshot, offset int64) string {
+// a token map proportional to the number of pages. The server key also lets
+// a repeated close verify a token after the spool has been removed.
+func (s *Server) pageToken(id string, offset int64, dbID string, queryHash, actorHash [32]byte, pageSize int) string {
 	position := strconv.FormatInt(offset, 10)
-	mac := hmac.New(sha256.New, snap.secret[:])
-	_, _ = mac.Write([]byte(snap.id + "." + position))
-	return snap.id + "." + position + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)[:16])
+	mac := hmac.New(sha256.New, s.snapshotKey[:])
+	_, _ = mac.Write([]byte(id + "." + position + "." + dbID + "." + strconv.Itoa(pageSize)))
+	_, _ = mac.Write(queryHash[:])
+	_, _ = mac.Write(actorHash[:])
+	return id + "." + position + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)[:16])
 }
 
-func pageOffset(snap *querySnapshot, token string) (int64, bool) {
+func (s *Server) pageOffset(token, dbID string, queryHash, actorHash [32]byte, pageSize int) (string, int64, bool) {
 	parts := strings.Split(token, ".")
-	if len(parts) != 3 || parts[0] != snap.id {
-		return 0, false
+	if len(parts) != 3 {
+		return "", 0, false
+	}
+	idBytes, decodeErr := base64.RawURLEncoding.DecodeString(parts[0])
+	if decodeErr != nil || len(idBytes) != 32 {
+		return "", 0, false
 	}
 	offset, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil || offset < 0 || offset > snap.bytes {
-		return 0, false
+	if err != nil || offset < 0 || offset > maxSnapshotBytes {
+		return "", 0, false
 	}
-	want := pageToken(snap, offset)
+	want := s.pageToken(parts[0], offset, dbID, queryHash, actorHash, pageSize)
 	if subtle.ConstantTimeCompare([]byte(want), []byte(token)) != 1 {
-		return 0, false
+		return "", 0, false
 	}
-	return offset, true
+	return parts[0], offset, true
 }
 
 func (s *Server) handlePagedDTQL(w http.ResponseWriter, r *http.Request, db *core.Database, query dal.StructuredQuery, doc []byte) {
@@ -99,6 +102,20 @@ func (s *Server) handlePagedDTQL(w http.ResponseWriter, r *http.Request, db *cor
 	}
 	queryHash := sha256.Sum256(doc)
 	actorHash := sha256.Sum256([]byte(r.Header.Get("Authorization")))
+	closeHeader := r.Header.Get("OVDB-Page-Close")
+	if closeHeader != "" && closeHeader != "true" {
+		writeError(w, http.StatusBadRequest, "bad_request", "OVDB-Page-Close must be true")
+		return
+	}
+	if closeHeader == "true" {
+		token := r.Header.Get("OVDB-Page-Token")
+		if token == "" {
+			writeError(w, http.StatusBadRequest, "bad_request", "OVDB-Page-Token is required to close a snapshot")
+			return
+		}
+		s.closeSnapshot(w, token, db, queryHash, actorHash, pageSize)
+		return
+	}
 	if token := r.Header.Get("OVDB-Page-Token"); token != "" {
 		s.serveSnapshotPage(w, token, db, queryHash, actorHash, pageSize)
 		return
@@ -127,14 +144,14 @@ func (s *Server) handlePagedDTQL(w http.ResponseWriter, r *http.Request, db *cor
 		}
 		return
 	}
-	id, secret, err := newSnapshotIdentity()
+	id, err := newSnapshotIdentity()
 	if err != nil {
 		_ = os.Remove(path)
 		s.writeInternalError(w, r, "failed to create query snapshot", err)
 		return
 	}
 	snap := &querySnapshot{path: path, bytes: size, db: db, queryHash: queryHash,
-		actorHash: actorHash, pageSize: pageSize, id: id, secret: secret, expiresAt: time.Now().Add(snapshotLifetime)}
+		actorHash: actorHash, pageSize: pageSize, id: id, expiresAt: time.Now().Add(snapshotLifetime)}
 	s.mu.RLock()
 	if s.dbs[db.ID()] != db {
 		s.mu.RUnlock()
@@ -151,7 +168,7 @@ func (s *Server) handlePagedDTQL(w http.ResponseWriter, r *http.Request, db *cor
 	s.snapshotMu.Unlock()
 	s.mu.RUnlock()
 	reserved = false
-	s.serveSnapshotPage(w, pageToken(snap, 0), db, queryHash, actorHash, pageSize)
+	s.serveSnapshotPage(w, s.pageToken(id, 0, db.ID(), queryHash, actorHash, pageSize), db, queryHash, actorHash, pageSize)
 }
 
 type snapshotBoundError string
@@ -281,12 +298,34 @@ func (s *Server) expireSnapshot(snap *querySnapshot) {
 	}
 }
 
+// closeSnapshot releases the file and capacity slot immediately. A valid
+// signed token remains a successful no-op after release, so clients can retry
+// a close whose 204 response was lost.
+func (s *Server) closeSnapshot(w http.ResponseWriter, token string, db *core.Database, queryHash, actorHash [32]byte, pageSize int) {
+	id, _, valid := s.pageOffset(token, db.ID(), queryHash, actorHash, pageSize)
+	if !valid {
+		writeError(w, http.StatusBadRequest, "invalid_page_token", "query page token is invalid")
+		return
+	}
+	s.snapshotMu.Lock()
+	if snap := s.snapshots[id]; snap != nil {
+		if snap.db != db || snap.queryHash != queryHash || snap.actorHash != actorHash || snap.pageSize != pageSize {
+			s.snapshotMu.Unlock()
+			writeError(w, http.StatusForbidden, "forbidden", "query snapshot belongs to another database or credential")
+			return
+		}
+		s.removeSnapshotLocked(snap)
+	}
+	s.snapshotMu.Unlock()
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // A token identifies a fixed byte offset in the immutable spool, so retries
 // return the same page. Hold snapshotMu only for lookup and bounded disk read;
 // release it before the network write.
 func (s *Server) serveSnapshotPage(w http.ResponseWriter, token string, db *core.Database, queryHash, actorHash [32]byte, pageSize int) {
-	s.snapshotMu.Lock()
 	parts := strings.Split(token, ".")
+	s.snapshotMu.Lock()
 	var snap *querySnapshot
 	if len(parts) == 3 {
 		snap = s.snapshots[parts[0]]
@@ -299,12 +338,6 @@ func (s *Server) serveSnapshotPage(w http.ResponseWriter, token string, db *core
 		writeError(w, http.StatusGone, "snapshot_expired", "query snapshot expired; restart the query")
 		return
 	}
-	offset, valid := pageOffset(snap, token)
-	if !valid {
-		s.snapshotMu.Unlock()
-		writeError(w, http.StatusGone, "snapshot_expired", "query page token is invalid; restart the query")
-		return
-	}
 	if snap.db != db || snap.actorHash != actorHash {
 		s.snapshotMu.Unlock()
 		writeError(w, http.StatusForbidden, "forbidden", "query snapshot belongs to another database or credential")
@@ -313,6 +346,12 @@ func (s *Server) serveSnapshotPage(w http.ResponseWriter, token string, db *core
 	if snap.queryHash != queryHash || snap.pageSize != pageSize {
 		s.snapshotMu.Unlock()
 		writeError(w, http.StatusBadRequest, "bad_request", "query or page size does not match the snapshot")
+		return
+	}
+	_, offset, valid := s.pageOffset(token, db.ID(), queryHash, actorHash, pageSize)
+	if !valid || offset > snap.bytes {
+		s.snapshotMu.Unlock()
+		writeError(w, http.StatusGone, "snapshot_expired", "query page token is invalid; restart the query")
 		return
 	}
 	f, err := os.Open(snap.path)
@@ -349,10 +388,13 @@ func (s *Server) serveSnapshotPage(w http.ResponseWriter, token string, db *core
 		offset += int64(len(row))
 	}
 	_ = f.Close()
-	response := map[string]any{"records": rows}
+	response := map[string]any{
+		"records":           rows,
+		"snapshotToken":     s.pageToken(snap.id, 0, db.ID(), queryHash, actorHash, pageSize),
+		"snapshotExpiresAt": snap.expiresAt.UTC().Format(time.RFC3339),
+	}
 	if offset < snap.bytes {
-		response["nextPageToken"] = pageToken(snap, offset)
-		response["snapshotExpiresAt"] = snap.expiresAt.UTC().Format(time.RFC3339)
+		response["nextPageToken"] = s.pageToken(snap.id, offset, db.ID(), queryHash, actorHash, pageSize)
 	}
 	s.snapshotMu.Unlock()
 	writeJSON(w, http.StatusOK, response)

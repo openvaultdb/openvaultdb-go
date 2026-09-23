@@ -36,6 +36,23 @@ func pagedDTQL(t *testing.T, url, doc string, size int, token string) (int, map[
 	return resp.StatusCode, body
 }
 
+func closePagedDTQL(t *testing.T, url, doc string, size int, token string) int {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("OVDB-Page-Size", fmt.Sprint(size))
+	req.Header.Set("OVDB-Page-Token", token)
+	req.Header.Set("OVDB-Page-Close", "true")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer drainClose(resp)
+	return resp.StatusCode
+}
+
 func TestDTQLSnapshotPagesDoNotMixWrites(t *testing.T) {
 	base := startTestServer(t, schemalessManifest)
 	url := base + "/v1/databases/testdb/dtql"
@@ -102,6 +119,46 @@ func TestDTQLSnapshotRejectsChangedQuery(t *testing.T) {
 	status, next := pagedDTQL(t, url, doc, 1, token)
 	if status != http.StatusOK || len(next["records"].([]any)) != 1 {
 		t.Fatalf("valid continuation: %d %#v", status, next)
+	}
+}
+
+func TestDTQLSnapshotCloseReusesCapacity(t *testing.T) {
+	base := startTestServer(t, schemalessManifest)
+	url := base + "/v1/databases/testdb/dtql"
+	doc := "from: {name: items}\n"
+	_, first := pagedDTQL(t, url, doc, 1, "")
+	_, second := pagedDTQL(t, url, doc, 1, "")
+	status, capacity := pagedDTQL(t, url, doc, 1, "")
+	if status != http.StatusServiceUnavailable || capacity["error"].(map[string]any)["code"] != "snapshot_capacity" {
+		t.Fatalf("capacity before close: %d %#v", status, capacity)
+	}
+	firstToken := first["snapshotToken"].(string)
+	if status := closePagedDTQL(t, url, doc, 1, firstToken+"x"); status != http.StatusBadRequest {
+		t.Fatalf("invalid close status = %d", status)
+	}
+	status, stillFull := pagedDTQL(t, url, doc, 1, "")
+	if status != http.StatusServiceUnavailable || stillFull["error"].(map[string]any)["code"] != "snapshot_capacity" {
+		t.Fatalf("invalid close freed capacity: %d %#v", status, stillFull)
+	}
+	if status := closePagedDTQL(t, url, doc, 1, firstToken); status != http.StatusNoContent {
+		t.Fatalf("close status = %d", status)
+	}
+	if status := closePagedDTQL(t, url, doc, 1, firstToken); status != http.StatusNoContent {
+		t.Fatalf("repeated close status = %d", status)
+	}
+	status, expired := pagedDTQL(t, url, doc, 1, firstToken)
+	if status != http.StatusGone || expired["error"].(map[string]any)["code"] != "snapshot_expired" {
+		t.Fatalf("page after close: %d %#v", status, expired)
+	}
+	status, third := pagedDTQL(t, url, doc, 1, "")
+	if status != http.StatusOK || third["snapshotToken"] == nil {
+		t.Fatalf("capacity after close: %d %#v", status, third)
+	}
+	if status := closePagedDTQL(t, url, doc, 1, second["snapshotToken"].(string)); status != http.StatusNoContent {
+		t.Fatalf("second close status = %d", status)
+	}
+	if status := closePagedDTQL(t, url, doc, 1, third["snapshotToken"].(string)); status != http.StatusNoContent {
+		t.Fatalf("third close status = %d", status)
 	}
 }
 
@@ -189,7 +246,7 @@ func TestDTQLSnapshotCORSAndShutdown(t *testing.T) {
 		t.Fatal(err)
 	}
 	preflight.Header.Set("Origin", "https://example.test")
-	preflight.Header.Set("Access-Control-Request-Headers", "OVDB-Page-Size,OVDB-Page-Token")
+	preflight.Header.Set("Access-Control-Request-Headers", "OVDB-Page-Size,OVDB-Page-Token,OVDB-Page-Close")
 	resp, err := http.DefaultClient.Do(preflight)
 	if err != nil {
 		t.Fatal(err)
@@ -197,7 +254,7 @@ func TestDTQLSnapshotCORSAndShutdown(t *testing.T) {
 	mustStatus(t, resp, http.StatusNoContent)
 	allowed := resp.Header.Get("Access-Control-Allow-Headers")
 	drainClose(resp)
-	if !strings.Contains(allowed, "OVDB-Page-Size") || !strings.Contains(allowed, "OVDB-Page-Token") {
+	if !strings.Contains(allowed, "OVDB-Page-Size") || !strings.Contains(allowed, "OVDB-Page-Token") || !strings.Contains(allowed, "OVDB-Page-Close") {
 		t.Fatalf("paging CORS headers absent: %q", allowed)
 	}
 	for _, id := range []string{"i1", "i2"} {

@@ -36,7 +36,7 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, db.ID(), auth.CapRecordsRead, collection) {
 		return
 	}
-	if r.Header.Get("OVDB-Page-Size") != "" || r.Header.Get("OVDB-Page-Token") != "" {
+	if r.Header.Get("OVDB-Page-Size") != "" || r.Header.Get("OVDB-Page-Token") != "" || r.Header.Get("OVDB-Page-Close") != "" {
 		s.handlePagedDTQL(w, r, db, query, doc)
 		return
 	}
