@@ -42,6 +42,11 @@ type Server struct {
 	explainResolver     MembershipResolver
 	accessInstance      string
 	logger              *slog.Logger // internal errors; defaults to slog.Default()
+	snapshotMu          sync.Mutex
+	snapshots           map[string]*querySnapshot // opaque next-page token -> disk spool
+	snapshotSlots       int                       // includes captures still being built
+	snapshotDir         string
+	snapshotDirErr      error
 }
 
 // Option configures the Server.
@@ -109,6 +114,7 @@ func New(version string, dbs map[string]*core.Database, opts ...Option) *Server 
 	for _, opt := range opts {
 		opt(s)
 	}
+	s.snapshotDir, s.snapshotDirErr = prepareSnapshotDir()
 	return s
 }
 
@@ -158,6 +164,7 @@ func (s *Server) UnmountContext(ctx context.Context, id string) error {
 	wg := s.inflight[db]
 	delete(s.inflight, db)
 	s.mu.Unlock()
+	s.expireSnapshotsForDB(db)
 	// Safe: no lease can be added after the db left the map (acquire holds
 	// s.mu.RLock across lookup and Add).
 	drained := make(chan struct{})

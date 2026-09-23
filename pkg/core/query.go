@@ -220,6 +220,60 @@ func (q boundedDTQL) Limit() int {
 	return q.StructuredQuery.Limit()
 }
 
+// snapshotDTQL removes the ordinary 1000-row default for a disk-backed
+// result capture. Its caller enforces a byte and row bound while streaming.
+type snapshotDTQL struct{ boundedDTQL }
+
+func (q snapshotDTQL) Limit() int { return 0 }
+
+// StreamDTQLSnapshot executes one complete query through one DALgo reader.
+// Local OVDB writes cannot interleave with the capture. The caller must bound
+// the emitted result and persist it before exposing any page token.
+func (d *Database) StreamDTQLSnapshot(ctx context.Context, query dal.StructuredQuery, emit func(Record) error) error {
+	collection, err := validateDTQL(query)
+	if err != nil {
+		return err
+	}
+	if query.Limit() != 0 || query.Offset() != 0 {
+		return fmt.Errorf("%w: snapshot query requires limit and offset to be zero", ErrInvalidDTQL)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	reader, err := d.db.ExecuteQueryToRecordsReader(ctx, snapshotDTQL{boundedDTQL{query}})
+	if err != nil {
+		return fmt.Errorf("failed to query collection %q: %w", collection, err)
+	}
+	defer func() { _ = reader.Close() }()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		rec, nextErr := reader.Next()
+		if errors.Is(nextErr, io.EOF) {
+			return nil
+		}
+		if nextErr != nil {
+			return fmt.Errorf("failed reading query results for %q: %w", collection, nextErr)
+		}
+		out := Record{Key: rec.Key()}
+		data, _ := rec.Data().(map[string]any)
+		if out.Key == nil || fmt.Sprintf("%v", out.Key.ID) == "" {
+			if id, ok := data["id"].(string); ok && id != "" {
+				out.Key = record.NewKeyWithID(collection, id)
+			}
+		}
+		if out.Key == nil {
+			return fmt.Errorf("query result has no record key")
+		}
+		out.Data = d.coerceToSchema(collection, data)
+		if err := emit(out); err != nil {
+			return err
+		}
+	}
+}
+
 // ExecuteDTQLQuery executes an already parsed query after validating its shape.
 func (d *Database) ExecuteDTQLQuery(ctx context.Context, query dal.StructuredQuery) ([]Record, error) {
 	collection, err := validateDTQL(query)

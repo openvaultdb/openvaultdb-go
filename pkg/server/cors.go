@@ -66,7 +66,7 @@ func (c *CORSConfig) allowedOrigin(origin string) string { return c.AllowedOrigi
 
 const (
 	corsAllowMethods = "GET,HEAD,POST,PUT,PATCH,DELETE"
-	corsAllowHeaders = "Authorization,Content-Type"
+	corsAllowHeaders = "Authorization,Content-Type,OVDB-Page-Size,OVDB-Page-Token"
 	corsMaxAge       = "600"
 )
 
