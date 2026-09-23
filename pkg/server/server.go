@@ -43,7 +43,7 @@ type Server struct {
 	accessInstance      string
 	logger              *slog.Logger // internal errors; defaults to slog.Default()
 	snapshotMu          sync.Mutex
-	snapshots           map[string]*querySnapshot // opaque next-page token -> disk spool
+	snapshots           map[string]*querySnapshot // random snapshot id -> disk spool
 	snapshotSlots       int                       // includes captures still being built
 	snapshotDir         string
 	snapshotDirErr      error

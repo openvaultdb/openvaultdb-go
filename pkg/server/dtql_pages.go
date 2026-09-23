@@ -3,8 +3,10 @@ package server
 import (
 	"bufio"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -34,22 +36,50 @@ const (
 type querySnapshot struct {
 	path      string
 	bytes     int64
-	offset    int64
 	db        *core.Database
 	queryHash [32]byte
 	actorHash [32]byte
 	pageSize  int
-	token     string
+	id        string
+	secret    [32]byte
 	expiresAt time.Time
 	timer     *time.Timer
 }
 
-func snapshotToken() (string, error) {
-	var secret [32]byte
-	if _, err := rand.Read(secret[:]); err != nil {
-		return "", err
+func newSnapshotIdentity() (string, [32]byte, error) {
+	var id, secret [32]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return "", secret, err
 	}
-	return base64.RawURLEncoding.EncodeToString(secret[:]), nil
+	if _, err := rand.Read(secret[:]); err != nil {
+		return "", secret, err
+	}
+	return base64.RawURLEncoding.EncodeToString(id[:]), secret, nil
+}
+
+// A signed offset makes every page token stable and retryable without keeping
+// a token map proportional to the number of pages.
+func pageToken(snap *querySnapshot, offset int64) string {
+	position := strconv.FormatInt(offset, 10)
+	mac := hmac.New(sha256.New, snap.secret[:])
+	_, _ = mac.Write([]byte(snap.id + "." + position))
+	return snap.id + "." + position + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)[:16])
+}
+
+func pageOffset(snap *querySnapshot, token string) (int64, bool) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 || parts[0] != snap.id {
+		return 0, false
+	}
+	offset, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || offset < 0 || offset > snap.bytes {
+		return 0, false
+	}
+	want := pageToken(snap, offset)
+	if subtle.ConstantTimeCompare([]byte(want), []byte(token)) != 1 {
+		return 0, false
+	}
+	return offset, true
 }
 
 func (s *Server) handlePagedDTQL(w http.ResponseWriter, r *http.Request, db *core.Database, query dal.StructuredQuery, doc []byte) {
@@ -97,14 +127,14 @@ func (s *Server) handlePagedDTQL(w http.ResponseWriter, r *http.Request, db *cor
 		}
 		return
 	}
-	token, err := snapshotToken()
+	id, secret, err := newSnapshotIdentity()
 	if err != nil {
 		_ = os.Remove(path)
 		s.writeInternalError(w, r, "failed to create query snapshot", err)
 		return
 	}
 	snap := &querySnapshot{path: path, bytes: size, db: db, queryHash: queryHash,
-		actorHash: actorHash, pageSize: pageSize, token: token, expiresAt: time.Now().Add(snapshotLifetime)}
+		actorHash: actorHash, pageSize: pageSize, id: id, secret: secret, expiresAt: time.Now().Add(snapshotLifetime)}
 	s.mu.RLock()
 	if s.dbs[db.ID()] != db {
 		s.mu.RUnlock()
@@ -116,12 +146,12 @@ func (s *Server) handlePagedDTQL(w http.ResponseWriter, r *http.Request, db *cor
 	if s.snapshots == nil {
 		s.snapshots = make(map[string]*querySnapshot)
 	}
-	s.snapshots[token] = snap
+	s.snapshots[id] = snap
 	snap.timer = time.AfterFunc(snapshotLifetime, func() { s.expireSnapshot(snap) })
 	s.snapshotMu.Unlock()
 	s.mu.RUnlock()
 	reserved = false
-	s.serveSnapshotPage(w, token, db, queryHash, actorHash, pageSize)
+	s.serveSnapshotPage(w, pageToken(snap, 0), db, queryHash, actorHash, pageSize)
 }
 
 type snapshotBoundError string
@@ -246,52 +276,68 @@ func (s *Server) releaseSnapshotSlot() {
 func (s *Server) expireSnapshot(snap *querySnapshot) {
 	s.snapshotMu.Lock()
 	defer s.snapshotMu.Unlock()
-	if s.snapshots[snap.token] == snap {
+	if s.snapshots[snap.id] == snap {
 		s.removeSnapshotLocked(snap)
 	}
 }
 
-// Caller holds snapshotMu, including during the short disk read. The token is
-// single-use: a retry after an uncertain response returns explicit 410 and
-// the caller can restart the query instead of mixing two result sets.
+// A token identifies a fixed byte offset in the immutable spool, so retries
+// return the same page. Hold snapshotMu only for lookup and bounded disk read;
+// release it before the network write.
 func (s *Server) serveSnapshotPage(w http.ResponseWriter, token string, db *core.Database, queryHash, actorHash [32]byte, pageSize int) {
 	s.snapshotMu.Lock()
-	defer s.snapshotMu.Unlock()
-	snap := s.snapshots[token]
+	parts := strings.Split(token, ".")
+	var snap *querySnapshot
+	if len(parts) == 3 {
+		snap = s.snapshots[parts[0]]
+	}
 	if snap == nil || time.Now().After(snap.expiresAt) {
 		if snap != nil {
 			s.removeSnapshotLocked(snap)
 		}
+		s.snapshotMu.Unlock()
 		writeError(w, http.StatusGone, "snapshot_expired", "query snapshot expired; restart the query")
 		return
 	}
+	offset, valid := pageOffset(snap, token)
+	if !valid {
+		s.snapshotMu.Unlock()
+		writeError(w, http.StatusGone, "snapshot_expired", "query page token is invalid; restart the query")
+		return
+	}
 	if snap.db != db || snap.actorHash != actorHash {
+		s.snapshotMu.Unlock()
 		writeError(w, http.StatusForbidden, "forbidden", "query snapshot belongs to another database or credential")
 		return
 	}
 	if snap.queryHash != queryHash || snap.pageSize != pageSize {
+		s.snapshotMu.Unlock()
 		writeError(w, http.StatusBadRequest, "bad_request", "query or page size does not match the snapshot")
 		return
 	}
 	f, err := os.Open(snap.path)
 	if err != nil {
 		s.removeSnapshotLocked(snap)
+		s.snapshotMu.Unlock()
 		writeError(w, http.StatusGone, "snapshot_expired", "query snapshot is unavailable; restart the query")
 		return
 	}
-	defer func() { _ = f.Close() }()
-	if _, err = f.Seek(snap.offset, io.SeekStart); err != nil {
+	if _, err = f.Seek(offset, io.SeekStart); err != nil {
+		_ = f.Close()
 		s.removeSnapshotLocked(snap)
+		s.snapshotMu.Unlock()
 		writeError(w, http.StatusGone, "snapshot_expired", "query snapshot is unavailable; restart the query")
 		return
 	}
 	reader := bufio.NewReader(f)
 	rows := make([]json.RawMessage, 0, pageSize)
 	var pageBytes int
-	for len(rows) < pageSize && snap.offset < snap.bytes {
+	for len(rows) < pageSize && offset < snap.bytes {
 		row, readErr := reader.ReadBytes('\n')
 		if readErr != nil {
+			_ = f.Close()
 			s.removeSnapshotLocked(snap)
+			s.snapshotMu.Unlock()
 			writeError(w, http.StatusGone, "snapshot_expired", "query snapshot is damaged; restart the query")
 			return
 		}
@@ -300,29 +346,20 @@ func (s *Server) serveSnapshotPage(w http.ResponseWriter, token string, db *core
 		}
 		rows = append(rows, json.RawMessage(row[:len(row)-1]))
 		pageBytes += len(row)
-		snap.offset += int64(len(row))
+		offset += int64(len(row))
 	}
+	_ = f.Close()
 	response := map[string]any{"records": rows}
-	if snap.offset < snap.bytes {
-		next, tokenErr := snapshotToken()
-		if tokenErr != nil {
-			s.removeSnapshotLocked(snap)
-			writeError(w, http.StatusInternalServerError, "internal", "failed to continue query snapshot")
-			return
-		}
-		delete(s.snapshots, snap.token)
-		snap.token = next
-		s.snapshots[next] = snap
-		response["nextPageToken"] = next
+	if offset < snap.bytes {
+		response["nextPageToken"] = pageToken(snap, offset)
 		response["snapshotExpiresAt"] = snap.expiresAt.UTC().Format(time.RFC3339)
-	} else {
-		s.removeSnapshotLocked(snap)
 	}
+	s.snapshotMu.Unlock()
 	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) removeSnapshotLocked(snap *querySnapshot) {
-	delete(s.snapshots, snap.token)
+	delete(s.snapshots, snap.id)
 	if snap.timer != nil {
 		snap.timer.Stop()
 	}

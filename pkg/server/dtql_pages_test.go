@@ -68,12 +68,18 @@ func TestDTQLSnapshotPagesDoNotMixWrites(t *testing.T) {
 		t.Fatalf("second page changed after write: %#v", secondRow)
 	}
 	status, replay := pagedDTQL(t, url, doc, 1, token)
-	if status != http.StatusGone || replay["error"].(map[string]any)["code"] != "snapshot_expired" {
-		t.Fatalf("replayed token: %d %#v", status, replay)
+	if status != http.StatusOK || replay["nextPageToken"] != second["nextPageToken"] ||
+		replay["records"].([]any)[0].(map[string]any)["data"].(map[string]any)["rank"] != float64(2) {
+		t.Fatalf("retried page differs: %d %#v", status, replay)
 	}
-	status, final := pagedDTQL(t, url, doc, 1, second["nextPageToken"].(string))
+	finalToken := second["nextPageToken"].(string)
+	status, final := pagedDTQL(t, url, doc, 1, finalToken)
 	if status != http.StatusOK || final["nextPageToken"] != nil || final["records"].([]any)[0].(map[string]any)["key"] != "items/i3" {
 		t.Fatalf("final page: %d %#v", status, final)
+	}
+	status, finalRetry := pagedDTQL(t, url, doc, 1, finalToken)
+	if status != http.StatusOK || finalRetry["nextPageToken"] != nil || finalRetry["records"].([]any)[0].(map[string]any)["key"] != "items/i3" {
+		t.Fatalf("final page retry: %d %#v", status, finalRetry)
 	}
 }
 
@@ -138,7 +144,9 @@ func TestDTQLSnapshotStreamsLargeSQLiteResult(t *testing.T) {
 	if err = tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	ts := httptest.NewServer(server.New("test", map[string]*core.Database{"large": db}).Handler())
+	srv := server.New("test", map[string]*core.Database{"large": db})
+	defer srv.CloseSnapshots()
+	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	url := ts.URL + "/v1/databases/large/dtql"
 	doc := "from: {name: items}\norderBy: [{field: id}]\n"

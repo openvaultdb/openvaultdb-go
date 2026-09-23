@@ -207,7 +207,7 @@ client can opt into **result snapshot paging** on the same endpoint:
    contains fewer than `OVDB-Page-Size` rows.
 3. Send the identical DTQL document and page size with
    `OVDB-Page-Token: <nextPageToken>` for each subsequent page. Tokens are
-   opaque, single-use, bound to the database and bearer credential, and are
+   opaque, retryable until expiry, bound to the database and bearer credential, and are
    never placed in URLs. Continue until `nextPageToken` is absent.
 
 Pages come from the captured result, so an OVDB write between page requests
