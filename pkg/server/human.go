@@ -2,16 +2,17 @@ package server
 
 import (
 	"embed"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"net/http"
 	"net/url"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/dal-go/dalgo/dbschema"
+	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 )
 
 // The default human surface is intentionally neutral. Deployments with their
@@ -104,7 +105,11 @@ func (s *Server) humanDatabases(r *http.Request, includeProviderReferences bool,
 					fields = append(fields, humanField{Name: fieldName, Type: string(field.Type), Required: field.Required})
 				}
 				sort.Slice(fields, func(i, j int) bool { return fields[i].Name < fields[j].Name })
-				query := url.Values{"q": {`{"collection":` + strconv.Quote(name) + `,"limit":50}`}}
+				queryJSON, err := json.Marshal(core.Query{Collection: name, Limit: 50})
+				if err != nil {
+					return nil, fmt.Errorf("collection %q query link: %w", name, err)
+				}
+				query := url.Values{"q": {string(queryJSON)}}
 				references := make([]humanReference, 0, len(schema.References))
 				for _, ref := range schema.References {
 					fields, targets := []string{ref.Field}, []string{ref.TargetField}

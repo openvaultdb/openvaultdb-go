@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,6 +90,29 @@ func testHumanDB(id string) *core.Database {
 		"Artist": {Fields: map[string]schema.Field{"ArtistId": {Type: schema.TypeInteger}}},
 		"Track":  {Fields: map[string]schema.Field{"AlbumId": {Type: schema.TypeInteger}}, References: []schema.Reference{{Field: "AlbumId", Collection: "Album", TargetField: "AlbumId"}}},
 	}}}}
+}
+
+func TestHumanQueryLinkEncodesCollectionNameAsJSON(t *testing.T) {
+	const name = "collection\x01name"
+	db := testHumanDB("db")
+	db.Manifest.Schemas.Collections = map[string]schema.Collection{name: {}}
+	s := New("test", map[string]*core.Database{"db": db})
+	t.Cleanup(s.CloseSnapshots)
+	databases, err := s.humanDatabases(httptest.NewRequest(http.MethodGet, "http://localhost/ovdb/dbs/db", nil), false, "db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryURL, err := url.Parse(databases[0].Collections[0].QueryURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var query core.Query
+	if err := json.Unmarshal([]byte(queryURL.Query().Get("q")), &query); err != nil {
+		t.Fatal(err)
+	}
+	if query.Collection != name || query.Limit != 50 {
+		t.Fatalf("unexpected query link payload: %+v", query)
+	}
 }
 
 func TestHumanPagesAndDiscovery(t *testing.T) {
