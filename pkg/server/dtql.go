@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/dal-go/dalgo/access"
@@ -20,24 +21,39 @@ import (
 // handleDTQL authenticates a bounded DTQL query and executes it through the
 // mounted database's secured DALgo handle.
 func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	db := s.db(w, r)
 	if db == nil {
 		return
 	}
-	doc, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", "failed to read body: "+err.Error())
-		return
-	}
-	if len(doc) == 0 {
-		writeError(w, http.StatusBadRequest, "bad_request", "body must contain a DTQL YAML document")
-		return
-	}
-	if strings.EqualFold(strings.TrimSpace(strings.SplitN(r.Header.Get("Content-Type"), ";", 2)[0]), "application/json") {
-		doc, err = bindDTQLParameters(doc)
+	var doc []byte
+	var err error
+	if r.Method == http.MethodGet {
+		doc, err = dtqlFromURL(r.URL)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_dtql", err.Error())
+			status := http.StatusBadRequest
+			if errors.Is(err, errDTQLURLTooLong) {
+				status = http.StatusRequestURITooLong
+			}
+			writeError(w, status, "bad_request", err.Error())
 			return
+		}
+	} else {
+		doc, err = io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "failed to read body: "+err.Error())
+			return
+		}
+		if len(doc) == 0 {
+			writeError(w, http.StatusBadRequest, "bad_request", "body must contain a DTQL YAML document")
+			return
+		}
+		if strings.EqualFold(strings.TrimSpace(strings.SplitN(r.Header.Get("Content-Type"), ";", 2)[0]), "application/json") {
+			doc, err = bindDTQLParameters(doc)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_dtql", err.Error())
+				return
+			}
 		}
 	}
 	query, collection, err := core.ParseDTQL(doc)
@@ -70,7 +86,50 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 	for _, rec := range records {
 		out = append(out, recordOut{Key: rec.Key.String(), Data: rec.Data})
 	}
+	s.cacheReadResponse(w, r, db)
 	writeJSON(w, http.StatusOK, map[string]any{"records": out})
+}
+
+var errDTQLURLTooLong = errors.New("DTQL URL exceeds 8 KiB limit")
+
+// dtqlFromURL accepts a single YAML q value and an optional JSON parameters
+// object. The same binder and validator handle POST and GET.
+func dtqlFromURL(u *url.URL) ([]byte, error) {
+	if len(u.RequestURI()) > 8<<10 {
+		return nil, errDTQLURLTooLong
+	}
+	values, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		return nil, fmt.Errorf("invalid DTQL URL query: %w", err)
+	}
+	for name := range values {
+		if name != "q" && name != "parameters" {
+			return nil, fmt.Errorf("unsupported DTQL URL parameter %q", name)
+		}
+	}
+	query := values["q"]
+	if len(query) != 1 || strings.TrimSpace(query[0]) == "" {
+		return nil, errors.New("DTQL URL requires exactly one nonempty q parameter")
+	}
+	parameters := json.RawMessage(`{}`)
+	if raw, ok := values["parameters"]; ok {
+		if len(raw) != 1 || raw[0] == "" {
+			return nil, errors.New("DTQL URL requires one JSON parameters object")
+		}
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(raw[0]), &object); err != nil || object == nil {
+			return nil, errors.New("DTQL URL parameters must be a JSON object")
+		}
+		parameters = json.RawMessage(raw[0])
+	}
+	body, err := json.Marshal(struct {
+		Query      string          `json:"query"`
+		Parameters json.RawMessage `json:"parameters"`
+	}{Query: query[0], Parameters: parameters})
+	if err != nil {
+		return nil, fmt.Errorf("invalid DTQL URL parameters: %w", err)
+	}
+	return bindDTQLParameters(body)
 }
 
 // bindDTQLParameters replaces parsed DTQL parameter nodes with JSON values.

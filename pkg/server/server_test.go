@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/dal-go/record"
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
@@ -164,6 +163,7 @@ func TestProtectedGETReadAndQueryAreNeverCacheable(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "db.yaml")
 	manifest := strings.Replace(schemalessManifest, "storage:", "acl:\n  enabled: true\n  policies: [policy.yaml]\nstorage:", 1)
+	manifest = strings.Replace(manifest, "  schema_mode: schemaless", "  schema_mode: schemaless\n  cache_ttl: 1h", 1)
 	aclWriteFile(t, manifestPath, manifest)
 	aclWriteFile(t, filepath.Join(dir, "policy.yaml"), strings.Replace(aclPolicy("public-read", "name", "Alice"), "database: crm", "database: testdb", 1))
 	db, err := mount.File(manifestPath)
@@ -171,12 +171,13 @@ func TestProtectedGETReadAndQueryAreNeverCacheable(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	ts := httptest.NewServer(server.New("test", map[string]*core.Database{db.ID(): db}, server.WithReadOnly(true), server.WithReadCacheTTL(time.Hour)).Handler())
+	ts := httptest.NewServer(server.New("test", map[string]*core.Database{db.ID(): db}, server.WithReadOnly(true)).Handler())
 	t.Cleanup(ts.Close)
 
 	for _, endpoint := range []string{
 		"/v1/databases/testdb/read?" + url.Values{"key": {"contacts/c1"}}.Encode(),
 		"/v1/databases/testdb/query?" + url.Values{"q": {`{"collection":"contacts"}`}}.Encode(),
+		"/v1/databases/testdb/dtql?" + url.Values{"q": {"from: {name: contacts}\n"}}.Encode(),
 	} {
 		resp := doRequest(t, http.MethodGet, ts.URL+endpoint, nil)
 		if got := resp.Header.Get("Cache-Control"); got != "no-store" {
@@ -190,7 +191,8 @@ func TestProtectedGETReadAndQueryAreNeverCacheable(t *testing.T) {
 func TestReadOnlyCachesGETResponses(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "db.yaml")
-	if err := os.WriteFile(manifestPath, []byte(schemalessManifest), 0o644); err != nil {
+	manifest := strings.Replace(schemalessManifest, "  schema_mode: schemaless", "  schema_mode: schemaless\n  cache_ttl: 1h", 1)
+	if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	db, err := mount.File(manifestPath)
@@ -201,15 +203,73 @@ func TestReadOnlyCachesGETResponses(t *testing.T) {
 	if _, err = db.Apply(t.Context(), []core.Op{{Op: "set", Key: record.NewKeyWithID("contacts", "c1"), Data: map[string]any{"name": "Alice"}}}, "seed"); err != nil {
 		t.Fatal(err)
 	}
-	ts := httptest.NewServer(server.New("test", map[string]*core.Database{db.ID(): db}, server.WithReadOnly(true), server.WithReadCacheTTL(time.Hour)).Handler())
+	uncachedPath := filepath.Join(dir, "uncached.yaml")
+	uncachedManifest := strings.Replace(schemalessManifest, "id: testdb", "id: uncached", 1)
+	uncachedManifest = strings.Replace(uncachedManifest, "path: ./data", "path: ./other-data", 1)
+	if err := os.WriteFile(uncachedPath, []byte(uncachedManifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	uncached, err := mount.File(uncachedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = uncached.Close() })
+	ts := httptest.NewServer(server.New("test", map[string]*core.Database{db.ID(): db, uncached.ID(): uncached}, server.WithReadOnly(true)).Handler())
 	t.Cleanup(ts.Close)
 
 	read := doRequest(t, http.MethodGet, ts.URL+"/v1/databases/testdb/read?"+url.Values{"key": {"contacts/c1"}}.Encode(), nil)
 	mustStatus(t, read, http.StatusOK)
-	if got := read.Header.Get("Cache-Control"); got != "public, max-age=3600" {
+	if got := read.Header.Get("Cache-Control"); got != "public, max-age=3600, s-maxage=3600" {
 		t.Fatalf("GET read Cache-Control = %q", got)
 	}
 	drainClose(read)
+	jsonQuery := doRequest(t, http.MethodGet, ts.URL+"/v1/databases/testdb/query?"+url.Values{"q": {`{"collection":"contacts"}`}}.Encode(), nil)
+	mustStatus(t, jsonQuery, http.StatusOK)
+	if got := jsonQuery.Header.Get("Cache-Control"); got != "public, max-age=3600, s-maxage=3600" {
+		t.Fatalf("GET query Cache-Control = %q", got)
+	}
+	drainClose(jsonQuery)
+	const dtql = "from: {name: contacts}\nwhere: {op: '==', left: {field: name}, right: {param: Name}}\n"
+	query := url.Values{"q": {dtql}, "parameters": {`{"Name":"Alice"}`}}.Encode()
+	dtqlResponse := doRequest(t, http.MethodGet, ts.URL+"/v1/databases/testdb/dtql?"+query, nil)
+	mustStatus(t, dtqlResponse, http.StatusOK)
+	if got := dtqlResponse.Header.Get("Cache-Control"); got != "public, max-age=3600, s-maxage=3600" {
+		t.Fatalf("GET dtql Cache-Control = %q", got)
+	}
+	if got := dtqlResponse.Header.Get("Vary"); got != "OVDB-Page-Size, OVDB-Page-Token, OVDB-Page-Close" {
+		t.Fatalf("GET dtql Vary = %q", got)
+	}
+	var result map[string]any
+	decodeJSON(t, dtqlResponse, &result)
+	if records := result["records"].([]any); len(records) != 1 {
+		t.Fatalf("GET dtql records = %#v", records)
+	}
+	uncachedResponse := doRequest(t, http.MethodGet, ts.URL+"/v1/databases/uncached/dtql?"+url.Values{"q": {"from: {name: contacts}\n"}}.Encode(), nil)
+	mustStatus(t, uncachedResponse, http.StatusOK)
+	if got := uncachedResponse.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("uncached database Cache-Control = %q", got)
+	}
+	drainClose(uncachedResponse)
+	post := doRequest(t, http.MethodPost, ts.URL+"/v1/databases/testdb/dtql", map[string]any{"query": "from: {name: contacts}\n"})
+	mustStatus(t, post, http.StatusOK)
+	if got := post.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("POST dtql Cache-Control = %q", got)
+	}
+	drainClose(post)
+	for _, bad := range []string{"q=a&q=b", "q=a&parameters=%5B%5D", "q=a&extra=1", "q=a&parameters=%7Bbad"} {
+		resp := doRequest(t, http.MethodGet, ts.URL+"/v1/databases/testdb/dtql?"+bad, nil)
+		mustStatus(t, resp, http.StatusBadRequest)
+		if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+			t.Fatalf("invalid GET dtql Cache-Control = %q", got)
+		}
+		drainClose(resp)
+	}
+	tooLong := doRequest(t, http.MethodGet, ts.URL+"/v1/databases/testdb/dtql?"+url.Values{"q": {strings.Repeat("a", 8192)}}.Encode(), nil)
+	mustStatus(t, tooLong, http.StatusRequestURITooLong)
+	if got := tooLong.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("overlong GET dtql Cache-Control = %q", got)
+	}
+	drainClose(tooLong)
 }
 
 func TestURLReadFormsDefaultToNoStoreBeforeHandler(t *testing.T) {

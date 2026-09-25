@@ -294,9 +294,14 @@ func (s *Server) executeQuery(w http.ResponseWriter, r *http.Request, db *core.D
 }
 
 func (s *Server) cacheReadResponse(w http.ResponseWriter, r *http.Request, db *core.Database) {
-	if s.readOnly && s.readCacheTTL > 0 && r.Method == http.MethodGet &&
+	ttl := db.Manifest.Database.ReadCacheTTL()
+	if s.readOnly && ttl > 0 && r.Method == http.MethodGet &&
 		isReadCacheEndpoint(r) &&
 		s.authCfg == nil && !db.HasAccessPolicies() {
-		w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", int(s.readCacheTTL.Seconds())))
+		if strings.HasSuffix(r.URL.Path, "/dtql") {
+			w.Header().Add("Vary", "OVDB-Page-Size, OVDB-Page-Token, OVDB-Page-Close")
+		}
+		seconds := int(ttl.Seconds())
+		w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, s-maxage=%d", seconds, seconds))
 	}
 }
