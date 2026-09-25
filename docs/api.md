@@ -67,10 +67,37 @@ flags. The server uses the HTTP request origin by default; `ovdb serve
 --public-url` sets the canonical external origin behind a reverse proxy.
 Authenticated servers do not publish database names in public discovery.
 
-The generic human pages are `GET /ovdb/`, `GET /ovdb/dbs/`, and
-`GET /ovdb/dbs/{db}`. The database URL is an identity and profile, not a
-machine query endpoint. The pages use a neutral built-in stylesheet; a hosting
+The generic human pages are `GET /ovdb/`, `GET /ovdb/dbs/`,
+`GET /ovdb/dbs/{db}`, and `GET /ovdb/dbs/{db}/collections/{collection}`.
+The database URL is an identity and profile, not a
+machine query endpoint. Collection pages show declared fields, database foreign
+keys discovered through DALgo, and optional additional OVDB `references`.
+Each relationship shows its source and enforcement state. OVDB declarations
+are informational and do not enforce referential integrity. Database foreign
+keys show the provider-reported enabled, disabled, or unknown state.
+The pages use a neutral built-in stylesheet; a hosting
 website may render its own pages while keeping these API/discovery semantics.
+
+For example, a collection declaration can describe an outgoing reference:
+
+```yaml
+schemas:
+  collections:
+    Artist:
+      fields:
+        ArtistId: {type: integer}
+    Album:
+      fields:
+        ArtistId: {type: integer}
+      references:
+        - {field: ArtistId, collection: Artist, target_field: ArtistId}
+```
+
+The server derives Artist's incoming reference from Album's declaration.
+For a composite relationship, use ordered `fields` and `target_fields` arrays
+instead of `field` and `target_field`. A matching database key and OVDB
+declaration appear once with both sources shown. Provider foreign keys are
+stored on the referencing collection; incoming links are derived from them.
 
 ## Endpoints
 

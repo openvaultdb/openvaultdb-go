@@ -457,6 +457,9 @@ storage:
   path: ./catalog.db
 schemas:
   collections:
+    artists:
+      fields:
+        id: {type: integer}
     products:
       fields:
         name:
@@ -464,6 +467,9 @@ schemas:
           required: true
         price:
           type: number
+        artist_id: {type: integer}
+      references:
+        - {field: artist_id, collection: artists, target_field: id}
 `)
 	m, err := manifest.Parse(yaml)
 	if err != nil {
@@ -474,6 +480,10 @@ schemas:
 	}
 	if m.Schemas == nil || len(m.Schemas.Collections) == 0 {
 		t.Error("expected non-empty Schemas.Collections")
+	}
+	refs := m.Schemas.Collections["products"].References
+	if len(refs) != 1 || refs[0].Collection != "artists" || refs[0].Field != "artist_id" || refs[0].TargetField != "id" {
+		t.Fatalf("references not parsed: %+v", refs)
 	}
 }
 

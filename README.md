@@ -78,8 +78,10 @@ ovdb serve --dir ./manifests
 
 The server binds to `127.0.0.1:6832` by default. Override with `--addr`.
 Opening `/ovdb/` in a browser shows the server's neutral, built-in HTML page;
-`/ovdb/dbs/` lists mounted databases and `/ovdb/dbs/<id>` shows a database
-profile. These pages require no JavaScript or separate website. When serving
+`/ovdb/dbs/` lists mounted databases, `/ovdb/dbs/<id>` shows a database
+profile, and `/ovdb/dbs/<id>/collections/<name>` shows a declared collection's
+schema, outgoing and incoming database or OVDB-declared references, and API links. These pages
+require no JavaScript or separate website. When serving
 behind a reverse proxy, set `--public-url https://your.example` so the
 connection URLs in discovery and profiles use the externally reachable origin.
 The browser pages and versioned `/v1/` machine API remain separate. With

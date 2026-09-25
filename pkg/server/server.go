@@ -254,6 +254,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /ovdb/", s.handleHumanServer)
 	mux.HandleFunc("GET /ovdb/dbs/", s.handleHumanDatabases)
 	mux.HandleFunc("GET /ovdb/dbs/{db}", s.handleHumanDatabase)
+	mux.HandleFunc("GET /ovdb/dbs/{db}/collections/{collection}", s.handleHumanCollection)
 	mux.HandleFunc("GET /ovdb/style.css", handleHumanStyle)
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	mux.HandleFunc("GET /v1/databases", s.handleDatabases)

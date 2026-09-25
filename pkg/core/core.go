@@ -287,6 +287,29 @@ func (d *Database) Collections(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
+// CollectionForeignKeys returns foreign keys discovered by the storage
+// provider. A provider without schema introspection contributes no keys;
+// manifest-declared references are handled separately by the caller.
+func (d *Database) CollectionForeignKeys(ctx context.Context, collection string) ([]dbschema.ForeignKeyDef, error) {
+	reader, ok := dal.As[dbschema.SchemaReader](d.db)
+	if !ok {
+		return nil, nil
+	}
+	ref := dal.NewRootCollectionRef(collection, "")
+	def, err := reader.DescribeCollection(ctx, &ref)
+	if err != nil {
+		var unsupported *dbschema.NotSupportedError
+		if errors.As(err, &unsupported) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("describe collection %q: %w", collection, err)
+	}
+	if def == nil {
+		return nil, nil
+	}
+	return def.ForeignKeys, nil
+}
+
 // OnClose registers fn to run when the database is closed, after resources
 // registered later (reverse order). Mounts use it for resources the dal.DB
 // driver does not own, e.g. a Firestore client.
