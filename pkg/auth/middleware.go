@@ -28,6 +28,9 @@ func FromRequest(r *http.Request) *Principal {
 // publicPath reports whether the path is reachable without a token: the
 // discovery document and the connect flow itself.
 func publicPath(path string) bool {
+	if path == "/ovdb" || strings.HasPrefix(path, "/ovdb/") {
+		return true // human handlers decide what public metadata they may expose
+	}
 	switch path {
 	case "/.well-known/openvaultdb", "/authorize", "/token":
 		return true

@@ -77,6 +77,14 @@ ovdb serve --dir ./manifests
 ```
 
 The server binds to `127.0.0.1:6832` by default. Override with `--addr`.
+Opening `/ovdb/` in a browser shows the server's neutral, built-in HTML page;
+`/ovdb/dbs/` lists mounted databases and `/ovdb/dbs/<id>` shows a database
+profile. These pages require no JavaScript or separate website. When serving
+behind a reverse proxy, set `--public-url https://your.example` so the
+connection URLs in discovery and profiles use the externally reachable origin.
+The browser pages and versioned `/v1/` machine API remain separate. With
+`--auth`, the public pages reveal no database names; use an authorized client
+to inspect the private catalog.
 
 Authentication is off by default (local dev). Enable it with `ovdb serve --auth`:
 the owner token is taken from `--owner-token` / `$OVDB_OWNER_TOKEN` (or generated

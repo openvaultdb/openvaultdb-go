@@ -26,9 +26,10 @@ small: just enough for DALgo-backed Sneat CRUD validation. Versioned under `/v1`
 
 ## Authentication (optional, `ovdb serve --auth`)
 
-Off by default (local-dev). When enabled, every endpoint except the three
-public ones (`/.well-known/openvaultdb`, `/authorize`, `/token`) requires
-`Authorization: Bearer <token>`:
+Off by default (local-dev). When enabled, every machine endpoint except
+`/.well-known/openvaultdb`, `/authorize`, and `/token` requires
+`Authorization: Bearer <token>`. The generic `/ovdb/` pages remain reachable
+without a token, but hide the database catalog and profiles:
 
 - **Owner token** (`--owner-token` / `$OVDB_OWNER_TOKEN`, generated and
   printed if unset): full administrative capability, including `/v1/databases` and the
@@ -59,6 +60,17 @@ GET /.well-known/openvaultdb
 → 200 {"name":"OpenVaultDB","protocol":"openvaultdb/0.1","version":"...","authEnabled":true,
        "authorizeEndpoint":"/authorize","tokenEndpoint":"/token"}
 ```
+
+Without auth, this document also lists mounted databases with their stable
+browser-openable `url` (`/ovdb/dbs/<id>`), versioned `apiUrl`, and capability
+flags. The server uses the HTTP request origin by default; `ovdb serve
+--public-url` sets the canonical external origin behind a reverse proxy.
+Authenticated servers do not publish database names in public discovery.
+
+The generic human pages are `GET /ovdb/`, `GET /ovdb/dbs/`, and
+`GET /ovdb/dbs/{db}`. The database URL is an identity and profile, not a
+machine query endpoint. The pages use a neutral built-in stylesheet; a hosting
+website may render its own pages while keeping these API/discovery semantics.
 
 ## Endpoints
 
