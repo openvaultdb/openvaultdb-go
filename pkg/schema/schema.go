@@ -70,7 +70,18 @@ type Field struct {
 
 // Collection declares the schema of one collection.
 type Collection struct {
-	Fields map[string]Field `yaml:"fields" json:"fields"`
+	Fields     map[string]Field `yaml:"fields" json:"fields"`
+	References []Reference      `yaml:"references,omitempty" json:"references,omitempty"`
+}
+
+// Reference describes a declared field relationship to another collection.
+// It is metadata for discovery and does not enforce referential integrity.
+type Reference struct {
+	Field        string   `yaml:"field" json:"field"`
+	Fields       []string `yaml:"fields,omitempty" json:"fields,omitempty"`
+	Collection   string   `yaml:"collection" json:"collection"`
+	TargetField  string   `yaml:"target_field" json:"targetField"`
+	TargetFields []string `yaml:"target_fields,omitempty" json:"targetFields,omitempty"`
 }
 
 // Schemas holds declared collection schemas of a database.
@@ -104,6 +115,30 @@ func (s *Schemas) Validate() error {
 			}
 			if err := f.Type.Validate(); err != nil {
 				return fmt.Errorf("collection %q field %q: %w", colName, fieldName, err)
+			}
+		}
+		for _, ref := range col.References {
+			fields, targets := ref.Fields, ref.TargetFields
+			if ref.Field != "" || ref.TargetField != "" {
+				if len(fields) != 0 || len(targets) != 0 || ref.Field == "" || ref.TargetField == "" {
+					return fmt.Errorf("collection %q reference must use field/target_field or fields/target_fields", colName)
+				}
+				fields, targets = []string{ref.Field}, []string{ref.TargetField}
+			}
+			if len(fields) == 0 || len(fields) != len(targets) {
+				return fmt.Errorf("collection %q reference fields and target_fields must have the same nonzero length", colName)
+			}
+			target, ok := s.Collections[ref.Collection]
+			if !ok {
+				return fmt.Errorf("collection %q references undeclared collection %q", colName, ref.Collection)
+			}
+			for i, field := range fields {
+				if _, ok := col.Fields[field]; !ok {
+					return fmt.Errorf("collection %q reference field %q is not declared", colName, field)
+				}
+				if _, ok := target.Fields[targets[i]]; !ok {
+					return fmt.Errorf("collection %q references undeclared field %q in %q", colName, targets[i], ref.Collection)
+				}
 			}
 		}
 	}

@@ -642,6 +642,35 @@ func TestSchemasValidate(t *testing.T) {
 		}
 	})
 
+	t.Run("valid declared relationship", func(t *testing.T) {
+		s := &schema.Schemas{Collections: map[string]schema.Collection{
+			"Album":  {Fields: map[string]schema.Field{"ArtistId": {Type: schema.TypeInteger}}, References: []schema.Reference{{Field: "ArtistId", Collection: "Artist", TargetField: "ArtistId"}}},
+			"Artist": {Fields: map[string]schema.Field{"ArtistId": {Type: schema.TypeInteger}}},
+		}}
+		if err := s.Validate(); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		ref  schema.Reference
+	}{
+		{"missing source field", schema.Reference{Field: "Missing", Collection: "Artist", TargetField: "ArtistId"}},
+		{"missing collection", schema.Reference{Field: "ArtistId", Collection: "Missing", TargetField: "ArtistId"}},
+		{"missing target field", schema.Reference{Field: "ArtistId", Collection: "Artist", TargetField: "Missing"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &schema.Schemas{Collections: map[string]schema.Collection{
+				"Album":  {Fields: map[string]schema.Field{"ArtistId": {Type: schema.TypeInteger}}, References: []schema.Reference{tc.ref}},
+				"Artist": {Fields: map[string]schema.Field{"ArtistId": {Type: schema.TypeInteger}}},
+			}}
+			if err := s.Validate(); err == nil {
+				t.Fatal("expected invalid relationship")
+			}
+		})
+	}
+
 	t.Run("empty collections map is valid", func(t *testing.T) {
 		t.Parallel()
 		s := &schema.Schemas{
@@ -649,6 +678,21 @@ func TestSchemasValidate(t *testing.T) {
 		}
 		if err := s.Validate(); err != nil {
 			t.Fatalf("unexpected error for empty collections: %v", err)
+		}
+	})
+
+	t.Run("composite reference preserves field order", func(t *testing.T) {
+		fields := map[string]schema.Field{"a": {Type: schema.TypeInteger}, "b": {Type: schema.TypeInteger}}
+		s := &schema.Schemas{Collections: map[string]schema.Collection{
+			"source": {Fields: fields, References: []schema.Reference{{Fields: []string{"a", "b"}, Collection: "target", TargetFields: []string{"b", "a"}}}},
+			"target": {Fields: fields},
+		}}
+		if err := s.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		s.Collections["source"] = schema.Collection{Fields: fields, References: []schema.Reference{{Fields: []string{"a", "b"}, Collection: "target", TargetFields: []string{"a"}}}}
+		if err := s.Validate(); err == nil {
+			t.Fatal("expected mismatched composite reference to fail")
 		}
 	})
 }
