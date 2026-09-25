@@ -246,6 +246,13 @@ allows all three paging headers when the origin is allowed.
 DTQL is dalgo's native lossless YAML serialization of `dal.StructuredQuery`
 (`github.com/dal-go/dalgo/dtql`). OpenVaultDB validates the target, checks token
 capabilities, and executes through the mounted DALgo policy enforcement layers.
+`POST /v1/databases/{db}/dtql` accepts the raw YAML document or
+`Content-Type: application/json` with `{"query":"<DTQL YAML>","parameters":{"Name":1}}`.
+The JSON form binds named scalar or scalar-array values to `{param: Name}`
+expressions. Bindings are parsed as values, so their text cannot alter the
+query structure. Missing, unused, null, object, and oversized array bindings
+are rejected. Database metadata advertises `queryFormat: dtql-yaml+json`;
+raw YAML remains accepted for existing clients.
 The supported profile is a single unaliased root collection with field projection,
 filtering, ordering, and pagination. Joins, aggregation, cursors, and native queries
 are not supported by this endpoint. Limit defaults to 1000 (maximum 1000), offset
