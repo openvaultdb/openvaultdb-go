@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/dal-go/dalgo/access"
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
@@ -34,12 +33,11 @@ type Server struct {
 
 	createMu sync.Mutex // serializes runtime database creation end-to-end
 
-	authCfg             *auth.Config  // nil = auth disabled (local-dev default)
-	corsCfg             *CORSConfig   // nil = CORS disabled (no headers added)
-	dataDir             string        // "" = runtime database creation disabled
-	readOnly            bool          // reject all routes that mutate server or database state
-	publicOrigin        string        // canonical HTTP(S) origin when behind a reverse proxy
-	readCacheTTL        time.Duration // cache lifetime for successful public GET read/query responses; 0 = no cache header
+	authCfg             *auth.Config // nil = auth disabled (local-dev default)
+	corsCfg             *CORSConfig  // nil = CORS disabled (no headers added)
+	dataDir             string       // "" = runtime database creation disabled
+	readOnly            bool         // reject all routes that mutate server or database state
+	publicOrigin        string       // canonical HTTP(S) origin when behind a reverse proxy
 	principalResolver   PrincipalResolver
 	accessAuthorization OwnerAuthorization
 	explainResolver     MembershipResolver
@@ -106,14 +104,6 @@ func WithReadOnly(readOnly bool) Option {
 // server. Without it, request scheme and Host are used (suitable for local use).
 func WithPublicOrigin(origin string) Option {
 	return func(s *Server) { s.publicOrigin = strings.TrimRight(origin, "/") }
-}
-
-// WithReadCacheTTL makes successful unauthenticated GET /read and GET /query
-// responses cacheable for ttl when WithReadOnly is also enabled. A non-positive
-// ttl disables the cache header. Protected databases and authentication-enabled
-// servers always remain uncacheable because their response can vary by caller.
-func WithReadCacheTTL(ttl time.Duration) Option {
-	return func(s *Server) { s.readCacheTTL = ttl }
 }
 
 // New creates a Server over mounted databases keyed by database id.
@@ -276,6 +266,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/databases/{db}/query", s.handleQuery)
 	mux.HandleFunc("GET /v1/databases/{db}/query", s.handleQuery)
 	mux.HandleFunc("POST /v1/databases/{db}/dtql", s.handleDTQL)
+	mux.HandleFunc("GET /v1/databases/{db}/dtql", s.handleDTQL)
 	mux.HandleFunc("POST /v1/databases/{db}/access/evaluate", s.handleAccessEvaluate)
 	mux.HandleFunc("POST /v1/databases/{db}/access/evidence", s.handleAccessEvidence)
 	mux.HandleFunc("GET /v1/databases/{db}/access/layers", s.handleAccessLayers)
@@ -343,7 +334,7 @@ func (s *Server) Handler() http.Handler {
 func isReadCacheEndpoint(r *http.Request) bool {
 	return (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
 		strings.HasPrefix(r.URL.Path, "/v1/databases/") &&
-		(strings.HasSuffix(r.URL.Path, "/read") || strings.HasSuffix(r.URL.Path, "/query"))
+		(strings.HasSuffix(r.URL.Path, "/read") || strings.HasSuffix(r.URL.Path, "/query") || strings.HasSuffix(r.URL.Path, "/dtql"))
 }
 
 // isMutation identifies every mounted route that persists data or changes
@@ -478,7 +469,7 @@ func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
 		"collections":  collections,
 		"capabilities": map[string]bool{"read": true, "query": true, "dtql": true, "write": !s.readOnly},
 		"endpoints":    map[string]string{"dtql": s.humanOrigin(r) + "/v1/databases/" + url.PathEscape(db.ID()) + "/dtql"},
-		"queryFormat":  "dtql-yaml",
+		"queryFormat":  "dtql-yaml+json",
 	})
 }
 

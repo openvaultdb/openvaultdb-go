@@ -1,6 +1,7 @@
 package manifest_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -11,6 +12,21 @@ import (
 // ---------------------------------------------------------------------------
 // Parse / Validate tests
 // ---------------------------------------------------------------------------
+
+func TestDatabaseCacheTTL(t *testing.T) {
+	const base = "database: {id: testdb, schema_mode: schemaless, cache_ttl: %s}\nstorage: {engine: ingitdb, path: ./data}\n"
+	for _, tc := range []struct {
+		value string
+		valid bool
+	}{
+		{"24h", true}, {"0s", true}, {"1.5s", false}, {"-1s", false}, {"bad", false}, {"8761h", false},
+	} {
+		_, err := manifest.Parse([]byte(fmt.Sprintf(base, tc.value)))
+		if (err == nil) != tc.valid {
+			t.Errorf("cache_ttl %q: err = %v, valid = %v", tc.value, err, tc.valid)
+		}
+	}
+}
 
 func TestParse_ValidSQLiteStrict(t *testing.T) {
 	yaml := []byte(`

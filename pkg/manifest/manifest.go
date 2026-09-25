@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"time"
 
 	"github.com/dal-go/dalgo/access"
 	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
@@ -36,6 +37,17 @@ type PolicyStoreConfig struct {
 type Database struct {
 	ID         string      `yaml:"id" json:"id"`
 	SchemaMode schema.Mode `yaml:"schema_mode" json:"schemaMode"`
+	CacheTTL   string      `yaml:"cache_ttl,omitempty" json:"cacheTtl,omitempty"`
+}
+
+// ReadCacheTTL is the database's public read cache duration. Invalid values
+// fail manifest validation; returning zero here also keeps unchecked values safe.
+func (d Database) ReadCacheTTL() time.Duration {
+	ttl, err := time.ParseDuration(d.CacheTTL)
+	if err != nil || ttl < 0 || ttl > 365*24*time.Hour || ttl%time.Second != 0 {
+		return 0
+	}
+	return ttl
 }
 
 // Storage selects and configures the storage engine.
@@ -250,6 +262,12 @@ func (m *Manifest) Validate() error {
 	}
 	if err := m.Database.SchemaMode.Validate(); err != nil {
 		return fmt.Errorf("database: %w", err)
+	}
+	if m.Database.CacheTTL != "" {
+		ttl, err := time.ParseDuration(m.Database.CacheTTL)
+		if err != nil || ttl < 0 || ttl > 365*24*time.Hour || ttl%time.Second != 0 {
+			return fmt.Errorf("database.cache_ttl must be a whole-second duration from 0s through 8760h")
+		}
 	}
 	if m.Storage.Engine == "" {
 		return fmt.Errorf("storage.engine is required")

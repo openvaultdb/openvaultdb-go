@@ -179,8 +179,11 @@ GET /v1/databases/{db}/query?q=<percent-encoded-JSON-query>
 The `q` value is the same JSON object accepted by `POST /query`, URL-encoded
 once. It is limited to 1 MiB. Query results remain subject to the server's 8
 MiB result buffer. For a public, unprotected mounted database, embedders can
-set `server.WithReadOnly(true)` plus `server.WithReadCacheTTL(ttl)` to send `Cache-Control: public, max-age=N`
-on successful GET `/read` and GET `/query` responses. These URL-query forms
+set `database.cache_ttl: 24h` in that database's manifest and run the server
+with `server.WithReadOnly(true)`. Successful GET `/read`, `/query`, and `/dtql`
+responses then send `Cache-Control: public, max-age=N, s-maxage=N`, where N is
+that database's duration in seconds. The duration must be whole seconds from
+`0s` through `8760h`; absent or `0s` disables public caching. These URL-query forms
 default to `Cache-Control: no-store`, including authentication failures,
 missing databases, and HEAD requests. Authentication-enabled or
 policy-protected responses are never marked cacheable.
@@ -204,7 +207,18 @@ ordering return IDs sorted (limit applied after sorting), matching document-stor
 ```
 POST /v1/databases/{db}/dtql        body: a DTQL-YAML document (max 1 MiB)
 → 200 {"records":[{"key":"...","data":{...}}, ...]}
+
+GET /v1/databases/{db}/dtql?q=<percent-encoded-DTQL-YAML>&parameters=<percent-encoded-JSON-object>
+→ 200 {"records":[{"key":"...","data":{...}}, ...]}
 ```
+
+`parameters` is optional. GET accepts one `q` and at most one `parameters`
+value; the full request URI is limited to 8 KiB. Use GET only for public,
+non-sensitive queries: URLs can appear in browser history, proxy logs, and
+analytics. Use POST when query values are sensitive. Snapshot pages always
+send `no-store`, even if their initial request uses GET. Cacheable unpaged GET
+responses vary on the three paging headers, so a proxy must keep paged and
+unpaged requests separate.
 
 For a complete result larger than the ordinary 1000-row/8 MiB response, the
 client can opt into **result snapshot paging** on the same endpoint:
@@ -246,6 +260,13 @@ allows all three paging headers when the origin is allowed.
 DTQL is dalgo's native lossless YAML serialization of `dal.StructuredQuery`
 (`github.com/dal-go/dalgo/dtql`). OpenVaultDB validates the target, checks token
 capabilities, and executes through the mounted DALgo policy enforcement layers.
+`POST /v1/databases/{db}/dtql` accepts the raw YAML document or
+`Content-Type: application/json` with `{"query":"<DTQL YAML>","parameters":{"Name":1}}`.
+The JSON form binds named scalar or scalar-array values to `{param: Name}`
+expressions. Bindings are parsed as values, so their text cannot alter the
+query structure. Missing, unused, null, object, and oversized array bindings
+are rejected. Database metadata advertises `queryFormat: dtql-yaml+json`;
+raw YAML remains accepted for existing clients.
 The supported profile is a single unaliased root collection with field projection,
 filtering, ordering, and pagination. Joins, aggregation, cursors, and native queries
 are not supported by this endpoint. Limit defaults to 1000 (maximum 1000), offset
