@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -37,6 +38,7 @@ type Server struct {
 	corsCfg             *CORSConfig   // nil = CORS disabled (no headers added)
 	dataDir             string        // "" = runtime database creation disabled
 	readOnly            bool          // reject all routes that mutate server or database state
+	publicOrigin        string        // canonical HTTP(S) origin when behind a reverse proxy
 	readCacheTTL        time.Duration // cache lifetime for successful public GET read/query responses; 0 = no cache header
 	principalResolver   PrincipalResolver
 	accessAuthorization OwnerAuthorization
@@ -97,6 +99,13 @@ func WithDataDir(dir string) Option {
 // side effect. Owner credentials do not bypass this setting.
 func WithReadOnly(readOnly bool) Option {
 	return func(s *Server) { s.readOnly = readOnly }
+}
+
+// WithPublicOrigin sets the externally reachable HTTP(S) origin used in
+// database connection URLs. Callers must validate it before constructing the
+// server. Without it, request scheme and Host are used (suitable for local use).
+func WithPublicOrigin(origin string) Option {
+	return func(s *Server) { s.publicOrigin = strings.TrimRight(origin, "/") }
 }
 
 // WithReadCacheTTL makes successful unauthenticated GET /read and GET /query
@@ -252,6 +261,10 @@ func (s *Server) inflightFor(db *core.Database) *sync.WaitGroup {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /.well-known/openvaultdb", s.handleWellKnown)
+	mux.HandleFunc("GET /ovdb/", s.handleHumanServer)
+	mux.HandleFunc("GET /ovdb/dbs/", s.handleHumanDatabases)
+	mux.HandleFunc("GET /ovdb/dbs/{db}", s.handleHumanDatabase)
+	mux.HandleFunc("GET /ovdb/style.css", handleHumanStyle)
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	mux.HandleFunc("GET /v1/databases", s.handleDatabases)
 	mux.HandleFunc("POST /v1/databases", s.handleDatabaseCreate)
@@ -457,11 +470,15 @@ func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
 		s.writeMappedError(w, r, err)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":          db.ID(),
-		"engine":      db.Manifest.Storage.Engine,
-		"schemaMode":  string(db.Manifest.Database.SchemaMode),
-		"collections": collections,
+		"id":           db.ID(),
+		"engine":       db.Manifest.Storage.Engine,
+		"schemaMode":   string(db.Manifest.Database.SchemaMode),
+		"collections":  collections,
+		"capabilities": map[string]bool{"read": true, "query": true, "dtql": true, "write": !s.readOnly},
+		"endpoints":    map[string]string{"dtql": s.humanOrigin(r) + "/v1/databases/" + url.PathEscape(db.ID()) + "/dtql"},
+		"queryFormat":  "dtql-yaml",
 	})
 }
 

@@ -84,6 +84,7 @@ func (s *Server) validateConnect(v url.Values) (consentView, string) {
 // handleWellKnown implements GET /.well-known/openvaultdb: discovery of the
 // protocol version and, when auth is enabled, the connect endpoints.
 func (s *Server) handleWellKnown(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	doc := map[string]any{
 		"name":        "OpenVaultDB",
 		"protocol":    "openvaultdb/0.1",
@@ -93,6 +94,18 @@ func (s *Server) handleWellKnown(w http.ResponseWriter, r *http.Request) {
 	if s.authCfg != nil {
 		doc["authorizeEndpoint"] = "/authorize"
 		doc["tokenEndpoint"] = "/token"
+	} else {
+		origin := s.humanOrigin(r)
+		databases := make([]map[string]any, 0)
+		for _, id := range s.databaseIDs() {
+			databases = append(databases, map[string]any{
+				"id":           id,
+				"url":          origin + humanDatabasePath(id),
+				"apiUrl":       origin + "/v1/databases/" + url.PathEscape(id),
+				"capabilities": map[string]bool{"read": true, "query": true, "dtql": true, "write": !s.readOnly},
+			})
+		}
+		doc["databases"] = databases
 	}
 	writeJSON(w, http.StatusOK, doc)
 }
