@@ -3,7 +3,9 @@ package joinexec
 import (
 	"errors"
 	"regexp"
+	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/dal-go/dalgo/dal"
 )
@@ -53,16 +55,41 @@ var queryLimitBounds = map[string]dalgoBound{
 }
 
 // aggregationBounds match DALgo's aggregation limit errors, which are plain
-// fmt.Errorf values. The limit is read from the message.
+// fmt.Errorf values. The limit is read from the message. Each pattern is
+// anchored the way DALgo emits its message: after the start of the text or a
+// ": " that DALgo's own wrapping adds, and up to the end of the text. DALgo
+// echoes request-supplied names inside quotes in other errors (an unavailable
+// join field, for one), and a name that spells a bound message is not a bound.
 var aggregationBounds = []struct {
 	name string
 	re   *regexp.Regexp
 }{
-	{BudgetAggregationGroups, regexp.MustCompile(`dalgo aggregation: group limit (\d{1,18}) exceeded`)},
-	{BudgetAggregationStates, regexp.MustCompile(`dalgo aggregation: aggregate-state limit (\d{1,18}) exceeded`)},
-	{BudgetAggregationBytes, regexp.MustCompile(`dalgo aggregation: retained aggregation byte limit (\d{1,18}) exceeded`)},
-	{BudgetAggregationDistinctValues, regexp.MustCompile(`dalgo aggregation: distinct-value limit (\d{1,18}) exceeded`)},
-	{BudgetAggregationTotalDistinct, regexp.MustCompile(`dalgo aggregation: total distinct-value limit (\d{1,18}) exceeded`)},
+	{BudgetAggregationGroups, regexp.MustCompile(`(?:^|: )dalgo aggregation: group limit (\d{1,18}) exceeded$`)},
+	{BudgetAggregationStates, regexp.MustCompile(`(?:^|: )dalgo aggregation: aggregate-state limit (\d{1,18}) exceeded$`)},
+	{BudgetAggregationBytes, regexp.MustCompile(`(?:^|: )dalgo aggregation: retained aggregation byte limit (\d{1,18}) exceeded$`)},
+	{BudgetAggregationDistinctValues, regexp.MustCompile(`(?s)(?:^|: )dalgo aggregation: distinct-value limit (\d{1,18}) exceeded for .+$`)},
+	{BudgetAggregationTotalDistinct, regexp.MustCompile(`(?:^|: )dalgo aggregation: total distinct-value limit (\d{1,18}) exceeded$`)},
+}
+
+// DALgo evaluates a derived source (a subquery in FROM) by running the inner
+// query and flattening the error it gets with %v into a join_plan error whose
+// Message is "cannot scan <alias>: " (or "scan <alias>: " from a reader) plus
+// the inner error's text. A bound raised inside the derived source therefore
+// arrives as text. These two patterns recognise the inner text at the end of
+// such a Message, built from the same tables as the exact lookups so the two
+// cannot drift apart. The path of the inner error is captured.
+var (
+	flattenedQueryLimit = flattenedBoundPattern("query_limit", queryLimitBounds)
+	flattenedJoinPlan   = flattenedBoundPattern("join_plan", joinPlanBounds)
+)
+
+func flattenedBoundPattern(category string, bounds map[string]dalgoBound) *regexp.Regexp {
+	messages := make([]string, 0, len(bounds))
+	for message := range bounds {
+		messages = append(messages, regexp.QuoteMeta(message))
+	}
+	sort.Strings(messages)
+	return regexp.MustCompile(`(?s)^(?:cannot )?scan .+: ` + category + `(?: at (\S+))?: (` + strings.Join(messages, "|") + `)$`)
 }
 
 // MapDalgoError returns a *BudgetError when err is, or wraps, one of DALgo's
@@ -71,8 +98,8 @@ var aggregationBounds = []struct {
 // already a *BudgetError or *SourceDeniedError is returned as is.
 //
 // DALgo reports a leaf's error as text inside its own error, which drops the
-// type; use Guard.Classify to recover a leaf's BudgetError or SourceDeniedError
-// as well.
+// type; use Guard.Classify to recover a leaf's BudgetError, SourceDeniedError
+// or SourceError as well.
 func MapDalgoError(err error, route string) error {
 	if err == nil {
 		return nil
@@ -93,6 +120,9 @@ func MapDalgoError(err error, route string) error {
 		if bound, ok := joinPlanBounds[join.Message]; ok {
 			return &BudgetError{Name: bound.name, Limit: bound.limit, Route: route, Path: join.Path}
 		}
+		if mapped := flattenedBound(join.Message, route); mapped != nil {
+			return mapped
+		}
 	}
 	text := err.Error()
 	for _, bound := range aggregationBounds {
@@ -102,4 +132,18 @@ func MapDalgoError(err error, route string) error {
 		}
 	}
 	return err
+}
+
+// flattenedBound maps the Message of a join_plan error that DALgo built from a
+// bound raised inside a derived source, or returns nil.
+func flattenedBound(message, route string) *BudgetError {
+	if m := flattenedQueryLimit.FindStringSubmatch(message); m != nil {
+		bound := queryLimitBounds[m[2]]
+		return &BudgetError{Name: bound.name, Limit: bound.limit, Route: route, Path: m[1]}
+	}
+	if m := flattenedJoinPlan.FindStringSubmatch(message); m != nil {
+		bound := joinPlanBounds[m[2]]
+		return &BudgetError{Name: bound.name, Limit: bound.limit, Route: route, Path: m[1]}
+	}
+	return nil
 }

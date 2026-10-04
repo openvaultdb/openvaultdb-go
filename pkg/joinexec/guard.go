@@ -13,16 +13,24 @@
 //
 // One Guard serves one request. Create it with NewGuard, take its context from
 // Guard.Context, make a leaf per source with Guard.Leaf, hand the leaves to
-// DALgo (for example through a dal.DatabaseResolver), and pass whatever error
-// DALgo returns to Guard.Classify before answering the caller.
+// DALgo (for example through a dal.DatabaseResolver), and answer the caller
+// with Guard.Collect, which drains the reader DALgo returns, closes it and
+// returns either every row or no rows and a classified error. A caller that
+// reads the reader itself must read it to the end, close it, and only then
+// pass the error it ended with (or nil) to Guard.Classify; rows read before an
+// error are not an answer, because DALgo's streaming join delivers its rows
+// before a budget error arrives.
 package joinexec
 
 import (
 	"context"
+	"errors"
+	"io"
 	"sync"
 	"time"
 
 	"github.com/dal-go/dalgo/dal"
+	"github.com/dal-go/record"
 )
 
 // Source is one registered database as the join executor sees it. The server's
@@ -104,7 +112,8 @@ func (g *Guard) Leaf(src Source) dal.QueryExecutor {
 }
 
 // Stats returns the per-collection statistics in the order collections were
-// first read.
+// first read. It is complete only after every reader has been closed; Collect
+// closes the reader it drains.
 func (g *Guard) Stats() []SourceStats {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -112,28 +121,61 @@ func (g *Guard) Stats() []SourceStats {
 }
 
 // Err returns the first failure a leaf recorded (a SourceDeniedError, a
-// BudgetError, or a refusal such as ErrNotSingleSource), or nil. Once set,
-// every further read through any leaf of this Guard fails with it.
+// BudgetError, a SourceError carrying the source's own error, or a refusal such
+// as ErrNotSingleSource), or nil. Once set, every further read through any leaf
+// of this Guard fails with it.
 func (g *Guard) Err() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.failure
 }
 
-// Classify turns an error returned by DALgo into the error to answer with.
-// DALgo reports a leaf's error as text inside its own error, so the recorded
-// failure wins when there is one; otherwise DALgo's own bounds map to
-// BudgetError (see MapDalgoError). Any other error is returned unchanged. A
-// caller should look at the request context first: a deadline or cancellation
-// surfaces as text too.
+// Classify turns what a request ended with into the error to answer with. err
+// is the error DALgo returned, or the one a drained reader ended with, or nil.
+//
+// DALgo reports a leaf's error as text inside its own error (and reads an error
+// that wraps io.EOF as the end of a stream), so the recorded failure wins when
+// there is one, even for a nil err: a request that recorded a failure never
+// ends well. Otherwise DALgo's own bounds map to BudgetError (see
+// MapDalgoError) and any other error is returned unchanged. Call it once, after
+// the reader was drained and closed.
 func (g *Guard) Classify(err error, route string) error {
-	if err == nil {
-		return nil
-	}
 	if failure := g.Err(); failure != nil {
 		return failure
 	}
 	return MapDalgoError(err, route)
+}
+
+// Collect drains reader, closes it and returns every row, or no rows and the
+// classified error when the read failed in any way: an error from the reader,
+// a failure the guard recorded even if the reader ended cleanly, a close error,
+// or the end of ctx. It is the one way to answer a request that cannot return
+// a partial result. reader must be non-nil, so a caller whose DALgo call
+// returned an error answers with Classify instead.
+func (g *Guard) Collect(ctx context.Context, reader dal.RecordsReader, route string) ([]record.Record, error) {
+	var records []record.Record
+	var readErr error
+	for {
+		if readErr = ctx.Err(); readErr != nil {
+			break
+		}
+		rec, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			readErr = err
+			break
+		}
+		records = append(records, rec)
+	}
+	if closeErr := reader.Close(); readErr == nil {
+		readErr = closeErr
+	}
+	if err := g.Classify(readErr, route); err != nil {
+		return nil, err
+	}
+	return records, nil
 }
 
 // fail records err as the request failure unless one is already recorded, and

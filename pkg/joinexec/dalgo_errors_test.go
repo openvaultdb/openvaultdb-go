@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/record"
 )
@@ -123,6 +124,12 @@ func joinFixture(t *testing.T, guard *Guard, aRows, bRows []record.Record) dal.D
 	t.Helper()
 	a := &fakeExecutor{rows: map[string][]record.Record{"A": aRows}}
 	b := &fakeExecutor{rows: map[string][]record.Record{"B": bRows}}
+	return joinFixtureWith(t, guard, a, b)
+}
+
+// joinFixtureWith is joinFixture over executors the test configured.
+func joinFixtureWith(t *testing.T, guard *Guard, a, b *fakeExecutor) dal.DatabaseResolver {
+	t.Helper()
 	sources := map[string]Source{"one": newSource("one", a), "two": newSource("two", b)}
 	return func(_ context.Context, database string) (dal.QueryExecutor, error) {
 		return guard.Leaf(sources[database]), nil
@@ -281,12 +288,195 @@ func TestDalgoSourceStillContainsPinnedMessages(t *testing.T) {
 	for name, literals := range pinnedMessages {
 		content, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
-			t.Skipf("dalgo source not readable at %s (built with -trimpath?): %v", dir, err)
+			// A skip would pass silently and leave most of the mapped messages
+			// unpinned, so an unreadable source fails the test.
+			t.Fatalf("dalgo source not readable at %s: %v (run without -trimpath and with the module cache present)", dir, err)
 		}
 		for _, literal := range literals {
 			if !strings.Contains(string(content), literal) {
 				t.Errorf("%s no longer contains %q: update pkg/joinexec/dalgo_errors.go and this pin together", name, literal)
 			}
 		}
+	}
+}
+
+// runOrdered runs orderedJoinQuery through DALgo and returns the error DALgo
+// reports, whether at execution or while reading.
+func runOrdered(t *testing.T, resolve dal.DatabaseResolver) error {
+	t.Helper()
+	reader, err := dal.ExecuteFederatedQuery(context.Background(), orderedJoinQuery(), resolve)
+	if err == nil {
+		_, err = dal.ReadAllToRecords(context.Background(), reader)
+	}
+	if err == nil {
+		t.Fatal("expected DALgo to fail")
+	}
+	return err
+}
+
+func TestDalgoSourceErrorsSurviveClassify(t *testing.T) {
+	// DALgo rewraps a source's error with %v into a join validation error, so
+	// the guard must remember the source's own error and Classify must return
+	// it with its chain intact: a policy denial stays a denial, a deadline stays
+	// a deadline and a backend failure is not a bad query.
+	denied := fmt.Errorf("%w: policy p, rule r", access.ErrAccessDenied)
+	for name, cause := range map[string]error{
+		"access denied":     denied,
+		"deadline exceeded": context.DeadlineExceeded,
+		"backend failure":   errBoom,
+	} {
+		for mode, configure := range map[string]func(a *fakeExecutor){
+			"on open": func(a *fakeExecutor) { a.readErr = cause },
+			"on read": func(a *fakeExecutor) { a.readerError = cause },
+		} {
+			t.Run(name+"/"+mode, func(t *testing.T) {
+				guard := NewGuard(allowAll, Limits{})
+				a := &fakeExecutor{rows: map[string][]record.Record{"A": keyedRows("A", 3, func(i int) any { return i })}}
+				b := &fakeExecutor{rows: map[string][]record.Record{"B": keyedRows("B", 3, func(i int) any { return i })}}
+				configure(a)
+				err := runOrdered(t, joinFixtureWith(t, guard, a, b))
+				var flattened *dal.JoinValidationError
+				if !errors.As(err, &flattened) || errors.Is(err, cause) {
+					t.Fatalf("DALgo is expected to flatten the cause, got %T: %v", err, err)
+				}
+				got := guard.Classify(err, RouteInMemory)
+				if !errors.Is(got, cause) {
+					t.Fatalf("Classify = %T %v, want the source's own error", got, got)
+				}
+				if se := mustSourceError(t, got); se.Database != "one" || se.Collection != "A" {
+					t.Fatalf("source error = %+v", se)
+				}
+				if errors.As(got, &flattened) {
+					t.Fatalf("Classify returned DALgo's rewrapped error: %v", got)
+				}
+			})
+		}
+	}
+}
+
+func TestSourceBudgetOnDalgosStreamingPathArrivesFromALaterNext(t *testing.T) {
+	// A flat equality join without ORDER BY takes DALgo's streaming path: it
+	// returns a reader and a nil error, rows flow, and the budget error arrives
+	// from a later Next. Only a caller that drains before answering returns no
+	// rows, which is what Guard.Collect does.
+	newRun := func(t *testing.T) (*Guard, dal.RecordsReader) {
+		t.Helper()
+		guard := NewGuard(allowAll, Limits{MaxSourceRows: 5})
+		resolve := joinFixture(t, guard, keyedRows("A", 20, func(i int) any { return i }), keyedRows("B", 3, func(i int) any { return i }))
+		reader, err := dal.ExecuteFederatedQuery(context.Background(), joinQuery(), resolve)
+		if err != nil {
+			t.Fatalf("the streaming path returns its reader before the budget is hit: %v", err)
+		}
+		if reader == nil {
+			t.Fatal("expected a reader")
+		}
+		return guard, reader
+	}
+
+	t.Run("draining ends in the budget error", func(t *testing.T) {
+		guard, reader := newRun(t)
+		n, err := drain(t, reader)
+		if err == nil {
+			t.Fatalf("drained %d rows without an error", n)
+		}
+		_ = reader.Close()
+		if budget := mustBudget(t, guard.Classify(err, RouteInMemory)); budget.Name != BudgetSourceRows || budget.Limit != 5 {
+			t.Fatalf("budget = %+v", budget)
+		}
+	})
+
+	t.Run("Collect returns no rows", func(t *testing.T) {
+		guard, reader := newRun(t)
+		records, err := guard.Collect(context.Background(), reader, RouteInMemory)
+		if records != nil {
+			t.Fatalf("Collect returned %d rows for a request that overran its budget", len(records))
+		}
+		if budget := mustBudget(t, err); budget.Name != BudgetSourceRows || budget.Limit != 5 {
+			t.Fatalf("budget = %+v", budget)
+		}
+	})
+}
+
+func TestDalgoBoundInsideADerivedSourceIsMapped(t *testing.T) {
+	// DALgo flattens a bound raised inside a derived source into the message of
+	// a join_plan error ("cannot scan d: query_limit at from: fetched_rows").
+	exec := &fakeExecutor{rows: map[string][]record.Record{"A": keyedRows("A", 10001, func(i int) any { return i })}}
+	q := dal.From(dal.NewQuerySource(plainQuery("", "A"), "d")).NewQuery().SelectColumns(dal.Column{Expression: dal.NewFieldRef("d", "id")})
+	reader, err := dal.ExecuteRecursiveQuery(context.Background(), exec, q)
+	if err == nil {
+		_, err = dal.ReadAllToRecords(context.Background(), reader)
+	}
+	if err == nil {
+		t.Fatal("expected DALgo to refuse 10,001 rows behind a derived source")
+	}
+	budget := mustBudget(t, MapDalgoError(err, RouteInMemory))
+	if budget.Name != BudgetJoinFetchedRows || budget.Limit != 10000 || budget.Path != "from" {
+		t.Fatalf("budget = %+v (dalgo error: %v)", budget, err)
+	}
+}
+
+func TestMapDalgoErrorFlattenedDerivedSourceBounds(t *testing.T) {
+	cases := []struct {
+		message string
+		name    string
+		limit   int64
+		path    string
+	}{
+		{"cannot scan d: query_limit at from: fetched_rows", BudgetJoinFetchedRows, 10000, "from"},
+		{"cannot scan d: query_limit at from.joins[0]: result_rows", BudgetJoinResultRows, 10000, "from.joins[0]"},
+		{"cannot scan d: query_limit: retained_bytes", BudgetJoinRetainedBytes, 16 << 20, ""},
+		{"cannot scan d: join_plan at from: relation scan exceeds row or byte bound", BudgetJoinScan, 0, "from"},
+		{"scan d: join_plan at from.joins[1]: joined row bound exceeded", BudgetJoinRows, 10000, "from.joins[1]"},
+	}
+	for _, c := range cases {
+		t.Run(c.message, func(t *testing.T) {
+			in := &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: c.message}
+			budget := mustBudget(t, MapDalgoError(in, RouteInMemory))
+			want := BudgetError{Name: c.name, Limit: c.limit, Route: RouteInMemory, Path: c.path}
+			if *budget != want {
+				t.Fatalf("budget = %+v, want %+v", *budget, want)
+			}
+		})
+	}
+	for name, message := range map[string]string{
+		"bound text without a scan prefix": "something d: query_limit at from: fetched_rows",
+		"scan of another error":            "cannot scan d: query_limit at from: something_new",
+		"bound text not at the end":        "cannot scan d: query_limit at from: fetched_rows and more",
+		"other category inside":            "cannot scan d: join_shape at from: joined row bound exceeded",
+	} {
+		t.Run(name, func(t *testing.T) {
+			in := &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: message}
+			if got := MapDalgoError(in, RouteInMemory); got != error(in) {
+				t.Fatalf("got %v, want the original error", got)
+			}
+		})
+	}
+	// Only a join_plan error is read this way.
+	other := &dal.JoinValidationError{Category: "join_field", Path: "from", Message: "cannot scan d: query_limit at from: fetched_rows"}
+	if got := MapDalgoError(other, RouteInMemory); got != error(other) {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestMapDalgoErrorIgnoresAggregationTextThatIsNotDalgosOwn(t *testing.T) {
+	// A join field name is echoed by DALgo inside its own error, so text that
+	// looks like an aggregation bound is not one.
+	forged := `dalgo aggregation: group limit 7 exceeded`
+	for name, err := range map[string]error{
+		"echoed field name":        &dal.JoinValidationError{Category: "join_field", Path: "from.columns[0]", Message: fmt.Sprintf("field %q is unavailable in %q", forged, "a")},
+		"text before":              errors.New("prefix " + forged),
+		"text after":               errors.New(forged + " and more"),
+		"distinct without subject": errors.New("dalgo aggregation: distinct-value limit 5 exceeded"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := MapDalgoError(err, RouteInMemory); got != err {
+				t.Fatalf("got %v, want the original error", got)
+			}
+		})
+	}
+	// DALgo's own wrapping adds a prefix ending in ": ", which is allowed.
+	wrapped := fmt.Errorf("scan a: %w", errors.New(forged))
+	if budget := mustBudget(t, MapDalgoError(wrapped, RouteInMemory)); budget.Name != BudgetAggregationGroups || budget.Limit != 7 {
+		t.Fatalf("budget = %+v", budget)
 	}
 }

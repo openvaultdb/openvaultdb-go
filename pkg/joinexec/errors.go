@@ -58,8 +58,13 @@ var (
 )
 
 // BudgetError reports that a request exceeded a resource bound. It names the
-// bound and its limit, never the observed figure. A request that returns it
-// returns no rows.
+// bound and its limit, never the observed figure.
+//
+// A BudgetError ends the request, but rows may already have been read when it
+// arrives: DALgo's streaming join (a flat equality join without ORDER BY)
+// returns its reader first and the error comes from a later Next. Only a caller
+// that reads to the end before answering returns no rows; Guard.Collect does
+// exactly that.
 type BudgetError struct {
 	// Name is one of the Budget* constants.
 	Name string
@@ -75,11 +80,15 @@ type BudgetError struct {
 }
 
 func (e *BudgetError) Error() string {
+	limit := ""
+	if e.Limit != 0 {
+		limit = fmt.Sprintf(" limit %d", e.Limit)
+	}
 	where := ""
 	if e.Path != "" {
-		where = " at " + e.Path
+		where = fmt.Sprintf(" at %q", e.Path)
 	}
-	return fmt.Sprintf("query budget exceeded: %s limit %d (%s route)%s", e.Name, e.Limit, e.Route, where)
+	return fmt.Sprintf("query budget exceeded: %s%s (%s route)%s", e.Name, limit, e.Route, where)
 }
 
 // SourceDeniedError reports a read of a collection the caller may not read.
@@ -92,3 +101,21 @@ type SourceDeniedError struct {
 func (e *SourceDeniedError) Error() string {
 	return fmt.Sprintf("access to collection %q in database %q is not allowed", e.Collection, e.Database)
 }
+
+// SourceError reports that a source failed while it was being read: its
+// executor returned an error, a reader failed part way, or the request context
+// ended during a read. Err is the source's own error with its chain intact, so
+// errors.Is finds an access denial, a deadline or a backend sentinel through it.
+// DALgo rewraps such an error as text; the guard records this one so that
+// Guard.Classify can return it instead.
+type SourceError struct {
+	Database   string
+	Collection string
+	Err        error
+}
+
+func (e *SourceError) Error() string {
+	return fmt.Sprintf("read of collection %q in database %q failed: %v", e.Collection, e.Database, e.Err)
+}
+
+func (e *SourceError) Unwrap() error { return e.Err }

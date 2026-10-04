@@ -19,7 +19,7 @@ type fakeExecutor struct {
 	queryCalls  int
 	fieldCalls  int
 	fields      []string
-	hasFields   bool
+	fieldsErr   error // returned by JoinFields of fieldsExecutor
 	readerError error // returned by the reader's Next after the rows
 	closed      int
 }
@@ -65,6 +65,9 @@ type fieldsExecutor struct {
 
 func (f fieldsExecutor) JoinFields(context.Context, dal.RecordsetSource) ([]string, error) {
 	f.fieldCalls++
+	if f.fieldsErr != nil {
+		return nil, f.fieldsErr
+	}
 	return f.fields, nil
 }
 
@@ -149,6 +152,15 @@ func mustDenied(t *testing.T, err error) *SourceDeniedError {
 		t.Fatalf("want *SourceDeniedError, got %T: %v", err, err)
 	}
 	return denied
+}
+
+func mustSourceError(t *testing.T, err error) *SourceError {
+	t.Helper()
+	var source *SourceError
+	if !errors.As(err, &source) {
+		t.Fatalf("want *SourceError, got %T: %v", err, err)
+	}
+	return source
 }
 
 var errBoom = fmt.Errorf("boom")

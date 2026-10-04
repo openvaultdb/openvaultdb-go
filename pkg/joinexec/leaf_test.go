@@ -3,6 +3,9 @@ package joinexec
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -198,6 +201,45 @@ func TestBudgetErrorDoesNotReportObservedFigures(t *testing.T) {
 	if strings.Contains(noPath, " at ") {
 		t.Fatalf("no path, no location: %q", noPath)
 	}
+	// A limit DALgo does not name is left out rather than printed as zero.
+	if strings.Contains(noPath, "limit") || !strings.Contains(noPath, "join_scan") || !strings.Contains(noPath, RouteDatabase) {
+		t.Fatalf("an unknown limit must not read as a zero limit: %q", noPath)
+	}
+	withPath := (&BudgetError{Name: BudgetSourceRows, Limit: 4, Route: RouteInMemory, Path: `db."odd" name`}).Error()
+	if !strings.Contains(withPath, "limit 4") || !strings.Contains(withPath, `at "db.\"odd\" name"`) {
+		t.Fatalf("request-supplied names are quoted: %q", withPath)
+	}
+}
+
+func TestLeafRefusalsQuoteRequestSuppliedNames(t *testing.T) {
+	parent := record.NewKeyWithID("Parent", 1)
+	nested := dal.NewCollectionRef("we ird: \"A\"", "", parent)
+	schema := dal.NewQualifiedRootCollectionRef("ma in", "A", "")
+	for name, ref := range map[string]dal.CollectionRef{"nested": nested, "schema": schema} {
+		t.Run(name, func(t *testing.T) {
+			guard := NewGuard(allowAll, Limits{})
+			q := dal.From(ref).NewQuery().SelectIntoRecord(nil)
+			_, err := guard.Leaf(newSource("db", &fakeExecutor{})).ExecuteQueryToRecordsReader(context.Background(), q)
+			if !strings.Contains(err.Error(), strconv.Quote(ref.Path())) {
+				t.Fatalf("path not quoted: %q", err.Error())
+			}
+		})
+	}
+	// The same for a subquery refusal, which names the collection.
+	odd := dal.NewDatabaseCollectionRef("db", "", "sp ace", "")
+	withSubquery := dal.From(odd).NewQuery().Where(dal.NewExistsCondition(plainQuery("db", "Other"))).SelectIntoRecord(nil)
+	guard := NewGuard(allowAll, Limits{})
+	_, err := guard.Leaf(newSource("db", &fakeExecutor{})).ExecuteQueryToRecordsReader(context.Background(), withSubquery)
+	if !strings.Contains(err.Error(), `"sp ace"`) {
+		t.Fatalf("collection not quoted: %q", err.Error())
+	}
+	// And for a row that cannot be encoded.
+	bad := record.NewRecordWithData(record.NewKeyWithID("a b", 1), map[string]any{"f": func() {}})
+	exec := &fakeExecutor{rows: map[string][]record.Record{"a b": {bad}}}
+	reader, _ := NewGuard(allowAll, Limits{}).Leaf(newSource("d b", exec)).ExecuteQueryToRecordsReader(context.Background(), plainQuery("d b", "a b"))
+	if _, err := reader.Next(); !strings.Contains(err.Error(), `"d b"."a b"`) {
+		t.Fatalf("source not quoted: %q", err.Error())
+	}
 }
 
 func TestLeafDeniedCollectionIsNeverRead(t *testing.T) {
@@ -236,7 +278,7 @@ func TestLeafJoinFieldsOfDeniedCollectionIsNeverServed(t *testing.T) {
 	guard := NewGuard(func(_, collection string) bool { return collection != "Secret" }, Limits{})
 	provider := guard.Leaf(newSource("vault", exec)).(dal.JoinFieldsProvider)
 	fields, err := provider.JoinFields(context.Background(), dal.NewDatabaseCollectionRef("vault", "", "Secret", "s"))
-	mustDenied(t, err)
+	_ = mustDenied(t, err)
 	if fields != nil || exec.fieldCalls != 0 || exec.queryCalls != 0 {
 		t.Fatalf("fields=%v calls=%d/%d", fields, exec.fieldCalls, exec.queryCalls)
 	}
@@ -246,7 +288,7 @@ func TestLeafDeniesWhenAuthorizeIsNil(t *testing.T) {
 	exec := &fakeExecutor{rows: map[string][]record.Record{"A": makeRows("A", 1, "x")}}
 	guard := NewGuard(nil, Limits{})
 	_, err := guard.Leaf(newSource("db", exec)).ExecuteQueryToRecordsReader(context.Background(), plainQuery("db", "A"))
-	mustDenied(t, err)
+	_ = mustDenied(t, err)
 	if exec.queryCalls != 0 {
 		t.Fatal("nil Authorize must fail closed")
 	}
@@ -262,7 +304,7 @@ func TestLeafAuthorizesTheCollectionOfEachRead(t *testing.T) {
 	}
 	_ = reader.Close()
 	_, err = guard.Leaf(newSource("db", exec)).ExecuteQueryToRecordsReader(context.Background(), plainQuery("db", "Closed"))
-	mustDenied(t, err)
+	_ = mustDenied(t, err)
 	if exec.queryCalls != 1 {
 		t.Fatalf("source reads = %d, want 1", exec.queryCalls)
 	}
@@ -396,6 +438,9 @@ func TestLeafChecksContext(t *testing.T) {
 		t.Fatal("a cancelled request reached the source")
 	}
 
+	// The cancellation above is a recorded failure, so read with a fresh guard.
+	guard = NewGuard(allowAll, Limits{})
+	leaf = guard.Leaf(newSource("db", exec))
 	ctx, cancel := context.WithCancel(context.Background())
 	reader, err := leaf.ExecuteQueryToRecordsReader(ctx, plainQuery("db", "A"))
 	if err != nil {
@@ -408,30 +453,51 @@ func TestLeafChecksContext(t *testing.T) {
 	if _, err := reader.Next(); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Next after cancel: %v", err)
 	}
-	if guard.Err() != nil {
-		t.Fatalf("a cancelled context is not a guard failure: %v", guard.Err())
+	// The cancellation is recorded, so Classify can answer with it even when
+	// DALgo flattens the error it saw.
+	se := mustSourceError(t, guard.Err())
+	if !errors.Is(se, context.Canceled) || se.Database != "db" || se.Collection != "A" {
+		t.Fatalf("guard err = %+v", se)
 	}
 	if stats := guard.Stats(); len(stats) != 1 || stats[0].Rows != 1 {
 		t.Fatalf("stats = %+v", stats)
 	}
 }
 
-func TestLeafPassesExecutorErrorsThrough(t *testing.T) {
+func TestLeafRecordsDeadlineBeforeTheSourceIsReached(t *testing.T) {
+	exec := &fakeExecutor{rows: map[string][]record.Record{"A": makeRows("A", 1, "x")}}
+	guard := NewGuard(allowAll, Limits{})
+	ctx, cancel := context.WithDeadline(context.Background(), time.Unix(1, 0))
+	defer cancel()
+	_, err := guard.Leaf(newSource("db", exec)).ExecuteQueryToRecordsReader(ctx, plainQuery("db", "A"))
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(guard.Classify(nil, RouteInMemory), context.DeadlineExceeded) {
+		t.Fatalf("err = %v, classify = %v", err, guard.Classify(nil, RouteInMemory))
+	}
+	if exec.queryCalls != 0 {
+		t.Fatal("an expired request reached the source")
+	}
+}
+
+func TestLeafRecordsExecutorErrors(t *testing.T) {
 	exec := &fakeExecutor{readErr: errBoom}
 	guard := NewGuard(allowAll, Limits{})
 	_, err := guard.Leaf(newSource("db", exec)).ExecuteQueryToRecordsReader(context.Background(), plainQuery("db", "A"))
-	if !errors.Is(err, errBoom) {
+	se := mustSourceError(t, err)
+	if !errors.Is(err, errBoom) || se.Database != "db" || se.Collection != "A" {
 		t.Fatalf("err = %v", err)
 	}
-	if guard.Err() != nil {
-		t.Fatalf("a backend error is not a guard failure: %v", guard.Err())
+	if guard.Err() != err {
+		t.Fatalf("the source's own error must be the recorded failure: %v", guard.Err())
 	}
 	if len(guard.Stats()) != 0 {
 		t.Fatal("a read that never opened leaves no stats")
 	}
+	if !strings.Contains(err.Error(), `"A"`) || !strings.Contains(err.Error(), `"db"`) || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("message = %q", err.Error())
+	}
 }
 
-func TestLeafPassesReaderErrorsThroughAndKeepsStats(t *testing.T) {
+func TestLeafRecordsReaderErrorsAndKeepsStats(t *testing.T) {
 	exec := &fakeExecutor{rows: map[string][]record.Record{"A": makeRows("A", 2, "x")}, readerError: errBoom}
 	guard := NewGuard(allowAll, Limits{})
 	reader, err := guard.Leaf(newSource("db", exec)).ExecuteQueryToRecordsReader(context.Background(), plainQuery("db", "A"))
@@ -445,8 +511,40 @@ func TestLeafPassesReaderErrorsThroughAndKeepsStats(t *testing.T) {
 	if stats := guard.Stats(); len(stats) != 1 || stats[0].Rows != 2 {
 		t.Fatalf("stats = %+v", stats)
 	}
+	if se := mustSourceError(t, guard.Err()); se.Collection != "A" || !errors.Is(se, errBoom) {
+		t.Fatalf("guard err = %+v", se)
+	}
+	// The request is dead: a later Next repeats the failure.
+	if _, err := reader.Next(); !errors.Is(err, errBoom) {
+		t.Fatalf("Next after failure: %v", err)
+	}
+}
+
+func TestLeafTreatsBareEOFAsEndOfStream(t *testing.T) {
+	exec := &fakeExecutor{rows: map[string][]record.Record{"A": makeRows("A", 1, "x")}, readerError: io.EOF}
+	guard := NewGuard(allowAll, Limits{})
+	reader, _ := guard.Leaf(newSource("db", exec)).ExecuteQueryToRecordsReader(context.Background(), plainQuery("db", "A"))
+	if n, err := drain(t, reader); n != 1 || !errors.Is(err, io.EOF) {
+		t.Fatalf("n=%d err=%v", n, err)
+	}
 	if guard.Err() != nil {
-		t.Fatalf("guard err: %v", guard.Err())
+		t.Fatalf("a bare io.EOF is the end of the stream, not a failure: %v", guard.Err())
+	}
+}
+
+func TestLeafRecordsAWrappedEOFAsAFailure(t *testing.T) {
+	// DALgo reads any error wrapping io.EOF as the end of a stream, so a source
+	// error that wraps it would pass for a clean end unless the guard remembers it.
+	wrapped := fmt.Errorf("connection lost: %w", io.EOF)
+	exec := &fakeExecutor{rows: map[string][]record.Record{"A": makeRows("A", 1, "x")}, readerError: wrapped}
+	guard := NewGuard(allowAll, Limits{})
+	reader, _ := guard.Leaf(newSource("db", exec)).ExecuteQueryToRecordsReader(context.Background(), plainQuery("db", "A"))
+	_, _ = drain(t, reader)
+	if !errors.Is(guard.Err(), wrapped) {
+		t.Fatalf("guard err = %v", guard.Err())
+	}
+	if got := guard.Classify(nil, RouteInMemory); !errors.Is(got, wrapped) {
+		t.Fatalf("Classify(nil) = %v, want the recorded failure", got)
 	}
 }
 
@@ -493,15 +591,84 @@ func TestLeafJoinFieldsWithoutProviderReturnsNil(t *testing.T) {
 	}
 }
 
-func TestLeafJoinFieldsRefusesDerivedSourceAndFailedRequest(t *testing.T) {
+func TestLeafJoinFieldsRecordsProviderErrors(t *testing.T) {
+	exec := fieldsExecutor{&fakeExecutor{fieldsErr: errBoom}}
+	guard := NewGuard(allowAll, Limits{})
+	provider := guard.Leaf(newSource("db", exec)).(dal.JoinFieldsProvider)
+	_, err := provider.JoinFields(context.Background(), dal.NewDatabaseCollectionRef("db", "", "A", "a"))
+	se := mustSourceError(t, err)
+	if !errors.Is(err, errBoom) || se.Database != "db" || se.Collection != "A" || guard.Err() != err {
+		t.Fatalf("err = %v, guard = %v", err, guard.Err())
+	}
+}
+
+func TestLeafJoinFieldsServesNothingForADerivedSource(t *testing.T) {
+	// DALgo asks for the fields of every FROM node, derived or not, before it
+	// runs the inner query through the executor. A derived source has no schema
+	// to serve and reads nothing, so it must not fail the request: the inner
+	// query is authorised when it reads.
+	exec := fieldsExecutor{&fakeExecutor{fields: []string{"secret"}}}
+	guard := NewGuard(allowAll, Limits{})
+	provider := guard.Leaf(newSource("db", exec)).(dal.JoinFieldsProvider)
+	derived := dal.NewQuerySource(plainQuery("db", "B"), "d")
+	for name, source := range map[string]dal.RecordsetSource{"value": derived, "pointer": &derived} {
+		fields, err := provider.JoinFields(context.Background(), source)
+		if err != nil || fields != nil {
+			t.Fatalf("%s: fields=%v err=%v", name, fields, err)
+		}
+	}
+	if exec.fieldCalls != 0 || exec.queryCalls != 0 || guard.Err() != nil {
+		t.Fatalf("calls=%d/%d guard=%v", exec.fieldCalls, exec.queryCalls, guard.Err())
+	}
+}
+
+func TestLeafJoinFieldsRefusesOtherSourcesAndFailedRequests(t *testing.T) {
 	guard := NewGuard(allowAll, Limits{})
 	provider := guard.Leaf(newSource("db", fieldsExecutor{&fakeExecutor{}})).(dal.JoinFieldsProvider)
-	if _, err := provider.JoinFields(context.Background(), dal.NewQuerySource(plainQuery("db", "B"), "d")); !errors.Is(err, ErrNotSingleSource) {
+	var nilDerived *dal.QuerySource
+	if _, err := provider.JoinFields(context.Background(), nilDerived); !errors.Is(err, ErrNotSingleSource) {
 		t.Fatalf("err = %v", err)
 	}
 	// The guard now holds a failure; every later call fails closed.
 	if _, err := provider.JoinFields(context.Background(), dal.NewDatabaseCollectionRef("db", "", "A", "a")); !errors.Is(err, ErrNotSingleSource) {
 		t.Fatalf("err = %v", err)
+	}
+	derived := dal.NewQuerySource(plainQuery("db", "B"), "d")
+	if _, err := provider.JoinFields(context.Background(), derived); !errors.Is(err, ErrNotSingleSource) {
+		t.Fatalf("a derived source after a failure must fail too: %v", err)
+	}
+}
+
+func TestLeafServesDerivedSourcesThroughDalgo(t *testing.T) {
+	exec := fieldsExecutor{&fakeExecutor{rows: map[string][]record.Record{"A": makeRows("A", 3, "x")}, fields: []string{"id", "payload"}}}
+	guard := NewGuard(allowAll, Limits{})
+	leaf := guard.Leaf(newSource("db", exec))
+	q := dal.From(dal.NewQuerySource(plainQuery("", "A"), "d")).NewQuery().SelectColumns(dal.Column{Expression: dal.NewFieldRef("d", "id")})
+	reader, err := dal.ExecuteRecursiveQuery(context.Background(), leaf, q)
+	if err != nil {
+		t.Fatalf("a derived source over an allowed collection must run: %v (guard: %v)", err, guard.Err())
+	}
+	records, err := guard.Collect(context.Background(), reader, RouteInMemory)
+	if err != nil || len(records) != 3 {
+		t.Fatalf("records=%d err=%v", len(records), err)
+	}
+}
+
+func TestLeafDerivedSourceOverADeniedCollectionIsNeverRead(t *testing.T) {
+	exec := fieldsExecutor{&fakeExecutor{rows: map[string][]record.Record{"Secret": makeRows("Secret", 3, "x")}, fields: []string{"id"}}}
+	guard := NewGuard(func(_, collection string) bool { return collection != "Secret" }, Limits{})
+	leaf := guard.Leaf(newSource("db", exec))
+	q := dal.From(dal.NewQuerySource(plainQuery("", "Secret"), "d")).NewQuery().SelectColumns(dal.Column{Expression: dal.NewFieldRef("d", "id")})
+	_, err := dal.ExecuteRecursiveQuery(context.Background(), leaf, q)
+	if err == nil {
+		t.Fatal("expected the denied inner collection to fail the request")
+	}
+	denied := mustDenied(t, guard.Classify(err, RouteInMemory))
+	if denied.Collection != "Secret" {
+		t.Fatalf("denied = %+v", denied)
+	}
+	if exec.queryCalls != 0 || exec.fieldCalls != 0 {
+		t.Fatalf("a denied collection reached the source: %d reads, %d field lookups", exec.queryCalls, exec.fieldCalls)
 	}
 }
 
@@ -534,7 +701,7 @@ func TestGuardContextAppliesTimeout(t *testing.T) {
 func TestGuardClassifyPrefersTheRecordedFailure(t *testing.T) {
 	g := NewGuard(allowAll, Limits{})
 	if g.Classify(nil, RouteInMemory) != nil {
-		t.Fatal("nil in, nil out")
+		t.Fatal("nil in, nil out while nothing is recorded")
 	}
 	plain := errors.New("something else")
 	if got := g.Classify(plain, RouteInMemory); got != plain {
@@ -543,13 +710,19 @@ func TestGuardClassifyPrefersTheRecordedFailure(t *testing.T) {
 	// DALgo flattens a leaf error to text inside its own error; the recorded
 	// failure is what the caller must see.
 	denied := &SourceDeniedError{Database: "d", Collection: "c"}
-	g.fail(denied)
+	_ = g.fail(denied)
 	flattened := &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: "scan c: " + denied.Error()}
 	if got := g.Classify(flattened, RouteInMemory); got != error(denied) {
 		t.Fatalf("Classify = %v, want the recorded denial", got)
 	}
+	// A recorded failure also wins over a clean end: DALgo reads an error that
+	// wraps io.EOF, and a materialising reader's call after an error, as the end
+	// of the stream.
+	if got := g.Classify(nil, RouteInMemory); got != error(denied) {
+		t.Fatalf("Classify(nil) = %v, want the recorded denial", got)
+	}
 	// Only the first failure is kept.
-	g.fail(errBoom)
+	_ = g.fail(errBoom)
 	if g.Err() != error(denied) {
 		t.Fatalf("Err = %v", g.Err())
 	}
