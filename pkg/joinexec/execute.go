@@ -1,0 +1,457 @@
+package joinexec
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/dal-go/dalgo/dal"
+	"github.com/dal-go/record"
+)
+
+// The result of one request is bounded, whatever the sources hold: a result
+// over either bound is refused with a BudgetError, never cut short.
+const (
+	// MaxResultRows is the most rows a result may have.
+	MaxResultRows = 1000
+	// MaxResultBytes is the most JSON-encoded bytes a result may have.
+	MaxResultBytes = 8 << 20
+)
+
+// Profile is the classification of the document, as the profile classifier of
+// pkg/core reports it. It is a claim, not evidence: Execute walks the query
+// itself and refuses a profile that does not describe it (ErrInvalidDocument).
+type Profile struct {
+	// Sources lists every collection the document reads, including reads inside
+	// derived sources and subquery expressions; a collection read twice is
+	// listed twice. Database is empty for a source that names none.
+	Sources []ProfileSource
+	// HasSubquery reports a derived source, scalar subquery, EXISTS predicate
+	// or query-valued comparison operand anywhere in the document.
+	HasSubquery bool
+}
+
+// ProfileSource is one collection read of a Profile.
+type ProfileSource struct {
+	Database   string
+	Collection string
+}
+
+// Registry resolves a database id to the source registered under it. A server
+// that keeps a mount alive for the length of a request takes that hold in
+// Lookup and lets go of it when the request ends.
+type Registry interface {
+	// Lookup returns the source registered under database, or false when there
+	// is none.
+	Lookup(database string) (Source, bool)
+}
+
+// Result is the answer to one request.
+type Result struct {
+	Records []record.Record
+	// Columns names the columns of the records in the order they were selected.
+	Columns   []string
+	Execution Execution
+}
+
+// Execution describes how a request ran. It is the execution block of the
+// response and never reports how many rows a source holds or was read for,
+// only how many rows it delivered (and not even that for a protected source).
+type Execution struct {
+	// Route is RouteDatabase or RouteInMemory.
+	Route        string            `json:"route"`
+	ElapsedMs    int64             `json:"elapsedMs"`
+	RowsReturned int               `json:"rowsReturned"`
+	Sources      []ExecutionSource `json:"sources"`
+}
+
+// ExecutionSource describes the reads of one collection.
+type ExecutionSource struct {
+	Database   string `json:"database"`
+	Collection string `json:"collection"`
+	// Rows is how many rows the source delivered. It is nil for a source with
+	// access policies, whose size a caller may not learn, and on the database
+	// route, where the database ran the whole document and reports no more.
+	Rows *int `json:"rows,omitempty"`
+	// ElapsedMs is the time the source's readers were open, nil on the database
+	// route.
+	ElapsedMs *int64 `json:"elapsedMs,omitempty"`
+}
+
+// config is what the options set.
+type config struct {
+	joinEngines   map[string]bool
+	nativeEngines map[string]bool
+	now           func() time.Time
+}
+
+// Option configures Execute.
+type Option func(*config)
+
+func newConfig(opts []Option) *config {
+	c := &config{
+		joinEngines:   engineSet([]string{"sqlite", "ingitdb"}),
+		nativeEngines: engineSet([]string{"sqlite"}),
+		now:           time.Now,
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
+}
+
+func engineSet(engines []string) map[string]bool {
+	set := make(map[string]bool, len(engines))
+	for _, engine := range engines {
+		set[engine] = true
+	}
+	return set
+}
+
+// WithJoinEngines sets the storage engines whose databases may take part in a
+// relational query. The default is sqlite and ingitdb, as the server's default
+// query limits; an empty list keeps the default. An engine outside the set is
+// refused with an EngineNotJoinableError.
+func WithJoinEngines(engines ...string) Option {
+	set := engineSet(engines)
+	return func(c *config) {
+		if len(set) > 0 {
+			c.joinEngines = set
+		}
+	}
+}
+
+// WithNativeEngines sets the storage engines that run a whole document
+// themselves (the database route). The default is sqlite; an empty list keeps
+// the default. An engine listed here must also be in the join set.
+func WithNativeEngines(engines ...string) Option {
+	set := engineSet(engines)
+	return func(c *config) {
+		if len(set) > 0 {
+			c.nativeEngines = set
+		}
+	}
+}
+
+// withClock replaces the clock Execute measures its own elapsed time with.
+func withClock(now func() time.Time) Option {
+	return func(c *config) { c.now = now }
+}
+
+// Execute runs a relational document and returns every row of its result, or no
+// rows and an error. It is the one place that reads a joined result, and it
+// reads with Guard.Collect, so a request that ran out of budget or lost a source
+// part way is never answered with the rows read before the failure.
+//
+// defaultDatabase is the database of a source that names none; it is empty on
+// an endpoint that serves several databases, where every source must name one.
+// A source with a database of its own is read from that database whatever the
+// default is.
+//
+// Execute works in this order, and a request that fails at one step has done
+// nothing of the steps after it:
+//
+//  1. Walk the document, check every name in it and check the profile against
+//     the walk (ErrInvalidDocument).
+//  2. Settle the database of every source (ErrSourceWithoutDatabase).
+//  3. Authorise every source (SourceDeniedError), before any mount is resolved,
+//     so a caller learns nothing about databases it may not read: 403 before
+//     404.
+//  4. Resolve each database once (UnknownDatabaseError).
+//  5. Refuse an engine that cannot be queried (EngineNotQueryableError), for
+//     every source, and then one outside the join set (EngineNotJoinableError).
+//  6. Refuse a scan clause on a source with access policies
+//     (ErrScanOnProtectedSource).
+//  7. Choose the route and run.
+//
+// The database route is chosen when every source is in one database, that
+// database's engine is native, it has no access policies and the document has
+// no subquery. The whole document then runs in one read transaction of the
+// database. Every other document runs in memory: DALgo reads each source with a
+// single-collection query through a guarded leaf and joins, filters and
+// aggregates above the leaves, so a source with access policies is only ever
+// read through its policy-checked executor and only rows the caller may read
+// reach a join or an aggregate.
+//
+// An engine's CanQuery method, when the Source has one, says whether the engine
+// can run structured queries at all (core.Database has it). The check here
+// comes before the join-set check and no join-set setting lifts it.
+//
+// opts, limits and the ordering of results are as documented on Option,
+// Limits, MaxResultRows and MaxResultBytes.
+func Execute(ctx context.Context, query dal.StructuredQuery, profile Profile, defaultDatabase string, registry Registry, authorize Authorize, limits Limits, opts ...Option) (Result, error) {
+	cfg := newConfig(opts)
+	started := cfg.now()
+	if registry == nil {
+		return Result{}, fmt.Errorf("%w: a registry is required", ErrInvalidDocument)
+	}
+	doc, err := inspect(query)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := checkProfile(doc, profile); err != nil {
+		return Result{}, err
+	}
+	targets, databases, qualified, err := settle(doc.sources, defaultDatabase)
+	if err != nil {
+		return Result{}, err
+	}
+	for _, target := range targets {
+		if authorize == nil || !authorize(target.database, target.collection) {
+			return Result{}, &SourceDeniedError{Database: target.database, Collection: target.collection}
+		}
+	}
+	sources, err := resolveSources(registry, databases)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := cfg.checkEngines(databases, sources); err != nil {
+		return Result{}, err
+	}
+	if err := checkScans(targets, sources); err != nil {
+		return Result{}, err
+	}
+
+	route := cfg.route(databases, sources, doc.hasSubquery)
+	guard := NewGuard(authorize, limits)
+	ctx, cancel := guard.Context(ctx)
+	defer cancel()
+	r := &run{guard: guard, sources: sources}
+	var records []record.Record
+	if route == RouteDatabase {
+		records, err = r.database(ctx, query, sources[databases[0]])
+	} else {
+		records, err = r.inMemory(ctx, query, databases, qualified)
+	}
+	if err != nil {
+		return Result{}, err
+	}
+	if records == nil {
+		records = []record.Record{}
+	}
+	execution := Execution{
+		Route:        route,
+		ElapsedMs:    cfg.now().Sub(started).Milliseconds(),
+		RowsReturned: len(records),
+	}
+	if route == RouteDatabase {
+		execution.Sources = databaseSources(targets)
+	} else {
+		execution.Sources = inMemorySources(guard.Stats())
+	}
+	return Result{Records: records, Columns: orderedColumns(query, records), Execution: execution}, nil
+}
+
+// settle gives every source a database. It returns the sources with their
+// databases, the distinct databases in document order, and whether every
+// source named its database itself.
+func settle(sources []walkedSource, defaultDatabase string) (targets []walkedSource, databases []string, qualified bool, err error) {
+	qualified = true
+	seen := map[string]bool{}
+	for _, source := range sources {
+		if source.database == "" {
+			qualified = false
+			source.database = defaultDatabase
+		}
+		if source.database == "" {
+			return nil, nil, false, fmt.Errorf("%w: collection %q", ErrSourceWithoutDatabase, source.collection)
+		}
+		targets = append(targets, source)
+		if !seen[source.database] {
+			seen[source.database] = true
+			databases = append(databases, source.database)
+		}
+	}
+	if len(databases) > 1 && !qualified {
+		return nil, nil, false, fmt.Errorf("%w: a document that reads several databases names the database of every source", ErrSourceWithoutDatabase)
+	}
+	return targets, databases, qualified, nil
+}
+
+// resolveSources looks every database up once.
+func resolveSources(registry Registry, databases []string) (map[string]Source, error) {
+	sources := make(map[string]Source, len(databases))
+	for _, database := range databases {
+		source, ok := registry.Lookup(database)
+		if !ok || source == nil {
+			return nil, &UnknownDatabaseError{Database: database}
+		}
+		if source.ID() != database {
+			return nil, fmt.Errorf("%w: %q", ErrRegistryMismatch, database)
+		}
+		sources[database] = source
+	}
+	return sources, nil
+}
+
+// checkEngines refuses a database whose engine cannot be queried, for every
+// database, before it refuses one outside the join set: the first is the
+// stronger statement and an operator's join set cannot lift it.
+func (c *config) checkEngines(databases []string, sources map[string]Source) error {
+	for _, database := range databases {
+		source := sources[database]
+		if gate, ok := source.(interface{ CanQuery() bool }); ok && !gate.CanQuery() {
+			return &EngineNotQueryableError{Database: database, Engine: source.Engine()}
+		}
+	}
+	for _, database := range databases {
+		if engine := sources[database].Engine(); !c.joinEngines[engine] {
+			return &EngineNotJoinableError{Database: database, Engine: engine}
+		}
+	}
+	return nil
+}
+
+// checkScans refuses a scan clause on a source with access policies.
+func checkScans(targets []walkedSource, sources map[string]Source) error {
+	for _, target := range targets {
+		if target.scan && sources[target.database].HasAccessPolicies() {
+			return fmt.Errorf("%w: %q.%q", ErrScanOnProtectedSource, target.database, target.collection)
+		}
+	}
+	return nil
+}
+
+// route chooses where the document runs.
+func (c *config) route(databases []string, sources map[string]Source, hasSubquery bool) string {
+	if len(databases) == 1 && !hasSubquery {
+		source := sources[databases[0]]
+		if c.nativeEngines[source.Engine()] && !source.HasAccessPolicies() {
+			return RouteDatabase
+		}
+	}
+	return RouteInMemory
+}
+
+// run holds what one request reads through.
+type run struct {
+	guard   *Guard
+	sources map[string]Source
+}
+
+// resolve is the dal.DatabaseResolver of the in-memory route: the guarded leaf
+// of a database the preflight resolved and authorised, and nothing else.
+func (r *run) resolve(_ context.Context, database string) (dal.QueryExecutor, error) {
+	source, ok := r.sources[database]
+	if !ok {
+		return nil, &UnknownDatabaseError{Database: database}
+	}
+	return r.guard.Leaf(source), nil
+}
+
+// database runs the whole document in one read transaction of source. The
+// result is drained inside the transaction, which ends when the function
+// returns.
+func (r *run) database(ctx context.Context, query dal.StructuredQuery, source Source) ([]record.Record, error) {
+	var (
+		records []record.Record
+		failure error
+		ran     bool
+	)
+	txErr := source.ReadTx(ctx, func(executor dal.QueryExecutor) error {
+		ran = true
+		reader, err := executor.ExecuteQueryToRecordsReader(ctx, query)
+		records, failure = r.collect(ctx, reader, err, RouteDatabase)
+		return failure
+	})
+	switch {
+	case failure != nil:
+		// Not txErr: a transaction that swallows the function's error must not
+		// turn a failed read into an empty result.
+		return nil, failure
+	case txErr != nil:
+		return nil, txErr
+	case !ran:
+		return nil, ErrReadTxSkipped
+	}
+	return records, nil
+}
+
+// inMemory runs the document above guarded leaves. A document whose sources all
+// name their database is routed by DALgo's federated executor, one leaf per
+// database; any other document lives in one database and reads through one leaf.
+func (r *run) inMemory(ctx context.Context, query dal.StructuredQuery, databases []string, qualified bool) ([]record.Record, error) {
+	var (
+		reader dal.RecordsReader
+		err    error
+	)
+	if qualified {
+		reader, err = dal.ExecuteFederatedQueryWithOptions(ctx, query, r.resolve, dal.FederatedQueryOptions{})
+	} else {
+		reader, err = dal.ExecuteRecursiveQuery(ctx, r.guard.Leaf(r.sources[databases[0]]), query)
+	}
+	return r.collect(ctx, reader, err, RouteInMemory)
+}
+
+// collect is the only place a result is read: it drains reader through
+// Guard.Collect, under the result bounds, and classifies whatever DALgo or the
+// reader reported. err is what the call that returned reader returned.
+func (r *run) collect(ctx context.Context, reader dal.RecordsReader, err error, route string) ([]record.Record, error) {
+	if err != nil {
+		return nil, r.guard.Classify(err, route)
+	}
+	if reader == nil {
+		return nil, r.guard.Classify(ErrNoReader, route)
+	}
+	return r.guard.Collect(ctx, &resultCap{RecordsReader: reader, route: route}, route)
+}
+
+// resultCap ends a read with a BudgetError when it would deliver more than
+// MaxResultRows rows or MaxResultBytes bytes.
+type resultCap struct {
+	dal.RecordsReader
+	route string
+	rows  int
+	bytes int64
+}
+
+func (c *resultCap) Next() (record.Record, error) {
+	rec, err := c.RecordsReader.Next()
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(rec.Data())
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrRowNotEncodable, err)
+	}
+	switch {
+	case c.rows+1 > MaxResultRows:
+		return nil, &BudgetError{Name: BudgetResponseRows, Limit: MaxResultRows, Route: c.route}
+	case c.bytes+int64(len(encoded)) > MaxResultBytes:
+		return nil, &BudgetError{Name: BudgetResponseBytes, Limit: MaxResultBytes, Route: c.route}
+	}
+	c.rows++
+	c.bytes += int64(len(encoded))
+	return rec, nil
+}
+
+// databaseSources lists the collections of a document the database ran, once
+// each, without figures: the database reports none.
+func databaseSources(targets []walkedSource) []ExecutionSource {
+	var sources []ExecutionSource
+	seen := map[[2]string]bool{}
+	for _, target := range targets {
+		key := [2]string{target.database, target.collection}
+		if !seen[key] {
+			seen[key] = true
+			sources = append(sources, ExecutionSource{Database: target.database, Collection: target.collection})
+		}
+	}
+	return sources
+}
+
+// inMemorySources reports what the leaves read, without a row count for a
+// source with access policies.
+func inMemorySources(stats []SourceStats) []ExecutionSource {
+	sources := make([]ExecutionSource, len(stats))
+	for i, s := range stats {
+		elapsed := s.Elapsed.Milliseconds()
+		sources[i] = ExecutionSource{Database: s.Database, Collection: s.Collection, ElapsedMs: &elapsed}
+		if !s.Protected {
+			rows := s.Rows
+			sources[i].Rows = &rows
+		}
+	}
+	return sources
+}
