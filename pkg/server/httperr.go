@@ -54,6 +54,8 @@ func writeMappedError(w http.ResponseWriter, err error) (internal bool) {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 	case errors.Is(err, core.ErrInvalidDTQL):
 		writeError(w, http.StatusBadRequest, "invalid_dtql", err.Error())
+	case errors.Is(err, core.ErrQueryUnsupported):
+		writeError(w, http.StatusNotImplemented, "query_unsupported", err.Error())
 	case errors.Is(err, core.ErrNotFound), errors.Is(err, core.ErrUpdateOfMissingRecord):
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 	case errors.Is(err, core.ErrAlreadyExists):

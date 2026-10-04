@@ -115,6 +115,32 @@ func TestHumanQueryLinkEncodesCollectionNameAsJSON(t *testing.T) {
 	}
 }
 
+// TestHumanQueryLinkOnlyWhenTheGuardAllowsQueries: a mount the guard refuses
+// structured queries on must not link to /query from its collection page.
+func TestHumanQueryLinkOnlyWhenTheGuardAllowsQueries(t *testing.T) {
+	for engine, want := range map[string]bool{"sqlite": true, "ingitdb": true, "postgres": false, "mysql": false} {
+		t.Run(engine, func(t *testing.T) {
+			db := testHumanDB("db")
+			db.Manifest.Storage.Engine = engine
+			s := New("test", map[string]*core.Database{"db": db})
+			t.Cleanup(s.CloseSnapshots)
+			databases, err := s.humanDatabases(httptest.NewRequest(http.MethodGet, "http://localhost/ovdb/dbs/db", nil), false, "db")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, collection := range databases[0].Collections {
+				if (collection.QueryURL != "") != want {
+					t.Errorf("%s: QueryURL = %q, want present %v", collection.Name, collection.QueryURL, want)
+				}
+			}
+			page := humanRequest(s.Handler(), "/ovdb/dbs/db/collections/Album")
+			if page.Code != 200 || strings.Contains(page.Body.String(), "Query records (JSON)") != want || !strings.Contains(page.Body.String(), "Database metadata API") {
+				t.Errorf("collection page: status %d, query link present %v, want %v", page.Code, strings.Contains(page.Body.String(), "Query records (JSON)"), want)
+			}
+		})
+	}
+}
+
 func TestHumanPagesAndDiscovery(t *testing.T) {
 	s := New("test", map[string]*core.Database{"chinook": testHumanDB("chinook")}, WithPublicOrigin("https://data.example.test"))
 	t.Cleanup(s.CloseSnapshots)
