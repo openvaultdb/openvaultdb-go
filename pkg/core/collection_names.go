@@ -1,6 +1,9 @@
 package core
 
 import (
+	"errors"
+	"fmt"
+	"maps"
 	"slices"
 	"sort"
 
@@ -29,12 +32,20 @@ type collectionNames struct {
 	spellings map[string][]string // canonical name to its spellings, canonical first
 }
 
+// ErrCollectionNamesConflict identifies a manifest whose collection names cannot
+// each designate one table: a name that is a spelling of one declared collection
+// and the canonical name of another, or two keys that are one table and declare
+// different fields. Opening a database refuses such a manifest.
+var ErrCollectionNamesConflict = errors.New("conflicting collection names")
+
 // newCollectionNames declares every key of the manifest's schemas, and on SQLite
 // the public name of a key that is a quoted SQL identifier (SQLiteLogicalName),
-// the name the mount registers with the driver for it.
-func newCollectionNames(m *manifest.Manifest) collectionNames {
+// the name the mount registers with the driver for it. It refuses a manifest in
+// which one name would designate two tables, or one table would have two
+// declarations (ErrCollectionNamesConflict).
+func newCollectionNames(m *manifest.Manifest) (collectionNames, error) {
 	if m.Schemas == nil {
-		return collectionNames{}
+		return collectionNames{}, nil
 	}
 	keys := make([]string, 0, len(m.Schemas.Collections))
 	for key := range m.Schemas.Collections {
@@ -45,12 +56,7 @@ func newCollectionNames(m *manifest.Manifest) collectionNames {
 		canonical: make(map[string]string, len(keys)),
 		spellings: make(map[string][]string, len(keys)),
 	}
-	add := func(spelling, canonical string) {
-		names.canonical[spelling] = canonical
-		if !slices.Contains(names.spellings[canonical], spelling) {
-			names.spellings[canonical] = append(names.spellings[canonical], spelling)
-		}
-	}
+	declaredBy := make(map[string]string, len(keys)) // canonical name to the first key that declares it
 	for _, key := range keys {
 		canonical := key
 		if m.Storage.Engine == "sqlite" {
@@ -58,10 +64,22 @@ func newCollectionNames(m *manifest.Manifest) collectionNames {
 				canonical = logical
 			}
 		}
-		add(canonical, canonical)
-		add(key, canonical)
+		if first, ok := declaredBy[canonical]; !ok {
+			declaredBy[canonical] = key
+		} else if !maps.Equal(m.Schemas.Collections[first].Fields, m.Schemas.Collections[key].Fields) {
+			return collectionNames{}, fmt.Errorf("%w: %q and %q are one table (%q) and declare different fields", ErrCollectionNamesConflict, first, key, canonical)
+		}
+		for _, spelling := range []string{canonical, key} {
+			if other, ok := names.canonical[spelling]; ok && other != canonical {
+				return collectionNames{}, fmt.Errorf("%w: %q is a spelling of both %q and %q", ErrCollectionNamesConflict, spelling, other, canonical)
+			}
+			names.canonical[spelling] = canonical
+			if !slices.Contains(names.spellings[canonical], spelling) {
+				names.spellings[canonical] = append(names.spellings[canonical], spelling)
+			}
+		}
 	}
-	return names
+	return names, nil
 }
 
 // CanonicalCollection returns the name the adapter is given for a collection a

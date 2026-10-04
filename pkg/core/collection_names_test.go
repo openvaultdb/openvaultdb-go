@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -23,22 +24,25 @@ import (
 type namesRecordingDB struct {
 	writeGuardDB
 	seen    []string
-	created []string // collections provisioned through ddl.SchemaModifier
+	kinds   []reflect.Kind // the ID kind of every key the adapter is given
+	created []string       // collections provisioned through ddl.SchemaModifier
 }
 
 func (f *namesRecordingDB) Get(ctx context.Context, rec record.Record) error {
 	f.seen = append(f.seen, "get "+rec.Key().Collection())
+	f.kinds = append(f.kinds, rec.Key().IDKind)
 	return f.writeGuardDB.Get(ctx, rec)
 }
 
 func (f *namesRecordingDB) Exists(ctx context.Context, key *record.Key) (bool, error) {
 	f.seen = append(f.seen, "exists "+key.Collection())
+	f.kinds = append(f.kinds, key.IDKind)
 	return f.writeGuardDB.Exists(ctx, key)
 }
 
 func (f *namesRecordingDB) RunReadwriteTransaction(ctx context.Context, worker dal.RWTxWorker, _ ...dal.TransactionOption) error {
 	f.transactions++
-	return worker(ctx, &namesRecordingTx{seen: &f.seen})
+	return worker(ctx, &namesRecordingTx{fake: f})
 }
 
 // CreateCollection makes the fake a ddl.SchemaModifier.
@@ -57,11 +61,12 @@ func (f *namesRecordingDB) AlterCollection(context.Context, string, ...ddl.Alter
 
 type namesRecordingTx struct {
 	dal.ReadwriteTransaction
-	seen *[]string
+	fake *namesRecordingDB
 }
 
 func (t *namesRecordingTx) note(call string, key *record.Key) {
-	*t.seen = append(*t.seen, call+" "+key.String())
+	t.fake.seen = append(t.fake.seen, call+" "+key.String())
+	t.fake.kinds = append(t.fake.kinds, key.IDKind)
 }
 
 func (t *namesRecordingTx) Set(_ context.Context, rec record.Record) error {
@@ -154,6 +159,49 @@ func TestCanonicalCollection(t *testing.T) {
 	}
 }
 
+// TestOpenRefusesACollectionNameThatIsAmbiguous: a name that is a spelling of
+// one declared collection and the canonical name of another cannot say which
+// table it designates, and two keys that are one table cannot each declare its
+// fields. Open refuses such a manifest. Keys that are one table with the same
+// fields, and any keys of an engine that renames nothing, are fine.
+func TestOpenRefusesACollectionNameThatIsAmbiguous(t *testing.T) {
+	string1, string2 := map[string]schema.Field{"name": {Type: schema.TypeString}}, map[string]schema.Field{"title": {Type: schema.TypeString}}
+	required := map[string]schema.Field{"name": {Type: schema.TypeString, Required: true}}
+	for _, c := range []struct {
+		label       string
+		engine      string
+		collections map[string]map[string]schema.Field
+		refused     bool
+	}{
+		{"a spelling of one table is the name of another", "sqlite", map[string]map[string]schema.Field{`"x"`: string1, `"""x"""`: string1}, true},
+		{"the same, with different fields", "sqlite", map[string]map[string]schema.Field{`"x"`: string1, `"""x"""`: string2}, true},
+		{"one table declared twice with different fields", "sqlite", map[string]map[string]schema.Field{"Orders": string1, `"Orders"`: string2}, true},
+		{"one table declared twice, a field required in one", "sqlite", map[string]map[string]schema.Field{"Orders": string1, `"Orders"`: required}, true},
+		{"one table declared twice with the same fields", "sqlite", map[string]map[string]schema.Field{"Orders": string1, `"Orders"`: string1}, false},
+		{"one table declared twice with no fields", "sqlite", map[string]map[string]schema.Field{"Orders": nil, `"Orders"`: {}}, false},
+		{"tables that share no spelling", "sqlite", map[string]map[string]schema.Field{`"x"`: string1, `"y"`: string2, "z": string1}, false},
+		{"a key that is not an identifier", "sqlite", map[string]map[string]schema.Field{`"a"b"`: string1, `a"b`: string2}, false},
+		{"an engine that renames nothing", "postgres", map[string]map[string]schema.Field{`"x"`: string1, `"""x"""`: string2}, false},
+		{"a document engine", "ingitdb", map[string]map[string]schema.Field{`"x"`: string1, `"""x"""`: string2}, false},
+	} {
+		t.Run(c.label, func(t *testing.T) {
+			collections := map[string]schema.Collection{}
+			for name, fields := range c.collections {
+				collections[name] = schema.Collection{Fields: fields}
+			}
+			m := &manifest.Manifest{
+				Database: manifest.Database{ID: "names", SchemaMode: schema.ModeStrict},
+				Storage:  manifest.Storage{Engine: c.engine},
+				Schemas:  &schema.Schemas{Collections: collections},
+			}
+			_, err := Open(m, &namesRecordingDB{}, []schema.Mode{schema.ModeStrict}, filepath.Join(t.TempDir(), "inferred.json"))
+			if c.refused != errors.Is(err, ErrCollectionNamesConflict) || !c.refused && err != nil {
+				t.Fatalf("got %v, refused = %v", err, c.refused)
+			}
+		})
+	}
+}
+
 func TestCollectionSpellings(t *testing.T) {
 	db, _ := namesOpen(t, "sqlite", `"Order Details"`, "Order Details", "customers", `"x"`)
 	for name, want := range map[string]string{
@@ -192,6 +240,7 @@ func TestSpellingsOfACollectionReachTheAdapterAsOneName(t *testing.T) {
 		t.Run(spelling, func(t *testing.T) {
 			db, fake := namesOpen(t, "sqlite", `"Order Details"`)
 			key := record.NewKeyWithID(spelling, "1")
+			key.IDKind = reflect.String
 			if _, err := db.Get(ctx, key); err != nil {
 				t.Fatal(err)
 			}
@@ -225,6 +274,12 @@ func TestSpellingsOfACollectionReachTheAdapterAsOneName(t *testing.T) {
 			}
 			if got := strings.Join(fake.seen, "; "); got != strings.Join(want, "; ") {
 				t.Fatalf("adapter was given:\n got %s\nwant %s", got, strings.Join(want, "; "))
+			}
+			// The renamed key is the same key: it keeps the kind of its ID.
+			for i, kind := range fake.kinds {
+				if kind != reflect.String {
+					t.Errorf("call %d (%s): the adapter was given a key whose ID kind is %v, want %v", i, fake.seen[i], kind, reflect.String)
+				}
 			}
 		})
 	}

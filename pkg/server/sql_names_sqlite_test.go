@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -19,12 +20,31 @@ import (
 
 // sqlNamesTables are the tables of the SQLite file the name tests run against.
 // "Orders" and "Orders Status" share a prefix: a request for one must never be
-// answered from, or write to, the other.
+// answered from, or write to, the other. The rest carry what a name can carry
+// that a statement has to quote: a hyphen, a reserved word, a double quote and a
+// backtick.
 var sqlNamesTables = []struct{ table, marker string }{
 	{"Orders", "row of Orders"},
 	{"Orders Status", "row of Orders Status"},
 	{"order-items", "row of order-items"},
 	{"Order Details", "row of Order Details"},
+	{"select", "row of select"},
+	{`O"Brien`, `row of O"Brien`},
+	{"My" + backtick + "Table", "row of My" + backtick + "Table"},
+}
+
+const backtick = "`"
+
+// sqlNamesQuotedTable is a table whose name carries the quote characters of the
+// quoted spelling of Order Details. It is not declared. The file holds it only
+// where a test asks for it (startSQLNamesWithQuotedTable), with one row that no
+// request for a declared collection may read or change.
+var sqlNamesQuotedTable = struct{ table, marker string }{`"Order Details"`, "row of the table named with quotes"}
+
+// sqlIdent writes name as a SQL identifier: in double quotes, a quote inside the
+// name doubled.
+func sqlIdent(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
 const sqlNamesManifest = `database: {id: dev, schema_mode: strict}
@@ -38,6 +58,12 @@ schemas:
     order-items:
       fields: {id: {type: string}, name: {type: string}}
     '"Order Details"':
+      fields: {id: {type: string}, name: {type: string}}
+    select:
+      fields: {id: {type: string}, name: {type: string}}
+    '"O""Brien"':
+      fields: {id: {type: string}, name: {type: string}}
+    'My` + "`" + `Table':
       fields: {id: {type: string}, name: {type: string}}
 `
 
@@ -59,16 +85,29 @@ func startSQLNames(t *testing.T, opts ...server.Option) sqlNamesFixture {
 // (the manifest's own id is "dev").
 func startSQLNamesAs(t *testing.T, id string, opts ...server.Option) sqlNamesFixture {
 	t.Helper()
+	return startSQLNamesFile(t, id, sqlNamesTables, opts...)
+}
+
+// startSQLNamesWithQuotedTable is startSQLNames over a file that also holds
+// sqlNamesQuotedTable.
+func startSQLNamesWithQuotedTable(t *testing.T, opts ...server.Option) sqlNamesFixture {
+	t.Helper()
+	tables := append(slices.Clone(sqlNamesTables), sqlNamesQuotedTable)
+	return startSQLNamesFile(t, "dev", tables, opts...)
+}
+
+func startSQLNamesFile(t *testing.T, id string, tables []struct{ table, marker string }, opts ...server.Option) sqlNamesFixture {
+	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "data.sqlite")
 	raw, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range sqlNamesTables {
+	for _, c := range tables {
 		for _, statement := range []string{
-			fmt.Sprintf(`CREATE TABLE %q (id TEXT PRIMARY KEY, name TEXT)`, c.table),
-			fmt.Sprintf(`INSERT INTO %q VALUES ('1', '%s')`, c.table, c.marker),
+			fmt.Sprintf(`CREATE TABLE %s (id TEXT PRIMARY KEY, name TEXT)`, sqlIdent(c.table)),
+			fmt.Sprintf(`INSERT INTO %s VALUES ('1', '%s')`, sqlIdent(c.table), strings.ReplaceAll(c.marker, "'", "''")),
 		} {
 			if _, err := raw.Exec(statement); err != nil {
 				t.Fatal(err)
@@ -103,7 +142,7 @@ func (f sqlNamesFixture) rows(t *testing.T, table string) string {
 		t.Fatal(err)
 	}
 	defer func() { _ = raw.Close() }()
-	found, err := raw.Query(fmt.Sprintf(`SELECT id, name FROM %q ORDER BY id`, table))
+	found, err := raw.Query(fmt.Sprintf(`SELECT id, name FROM %s ORDER BY id`, sqlIdent(table)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,6 +205,10 @@ var sqlNamesSpellings = []struct{ label, collection, table string }{
 	{"name with a hyphen", "order-items", "order-items"},
 	{"name with a space, plain form", "Order Details", "Order Details"},
 	{"name with a space, quoted form", `"Order Details"`, "Order Details"},
+	{"reserved word", "select", "select"},
+	{"name with a double quote, plain form", `O"Brien`, `O"Brien`},
+	{"name with a double quote, quoted form", `"O""Brien"`, `O"Brien`},
+	{"name with a backtick", "My" + backtick + "Table", "My" + backtick + "Table"},
 }
 
 const sqlNamesRecords = "/v1/databases/dev/records/"
@@ -326,27 +369,38 @@ func TestCapabilityOfACollectionHoldsUnderEverySpelling(t *testing.T) {
 	}
 }
 
-// TestCapabilityOfACollectionFailsClosedWhenTheServerCannotResolveTheDatabase:
-// the spellings of a collection come from the mounted database. A database the
-// server serves under an id other than its manifest's is not found by the id the
-// grant names, so a key is checked under the spelling it was written in alone.
-func TestCapabilityOfACollectionFailsClosedWhenTheServerCannotResolveTheDatabase(t *testing.T) {
-	store, err := auth.OpenStore(filepath.Join(t.TempDir(), "auth.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The grant names the database by its manifest id.
-	const token = "ovdb_test_alias_token"
-	grant := &auth.Grant{DatabaseID: "dev", Capabilities: []auth.Capability{{Action: auth.CapRecordsRead, Collection: "Order Details"}}}
-	if err := store.CreateGrant(grant, token); err != nil {
-		t.Fatal(err)
-	}
-	f := startSQLNamesAs(t, "alias", server.WithAuth(&auth.Config{OwnerToken: ownerToken, Store: store}))
-	for spelling, want := range map[string]int{"Order Details": http.StatusOK, `"Order Details"`: http.StatusForbidden} {
-		path := "/v1/databases/alias/records/" + url.PathEscape(spelling) + "/1"
-		if status, _ := request(t, f.ts, "GET", path, token, ""); status != want {
-			t.Errorf("GET as %s: status %d, want %d", spelling, status, want)
-		}
+// TestCapabilityOfACollectionHoldsUnderEverySpellingWhenServedUnderAnotherID:
+// the spellings of a collection come from the database the request reached, not
+// from a lookup by id. A database the server serves under an id other than its
+// manifest's follows the same rule as any other: a grant on Order Details covers
+// a key written in either spelling, and a grant on another collection covers
+// neither.
+func TestCapabilityOfACollectionHoldsUnderEverySpellingWhenServedUnderAnotherID(t *testing.T) {
+	for _, c := range []struct {
+		grant string
+		want  int
+	}{
+		{"Order Details", http.StatusOK},
+		{`"Order Details"`, http.StatusOK},
+		{"Orders", http.StatusForbidden},
+	} {
+		t.Run("grant on "+c.grant, func(t *testing.T) {
+			store, err := auth.OpenStore(filepath.Join(t.TempDir(), "auth.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The grant names the database by its manifest id; the server serves it as
+			// "alias".
+			const token = "ovdb_test_alias_token"
+			grantToken(t, store, "dev", token, auth.Capability{Action: auth.CapRecordsRead, Collection: c.grant})
+			f := startSQLNamesAs(t, "alias", server.WithAuth(&auth.Config{OwnerToken: ownerToken, Store: store}))
+			for _, spelling := range []string{"Order Details", `"Order Details"`} {
+				path := "/v1/databases/alias/records/" + url.PathEscape(spelling) + "/1"
+				if status, _ := request(t, f.ts, "GET", path, token, ""); status != c.want {
+					t.Errorf("GET as %s: status %d, want %d", spelling, status, c.want)
+				}
+			}
+		})
 	}
 }
 
@@ -379,6 +433,10 @@ func TestEmptyWritesOnARealSQLiteMount(t *testing.T) {
 		{"batch refused as a whole", "POST", batch, `{"ops":[{"op":"set","key":"Orders/1","data":{"name":"changed"}},{"op":"set","key":"Orders/2","data":{}}]}`, 400, "1=row of Orders,2=,3=,4="},
 		{"batch that empties a row it inserted", "POST", batch, `{"ops":[{"op":"insert","key":"Orders/5","data":{"name":"x"}},{"op":"set","key":"Orders/5","data":{}}]}`, 400, "1=row of Orders,2=,3=,4="},
 		{"batch that sets a row it deleted", "POST", batch, `{"ops":[{"op":"delete","key":"Orders/4"},{"op":"set","key":"Orders/4","data":{}}]}`, 200, "1=row of Orders,2=,3=,4="},
+		{"batch that inserts one key twice with no data", "POST", batch, `{"ops":[{"op":"insert","key":"Orders/6"},{"op":"insert","key":"Orders/6"}]}`, 409, "1=row of Orders,2=,3=,4="},
+		{"batch that updates a row it inserted with no data", "POST", batch, `{"ops":[{"op":"insert","key":"Orders/6"},{"op":"update","key":"Orders/6","updates":[{"fieldName":"name","value":"u"}]}]}`, 200, "1=row of Orders,2=,3=,4=,6=u"},
+		{"batch that inserts a row it set with no data", "POST", batch, `{"ops":[{"op":"set","key":"Orders/7"},{"op":"insert","key":"Orders/7"}]}`, 409, "1=row of Orders,2=,3=,4=,6=u"},
+		{"batch that updates a row it set with no data", "POST", batch, `{"ops":[{"op":"set","key":"Orders/7"},{"op":"update","key":"Orders/7","updates":[{"fieldName":"name","value":"v"}]}]}`, 200, "1=row of Orders,2=,3=,4=,6=u,7=v"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			status, body := f.call(t, c.method, c.path, c.body)

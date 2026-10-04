@@ -223,9 +223,9 @@ func TestDeclaredCollectionsReachAdapterOnSQLEngines(t *testing.T) {
 
 // TestNestedKeysRefusedOnSQLEngines: a SQL mount has no subcollections.
 // dalgo2sql maps a key with a parent to the recordset <leaf>_<parent>, which no
-// mount registers, and its delete statement names only the leaf table, so the
-// capability checked on the root collection would not be the table written.
-// Even with every segment declared, the key is a 404 before any adapter call.
+// mount registers and which is not the root collection the capability is
+// checked on. Even with every segment declared, the key is a 404 before any
+// adapter call.
 func TestNestedKeysRefusedOnSQLEngines(t *testing.T) {
 	customer := record.NewKeyWithID("customers", "c1")
 	keys := map[string]*record.Key{

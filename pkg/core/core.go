@@ -126,8 +126,12 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 	if !supported {
 		return nil, &ModeCompatibilityError{Engine: m.Storage.Engine, Requested: mode, Supported: supportedModes}
 	}
+	names, err := newCollectionNames(m)
+	if err != nil {
+		return nil, err
+	}
 	d := &Database{Manifest: m, db: db, modes: supportedModes, policyController: controller,
-		names: newCollectionNames(m), documentEngine: documentEngines[m.Storage.Engine]}
+		names: names, documentEngine: documentEngines[m.Storage.Engine]}
 	// Retain the raw driver's Close: protected/secured wrappers installed
 	// below replace d.db but share the driver's underlying handle.
 	if closer, ok := db.(io.Closer); ok {
@@ -497,7 +501,7 @@ func (d *Database) Apply(ctx context.Context, ops []Op, message string) (int, er
 func (d *Database) SetAfterWrite(fn func(ctx context.Context) error) { d.afterWrite = fn }
 
 type stagedState struct {
-	data   map[string]any // nil when absent/deleted
+	data   map[string]any // nil when absent/deleted, or written with no data
 	exists bool           // the record is in the store, or an earlier op of the batch wrote it
 }
 
@@ -547,14 +551,18 @@ func (d *Database) validateOps(ctx context.Context, ops []Op) error {
 			st.data = deepCopy(op.Data)
 			st.exists = true
 		case "insert":
-			if st.data != nil {
+			if st.exists {
 				return fmt.Errorf("%w: %s", ErrAlreadyExists, op.Key.String())
 			}
 			st.data = deepCopy(op.Data)
 			st.exists = true
 		case "update":
-			if st.data == nil {
+			if !st.exists {
 				return fmt.Errorf("%w: %s", ErrUpdateOfMissingRecord, op.Key.String())
+			}
+			if st.data == nil {
+				// An earlier op of the batch wrote the record with no data.
+				st.data = map[string]any{}
 			}
 			if err = applyUpdates(st.data, op.Updates, now); err != nil {
 				return fmt.Errorf("op %d (update %s): %w", i, op.Key.String(), err)

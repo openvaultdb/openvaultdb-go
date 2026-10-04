@@ -151,11 +151,13 @@ checks every one first: on `sqlite` (the one engine whose dialect has reviewed
 quoting) a name is written quoted, so a name with a space, a quote or a hyphen is
 an ordinary identifier and a declared `Orders Status` reads its own table, never
 `Orders`; on `postgres` and `mysql`, which open it with no reviewed dialect, a
-name must be a plain identifier (letters, digits and underscores, not starting
-with a digit) and any other is refused by the adapter without a statement being
-sent (a `500 internal`, or a `404` for `HEAD`). The structured-query path of a PostgreSQL or MySQL mount
-has no reviewed dialect yet either. ovdb does not depend on the adapter for
-either:
+collection, field or primary-key name must be a plain ASCII identifier (ASCII
+letters, digits and underscores, not starting with a digit) and any other is
+refused by the adapter without a statement being sent (a `500 internal`, or a
+`404` for `HEAD`). A manifest that declares such a name is not refused when the
+database opens; that is left to the task that gives the two mounts a reviewed
+dialect (OV-01). The structured-query path of a PostgreSQL or MySQL mount has no
+reviewed dialect yet either. ovdb does not depend on the adapter for either:
 
 - **Queries.** `/query` and `/dtql` are refused on `postgres` and `mysql` with
   `501 query_unsupported` before any query reaches the driver. They are not
@@ -180,10 +182,17 @@ either:
   only form the adapter is given, since the adapter quotes a name itself. `Get`,
   `Exists` and `Apply` rename the key before the adapter call, so the two
   spellings of one row are one record in a batch, and the mount provisions the
-  table under the canonical name. A capability scoped to either spelling covers a
-  key written with either (`core.Database.CollectionSpellings`). The class of the
-  engine (a document engine or not) is recorded when the database opens, beside
-  the declared set, and is not read from the live manifest afterwards.
+  table under the canonical name. On the key routes a capability scoped to either
+  spelling covers a key written with either (`core.Database.CollectionSpellings`,
+  used by the server's key-route check); the routes that give the adapter the
+  collection as written (`/query`, `/dtql`, the protected `PATCH` and the
+  authorization endpoints) match a capability against the spelling sent. A
+  manifest in which one name would be a spelling of two collections, or two keys
+  that are one table declare different fields, is refused when the database opens
+  (`core.ErrCollectionNamesConflict`). The access-policy layer sees the canonical
+  name on a key read or write. The class of the engine (a document engine or not)
+  is recorded when the database opens, beside the declared set, and is not read
+  from the live manifest afterwards.
 - **Field names**, on every engine. The top-level keys of a write body, an
   update's `fieldName` and the first segment of its `fieldPath` pass
   `core.ValidateFieldName` (the rule `/query` and `/dtql` use) or the request

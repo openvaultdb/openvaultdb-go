@@ -360,36 +360,43 @@ func isMutation(r *http.Request) bool {
 	}
 }
 
-// authorize enforces a capability for the request (Layer 2). Always true
-// when auth is disabled. Writes the 403 response when denied.
+// authorize enforces a capability for the request (Layer 2) on the collection
+// exactly as written. Always true when auth is disabled. Writes the 403 response
+// when denied. A route that hands the adapter the collection as written (the
+// query routes, the protected update and the authorization API) uses it: a grant
+// scoped to one spelling of a collection holds for that spelling alone.
 func (s *Server) authorize(w http.ResponseWriter, r *http.Request, databaseID, action, collection string) bool {
 	if s.authCfg == nil {
 		return true
 	}
-	if s.principalAllows(r, databaseID, action, collection) {
-		return true
-	}
-	writeError(w, http.StatusForbidden, "forbidden",
-		"token does not grant "+action+" on database "+databaseID)
-	return false
+	return s.enforce(w, r, databaseID, action, collection)
 }
 
-// principalAllows reports whether the request's principal holds action on the
-// collection of the database. A collection can be written in more than one way
-// (core.Database.CollectionSpellings), and every spelling designates the same
-// table, so a grant scoped to any of them holds for a key written in any of
-// them. An empty collection is the database as a whole and has one spelling.
-func (s *Server) principalAllows(r *http.Request, databaseID, action, collection string) bool {
-	spellings := []string{collection}
-	if db := s.getDB(databaseID); db != nil {
-		spellings = db.CollectionSpellings(collection)
+// authorizeKey enforces a capability for a request that reaches the adapter
+// through a record key (core.Database Get, Exists and Apply), on the collection
+// of the key. Those methods give the adapter the collection's canonical name
+// (core.Database.CanonicalCollection), so every spelling of a collection
+// designates the same table and a grant scoped to any of them holds for a key
+// written in any of them. An empty collection is the database as a whole and has
+// one spelling.
+func (s *Server) authorizeKey(w http.ResponseWriter, r *http.Request, db *core.Database, action, collection string) bool {
+	if s.authCfg == nil {
+		return true
 	}
+	return s.enforce(w, r, db.ID(), action, db.CollectionSpellings(collection)...)
+}
+
+// enforce writes the 403 response unless the request's principal holds action on
+// the database for one of the collections.
+func (s *Server) enforce(w http.ResponseWriter, r *http.Request, databaseID, action string, collections ...string) bool {
 	principal := auth.FromRequest(r)
-	for _, spelling := range spellings {
-		if principal.Allows(databaseID, action, spelling) {
+	for _, collection := range collections {
+		if principal.Allows(databaseID, action, collection) {
 			return true
 		}
 	}
+	writeError(w, http.StatusForbidden, "forbidden",
+		"token does not grant "+action+" on database "+databaseID)
 	return false
 }
 

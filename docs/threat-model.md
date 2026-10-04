@@ -41,8 +41,11 @@ engine.
 - **Capability scope** is checked on the root collection of the same parsed key the driver
   receives (for queries: the parent key's root collection). A collection that can be written in
   more than one way (a SQLite manifest key that is a quoted SQL identifier, and its public name)
-  has one canonical name, and a grant scoped to any spelling holds for a key written with any
-  of them. A nested key on `ingitdb` or `firestore` is a subcollection of the parent record in
+  has one canonical name. On the key routes (`/records`, `/read?key=`, `/batch`) a grant scoped
+  to any spelling holds for a key written with any of them, and the adapter is given the
+  canonical name; on the routes that give the adapter the collection as written (`/query`,
+  `/dtql`, the protected `PATCH`, `/access/evaluate`, `/access/evidence`) a grant is matched
+  against the spelling sent. A nested key on `ingitdb` or `firestore` is a subcollection of the parent record in
   every adapter call (Get, Set, Insert, Update, Delete), so the root collection is the one the
   key is written under.
 - **Names that reach SQL text** are a separate rule: `ValidateSegment` accepts quotes, spaces and
@@ -52,7 +55,7 @@ engine.
   in a write body must pass `core.ValidateFieldName` (400 `bad_request`); both refusals happen
   before the adapter is called. On `sqlite` the adapter also quotes every name it writes, so a
   declared name with a space or a hyphen reads and writes its own table; on `postgres` and
-  `mysql` it accepts a plain name only. The refusals above do not depend on that. See
+  `mysql` it accepts a plain ASCII name only. The refusals above do not depend on that. See
   "PostgreSQL engine" below.
 - **Storage paths** in manifests are resolved relative to the manifest file's directory;
   absolute paths in the manifest are accepted. The server does not sanitise manifest paths
@@ -180,8 +183,9 @@ process environment. ovdb opens exactly one connection pool per mounted
 Postgres database. Record *values* travel as statement parameters. The
 adapter (`dalgo2sql`) writes collection and field *names* into the statement
 text of key reads and writes and, with no reviewed quoting for PostgreSQL yet,
-accepts only a plain name (letters, digits and underscores, not starting with a
-digit), refusing any other before it sends a statement. ovdb does not rely on
+accepts only a plain ASCII name (ASCII letters, digits and underscores, not
+starting with a digit) for a collection, a field and a primary key, refusing any
+other before it sends a statement. ovdb does not rely on
 the adapter: before it calls the adapter, a key read or write is refused with 404
 `not_found` unless the key's collection is one the mount declared in the
 manifest's `schemas` when it opened (names match exactly, including case) and
@@ -226,8 +230,8 @@ from the environment variable named by `storage.mysql.dsn_env` (default
 `OVDB_MYSQL_DSN`), never from the manifest. Prefer a TLS-enabled DSN
 (`tls=true` or a custom TLS config) for non-local servers. The same limits
 apply as for PostgreSQL: values are bound as parameters, `dalgo2sql` writes
-collection and field names into the statement text and accepts only a plain name
-there, and ovdb refuses an undeclared collection (404), a field name that is not
+collection, field and primary-key names into the statement text and accepts only
+a plain ASCII name there, and ovdb refuses an undeclared collection (404), a field name that is not
 plain (400) and a write that names nothing to change (400) before the adapter is
 called, and answers structured queries with 501 `query_unsupported`.
 

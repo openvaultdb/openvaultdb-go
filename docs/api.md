@@ -122,6 +122,10 @@ GET /v1/databases/{db}/inferred-schema
 → 200 inferred schema catalogue JSON (see pkg/inferred); 404 for strict databases
 ```
 
+`collections` is the list the storage driver reports. On `postgres` that list holds views as
+well as tables, and the foreign keys shown for a table include those of a table with uuid, json
+or array columns.
+
 ### Records
 
 ```
@@ -161,27 +165,41 @@ by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
   the server does not recognise is held to the same rule). The key's collection must be one the
   database declared in its `schemas` when it opened. A SQLite manifest that keys a collection by
   its SQL-quoted identifier, `'"Order Details"'`, declares that one collection under two
-  spellings, the quoted form and the public name `Order Details`. Both spellings are the same
-  collection: they pass the same declared-collection check and the same capability check (a
-  grant scoped to either spelling covers a key written with either), and the adapter is given
-  the public name. Names match exactly, including case, on every SQL engine. Anything else is
-  `404 not_found`, for `GET`, `HEAD`, `PUT`, `POST`, `PATCH` and `DELETE` alike (a `DELETE` of
-  an undeclared collection is not the idempotent `204` of a declared one) and for a whole
-  `/batch`: one undeclared key refuses every op. The key rule above (`invalid_key`) is a
-  path-safety rule only and accepts quotes, spaces and semicolons, which is why the declaration
-  is the allow-list here.
+  spellings, the quoted form and the public name `Order Details`. Both spellings pass the same
+  declared-collection check. On the key routes (`/records/{key...}` except the protected
+  `PATCH`, `/read?key=`, `/batch`) they are the same collection: a grant scoped to either
+  spelling covers a key written in either, and the adapter is given the public name. The routes
+  that give the adapter the collection as written (`/query`, `/dtql`, the protected `PATCH`,
+  `/access/evaluate` and `/access/evidence`) match a grant against the spelling sent: a grant
+  on the public name covers the public name and a grant on the quoted spelling covers the
+  quoted spelling, and neither covers the other. A manifest in which one name would be a
+  spelling of two collections, or in which two keys that are one table declare different
+  fields, is refused when the database opens. Names match exactly, including case, on every SQL
+  engine. Anything else is `404 not_found`, for `GET`, `HEAD`, `PUT`, `POST`, `PATCH` and
+  `DELETE` alike (a `DELETE` of an undeclared collection is not the idempotent `204` of a
+  declared one) and for a whole `/batch`: one undeclared key refuses every op. The key rule
+  above (`invalid_key`) is a path-safety rule only and accepts quotes, spaces and semicolons,
+  which is why the declaration is the allow-list here.
 - **Names the adapter writes into a statement.** On `sqlite` the adapter quotes every collection,
   field and primary-key name it writes, so a declared name with a space or a hyphen (`Orders
   Status`, `order-items`) reads and writes its own table and no other (not `Orders`). On
-  `postgres` and `mysql` the adapter writes a name as given and accepts a plain one only
-  (letters, digits and underscores, not starting with a digit); it refuses any other before it
-  sends a statement, so a declared collection named otherwise cannot be read or written there yet
-  (`500 internal`; a `HEAD` answers `404`). Quoting on those two engines follows when their
-  dialects have been reviewed.
+  `postgres` and `mysql` the adapter writes a name as given and accepts only ASCII letters,
+  digits and underscores, not starting with a digit (`^[A-Za-z_][A-Za-z0-9_]*$`), for a
+  collection name, a field name and a primary-key name alike. It refuses any other before it
+  sends a statement, so a declared collection or field named otherwise (a name with a non-ASCII
+  letter or a `$` is one) cannot be read or written there yet: `500 internal`, and a `HEAD`
+  answers `404`. The field-name rule below is wider than this, so on those two engines a field
+  name can pass it and still be refused by the adapter. A manifest that declares such a name is
+  not refused when the database opens: that is left to the task that gives the two mounts a
+  reviewed dialect (OV-01). Quoting on those two engines follows then.
+- **Access policies and spellings.** The access-policy layer sees the collection under the name
+  the adapter is given. On `sqlite`, for a key read or write, that is the public name whichever
+  spelling the caller sent, so a policy path names the public name; a policy path written with
+  the quoted spelling does not match a key read or write.
 - **No subcollections on these engines.** A key with a parent (`customers/c1/orders/o1`) is
-  `404 not_found` whatever its segments, because the adapter maps it to a table no mount
-  registers and its delete names only the leaf table, which is not the collection the capability
-  was checked on.
+  `404 not_found` whatever its segments, because the adapter maps it to a recordset named after
+  the whole path (`<leaf>_<parent>`), which no mount registers and which is not the collection
+  the capability was checked on.
 - **Nested keys on the document engines.** `ingitdb` (the local and the GitHub-backed
   adapter) and `firestore` address a nested key as a subcollection of the parent record, in
   `GET`, `HEAD`, `PUT`, `POST`, `PATCH` and `DELETE` alike: `a/x/b/5` is document `5` of
@@ -190,7 +208,8 @@ by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
 - **Field names, on every engine.** Every field name a write carries that can become a column
   must pass the same rule as the names in `/query` and `/dtql`: dot-separated segments of
   letters, digits, underscore and hyphen (Unicode letters allowed), each optionally starting with
-  `$` before a letter (`$id`), at most 256 bytes, no `--`. That covers the top-level keys of
+  `$` before a letter (`$id`), at most 256 bytes, no `--`. (The adapter of `postgres` and `mysql`
+  accepts less; see above.) That covers the top-level keys of
   `data` in `PUT`, `POST` and batch `set`/`insert` ops, the `fieldName` of an update
   (`delete: true` included), the first segment of an update's `fieldPath`, and the same in a
   protected operation's columns and changes. Anything else is `400 bad_request`; an update that
@@ -214,7 +233,7 @@ by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
 - **A mount with access policies** answers an undeclared table on the protected `PATCH`,
   `/access/evaluate` (inspection and sampling) and `/access/evidence` as it answers a hidden
   record: `404 resource_unavailable`, redacted, with no message that names the table. Those
-  endpoints address a collection by its public name.
+  endpoints give the coordinator the collection as written.
 
 ### Update operation object
 

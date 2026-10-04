@@ -140,3 +140,42 @@ func TestSetOfNoColumnReachesDocumentEngines(t *testing.T) {
 		})
 	}
 }
+
+// TestBatchFollowsARecordWrittenWithNoData: whether a record exists is what the
+// batch leaves of it, whatever data it carries. A record an earlier op inserted
+// or set with no data exists, so a second insert of it conflicts and an update of
+// it applies; a record the batch deleted does not exist.
+func TestBatchFollowsARecordWrittenWithNoData(t *testing.T) {
+	key := record.NewKeyWithID("customers", "c1")
+	rename := []UpdateOp{{FieldName: "name", Value: "Bob"}}
+	for name, c := range map[string]struct {
+		absent bool
+		batch  []Op
+		want   error // nil: the batch is applied, in one transaction
+	}{
+		"inserted twice with no data":            {true, []Op{{Op: "insert", Key: key}, {Op: "insert", Key: key}}, ErrAlreadyExists},
+		"set with no data, then inserted":        {true, []Op{{Op: "set", Key: key}, {Op: "insert", Key: key}}, ErrAlreadyExists},
+		"inserted with no data, then updated":    {true, []Op{{Op: "insert", Key: key}, {Op: "update", Key: key, Updates: rename}}, nil},
+		"set with no data, then updated":         {true, []Op{{Op: "set", Key: key}, {Op: "update", Key: key, Updates: rename}}, nil},
+		"updated while absent":                   {true, []Op{{Op: "update", Key: key, Updates: rename}}, ErrUpdateOfMissingRecord},
+		"deleted, then updated":                  {false, []Op{{Op: "delete", Key: key}, {Op: "update", Key: key, Updates: rename}}, ErrUpdateOfMissingRecord},
+		"deleted, then inserted with no data":    {false, []Op{{Op: "delete", Key: key}, {Op: "insert", Key: key}}, nil},
+		"inserted with data, then updated":       {true, []Op{{Op: "insert", Key: key, Data: writeGuardPlain}, {Op: "update", Key: key, Updates: rename}}, nil},
+		"inserted while the record exists":       {false, []Op{{Op: "insert", Key: key, Data: writeGuardPlain}}, ErrAlreadyExists},
+		"updated while the record exists":        {false, []Op{{Op: "update", Key: key, Updates: rename}}, nil},
+		"inserted with no data while it exists":  {false, []Op{{Op: "insert", Key: key}}, ErrAlreadyExists},
+		"set with no data, deleted, then insert": {true, []Op{{Op: "set", Key: key}, {Op: "delete", Key: key}, {Op: "insert", Key: key}}, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			db, fake := writeGuardOpen(t, "sqlite", "customers")
+			fake.absent = c.absent
+			_, err := db.Apply(context.Background(), c.batch, "")
+			if c.want == nil && err != nil || c.want != nil && !errors.Is(err, c.want) {
+				t.Fatalf("got %v, want %v", err, c.want)
+			}
+			if wantTransactions := map[bool]int{true: 1, false: 0}[c.want == nil]; fake.transactions != wantTransactions {
+				t.Fatalf("transactions = %d, want %d", fake.transactions, wantTransactions)
+			}
+		})
+	}
+}

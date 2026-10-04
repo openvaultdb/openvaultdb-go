@@ -41,11 +41,10 @@ func (d *Database) isDocumentEngine() bool { return d.documentEngine }
 
 // GuardKey refuses, before any adapter call, a key the adapter of a SQL engine
 // cannot address safely: a key with a parent, because a SQL mount has no
-// subcollections (dalgo2sql maps such a key to a recordset named
-// <leaf>_<parent> that no mount registers, and its delete statement names only
-// the leaf table, so the capability checked on the root collection would not be
-// the table written), and a collection the database does not declare (see
-// GuardCollection). Document engines address nested keys natively, as a
+// subcollections (dalgo2sql maps such a key to a recordset named after the whole
+// path, <leaf>_<parent>, that no mount registers and that is not the root
+// collection the capability is checked on), and a collection the database does
+// not declare (see GuardCollection). Document engines address nested keys natively, as a
 // subcollection of the parent record, so they are not refused here and the
 // capability stays scoped by the root collection. A nil key names nothing and is
 // left to the caller. The error wraps ErrNotFound (HTTP 404 not_found).
