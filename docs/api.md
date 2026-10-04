@@ -21,7 +21,8 @@ small: just enough for DALgo-backed Sneat CRUD validation. Versioned under `/v1`
   - `422 schema_validation` — strict/partial mode validation failure
   - `400 invalid_key` — malformed or unsafe key, collection name or parent path
   - `400 bad_request` — malformed body/query; also a field name in a write body (or a query) that
-    is not a plain field name
+    is not a plain field name, and on an engine whose adapter builds SQL a write that names
+    nothing to change (see [Names the server accepts](#names-the-server-accepts))
   - `403 read_only` — server-wide read-only mode rejected a mutation
   - `500 internal` — unexpected server/engine error (details are logged server-side, not returned)
   - `501 not_supported` — operation not in MVP
@@ -158,21 +159,34 @@ by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
 
 - **Collections on engines whose adapter builds SQL** (`sqlite`, `postgres`, `mysql`; an engine
   the server does not recognise is held to the same rule). The key's collection must be one the
-  database declared in its `schemas` when it opened (a SQLite manifest that keys a collection by
-  its SQL-quoted identifier, `'"Order Details"'`, also declares the public name `Order Details`).
-  Names match exactly, including case, on every SQL engine. Anything else is `404 not_found`,
-  for `GET`, `HEAD`, `PUT`, `POST`, `PATCH` and `DELETE` alike (a `DELETE` of an undeclared
-  collection is not the idempotent `204` of a declared one) and for a whole `/batch`: one
-  undeclared key refuses every op. The key rule above (`invalid_key`) is a path-safety rule only
-  and accepts quotes, spaces and semicolons, which is why the declaration is the allow-list here.
-  The guard does not refuse a declared name that has a space or a hyphen in it; whether the key
-  read then succeeds depends on the adapter quoting names (SQL-0W), and on SQLite the quoted
-  identifier (`"Order Details"` with the quotes) is the form that reads.
+  database declared in its `schemas` when it opened. A SQLite manifest that keys a collection by
+  its SQL-quoted identifier, `'"Order Details"'`, declares that one collection under two
+  spellings, the quoted form and the public name `Order Details`. Both spellings are the same
+  collection: they pass the same declared-collection check and the same capability check (a
+  grant scoped to either spelling covers a key written with either), and the adapter is given
+  the public name. Names match exactly, including case, on every SQL engine. Anything else is
+  `404 not_found`, for `GET`, `HEAD`, `PUT`, `POST`, `PATCH` and `DELETE` alike (a `DELETE` of
+  an undeclared collection is not the idempotent `204` of a declared one) and for a whole
+  `/batch`: one undeclared key refuses every op. The key rule above (`invalid_key`) is a
+  path-safety rule only and accepts quotes, spaces and semicolons, which is why the declaration
+  is the allow-list here.
+- **Names the adapter writes into a statement.** On `sqlite` the adapter quotes every collection,
+  field and primary-key name it writes, so a declared name with a space or a hyphen (`Orders
+  Status`, `order-items`) reads and writes its own table and no other (not `Orders`). On
+  `postgres` and `mysql` the adapter writes a name as given and accepts a plain one only
+  (letters, digits and underscores, not starting with a digit); it refuses any other before it
+  sends a statement, so a declared collection named otherwise cannot be read or written there yet
+  (`500 internal`; a `HEAD` answers `404`). Quoting on those two engines follows when their
+  dialects have been reviewed.
 - **No subcollections on these engines.** A key with a parent (`customers/c1/orders/o1`) is
   `404 not_found` whatever its segments, because the adapter maps it to a table no mount
   registers and its delete names only the leaf table, which is not the collection the capability
-  was checked on. The document engines (`ingitdb`, `firestore`) keep the key rule alone and
-  address nested keys natively.
+  was checked on.
+- **Nested keys on the document engines.** `ingitdb` (the local and the GitHub-backed
+  adapter) and `firestore` address a nested key as a subcollection of the parent record, in
+  `GET`, `HEAD`, `PUT`, `POST`, `PATCH` and `DELETE` alike: `a/x/b/5` is document `5` of
+  subcollection `b` under record `x` of collection `a`, never a top-level collection `b`. The
+  key rule alone applies to them, and the capability is checked on the root collection (`a`).
 - **Field names, on every engine.** Every field name a write carries that can become a column
   must pass the same rule as the names in `/query` and `/dtql`: dot-separated segments of
   letters, digits, underscore and hyphen (Unicode letters allowed), each optionally starting with
@@ -180,14 +194,27 @@ by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
   `data` in `PUT`, `POST` and batch `set`/`insert` ops, the `fieldName` of an update
   (`delete: true` included), the first segment of an update's `fieldPath`, and the same in a
   protected operation's columns and changes. Anything else is `400 bad_request`; an update that
-  names no field is too. When a request breaks both rules, the collection wins (`404`).
+  names no field is too. Within one operation the collection is checked before the field
+  names, so a request that breaks both rules is `404`. In a batch the operations are checked in
+  order and the first one that fails decides the answer: an earlier operation with a bad field
+  name makes the whole batch `400`, even when a later one names an undeclared collection.
 - **Later segments of a `fieldPath`** are map keys. On the SQL engines they must pass the same
   rule. On `ingitdb` and `firestore` they are data and never reach SQL (Sneat's linkage writes
-  `["related", ext, collection, "id@spaceID"]`), so only a segment that is empty, blank or holds
-  a control character is `400 bad_request`.
+  `["related", ext, collection, "id@spaceID"]`), so only a blank segment (empty, or only white
+  space) or one that holds a control character is `400 bad_request`. A path with no segment at
+  all is `400 bad_request` on every engine.
+- **Empty writes on the SQL engines.** An update with no operation (an `update` op of `/batch`
+  whose `updates` is empty or absent; `PATCH` with an empty `updates` list is `400` on every
+  engine), and a `set` (`PUT`, batch `set`) that names no field but `id` for a record that
+  exists, give the adapter nothing to put in a statement and are `400 bad_request`; the batch
+  is refused whole and nothing is written. (The `set` rule depends on the record, so the server
+  reads it by key first, as it does before any write.) A `set` of no field for a record that
+  does not exist inserts a record that holds only its id (`204`), as `POST` with
+  `{"data":{}}` does (`201`).
 - **A mount with access policies** answers an undeclared table on the protected `PATCH`,
   `/access/evaluate` (inspection and sampling) and `/access/evidence` as it answers a hidden
-  record: `404 resource_unavailable`, redacted, with no message that names the table.
+  record: `404 resource_unavailable`, redacted, with no message that names the table. Those
+  endpoints address a collection by its public name.
 
 ### Update operation object
 

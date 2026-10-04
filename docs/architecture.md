@@ -106,7 +106,9 @@ columns. Declared schemas come from the manifest and are provisioned as
 tables at open. Strict-only in MVP because partial/schemaless need
 inferred-schema-driven column evolution (roadmap). The `id` column is treated
 as implicitly declared by validation, and declared boolean fields are coerced
-back from SQLite's 0/1 integers on reads.
+back from SQLite's 0/1 integers on reads. The adapter quotes every collection,
+field and primary-key name it writes, so a collection named with a space or a
+hyphen is an ordinary table (see "Names and queries on the SQL engines").
 
 ### Firestore
 
@@ -143,11 +145,17 @@ not rolled back on a later error in the same open.
 
 ### Names and queries on the SQL engines
 
-`dalgo2sql` binds record values as statement parameters but writes collection
-and field names into the statement text of key reads and writes (its fix is
-the `dalgo2sql` task SQL-0W), and the structured-query path of a PostgreSQL or
-MySQL mount has no reviewed dialect yet. ovdb does not depend on the adapter
-for either:
+`dalgo2sql` binds record values as statement parameters. It writes collection,
+field and primary-key names into the statement text of key reads and writes, and
+checks every one first: on `sqlite` (the one engine whose dialect has reviewed
+quoting) a name is written quoted, so a name with a space, a quote or a hyphen is
+an ordinary identifier and a declared `Orders Status` reads its own table, never
+`Orders`; on `postgres` and `mysql`, which open it with no reviewed dialect, a
+name must be a plain identifier (letters, digits and underscores, not starting
+with a digit) and any other is refused by the adapter without a statement being
+sent (a `500 internal`, or a `404` for `HEAD`). The structured-query path of a PostgreSQL or MySQL mount
+has no reviewed dialect yet either. ovdb does not depend on the adapter for
+either:
 
 - **Queries.** `/query` and `/dtql` are refused on `postgres` and `mysql` with
   `501 query_unsupported` before any query reaches the driver. They are not
@@ -162,14 +170,30 @@ for either:
   afterwards does not change it. Names match exactly, including case. The
   key-segment rule (`core.ValidateSegment`) is a path-safety check only and
   accepts quotes, spaces and semicolons, so the declaration is the allow-list.
-  `inGitDB` and Firestore keep the key-segment rule alone.
+  `inGitDB` and Firestore keep the key-segment rule alone: their adapters
+  address a nested key as a subcollection of the parent record, so the
+  capability is checked on the root collection.
+- **One name per collection.** A SQLite manifest may key a collection by its
+  SQL-quoted identifier (`"Order Details"` with the quotes). The collection is
+  then declared under two spellings, the quoted key and the public name, and the
+  public name is its canonical name (`core.Database.CanonicalCollection`): the
+  only form the adapter is given, since the adapter quotes a name itself. `Get`,
+  `Exists` and `Apply` rename the key before the adapter call, so the two
+  spellings of one row are one record in a batch, and the mount provisions the
+  table under the canonical name. A capability scoped to either spelling covers a
+  key written with either (`core.Database.CollectionSpellings`). The class of the
+  engine (a document engine or not) is recorded when the database opens, beside
+  the declared set, and is not read from the live manifest afterwards.
 - **Field names**, on every engine. The top-level keys of a write body, an
   update's `fieldName` and the first segment of its `fieldPath` pass
   `core.ValidateFieldName` (the rule `/query` and `/dtql` use) or the request
   is `400 bad_request` before the adapter is called. The later segments of a
   `fieldPath` are map keys: the same rule on the SQL engines, and on `inGitDB`
-  and Firestore only a non-empty, non-blank segment without control characters
+  and Firestore only a non-blank segment without control characters
   (Sneat's linkage writes `id@spaceID` keys there).
+- **Empty writes**, on the SQL engines. An `update` with no operation, and a
+  `set` that names no field but `id` for a record that exists, leave the adapter
+  nothing to put in a statement and are `400 bad_request` before the write.
 
 The guard sits in `core.Database` (`Get`, `Exists`, `Apply`), so every caller
 is covered; the protected `PATCH` and the authorization endpoints that read by

@@ -366,11 +366,30 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request, databaseID, a
 	if s.authCfg == nil {
 		return true
 	}
-	if auth.FromRequest(r).Allows(databaseID, action, collection) {
+	if s.principalAllows(r, databaseID, action, collection) {
 		return true
 	}
 	writeError(w, http.StatusForbidden, "forbidden",
 		"token does not grant "+action+" on database "+databaseID)
+	return false
+}
+
+// principalAllows reports whether the request's principal holds action on the
+// collection of the database. A collection can be written in more than one way
+// (core.Database.CollectionSpellings), and every spelling designates the same
+// table, so a grant scoped to any of them holds for a key written in any of
+// them. An empty collection is the database as a whole and has one spelling.
+func (s *Server) principalAllows(r *http.Request, databaseID, action, collection string) bool {
+	spellings := []string{collection}
+	if db := s.getDB(databaseID); db != nil {
+		spellings = db.CollectionSpellings(collection)
+	}
+	principal := auth.FromRequest(r)
+	for _, spelling := range spellings {
+		if principal.Allows(databaseID, action, spelling) {
+			return true
+		}
+	}
 	return false
 }
 

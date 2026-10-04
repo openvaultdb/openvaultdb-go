@@ -373,7 +373,8 @@ var linkagePath = []string{"related", "contactus", "contacts", "c1@space2"}
 var mapKeysOnlyDocumentEnginesAccept = []string{"c1@space2", "na me", `na"me`, "name;", "a--b", "a/b", "名前", "$id", "a.b", "name\u200b"}
 
 // blankOrControlSegments are refused on every engine: update.ByFieldPath
-// panics on an empty segment, and a control character is never a map key.
+// panics on a blank segment (empty, or only white space), and a control
+// character is never a map key.
 var blankOrControlSegments = []string{"", " ", "  ", "\t", "\n", "\u00a0", "name\x00", "na\nme", "na\tme", "\x7f", "a\u0085b"}
 
 func TestValidateFieldPath(t *testing.T) {
@@ -451,8 +452,9 @@ func TestLaterFieldPathSegmentsOnSQLEngines(t *testing.T) {
 // TestLaterFieldPathSegmentsOnDocumentEngines: segments after the first are map
 // keys and never reach SQL on ingitdb and firestore. Sneat's linkage writes
 // `id@spaceID` keys through dalgo2openvaultdb, so they stay accepted; a
-// segment that is empty, blank or carries a control character is refused
-// before the adapter (an empty one panics in update.ByFieldPath).
+// segment that is blank (empty, or only white space) or carries a control
+// character is refused before the adapter (update.ByFieldPath panics on a
+// blank one).
 func TestLaterFieldPathSegmentsOnDocumentEngines(t *testing.T) {
 	key := record.NewKeyWithID("customers", "c1")
 	for _, engine := range writeGuardDocumentEngines {
