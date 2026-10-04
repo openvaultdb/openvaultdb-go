@@ -75,6 +75,9 @@ func (d *Database) Execute(ctx context.Context, q Query) ([]Record, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err = q.validateFields(); err != nil {
+		return nil, err
+	}
 	collectionRef := dal.NewRootCollectionRef(q.Collection, "")
 	if parentKey != nil {
 		collectionRef = dal.NewCollectionRef(q.Collection, "", parentKey)
@@ -189,6 +192,9 @@ func validateDTQL(query dal.StructuredQuery) (string, error) {
 	if err := ValidateCollectionName(source.Name()); err != nil {
 		return "", err
 	}
+	if err := validateDTQLFields(query, 0); err != nil {
+		return "", err
+	}
 	return source.Name(), nil
 }
 
@@ -236,6 +242,9 @@ func (d *Database) StreamDTQLSnapshot(ctx context.Context, query dal.StructuredQ
 	}
 	if query.Limit() != 0 || query.Offset() != 0 {
 		return fmt.Errorf("%w: snapshot query requires limit and offset to be zero", ErrInvalidDTQL)
+	}
+	if err := d.guardQuery(); err != nil {
+		return err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
@@ -290,6 +299,11 @@ func (d *Database) executeDalQuery(ctx context.Context, query dal.StructuredQuer
 }
 
 func (d *Database) executeDalQueryOn(ctx context.Context, db dal.DB, query dal.StructuredQuery, collection string, keysOnly bool) ([]Record, error) {
+	// Single choke point for every structured read: no engine that is not
+	// cleared for queries (see queryEngines) is ever handed one.
+	if err := d.guardQuery(); err != nil {
+		return nil, err
+	}
 	reader, err := db.ExecuteQueryToRecordsReader(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query collection %q: %w", collection, err)
