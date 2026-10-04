@@ -49,6 +49,8 @@ type Server struct {
 	snapshotDir         string
 	snapshotDirErr      error
 	snapshotKey         [32]byte
+	queryLimits         QueryLimits // relational query limits; always normalized after New
+	queryGate           *queryGate
 }
 
 // Option configures the Server.
@@ -114,6 +116,9 @@ func New(version string, dbs map[string]*core.Database, opts ...Option) *Server 
 	s := &Server{version: version, dbs: dbs, inflight: map[*core.Database]*sync.WaitGroup{}, accessInstance: "local", logger: slog.Default()}
 	for _, opt := range opts {
 		opt(s)
+	}
+	if s.queryGate == nil {
+		s.setQueryLimits(DefaultQueryLimits())
 	}
 	s.snapshotDir, s.snapshotDirErr = prepareSnapshotDir()
 	if _, err := rand.Read(s.snapshotKey[:]); err != nil {
