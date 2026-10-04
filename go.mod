@@ -6,11 +6,11 @@ toolchain go1.27.0
 
 require (
 	cloud.google.com/go/firestore v1.24.0
-	github.com/dal-go/dalgo v0.88.0
+	github.com/dal-go/dalgo v0.89.1
 	github.com/dal-go/dalgo2firestore v0.10.3
 	github.com/dal-go/dalgo2mysql v0.2.2
 	github.com/dal-go/dalgo2postgres v0.2.2
-	github.com/dal-go/record v0.1.3
+	github.com/dal-go/record v0.1.4
 	github.com/ingitdb/dalgo2ingitdb v0.6.1
 	github.com/ingitdb/ingitdb-go/ingitdb v0.6.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -46,7 +46,7 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/stretchr/testify v1.12.1 // indirect
-	github.com/strongo/validation v0.0.13 // indirect
+	github.com/strongo/validation v0.0.15 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.70.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.70.0 // indirect
@@ -82,7 +82,7 @@ require (
 	github.com/ingr-io/ingr-go v0.0.2 // indirect
 	github.com/mschoch/smat v0.2.0 // indirect
 	github.com/pelletier/go-toml/v2 v2.4.3 // indirect
-	github.com/strongo/random v0.0.2 // indirect
+	github.com/strongo/random v0.0.3 // indirect
 	go.starlark.net v0.0.0-20260708150628-5395d018f003 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 )
