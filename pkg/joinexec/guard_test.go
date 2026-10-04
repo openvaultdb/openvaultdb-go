@@ -3,6 +3,8 @@ package joinexec
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
 
@@ -98,6 +100,34 @@ func TestGuardCollectClassifiesReaderErrors(t *testing.T) {
 	}
 	if budget := mustBudget(t, err); budget.Name != BudgetJoinRows || budget.Route != RouteDatabase {
 		t.Fatalf("budget = %+v", budget)
+	}
+}
+
+// TestGuardCollectEndsOnlyOnTheEndOfTheStream: Collect reads dal.ErrNoMoreRecords
+// (and a bare io.EOF, which a reader no leaf guards, such as the database route's,
+// returns) as the end. An error that merely wraps io.EOF is a failed read: no rows.
+func TestGuardCollectEndsOnlyOnTheEndOfTheStream(t *testing.T) {
+	for name, end := range map[string]error{
+		"bare io.EOF":   io.EOF,
+		"limit reached": dal.ErrLimitReached,
+	} {
+		t.Run(name, func(t *testing.T) {
+			guard := NewGuard(allowAll, Limits{})
+			records, err := guard.Collect(context.Background(), &stubReader{rows: makeRows("A", 2, "x"), err: end}, RouteDatabase)
+			if err != nil || len(records) != 2 {
+				t.Fatalf("records=%d err=%v", len(records), err)
+			}
+		})
+	}
+	wrapped := fmt.Errorf("x: %w", io.EOF)
+	guard := NewGuard(allowAll, Limits{})
+	reader := &stubReader{rows: makeRows("A", 2, "x"), err: wrapped}
+	records, err := guard.Collect(context.Background(), reader, RouteDatabase)
+	if records != nil || !errors.Is(err, wrapped) {
+		t.Fatalf("records=%v err=%v: a failure that wraps io.EOF is not an end of stream", records, err)
+	}
+	if reader.closed != 1 {
+		t.Fatalf("reader closed %d times", reader.closed)
 	}
 }
 

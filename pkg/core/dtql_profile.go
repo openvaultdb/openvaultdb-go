@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/dal-go/dalgo/dal"
 	"github.com/openvaultdb/openvaultdb-go/pkg/manifest"
@@ -21,10 +22,17 @@ const (
 
 // Relational profile bounds.
 const (
+	// relationalMaxLimit and relationalMaxOffset cap the outermost query only:
+	// they bound the answer. A nested read is bounded by the request's read
+	// budget (see pkg/joinexec), so a top-N derived source is a valid shape.
 	relationalMaxLimit         = 1000
 	relationalMaxOffset        = 10000
 	relationalMaxSources       = 8
 	relationalMaxSubqueryDepth = 4
+	// relationalMaxNesting bounds how deep conditions and expressions nest,
+	// counted across subqueries. It protects the walk itself; the query guard's
+	// own, tighter limit (maxQueryTreeDepth) applies afterwards.
+	relationalMaxNesting = 64
 )
 
 // ProfileSource is one collection read a query makes. A query that reads the
@@ -57,14 +65,24 @@ type Profile struct {
 // outside both. It is a security boundary: a shape it does not recognise is
 // refused with ErrInvalidDTQL, never passed through.
 //
+// The relational rules are checked for every document, single-collection ones
+// included, over the whole query tree and the subqueries in it. A document that
+// ParseDTQL accepts is therefore refused here when it carries a money
+// configuration, the one such shape: a schema-qualified root, a scan root and a
+// database on the root are refused by ParseDTQL as well. Names are checked next,
+// with the query guard's rules (see validateRelationalNames), so a name that
+// ParseDTQL refuses is not an accepted relational document either.
+//
 // A query is single-collection only when validateDTQL accepts it and it also
-// names no database and has no subquery anywhere (validateDTQL does not look
-// at conditions, so a subquery in WHERE would otherwise hide a second source).
-// Every other query must satisfy the relational rules, which are checked over
-// the whole query tree, subqueries included.
+// names no database and has no subquery anywhere (validateDTQL checks names
+// inside conditions but does not refuse a subquery there, so a subquery in
+// WHERE would otherwise hide a second source). Every other query is relational.
 func ClassifyDTQL(query dal.StructuredQuery) (Profile, error) {
 	walk := &profileWalk{}
-	if err := walk.query(query, "", 0); err != nil {
+	if err := walk.query(query, 0); err != nil {
+		return Profile{}, err
+	}
+	if err := validateRelationalNames(query); err != nil {
 		return Profile{}, err
 	}
 	hasSubquery := dal.HasSubquery(query)
@@ -84,173 +102,271 @@ func ClassifyDTQL(query dal.StructuredQuery) (Profile, error) {
 	}, nil
 }
 
+// pathSegment is one step of a DTQL path: a key, with the index of the array
+// element when the step enters one ("joins[0]").
+type pathSegment struct {
+	key   string
+	index int // -1 when the step is not an array element
+}
+
 // profileWalk collects sources and enforces the relational rules in one pass
 // over the exported dal tree.
+//
+// It tracks where it is as a stack of path segments, one per level, and joins
+// them into text only when a rule refuses. The walk stops at its first refusal,
+// so the levels it unwinds through never pop their segments; nothing reads the
+// path after a refusal. A successful walk therefore holds one segment per level
+// of nesting, not a longer copy of the path at every level.
 type profileWalk struct {
 	sources []ProfileSource
+	path    []pathSegment
+	// nest is the number of conditions and expressions currently being walked
+	// above this point.
+	nest int
 }
 
-func relationalRefusal(rule, path, detail string) error {
-	if path == "" {
-		path = "$"
+func (w *profileWalk) push(key string) { w.path = append(w.path, pathSegment{key: key, index: -1}) }
+
+func (w *profileWalk) pushIndex(key string, i int) {
+	w.path = append(w.path, pathSegment{key: key, index: i})
+}
+
+func (w *profileWalk) pop() { w.path = w.path[:len(w.path)-1] }
+
+// pathText renders the current path as a DTQL path, "$" for the query root.
+func (w *profileWalk) pathText() string {
+	if len(w.path) == 0 {
+		return "$"
 	}
-	return fmt.Errorf("%w: relational profile: %s at %s: %s", ErrInvalidDTQL, rule, path, detail)
-}
-
-func joinPath(path, suffix string) string {
-	if path == "" {
-		return suffix
+	var b strings.Builder
+	for i, segment := range w.path {
+		if i > 0 {
+			b.WriteByte('.')
+		}
+		b.WriteString(segment.key)
+		if segment.index >= 0 {
+			fmt.Fprintf(&b, "[%d]", segment.index)
+		}
 	}
-	return path + "." + suffix
+	return b.String()
 }
 
-func indexPath(path string, i int) string { return fmt.Sprintf("%s[%d]", path, i) }
+// refuse returns the refusal of rule at the current path.
+func (w *profileWalk) refuse(rule, detail string) error {
+	return fmt.Errorf("%w: relational profile: %s at %s: %s", ErrInvalidDTQL, rule, w.pathText(), detail)
+}
+
+// refuseWith is refuse for a rule that another rule already states: the result
+// wraps cause as well as ErrInvalidDTQL, so a caller that tells the two apart
+// (a collection name is 400 invalid_key) still can.
+func (w *profileWalk) refuseWith(rule string, cause error) error {
+	return fmt.Errorf("%w: relational profile: %s at %s: %w", ErrInvalidDTQL, rule, w.pathText(), cause)
+}
+
+// enter counts one more condition or expression level and refuses past the
+// nesting cap. A successful level ends with w.nest--.
+func (w *profileWalk) enter() error {
+	w.nest++
+	if w.nest > relationalMaxNesting {
+		return w.refuse("nesting", fmt.Sprintf("conditions and expressions nest at most %d levels", relationalMaxNesting))
+	}
+	return nil
+}
 
 // query checks one query and everything nested in it. depth is the number of
-// subquery levels above it, path the DTQL path of the query ("" for the root).
-func (w *profileWalk) query(query dal.StructuredQuery, path string, depth int) error {
+// subquery levels above it; the path is where the query sits.
+func (w *profileWalk) query(query dal.StructuredQuery, depth int) error {
 	if query == nil {
-		return relationalRefusal("query-shape", path, "a query is required")
+		return w.refuse("query-shape", "a query is required")
 	}
 	if depth > relationalMaxSubqueryDepth {
-		return relationalRefusal("subquery-depth", path, fmt.Sprintf("subqueries nest at most %d levels", relationalMaxSubqueryDepth))
+		return w.refuse("subquery-depth", fmt.Sprintf("subqueries nest at most %d levels", relationalMaxSubqueryDepth))
 	}
 	if query.StartFrom() != "" || query.StartAfter() != "" {
-		return relationalRefusal("cursor", path, "cursors are not supported")
+		return w.refuse("cursor", "cursors are not supported")
 	}
 	if configured, ok := query.(interface{ Money() *dal.MoneyConfig }); ok && configured.Money() != nil {
-		return relationalRefusal("money", path, "money arithmetic is not supported")
+		return w.refuse("money", "money arithmetic is not supported")
 	}
-	if limit := query.Limit(); limit < 0 || limit > relationalMaxLimit {
-		return relationalRefusal("limit", path, fmt.Sprintf("limit must be 0..%d", relationalMaxLimit))
+	// The caps bound the answer, so they apply to the outermost query only; a
+	// negative number is refused at every level.
+	if limit := query.Limit(); limit < 0 || (depth == 0 && limit > relationalMaxLimit) {
+		if depth == 0 {
+			return w.refuse("limit", fmt.Sprintf("limit must be 0..%d", relationalMaxLimit))
+		}
+		return w.refuse("limit", "limit must not be negative")
 	}
-	if offset := query.Offset(); offset < 0 || offset > relationalMaxOffset {
-		return relationalRefusal("offset", path, fmt.Sprintf("offset must be 0..%d", relationalMaxOffset))
+	if offset := query.Offset(); offset < 0 || (depth == 0 && offset > relationalMaxOffset) {
+		if depth == 0 {
+			return w.refuse("offset", fmt.Sprintf("offset must be 0..%d", relationalMaxOffset))
+		}
+		return w.refuse("offset", "offset must not be negative")
 	}
-	if err := w.from(query.From(), joinPath(path, "from"), depth); err != nil {
+	w.push("from")
+	if err := w.from(query.From(), depth); err != nil {
 		return err
 	}
-	if err := w.condition(query.Where(), joinPath(path, "where"), depth); err != nil {
+	w.pop()
+	w.push("where")
+	if err := w.condition(query.Where(), depth); err != nil {
 		return err
 	}
+	w.pop()
 	for i, expression := range query.GroupBy() {
-		if err := w.expression(expression, indexPath(joinPath(path, "groupBy"), i), depth); err != nil {
+		w.pushIndex("groupBy", i)
+		if err := w.expression(expression, depth); err != nil {
 			return err
 		}
+		w.pop()
 	}
-	if err := w.condition(query.Having(), joinPath(path, "having"), depth); err != nil {
+	w.push("having")
+	if err := w.condition(query.Having(), depth); err != nil {
 		return err
 	}
+	w.pop()
 	for i, order := range query.OrderBy() {
-		orderPath := indexPath(joinPath(path, "orderBy"), i)
+		w.pushIndex("orderBy", i)
 		if order == nil {
-			return relationalRefusal("expression-shape", orderPath, "an ordering expression is required")
+			return w.refuse("expression-shape", "an ordering expression is required")
 		}
-		if err := w.expression(order.Expression(), orderPath, depth); err != nil {
+		if err := w.expression(order.Expression(), depth); err != nil {
 			return err
 		}
+		w.pop()
 	}
 	for i, column := range query.Columns() {
 		if column.Wildcard != nil && column.Expression == nil {
 			continue
 		}
-		if err := w.expression(column.Expression, indexPath(joinPath(path, "columns"), i), depth); err != nil {
+		w.pushIndex("columns", i)
+		if err := w.expression(column.Expression, depth); err != nil {
 			return err
 		}
+		w.pop()
 	}
 	return nil
 }
 
 // from checks a relation tree: its base source, then each join's relation
 // tree and ON conditions.
-func (w *profileWalk) from(from dal.FromSource, path string, depth int) error {
+func (w *profileWalk) from(from dal.FromSource, depth int) error {
 	if from == nil || from.Base() == nil {
-		return relationalRefusal("query-shape", path, "a source is required")
+		return w.refuse("query-shape", "a source is required")
 	}
-	if err := w.source(from.Base(), path, depth); err != nil {
+	if err := w.source(from.Base(), depth); err != nil {
 		return err
 	}
 	for i, join := range from.Joins() {
-		joinAt := indexPath(joinPath(path, "joins"), i)
+		w.pushIndex("joins", i)
 		if join.JoinType() != dal.JoinInner && join.JoinType() != dal.JoinLeft {
-			return relationalRefusal("join-type", joinAt, fmt.Sprintf("only inner and left joins are supported, not %s", join.JoinType()))
+			return w.refuse("join-type", fmt.Sprintf("only inner and left joins are supported, not %s", join.JoinType()))
 		}
 		child := join.From()
 		if child == nil {
 			child = dal.From(join.RecordsetSource)
 		}
-		if err := w.from(child, joinPath(joinAt, "from"), depth); err != nil {
+		w.push("from")
+		if err := w.from(child, depth); err != nil {
 			return err
 		}
+		w.pop()
 		for j, on := range join.On() {
-			if err := w.condition(on, indexPath(joinPath(joinAt, "on"), j), depth); err != nil {
+			w.pushIndex("on", j)
+			if err := w.condition(on, depth); err != nil {
 				return err
 			}
+			w.pop()
 		}
+		w.pop()
 	}
 	return nil
 }
 
 // source checks one relation: a root collection, or a derived query.
-func (w *profileWalk) source(source dal.RecordsetSource, path string, depth int) error {
+func (w *profileWalk) source(source dal.RecordsetSource, depth int) error {
 	switch value := source.(type) {
 	case dal.CollectionRef:
-		return w.collection(value, path)
+		return w.collection(value)
 	case dal.CollectionGroupRef:
-		return relationalRefusal("collection-group", path, "collection groups are not supported")
+		return w.refuse("collection-group", "collection groups are not supported")
 	case dal.QuerySource:
-		return w.query(value.Query(), joinPath(path, "query"), depth+1)
+		w.push("query")
+		if err := w.query(value.Query(), depth+1); err != nil {
+			return err
+		}
+		w.pop()
+		return nil
 	default:
-		return relationalRefusal("source-shape", path, fmt.Sprintf("unsupported source type %T", source))
+		return w.refuse("source-shape", fmt.Sprintf("unsupported source type %T", source))
 	}
 }
 
-func (w *profileWalk) collection(ref dal.CollectionRef, path string) error {
+func (w *profileWalk) collection(ref dal.CollectionRef) error {
 	if ref.Parent() != nil {
-		return relationalRefusal("parent-source", path, "only root collections are supported")
+		return w.refuse("parent-source", "only root collections are supported")
 	}
 	// The access layer treats a schema-qualified source as an opaque
 	// resource, so collection policies would not match it.
 	if ref.Schema() != "" {
-		return relationalRefusal("schema", path, "schema-qualified sources are not supported")
+		return w.refuse("schema", "schema-qualified sources are not supported")
 	}
 	if ref.ScanLimit() != 0 || len(ref.ScanOrders()) != 0 {
-		return relationalRefusal("scan", path, "scan bounds are not supported")
+		return w.refuse("scan", "scan bounds are not supported")
 	}
 	if err := ValidateCollectionName(ref.Name()); err != nil {
-		return relationalRefusal("collection-name", path, err.Error())
+		return w.refuseWith("collection-name", err)
 	}
 	if database := ref.Database(); database != "" {
 		if err := manifest.ValidateID(database); err != nil {
-			return relationalRefusal("database-id", path, err.Error())
+			return w.refuse("database-id", err.Error())
 		}
 	}
 	if len(w.sources) >= relationalMaxSources {
-		return relationalRefusal("source-count", path, fmt.Sprintf("at most %d sources are supported", relationalMaxSources))
+		return w.refuse("source-count", fmt.Sprintf("at most %d sources are supported", relationalMaxSources))
 	}
 	w.sources = append(w.sources, ProfileSource{Database: ref.Database(), Collection: ref.Name(), Alias: ref.Alias()})
 	return nil
 }
 
 // condition checks a condition tree. A nil condition is an absent clause.
-func (w *profileWalk) condition(condition dal.Condition, path string, depth int) error {
-	switch value := condition.(type) {
-	case nil:
+func (w *profileWalk) condition(condition dal.Condition, depth int) error {
+	if condition == nil {
 		return nil
+	}
+	if err := w.enter(); err != nil {
+		return err
+	}
+	if err := w.conditionNode(condition, depth); err != nil {
+		return err
+	}
+	w.nest--
+	return nil
+}
+
+func (w *profileWalk) conditionNode(condition dal.Condition, depth int) error {
+	switch value := condition.(type) {
 	case dal.Comparison:
-		if err := w.expression(value.Left, joinPath(path, "left"), depth); err != nil {
+		w.push("left")
+		if err := w.expression(value.Left, depth); err != nil {
 			return err
 		}
-		return w.expression(value.Right, joinPath(path, "right"), depth)
+		w.pop()
+		w.push("right")
+		if err := w.expression(value.Right, depth); err != nil {
+			return err
+		}
+		w.pop()
+		return nil
 	case dal.GroupCondition:
 		for i, child := range value.Conditions() {
-			childPath := indexPath(joinPath(path, groupKey(value.Operator())), i)
+			w.pushIndex(groupKey(value.Operator()), i)
 			if child == nil {
-				return relationalRefusal("condition-shape", childPath, "a condition is required")
+				return w.refuse("condition-shape", "a condition is required")
 			}
-			if err := w.condition(child, childPath, depth); err != nil {
+			if err := w.condition(child, depth); err != nil {
 				return err
 			}
+			w.pop()
 		}
 		return nil
 	case dal.IsNullCondition:
@@ -258,15 +374,27 @@ func (w *profileWalk) condition(condition dal.Condition, path string, depth int)
 		if value.Negated() {
 			key = "isNotNull"
 		}
-		return w.expression(value.Operand(), joinPath(path, key), depth)
+		w.push(key)
+		if err := w.expression(value.Operand(), depth); err != nil {
+			return err
+		}
+		w.pop()
+		return nil
 	case dal.ExistsCondition:
 		key := "exists"
 		if value.Negated() {
 			key = "notExists"
 		}
-		return w.query(value.Query(), joinPath(joinPath(path, key), "query"), depth+1)
+		w.push(key)
+		w.push("query")
+		if err := w.query(value.Query(), depth+1); err != nil {
+			return err
+		}
+		w.pop()
+		w.pop()
+		return nil
 	default:
-		return relationalRefusal("condition-shape", path, fmt.Sprintf("unsupported condition type %T", condition))
+		return w.refuse("condition-shape", fmt.Sprintf("unsupported condition type %T", condition))
 	}
 }
 
@@ -278,27 +406,56 @@ func groupKey(operator dal.Operator) string {
 }
 
 // expression checks an expression tree. Expressions are never absent.
-func (w *profileWalk) expression(expression dal.Expression, path string, depth int) error {
+func (w *profileWalk) expression(expression dal.Expression, depth int) error {
+	if err := w.enter(); err != nil {
+		return err
+	}
+	if err := w.expressionNode(expression, depth); err != nil {
+		return err
+	}
+	w.nest--
+	return nil
+}
+
+func (w *profileWalk) expressionNode(expression dal.Expression, depth int) error {
 	switch value := expression.(type) {
 	case dal.FieldRef, dal.Constant, dal.Param, dal.Array:
 		return nil
 	case dal.StarExpression:
 		return nil
 	case dal.BinaryExpression:
-		if err := w.expression(value.Left, joinPath(joinPath(path, "binary"), "left"), depth); err != nil {
+		w.push("binary")
+		w.push("left")
+		if err := w.expression(value.Left, depth); err != nil {
 			return err
 		}
-		return w.expression(value.Right, joinPath(joinPath(path, "binary"), "right"), depth)
+		w.pop()
+		w.push("right")
+		if err := w.expression(value.Right, depth); err != nil {
+			return err
+		}
+		w.pop()
+		w.pop()
+		return nil
 	case dal.AggregateFunc:
+		w.push("aggregate")
 		for i, arg := range value.FuncArgs() {
-			if err := w.expression(arg, indexPath(joinPath(joinPath(path, "aggregate"), "args"), i), depth); err != nil {
+			w.pushIndex("args", i)
+			if err := w.expression(arg, depth); err != nil {
 				return err
 			}
+			w.pop()
 		}
+		w.pop()
 		return nil
 	case dal.QueryExpression:
-		return w.query(value.Query(), joinPath(path, "query"), depth+1)
+		w.push("query")
+		if err := w.query(value.Query(), depth+1); err != nil {
+			return err
+		}
+		w.pop()
+		return nil
 	default:
-		return relationalRefusal("expression-shape", path, fmt.Sprintf("unsupported expression type %T", expression))
+		return w.refuse("expression-shape", fmt.Sprintf("unsupported expression type %T", expression))
 	}
 }
