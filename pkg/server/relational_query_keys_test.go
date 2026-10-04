@@ -68,6 +68,38 @@ func TestRelationalQueryKeysUseAdapterID(t *testing.T) {
 		}
 	}
 	assertKey(result)
+
+	// The reader must carry identity in a hidden helper when the caller
+	// projects it away, without exposing that helper in the result data.
+	projected := "from: {name: 'Order Details'}\ncolumns: [{field: first}]\n"
+	response, err = http.Get(endpoint + "?q=" + url.QueryEscape(projected))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var projectedResult map[string]any
+	decodeJSON(t, response, &projectedResult)
+	assertProjected := func(result map[string]any) {
+		t.Helper()
+		records := result["records"].([]any)
+		if len(records) != 1 {
+			t.Fatalf("records: %#v", result)
+		}
+		row := records[0].(map[string]any)
+		if row["key"] != "Order Details/composite-10248-11" {
+			t.Fatalf("projected query key must use adapter ID: %#v", row)
+		}
+		data := row["data"].(map[string]any)
+		if len(data) != 1 || data["first"] != float64(10248) {
+			t.Fatalf("projection should expose only first and no identity helper: %#v", data)
+		}
+	}
+	assertProjected(projectedResult)
+	projectedStatus, projectedPage := pagedDTQL(t, endpoint, projected, 1, "")
+	if projectedStatus != http.StatusOK {
+		t.Fatalf("projected paged status: %d %#v", projectedStatus, projectedPage)
+	}
+	assertProjected(projectedPage)
+
 	status, page := pagedDTQL(t, endpoint, doc, 1, "")
 	if status != http.StatusOK {
 		t.Fatalf("paged status: %d %#v", status, page)
