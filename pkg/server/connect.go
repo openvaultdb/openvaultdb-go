@@ -98,11 +98,13 @@ func (s *Server) handleWellKnown(w http.ResponseWriter, r *http.Request) {
 		origin := s.humanOrigin(r)
 		databases := make([]map[string]any, 0)
 		for _, id := range s.databaseIDs() {
+			db := s.getDB(id)
+			canQuery := db != nil && db.CanQuery()
 			databases = append(databases, map[string]any{
 				"id":           id,
 				"url":          origin + humanDatabasePath(id),
 				"apiUrl":       origin + "/v1/databases/" + url.PathEscape(id),
-				"capabilities": map[string]bool{"read": true, "query": true, "dtql": true, "write": !s.readOnly},
+				"capabilities": map[string]bool{"read": true, "query": canQuery, "dtql": canQuery, "write": !s.readOnly},
 			})
 		}
 		doc["databases"] = databases

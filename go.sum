@@ -38,8 +38,12 @@ github.com/dal-go/dalgo2postgres v0.2.2 h1:Da7M8wEXrmOhrqadZ5ogRX+vaqpnmSgVPmhhD
 github.com/dal-go/dalgo2postgres v0.2.2/go.mod h1:D58B4ilD8PmhEmOHnQ16gipZunqJrnFT1ODpqqBxYZE=
 github.com/dal-go/dalgo2sql v0.18.0 h1:46KOcygnP6zyCxnwLpNO0vbIrbURlhrFcKMoj3ax/Yg=
 github.com/dal-go/dalgo2sql v0.18.0/go.mod h1:EUVw/qhbVDUguSgoVnwhRL6zj8951xgYMNY03POY6VI=
+github.com/dal-go/dalgo2sql v0.19.3 h1:7qb83rnHDCruVrWAONm/LYL7sJTW9IX4/hxUf6KxIAs=
+github.com/dal-go/dalgo2sql v0.19.3/go.mod h1:/WI/pEeJx+nUS8Yo+UugLN/1QXz2IfUiTYyn7fhoCv0=
 github.com/dal-go/dalgo2sqlite v0.2.0 h1:1eOs7wRaAONN7R33sZqpuOylA7ECqVxOWKuY8sH6QcQ=
 github.com/dal-go/dalgo2sqlite v0.2.0/go.mod h1:+dmY5iiqm1WhBvuuUfyd+M8coV0eqNyTgR3eJeqtmqM=
+github.com/dal-go/dalgo2sqlite v0.2.3 h1:iev3CYdLE5F+ejnIdv9SZZmzSaaCj70E3ulrIJMDI1Y=
+github.com/dal-go/dalgo2sqlite v0.2.3/go.mod h1:P9k6p7FcAUVKfrrCs7y8YQRead/B5zTe8q9nFoXQPZ0=
 github.com/dal-go/record v0.1.3 h1:K85k/kSX08lTefMiMmPpC12nmCY2TVJk7+ZyC5PD9XU=
 github.com/dal-go/record v0.1.3/go.mod h1:quwsVJTT0f6y3Mhx+yHpTobY7luX1M6kyO6fdJ/AFYE=
 github.com/dal-go/record v0.1.4 h1:21IJNlUASNw9TytcB5V5a2jHQKa1pycr//dGvj8zNH8=

@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"database/sql"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 	"github.com/openvaultdb/openvaultdb-go/pkg/mount"
 	"github.com/openvaultdb/openvaultdb-go/pkg/server"
+	_ "modernc.org/sqlite"
 )
 
 const sqliteMountManifest = `
@@ -160,6 +162,58 @@ func TestMount_RejectsDuplicateID(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET remounted database: status %d", resp.StatusCode)
+	}
+}
+
+func TestSQLiteMountQuotesReservedFieldIdentifier(t *testing.T) {
+	const manifestYAML = `
+database:
+  id: reserved_names
+  schema_mode: strict
+storage:
+  engine: sqlite
+  path: ./reserved.sqlite
+schemas:
+  collections:
+    widgets:
+      fields:
+        Primary: {type: integer}
+`
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "reserved.yaml")
+	if err := os.WriteFile(manifestPath, []byte(manifestYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	db, err := mount.File(manifestPath)
+	if err != nil {
+		t.Fatalf("mount SQLite schema with native field Primary: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	path := filepath.Join(dir, "reserved.sqlite")
+	sqlDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	if _, err := sqlDB.Exec(`INSERT INTO widgets (id, "Primary") VALUES (?, ?)`, "widget-1", 7); err != nil {
+		t.Fatalf("seed native field Primary: %v", err)
+	}
+
+	key := record.NewKeyWithID("widgets", "widget-1")
+	data, err := db.Get(t.Context(), key)
+	if err != nil {
+		t.Fatalf("read native field Primary: %v", err)
+	}
+	if data["Primary"] != int64(7) && data["Primary"] != 7 {
+		t.Fatalf("data.Primary = %v (%T), want integer 7", data["Primary"], data["Primary"])
+	}
+	rows, err := db.Execute(t.Context(), core.Query{Collection: "widgets", Limit: 1})
+	if err != nil {
+		t.Fatalf("query native field Primary: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Data["Primary"] != int64(7) && rows[0].Data["Primary"] != 7 {
+		t.Fatalf("query rows = %#v, want one row with Primary=7", rows)
 	}
 }
 
