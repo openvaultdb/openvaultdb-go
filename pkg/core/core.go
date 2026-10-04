@@ -61,6 +61,11 @@ type Database struct {
 	coordinator      *access.EnforcementCoordinator
 	cat              *inferred.Catalogue // nil in strict mode
 
+	// declared is the collections the mount declared when it opened, the
+	// allow-list of key reads and writes on an engine whose adapter builds SQL
+	// (see GuardCollection). A Database not built by Open declares nothing.
+	declared map[string]struct{}
+
 	// afterWrite, when set, runs after each successfully applied write batch
 	// (e.g. git push for inGitDB-backed databases). A returned error is
 	// reported to the client, but the batch itself is already applied.
@@ -115,7 +120,7 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 	if !supported {
 		return nil, &ModeCompatibilityError{Engine: m.Storage.Engine, Requested: mode, Supported: supportedModes}
 	}
-	d := &Database{Manifest: m, db: db, modes: supportedModes, policyController: controller}
+	d := &Database{Manifest: m, db: db, modes: supportedModes, policyController: controller, declared: declaredCollections(m)}
 	// Retain the raw driver's Close: protected/secured wrappers installed
 	// below replace d.db but share the driver's underlying handle.
 	if closer, ok := db.(io.Closer); ok {
@@ -210,8 +215,13 @@ func (d *Database) InferredSnapshot() *inferred.Snapshot {
 	return d.cat.Snapshot()
 }
 
-// Get returns record data or ErrNotFound.
+// Get returns record data or ErrNotFound. A collection the database does not
+// declare is ErrNotFound on an engine whose adapter builds SQL, without an
+// adapter call (GuardKey).
 func (d *Database) Get(ctx context.Context, key *record.Key) (map[string]any, error) {
+	if err := d.GuardKey(key); err != nil {
+		return nil, err
+	}
 	data := map[string]any{}
 	rec := record.NewRecordWithData(key, data)
 	if err := d.db.Get(ctx, rec); err != nil {
@@ -264,8 +274,12 @@ func (d *Database) coerceToSchema(collection string, data map[string]any) map[st
 	return data
 }
 
-// Exists reports whether the record exists.
+// Exists reports whether the record exists. Like Get, it refuses an undeclared
+// collection on a SQL engine before the adapter is called.
 func (d *Database) Exists(ctx context.Context, key *record.Key) (bool, error) {
+	if err := d.GuardKey(key); err != nil {
+		return false, err
+	}
 	return d.db.Exists(ctx, key)
 }
 
@@ -362,6 +376,11 @@ type UpdateOp struct {
 // inside one dal.RunReadwriteTransaction — for inGitDB that is at most one
 // git commit per batch, with message as the commit message.
 func (d *Database) Apply(ctx context.Context, ops []Op, message string) (int, error) {
+	// Refuse the whole batch before the first adapter call: the validation
+	// below reads every key from the driver.
+	if err := d.guardWrite(ops); err != nil {
+		return 0, err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 

@@ -29,7 +29,10 @@ reads, writes, updates and queries through to the driver natively:
 - queries: wire JSON → `dal.StructuredQuery` builder → the driver's own query
   evaluator; **DTQL** documents (dalgo's native lossless YAML serialization of
   `dal.StructuredQuery`) pass through via `POST /v1/databases/{db}/dtql` —
-  ovdb's job there is only routing/auth, never query evaluation;
+  ovdb's job there is only routing/auth, never query evaluation. Structured
+  queries run on SQLite, inGitDB and Firestore only: a PostgreSQL or MySQL
+  mount is refused them with `501 query_unsupported` until a reviewed query
+  compiler lands (see "Names and queries on the SQL engines" below);
 - parent-scoped subcollection queries (e.g. Sneat's happenings under a space
   module) travel as a dal-escaped `parent` key path and become
   `dal.NewCollectionRef(name, "", parentKey)`.
@@ -62,6 +65,11 @@ github.com/dal-go/dalgo2openvaultdb   — DALgo driver speaking the HTTP API
 | firestore | github.com/dal-go/dalgo2firestore  | strict, partial, schemaless   |
 | postgres  | github.com/dal-go/dalgo2postgres   | strict (MVP; JSONB doc-column mode → all three, roadmap) |
 | mysql     | github.com/dal-go/dalgo2mysql      | strict (MVP; JSON doc-column mode → all three, roadmap) |
+
+Structured queries (`/query`, `/dtql`) are available on `sqlite`, `ingitdb` and
+`firestore` only. `postgres` and `mysql` mounts answer them with `501
+query_unsupported`; their key reads and writes work, under the rules in "Names
+and queries on the SQL engines".
 
 ### inGitDB (reference engine)
 
@@ -132,6 +140,41 @@ Unlike Postgres, MySQL preserves identifier case (with the default
 case folding or read-side case restoration is needed. MySQL DDL is
 non-transactional (each statement auto-commits), so collection provisioning is
 not rolled back on a later error in the same open.
+
+### Names and queries on the SQL engines
+
+`dalgo2sql` binds record values as statement parameters but writes collection
+and field names into the statement text of key reads and writes (its fix is
+the `dalgo2sql` task SQL-0W), and the structured-query path of a PostgreSQL or
+MySQL mount has no reviewed dialect yet. ovdb does not depend on the adapter
+for either:
+
+- **Queries.** `/query` and `/dtql` are refused on `postgres` and `mysql` with
+  `501 query_unsupported` before any query reaches the driver. They are not
+  available there today.
+- **Collections.** On `sqlite`, `postgres` and `mysql` (and any engine ovdb
+  does not recognise) a key read or write whose collection is not one the
+  mount declared in the manifest's `schemas` when it opened is `404 not_found`
+  before the adapter is called; so is a key with a parent, because a SQL mount
+  has no subcollections (the adapter would address another table than the root
+  collection the capability was checked on). The allow-list is fixed when the
+  database opens, so an embedder that renames the live manifest's keys
+  afterwards does not change it. Names match exactly, including case. The
+  key-segment rule (`core.ValidateSegment`) is a path-safety check only and
+  accepts quotes, spaces and semicolons, so the declaration is the allow-list.
+  `inGitDB` and Firestore keep the key-segment rule alone.
+- **Field names**, on every engine. The top-level keys of a write body, an
+  update's `fieldName` and the first segment of its `fieldPath` pass
+  `core.ValidateFieldName` (the rule `/query` and `/dtql` use) or the request
+  is `400 bad_request` before the adapter is called. The later segments of a
+  `fieldPath` are map keys: the same rule on the SQL engines, and on `inGitDB`
+  and Firestore only a non-empty, non-blank segment without control characters
+  (Sneat's linkage writes `id@spaceID` keys there).
+
+The guard sits in `core.Database` (`Get`, `Exists`, `Apply`), so every caller
+is covered; the protected `PATCH` and the authorization endpoints that read by
+key apply the same checks before their coordinator runs. See `docs/api.md`
+("Names the server accepts") and `docs/threat-model.md`.
 
 ### Cloud-managed relational (no new engine)
 

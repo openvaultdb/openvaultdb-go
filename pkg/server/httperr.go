@@ -50,7 +50,7 @@ func writeMappedError(w http.ResponseWriter, err error) (internal bool) {
 		writeError(w, http.StatusForbidden, "ACCESS_DENIED", "access denied")
 	case errors.Is(err, core.ErrInvalidKey):
 		writeError(w, http.StatusBadRequest, "invalid_key", err.Error())
-	case errors.Is(err, core.ErrInvalidQuery):
+	case errors.Is(err, core.ErrInvalidQuery), errors.Is(err, core.ErrInvalidFieldName):
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 	case errors.Is(err, core.ErrInvalidDTQL):
 		writeError(w, http.StatusBadRequest, "invalid_dtql", err.Error())
