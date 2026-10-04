@@ -166,6 +166,28 @@ var safeFieldNames = []string{
 	"\u0928\u093e\u092e", "\u0e0a\u0e37\u0e48\u0e2d", "nai\u0308ve", "a.\u0928\u093e\u092e", "$\u0e0a\u0e37\u0e48\u0e2d",
 }
 
+// quotedUnsafeFieldNames are the names the quoted-name rule (sqlite, ingitdb,
+// firestore) refuses as well: they could end a quoted identifier or a statement,
+// are empty or have an empty segment, hold a control character, start or end a
+// segment with a space, or are not text.
+var quotedUnsafeFieldNames = []string{
+	`na"me`, `na'me`, "na`me", `na\me`, "name;", "name; DROP TABLE x", `"; DROP TABLE x; --`,
+	"", ".", "a..b", ".name", "name.", "$id.", "a. b", "a .b",
+	"name\x00", "na\nme", "na\tme", "na\rme", "na\x7fme", "na\u0085me",
+	" name", "name ", "\u00a0name", "name\u00a0", "\u3000name",
+	strings.Repeat("a", maxFieldNameLen+1), "a\xffb",
+}
+
+// quotedOnlyFieldNames are accepted by the quoted-name rule and refused by the
+// strict one. Each class is also queried against a real SQLite file (see
+// field_names_sqlite_test.go).
+var quotedOnlyFieldNames = []string{
+	"zip code", "na me", "a  b", "name--", "na--me", "a---b", "name/*", "na/**/me", "name#", "(name", "name)", "name=1",
+	"name OR 1=1", "[name]", "a/b", "a*b", "a%b", "a,b", "a|b", "a:b", "a<b", "a+b", "a@b", "a!b", "a?b", "a~b", "a^b",
+	"a&b", "a{b", "a}b", "a]b", "-name", "a.-b", "$", "$$id", "a$$", "$1", "a.$1", "$1a", "a$b", "a.$b$", "$.a",
+	"na\u00a0me", "na\u200bme", "na\u2028me", "temp \u00b0C", "emoji \U0001F600", "address.zip code", "a b.c d",
+}
+
 func TestValidateFieldName(t *testing.T) {
 	for _, name := range unsafeFieldNames {
 		if err := ValidateFieldName(name); err == nil {
@@ -179,10 +201,19 @@ func TestValidateFieldName(t *testing.T) {
 	}
 }
 
+// unsafeFieldNamesFor returns the names an engine must refuse before any adapter
+// call: the strict list, or the shorter list of an engine with the quoted rule.
+func unsafeFieldNamesFor(engine string) []string {
+	if quotedNameEngines[engine] {
+		return quotedUnsafeFieldNames
+	}
+	return unsafeFieldNames
+}
+
 func TestWireQueryFieldNamesValidatedBeforeAdapter(t *testing.T) {
-	for _, engine := range []string{"sqlite", "ingitdb", "postgres"} {
+	for _, engine := range []string{"sqlite", "ingitdb", "firestore", "postgres", "mysql", "oracle"} {
 		db, fake := openEngine(t, engine)
-		for _, name := range unsafeFieldNames {
+		for _, name := range unsafeFieldNamesFor(engine) {
 			for label, q := range map[string]Query{
 				"where":   {Collection: "customers", Where: []Filter{{Field: name, Op: "==", Value: 1}}},
 				"orderBy": {Collection: "customers", OrderBy: []OrderBy{{Field: name}}},
@@ -239,9 +270,9 @@ func dtqlWith(name string) map[string]dal.StructuredQuery {
 }
 
 func TestDTQLFieldNamesValidatedBeforeAdapter(t *testing.T) {
-	for _, engine := range []string{"sqlite", "ingitdb", "postgres"} {
+	for _, engine := range []string{"sqlite", "ingitdb", "firestore", "postgres", "mysql", "oracle"} {
 		db, fake := openEngine(t, engine)
-		for _, name := range unsafeFieldNames {
+		for _, name := range unsafeFieldNamesFor(engine) {
 			for label, query := range dtqlWith(name) {
 				if _, err := db.ExecuteDTQLQuery(context.Background(), query); !errors.Is(err, ErrInvalidDTQL) {
 					t.Errorf("%s %s %.30q: %v", engine, label, name, err)
@@ -271,7 +302,7 @@ func TestDTQLSafeFieldNamesPass(t *testing.T) {
 
 func TestParseDTQLRefusesUnsafeFieldNames(t *testing.T) {
 	for _, doc := range []string{
-		"from: {name: customers}\nwhere: {op: '==', left: {field: \"na me\"}, right: {value: 1}}\n",
+		"from: {name: customers}\nwhere: {op: '==', left: {field: \"na;me\"}, right: {value: 1}}\n",
 		"from: {name: customers}\norderBy: [{field: \"a;b\"}]\n",
 		"from: {name: customers}\ncolumns: [{field: \"a'b\"}]\n",
 	} {
@@ -629,7 +660,7 @@ func TestNameWalkerVariantsDifferInTwoPlaces(t *testing.T) {
 		if err := validateRelationalNames(isNull(dal.Field("a"), negated)); err != nil {
 			t.Errorf("relational variant, null test (negated %v): %v", negated, err)
 		}
-		if err := validateRelationalNames(isNull(dal.Field("a b"), negated)); !errors.Is(err, ErrInvalidDTQL) {
+		if err := validateRelationalNames(isNull(dal.Field("a;b"), negated)); !errors.Is(err, ErrInvalidDTQL) {
 			t.Errorf("relational variant, null test of an unsafe field (negated %v): %v", negated, err)
 		}
 	}
@@ -647,7 +678,7 @@ func TestNameWalkerVariantsDifferInTwoPlaces(t *testing.T) {
 		"schema":       selectQuery(fromTree(dal.NewQualifiedRootCollectionRef("s", "other", "")).NewQuery()),
 		"name":         selectQuery(fromTree(rootRef("ot\x00her")).NewQuery()),
 		"alias":        selectQuery(fromTree(dal.NewDatabaseCollectionRef("d", "", "other", "a b")).NewQuery()),
-		"unsafe field": selectQuery(fromTree(dal.NewDatabaseCollectionRef("d", "", "other", "")).NewQuery().WhereField("a b", dal.Equal, 1)),
+		"unsafe field": selectQuery(fromTree(dal.NewDatabaseCollectionRef("d", "", "other", "")).NewQuery().WhereField("a;b", dal.Equal, 1)),
 	} {
 		if err := validateRelationalNames(query); !errors.Is(err, ErrInvalidDTQL) {
 			t.Errorf("relational variant, %s: %v", label, err)
@@ -752,4 +783,138 @@ func TestValidateIdentifierDoesNotEchoAnOverLongName(t *testing.T) {
 	if err := validateQualifier(long, nil); !errors.Is(err, ErrInvalidDTQL) || strings.Contains(err.Error(), "aaaa") {
 		t.Fatalf("qualifier err = %v", err)
 	}
+}
+
+func TestValidateQuotedFieldName(t *testing.T) {
+	for _, name := range quotedUnsafeFieldNames {
+		if err := validateQuotedFieldName(name); err == nil {
+			t.Errorf("%.40q accepted", name)
+		}
+	}
+	for _, name := range quotedOnlyFieldNames {
+		if err := validateQuotedFieldName(name); err != nil {
+			t.Errorf("%q refused: %v", name, err)
+		}
+		if err := ValidateFieldName(name); err == nil {
+			t.Errorf("%q is in quotedOnlyFieldNames but the strict rule accepts it", name)
+		}
+	}
+	// The quoted rule is wider: whatever the strict rule accepts, it accepts.
+	for _, name := range safeFieldNames {
+		if err := validateQuotedFieldName(name); err != nil {
+			t.Errorf("%q is plain but refused: %v", name, err)
+		}
+	}
+	// And the strict rule refuses everything the quoted one refuses.
+	for _, name := range quotedUnsafeFieldNames {
+		if err := ValidateFieldName(name); err == nil {
+			t.Errorf("%.40q is refused by the quoted rule but accepted by the strict one", name)
+		}
+	}
+	// The limit is on bytes, and an over-long name is not echoed.
+	if err := validateQuotedFieldName(strings.Repeat("a", maxFieldNameLen)); err != nil {
+		t.Errorf("a name at the limit: %v", err)
+	}
+	if err := validateQuotedFieldName(strings.Repeat("a b", maxFieldNameLen)); err == nil || strings.Contains(err.Error(), "a ba b") {
+		t.Errorf("over-long name: %v", err)
+	}
+	if err := validateQuotedFieldName(strings.Repeat("\u00e9", maxFieldNameLen/2+1)); err == nil {
+		t.Error("257 bytes of two-byte letters accepted")
+	}
+}
+
+func TestFieldRuleFollowsTheEngine(t *testing.T) {
+	for engine, want := range map[string]fieldRule{
+		"sqlite": quotedNames, "ingitdb": quotedNames, "firestore": quotedNames,
+		"postgres": strictNames, "mysql": strictNames, "oracle": strictNames, "": strictNames,
+	} {
+		db, _ := openEngine(t, engine)
+		if got := db.fieldRule(); got != want {
+			t.Errorf("%q: rule = %v, want %v", engine, got, want)
+		}
+	}
+	if got := (&Database{}).fieldRule(); got != strictNames {
+		t.Errorf("a database without a manifest must take the strict rule, got %v", got)
+	}
+	// An engine takes the wide rule only if it can be queried at all.
+	for engine := range quotedNameEngines {
+		if !queryEngines[engine] {
+			t.Errorf("%q has the quoted-name rule but is not cleared for queries", engine)
+		}
+	}
+	// The strict rule stays on the two engines the guard refuses for the legacy
+	// text emitter.
+	for _, engine := range []string{"postgres", "mysql"} {
+		if quotedNameEngines[engine] {
+			t.Errorf("%q must keep the strict rule", engine)
+		}
+	}
+}
+
+// TestEnginesThatQuoteAcceptNamesTheStrictRuleRefuses: a name with a space or
+// punctuation reaches the adapter on sqlite, ingitdb and firestore, from the
+// wire query and from DTQL, and is refused with no adapter call on every other
+// engine.
+func TestEnginesThatQuoteAcceptNamesTheStrictRuleRefuses(t *testing.T) {
+	for _, engine := range []string{"sqlite", "ingitdb", "firestore", "postgres", "mysql", "oracle", ""} {
+		t.Run(engine, func(t *testing.T) {
+			db, fake := openEngine(t, engine)
+			ctx := context.Background()
+			quoted := quotedNameEngines[engine]
+			reached := 0
+			for _, name := range quotedOnlyFieldNames {
+				_, wireErr := db.Execute(ctx, Query{Collection: "customers", Where: []Filter{{Field: name, Op: "==", Value: 1}}, OrderBy: []OrderBy{{Field: name}}})
+				root := dal.From(dal.NewRootCollectionRef("customers", "")).NewQuery()
+				parsed := root.WhereField(name, dal.Equal, 1).OrderBy(dal.AscendingField(name)).SelectColumns(dal.Column{Expression: dal.Field(name)})
+				_, dtqlErr := db.ExecuteDTQLQuery(ctx, parsed)
+				streamErr := db.StreamDTQLSnapshot(ctx, parsed, func(Record) error { return nil })
+				if quoted {
+					for label, err := range map[string]error{"wire": wireErr, "dtql": dtqlErr, "stream": streamErr} {
+						if !errors.Is(err, errFakeReached) {
+							t.Errorf("%s %q: %v", label, name, err)
+						}
+					}
+					reached += 3
+					continue
+				}
+				_, _, sampleErr := db.SelectAccessSample(ctx, parsed, 1, access.Principal{})
+				if !errors.Is(wireErr, ErrInvalidQuery) || !errors.Is(dtqlErr, ErrInvalidDTQL) || !errors.Is(streamErr, ErrInvalidDTQL) || !errors.Is(sampleErr, ErrInvalidDTQL) {
+					t.Errorf("%q: wire %v, dtql %v, stream %v, sample %v", name, wireErr, dtqlErr, streamErr, sampleErr)
+				}
+			}
+			if fake.queries != reached {
+				t.Fatalf("adapter reached %d times, want %d", fake.queries, reached)
+			}
+		})
+	}
+}
+
+// TestParseDTQLKnowsNoEngine: ParseDTQL applies the widest rule, because the
+// handler parses before it looks at the engine; the Database applies its own.
+func TestParseDTQLKnowsNoEngine(t *testing.T) {
+	doc := "from: {name: customers}\nwhere: {op: '==', left: {field: \"zip code\"}, right: {value: 1}}\norderBy: [{field: \"zip code\"}]\n"
+	query, collection, err := ParseDTQL([]byte(doc))
+	if err != nil || collection != "customers" {
+		t.Fatalf("ParseDTQL: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := openEngineDatabase(t, "sqlite").ExecuteDTQLQuery(ctx, query); !errors.Is(err, errFakeReached) {
+		t.Errorf("sqlite: %v", err)
+	}
+	if _, err := openEngineDatabase(t, "postgres").ExecuteDTQLQuery(ctx, query); !errors.Is(err, ErrInvalidDTQL) {
+		t.Errorf("postgres: %v", err)
+	}
+	if _, err := openEngineDatabase(t, "postgres").ExecuteDTQL(ctx, []byte(doc)); !errors.Is(err, ErrInvalidDTQL) {
+		t.Errorf("postgres, from the document: %v", err)
+	}
+	// What no engine takes is refused at the parse.
+	if _, _, err := ParseDTQL([]byte("from: {name: customers}\nwhere: {op: '==', left: {field: \"a;b\"}, right: {value: 1}}\n")); !errors.Is(err, ErrInvalidDTQL) {
+		t.Errorf("a semicolon: %v", err)
+	}
+}
+
+func openEngineDatabase(t *testing.T, engine string) *Database {
+	t.Helper()
+	db, _ := openEngine(t, engine)
+	return db
 }

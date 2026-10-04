@@ -180,10 +180,21 @@ func TestSchemaDatabaseAndScanRefusedOnRootSourceOnEveryEngine(t *testing.T) {
 }
 
 func TestUnsafeFieldNamesRefusedOnEveryEngine(t *testing.T) {
-	names := []string{`na"me`, "na me", "name;", "na--me", "na/*me", "name#", "na'me"}
+	// Refused under every engine's rule: what could end a quoted identifier or a
+	// statement.
+	always := []string{`na"me`, "name;", "na'me", "na`me", `na\me`}
+	// Refused under the strict rule only: spaces, comment markers, punctuation.
+	// sqlite and ingitdb quote names and take them (see below); postgres and
+	// mysql keep the strict rule.
+	strictOnly := []string{"na me", "na--me", "na/*me", "name#"}
+	quoting := map[string]bool{"sqlite": true, "ingitdb": true}
 	for _, engine := range []string{"sqlite", "ingitdb", "postgres", "mysql"} {
 		t.Run(engine, func(t *testing.T) {
 			ts, fake := guardServer(t, engine)
+			names := append([]string(nil), always...)
+			if !quoting[engine] {
+				names = append(names, strictOnly...)
+			}
 			for _, name := range names {
 				wireWhere, _ := json.Marshal(map[string]any{"collection": "customers", "where": []map[string]any{{"field": name, "op": "==", "value": 1}}})
 				wireOrder, _ := json.Marshal(map[string]any{"collection": "customers", "orderBy": []map[string]any{{"field": name}}})
@@ -212,6 +223,33 @@ func TestUnsafeFieldNamesRefusedOnEveryEngine(t *testing.T) {
 			}
 			if fake.queries != 0 {
 				t.Fatalf("adapter query path called %d times", fake.queries)
+			}
+		})
+	}
+}
+
+// TestEnginesThatQuoteTakeANameTheStrictRuleRefuses: on sqlite and ingitdb a
+// name with a space or punctuation is not a 400: it reaches the adapter, from
+// the wire query, from DTQL and from a snapshot page. (The fake adapter fails
+// every read, so the answer is not 200; the point is that it was reached.)
+func TestEnginesThatQuoteTakeANameTheStrictRuleRefuses(t *testing.T) {
+	for _, engine := range []string{"sqlite", "ingitdb"} {
+		t.Run(engine, func(t *testing.T) {
+			ts, fake := guardServer(t, engine)
+			for _, name := range []string{"zip code", "na--me", "na/*me", "name#", "a(b)"} {
+				wireWhere, _ := json.Marshal(map[string]any{"collection": "customers", "where": []map[string]any{{"field": name, "op": "==", "value": 1}}})
+				yamlName, _ := json.Marshal(name)
+				for _, call := range []guardCall{
+					{name: "query where", method: "POST", path: base + "/query", body: string(wireWhere)},
+					{name: "dtql where", method: "POST", path: base + "/dtql", body: "from: {name: customers}\nwhere: {op: '==', left: {field: " + string(yamlName) + "}, right: {value: 1}}\n"},
+					{name: "dtql snapshot", method: "POST", path: base + "/dtql", body: "from: {name: customers}\norderBy: [{field: " + string(yamlName) + "}]\n", headers: map[string]string{"OVDB-Page-Size": "5"}},
+				} {
+					before := fake.queries
+					status, body := send(t, ts, call)
+					if status == http.StatusBadRequest || fake.queries != before+1 {
+						t.Errorf("%s %q: status %d body %v, adapter calls %d -> %d", call.name, name, status, body, before, fake.queries)
+					}
+				}
 			}
 		})
 	}

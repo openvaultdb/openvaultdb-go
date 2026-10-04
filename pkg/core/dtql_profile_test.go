@@ -275,6 +275,7 @@ limit: 10
 func TestClassifyDTQLSingleCollectionMatchesValidateDTQL(t *testing.T) {
 	for _, doc := range []string{
 		"from: {name: customers}\n",
+		"from: {name: customers}\nwhere: {op: '==', left: {field: \"zip code\"}, right: {value: 1}}\norderBy: [{field: \"zip code\"}]\n",
 		"from: {name: customers}\nlimit: 50\noffset: 5\n",
 		"from: {name: customers}\ncolumns: [{field: name}]\n",
 		"from: {name: customers}\nwhere: {op: '==', left: {field: name}, right: {param: n}}\norderBy: [{field: name, desc: true}]\n",
@@ -596,7 +597,9 @@ func TestClassifyDTQLSubqueryOrDatabaseKeepsASingleSourceRelational(t *testing.T
 // TestClassifyDTQLRefusesTheNamesTheQueryGuardRefuses is the regression test
 // for the relational walk that checked no name: a name /dtql refuses through
 // ParseDTQL must not become an accepted relational document through
-// ClassifyDTQL, and a refusal returns a zero Profile.
+// ClassifyDTQL, and a refusal returns a zero Profile. (Field names use a
+// semicolon as the unsafe character: a name with a space is a valid name since
+// the quoted-name rule. Aliases and qualifiers keep the identifier rule.)
 func TestClassifyDTQLRefusesTheNamesTheQueryGuardRefuses(t *testing.T) {
 	const joined = `
 from:
@@ -607,25 +610,25 @@ from:
       on: [{left: {field: id, source: a}, op: '==', right: {field: id, source: b}}]
 `
 	for _, tc := range []struct{ name, doc string }{
-		{"unsafe field in where of a join document", joined + "where: {op: '==', left: {field: \"first name\", source: a}, right: {value: 1}}\n"},
-		{"unsafe field in a join condition", strings.Replace(joined, "{field: id, source: b}", "{field: \"i d\", source: b}", 1)},
+		{"unsafe field in where of a join document", joined + "where: {op: '==', left: {field: \"first;name\", source: a}, right: {value: 1}}\n"},
+		{"unsafe field in a join condition", strings.Replace(joined, "{field: id, source: b}", "{field: \"i;d\", source: b}", 1)},
 		{"unsafe field in an ordering", joined + "orderBy: [{field: \"a;b\", source: a}]\n"},
 		{"unsafe field in group by", joined + "groupBy: [{field: \"a'b\", source: a}]\n"},
-		{"unsafe field in having", joined + "having: {op: '>', left: {aggregate: {function: sum, args: [{field: \"a b\", source: a}]}}, right: {value: 1}}\n"},
+		{"unsafe field in having", joined + "having: {op: '>', left: {aggregate: {function: sum, args: [{field: \"a;b\", source: a}]}}, right: {value: 1}}\n"},
 		{"unsafe qualifier", "from: {name: a}\ncolumns: [{field: id, source: \"x y\"}]\n"},
 		{"unsafe source alias", "from:\n  name: a\n  alias: a\n  joins:\n    - from: {name: b, alias: \"b b\"}\n      on: [{left: {field: id, source: a}, op: '==', right: {field: id, source: \"b b\"}}]\n"},
 		{"unsafe root alias", "from:\n  name: a\n  alias: \"a;a\"\n  joins:\n    - from: {name: b, alias: b}\n      on: [{left: {field: id, source: \"a;a\"}, op: '==', right: {field: id, source: b}}]\n"},
 		{"unsafe column alias", joined + "columns: [{field: id, source: a, as: \"a b\"}]\n"},
-		{"unsafe wildcard exclude", joined + "columns: [{wildcard: {source: a, exclude: [\"a b\"]}}]\n"},
+		{"unsafe wildcard exclude", joined + "columns: [{wildcard: {source: a, exclude: [\"a;b\"]}}]\n"},
 		{"unsafe derived alias", "from:\n  query:\n    as: \"d e\"\n    from: {name: a, alias: a}\n"},
-		{"unsafe field inside a derived source", "from:\n  query:\n    as: d\n    from: {name: a, alias: a}\n    where: {op: '==', left: {field: \"a b\", source: a}, right: {value: 1}}\n"},
-		{"unsafe field inside an exists subquery", joined + "where:\n  exists:\n    query:\n      from: {name: c, alias: c}\n      where: {op: '==', left: {field: \"a b\", source: c}, right: {value: 1}}\n"},
-		{"unsafe field in a null test", joined + "where: {isNull: {field: \"a b\", source: a}}\n"},
-		{"unsafe field in a not-null test", joined + "where: {isNotNull: {field: \"a b\", source: a}}\n"},
-		{"single source with an unsafe field", "from: {name: customers}\nwhere: {op: '==', left: {field: \"first name\"}, right: {value: 1}}\n"},
+		{"unsafe field inside a derived source", "from:\n  query:\n    as: d\n    from: {name: a, alias: a}\n    where: {op: '==', left: {field: \"a;b\", source: a}, right: {value: 1}}\n"},
+		{"unsafe field inside an exists subquery", joined + "where:\n  exists:\n    query:\n      from: {name: c, alias: c}\n      where: {op: '==', left: {field: \"a;b\", source: c}, right: {value: 1}}\n"},
+		{"unsafe field in a null test", joined + "where: {isNull: {field: \"a;b\", source: a}}\n"},
+		{"unsafe field in a not-null test", joined + "where: {isNotNull: {field: \"a;b\", source: a}}\n"},
+		{"single source with an unsafe field", "from: {name: customers}\nwhere: {op: '==', left: {field: \"first;name\"}, right: {value: 1}}\n"},
 		{"single source with an unsafe ordering", "from: {name: customers}\norderBy: [{field: \"a;b\"}]\n"},
 		{"single source with an unsafe column", "from: {name: customers}\ncolumns: [{field: \"a'b\"}]\n"},
-		{"database root with an unsafe field", "from: {database: chinook, name: Customer}\nwhere: {op: '==', left: {field: \"a b\"}, right: {value: 1}}\n"},
+		{"database root with an unsafe field", "from: {database: chinook, name: Customer}\nwhere: {op: '==', left: {field: \"a;b\"}, right: {value: 1}}\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			profile, err := ClassifyDTQL(mustDeserialize(t, tc.doc))
