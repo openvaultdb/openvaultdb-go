@@ -101,4 +101,25 @@ func TestJoinSourceOnSQLiteMount(t *testing.T) {
 			t.Fatalf("err = %v, want the callback's error", err)
 		}
 	})
+
+	t.Run("ReadTx returns the callback's error after the context expired", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		err := db.ReadTx(ctx, func(tx dal.QueryExecutor) error {
+			cancel()
+			query, _, err := core.ParseDTQL([]byte("from: {name: items}\n"))
+			if err != nil {
+				t.Error(err)
+				return err
+			}
+			// The driver has rolled the transaction back; the read fails.
+			if reader, err := tx.ExecuteQueryToRecordsReader(ctx, query); err == nil {
+				_ = reader.Close()
+			}
+			return errJoinSrcSQLiteWorker
+		})
+		if !errors.Is(err, errJoinSrcSQLiteWorker) {
+			t.Fatalf("err = %v, want the callback's error", err)
+		}
+	})
 }

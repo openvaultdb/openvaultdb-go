@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/dalgo/recordset"
 
@@ -17,6 +18,8 @@ var (
 	errJoinSrcFields  = errors.New("join source test: fields reached")
 	errJoinSrcTxStart = errors.New("join source test: transaction did not start")
 	errJoinSrcWorker  = errors.New("join source test: worker failed")
+	errJoinSrcRollbk  = errors.New("join source test: rollback failed")
+	errJoinSrcPanic   = errors.New("join source test: callback panicked")
 )
 
 // joinSrcRecorder counts the calls that reach the fake driver.
@@ -25,6 +28,7 @@ type joinSrcRecorder struct {
 	recordsets int
 	fields     int
 	txStarts   int
+	txCtx      context.Context // the context the driver was given for the transaction
 }
 
 func joinSrcReaderErr(calls *joinSrcRecorder) (dal.RecordsReader, error) {
@@ -66,6 +70,10 @@ type joinSrcDB struct {
 	dal.DB
 	calls *joinSrcRecorder
 	tx    dal.ReadTransaction
+	// wrapRollback makes the driver answer a failed worker the way dalgo2sql
+	// does once the context has expired: dal.NewRollbackError, which hides the
+	// worker's error from errors.Is.
+	wrapRollback bool
 }
 
 func (d joinSrcDB) ExecuteQueryToRecordsReader(context.Context, dal.Query) (dal.RecordsReader, error) {
@@ -78,10 +86,15 @@ func (d joinSrcDB) ExecuteQueryToRecordsetReader(context.Context, dal.Query, ...
 
 func (d joinSrcDB) RunReadonlyTransaction(ctx context.Context, f dal.ROTxWorker, _ ...dal.TransactionOption) error {
 	d.calls.txStarts++
+	d.calls.txCtx = ctx
 	if d.tx == nil {
 		return errJoinSrcTxStart
 	}
-	return f(ctx, d.tx)
+	err := f(ctx, d.tx)
+	if err != nil && d.wrapRollback {
+		return dal.NewRollbackError(errJoinSrcRollbk, err)
+	}
+	return err
 }
 
 // joinSrcFieldsDB is a driver that also supplies join fields.
@@ -214,7 +227,9 @@ func TestJoinSourceExecutorForwardsOnAllowedEngines(t *testing.T) {
 }
 
 func TestJoinSourceExecutorDoesNotExposeTheDriver(t *testing.T) {
-	db, _ := joinSrcOpen(t, "sqlite", nil, joinSrcPlainDB)
+	db, _ := joinSrcOpen(t, "sqlite", nil, func(c *joinSrcRecorder) dal.DB {
+		return joinSrcDB{calls: c, tx: joinSrcTx{calls: c}}
+	})
 	executor := db.Executor()
 	if _, ok := executor.(dal.DB); ok {
 		t.Error("executor exposes the dal.DB")
@@ -227,14 +242,19 @@ func TestJoinSourceExecutorDoesNotExposeTheDriver(t *testing.T) {
 	}); ok {
 		t.Error("executor exposes the transaction coordinator")
 	}
+	ran := false
 	err := db.ReadTx(context.Background(), func(tx dal.QueryExecutor) error {
+		ran = true
 		if _, ok := tx.(dal.ReadTransaction); ok {
 			t.Error("transaction executor exposes the raw read transaction")
 		}
+		if _, ok := tx.(dal.DB); ok {
+			t.Error("transaction executor exposes the dal.DB")
+		}
 		return nil
 	})
-	if !errors.Is(err, errJoinSrcTxStart) {
-		t.Fatalf("got %v", err)
+	if err != nil || !ran {
+		t.Fatalf("err = %v, callback ran = %v", err, ran)
 	}
 }
 
@@ -317,4 +337,111 @@ func TestJoinSourceReadTx(t *testing.T) {
 			t.Fatalf("driver calls = %+v", *calls)
 		}
 	})
+
+	t.Run("a rollback error that hides the worker's error is not returned", func(t *testing.T) {
+		db, _ := joinSrcOpen(t, "sqlite", nil, func(c *joinSrcRecorder) dal.DB {
+			return joinSrcDB{calls: c, tx: joinSrcTx{calls: c}, wrapRollback: true}
+		})
+		err := db.ReadTx(ctx, func(dal.QueryExecutor) error { return errJoinSrcWorker })
+		if err != errJoinSrcWorker {
+			t.Fatalf("got %v, want the worker's error itself", err)
+		}
+	})
+
+	t.Run("the transaction is released when the callback panics", func(t *testing.T) {
+		db, calls := joinSrcOpen(t, "sqlite", nil, func(c *joinSrcRecorder) dal.DB {
+			return joinSrcDB{calls: c, tx: joinSrcTx{calls: c}}
+		})
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != errJoinSrcPanic {
+					t.Errorf("recovered %v, want the callback's panic", recovered)
+				}
+			}()
+			_ = db.ReadTx(ctx, func(dal.QueryExecutor) error { panic(errJoinSrcPanic) })
+		}()
+		if calls.txCtx == nil || calls.txCtx.Err() == nil {
+			t.Fatal("the context given to the driver was not cancelled after the panic")
+		}
+	})
+
+	t.Run("a cancelled request context is passed on", func(t *testing.T) {
+		db, calls := joinSrcOpen(t, "sqlite", nil, func(c *joinSrcRecorder) dal.DB {
+			return joinSrcDB{calls: c, tx: joinSrcTx{calls: c}}
+		})
+		parent, cancel := context.WithCancel(ctx)
+		err := db.ReadTx(parent, func(dal.QueryExecutor) error {
+			cancel()
+			if calls.txCtx.Err() == nil {
+				t.Error("cancelling the request context did not reach the driver's context")
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestJoinSourceReadTxRefusesAPolicyProtectedDatabase(t *testing.T) {
+	calls := &joinSrcRecorder{}
+	m := &manifest.Manifest{
+		Database: manifest.Database{ID: "joinsrc", SchemaMode: schema.ModeStrict},
+		Storage:  manifest.Storage{Engine: "sqlite"},
+	}
+	db, err := Open(m, joinSrcDB{calls: calls, tx: joinSrcTx{calls: calls}}, []schema.Mode{schema.ModeStrict}, "", joinSrcPolicy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !db.HasAccessPolicies() {
+		t.Fatal("the database must have access policies")
+	}
+	ran := false
+	err = db.ReadTx(context.Background(), func(dal.QueryExecutor) error { ran = true; return nil })
+	if !errors.Is(err, ErrProtectedReadTx) || ran {
+		t.Fatalf("err = %v, callback ran = %v; want ErrProtectedReadTx", err, ran)
+	}
+	if *calls != (joinSrcRecorder{}) {
+		t.Fatalf("the driver was reached for a protected database: %+v", *calls)
+	}
+}
+
+// joinSrcPolicy is an access policy that is never consulted by these tests.
+type joinSrcPolicy struct{}
+
+func (joinSrcPolicy) Name() string { return "joinsrc-test" }
+func (joinSrcPolicy) Decide(context.Context, access.Request) access.Decision {
+	return access.Decision{}
+}
+func (joinSrcPolicy) Authorize(context.Context, access.Request) error { return nil }
+
+func TestJoinSourceExecutorRefusesNonStructuredQueries(t *testing.T) {
+	ctx := context.Background()
+	text := dal.NewTextQuery("DELETE FROM items", nil)
+	db, calls := joinSrcOpen(t, "sqlite", nil, func(c *joinSrcRecorder) dal.DB {
+		return joinSrcDB{calls: c, tx: joinSrcTx{calls: c}}
+	})
+	check := func(what string, err error) {
+		t.Helper()
+		if !errors.Is(err, ErrInvalidDTQL) {
+			t.Errorf("%s: want ErrInvalidDTQL, got %v", what, err)
+		}
+	}
+	_, err := db.Executor().ExecuteQueryToRecordsReader(ctx, text)
+	check("Executor records reader", err)
+	_, err = db.Executor().ExecuteQueryToRecordsetReader(ctx, text)
+	check("Executor recordset reader", err)
+	err = db.ReadTx(ctx, func(tx dal.QueryExecutor) error {
+		_, err := tx.ExecuteQueryToRecordsReader(ctx, text)
+		check("ReadTx records reader", err)
+		_, err = tx.ExecuteQueryToRecordsetReader(ctx, text)
+		check("ReadTx recordset reader", err)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls.readers != 0 || calls.recordsets != 0 {
+		t.Fatalf("a text query reached the driver: %+v", *calls)
+	}
 }
