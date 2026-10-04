@@ -316,7 +316,7 @@ func (d *Database) CollectionForeignKeys(ctx context.Context, collection string)
 		if errors.As(err, &unsupported) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("describe collection %q: %w", collection, err)
+		return nil, fmt.Errorf("describe collection %q: %w", clipName(collection), err)
 	}
 	if def == nil {
 		return nil, nil
@@ -595,7 +595,7 @@ func (d *Database) ensureCollection(ctx context.Context, collection string, fiel
 		})
 	}
 	if err := modifier.CreateCollection(ctx, def, ddl.IfNotExists()); err != nil {
-		return fmt.Errorf("failed to ensure collection %q: %w", collection, err)
+		return fmt.Errorf("failed to ensure collection %q: %w", clipName(collection), err)
 	}
 	return nil
 }

@@ -90,15 +90,16 @@ func (r fieldRule) validate(name string) error {
 
 // quotedNameEngines lists the storage engines whose read path never puts a
 // field name into SQL text unquoted: sqlite through dalgo2sql's quoting
-// compiler, ingitdb and firestore build no SQL at all. They take the wider
-// quoted-name rule; every other engine keeps the strict one. The list is kept
-// apart from queryEngines on purpose: an engine cleared for queries later keeps
-// the strict rule until someone clears it here too, together with a test that
-// runs a real query against it.
+// compiler, ingitdb builds no SQL at all. They take the wider quoted-name rule;
+// every other engine keeps the strict one. The list is kept apart from
+// queryEngines on purpose: an engine cleared for queries later keeps the strict
+// rule until someone clears it here too, together with a test that runs a real
+// query against it. Firestore is cleared for queries and holds the strict rule:
+// its client rejects some of the characters the quoted rule accepts in a field
+// path, so it joins this list when its own name rules are tested.
 var quotedNameEngines = map[string]bool{
-	"sqlite":    true,
-	"ingitdb":   true,
-	"firestore": true,
+	"sqlite":  true,
+	"ingitdb": true,
 }
 
 // fieldRule is the field-name rule of this mount's engine.
@@ -234,11 +235,25 @@ func validateDTQLFieldsWith(query dal.StructuredQuery, depth int, names fieldRul
 // validateRelationalNames applies the relational variant of the name walk to a
 // whole query. ClassifyDTQL calls it, so that a relational document is held to
 // the names rule ParseDTQL holds a single-collection one to. Like ParseDTQL it
-// knows no engine and applies the widest rule; the engines a join may read are
-// all in quotedNameEngines (see QueryLimits.JoinEngines), and a caller that
-// admits another engine must check names with that engine's rule too.
+// knows no engine and applies the widest rule; the Database that reads the
+// query applies the rule of its own engine (checkRelationalNames).
 func validateRelationalNames(query dal.StructuredQuery) error {
-	return nameWalker{names: quotedNames, relational: true}.query(query, 0, nil)
+	return validateRelationalNamesFor(query, quotedNames)
+}
+
+// validateRelationalNamesFor is validateRelationalNames with the field-name
+// rule of an engine.
+func validateRelationalNamesFor(query dal.StructuredQuery, names fieldRule) error {
+	return nameWalker{names: names, relational: true}.query(query, 0, nil)
+}
+
+// checkRelationalNames runs the relational name walk over a whole query with
+// the field-name rule of this database's engine, as validateDTQLFor does for the
+// single-collection profile. The join source's guard calls it before every
+// read, so an engine outside quotedNameEngines is held to the strict rule even
+// when an operator lists it as a join engine.
+func (d *Database) checkRelationalNames(query dal.StructuredQuery) error {
+	return validateRelationalNamesFor(query, d.fieldRule())
 }
 
 func (w nameWalker) query(query dal.StructuredQuery, depth int, outer sourceScope) error {
@@ -278,6 +293,11 @@ func (w nameWalker) query(query dal.StructuredQuery, depth int, outer sourceScop
 			for _, excluded := range column.Wildcard.Exclude {
 				if err := w.field(excluded); err != nil {
 					return err
+				}
+				// DALgo reads an exclude as a case-insensitive mask where * and ?
+				// stand for characters, not as the name of a field.
+				if strings.ContainsAny(excluded, "*?") {
+					return fmt.Errorf("%w: a wildcard exclude names a field and takes no mask (* or ?)", ErrInvalidDTQL)
 				}
 			}
 		}

@@ -34,12 +34,18 @@ func (f *queryCountingDB) ExecuteQueryToRecordsetReader(context.Context, dal.Que
 	return nil, errFakeReached
 }
 
+// openEngine opens a fake-backed database that declares the collections the
+// tests of this file query: customers, and other for their subqueries.
 func openEngine(t *testing.T, engine string) (*Database, *queryCountingDB) {
 	t.Helper()
 	fake := &queryCountingDB{}
 	m := &manifest.Manifest{
 		Database: manifest.Database{ID: "guarded", SchemaMode: schema.ModeStrict},
 		Storage:  manifest.Storage{Engine: engine},
+		Schemas: &schema.Schemas{Collections: map[string]schema.Collection{
+			"customers": {Fields: map[string]schema.Field{"name": {Type: schema.TypeString}}},
+			"other":     {Fields: map[string]schema.Field{"name": {Type: schema.TypeString}}},
+		}},
 	}
 	db, err := Open(m, fake, []schema.Mode{schema.ModeStrict}, "")
 	if err != nil {
@@ -825,8 +831,8 @@ func TestValidateQuotedFieldName(t *testing.T) {
 
 func TestFieldRuleFollowsTheEngine(t *testing.T) {
 	for engine, want := range map[string]fieldRule{
-		"sqlite": quotedNames, "ingitdb": quotedNames, "firestore": quotedNames,
-		"postgres": strictNames, "mysql": strictNames, "oracle": strictNames, "": strictNames,
+		"sqlite": quotedNames, "ingitdb": quotedNames,
+		"firestore": strictNames, "postgres": strictNames, "mysql": strictNames, "oracle": strictNames, "": strictNames,
 	} {
 		db, _ := openEngine(t, engine)
 		if got := db.fieldRule(); got != want {
@@ -843,8 +849,10 @@ func TestFieldRuleFollowsTheEngine(t *testing.T) {
 		}
 	}
 	// The strict rule stays on the two engines the guard refuses for the legacy
-	// text emitter.
-	for _, engine := range []string{"postgres", "mysql"} {
+	// text emitter, and on firestore until its own name rules are tested: its
+	// client rejects the characters ~ * / [ ] in a field path, which the quoted
+	// rule accepts.
+	for _, engine := range []string{"postgres", "mysql", "firestore"} {
 		if quotedNameEngines[engine] {
 			t.Errorf("%q must keep the strict rule", engine)
 		}
@@ -917,4 +925,52 @@ func openEngineDatabase(t *testing.T, engine string) *Database {
 	t.Helper()
 	db, _ := openEngine(t, engine)
 	return db
+}
+
+// TestWildcardExcludeTakesNoMask: DALgo reads an exclude of a wildcard column as
+// a case-insensitive mask where * and ? stand for characters, so the name walk
+// refuses either character in an exclude, whatever the field-name rule, and
+// accepts any other name.
+func TestWildcardExcludeTakesNoMask(t *testing.T) {
+	root := func() dal.IQueryBuilder { return dal.From(rootRef("customers")).NewQuery() }
+	db, _ := openEngine(t, "sqlite")
+	walks := map[string]func(dal.StructuredQuery) error{
+		"single-collection, quoted rule": func(q dal.StructuredQuery) error { return validateDTQLFieldsWith(q, 0, quotedNames) },
+		"relational":                     validateRelationalNames,
+		"relational, engine's rule":      db.checkRelationalNames,
+	}
+	for _, name := range []string{"*", "?", "a*", "*a", "a*b", "a?b", "zip code*", "a.b?", "**", "a\u00e9*"} {
+		for label, walk := range walks {
+			for shape, query := range map[string]dal.StructuredQuery{
+				"unqualified":       root().SelectColumns(dal.AllColumnsExcept("ok", name)),
+				"qualified":         root().SelectColumns(dal.AllColumnsExceptFrom("customers", name)),
+				"after a good name": root().SelectColumns(dal.AllColumnsExcept("ok", "other", name)),
+			} {
+				err := walk(query)
+				if !errors.Is(err, ErrInvalidDTQL) || !strings.Contains(err.Error(), "mask") {
+					t.Errorf("%s, %s, %q: %v", label, shape, name, err)
+				}
+				// The message does not repeat the name (the characters of the
+				// message itself are not the name).
+				if strings.ContainsAny(name, "abcdefghijklmnopqrstuvwxyz") && strings.Contains(err.Error(), name) {
+					t.Errorf("%s, %s, %q: the message repeats the name: %v", label, shape, name, err)
+				}
+			}
+		}
+	}
+	for _, name := range []string{"ok", "zip code", "a.b", "a-b", "名前", "a%b", "a_b"} {
+		for label, walk := range walks {
+			if err := walk(root().SelectColumns(dal.AllColumnsExcept(name))); err != nil {
+				t.Errorf("%s, %q: %v", label, name, err)
+			}
+		}
+	}
+	// The strict rule refuses them as names before the mask rule is reached.
+	if err := validateDTQLFields(root().SelectColumns(dal.AllColumnsExcept("a*")), 0); !errors.Is(err, ErrInvalidDTQL) {
+		t.Errorf("strict rule: %v", err)
+	}
+	// A column that is not a wildcard may be named with these characters on an engine that quotes.
+	if err := validateRelationalNames(root().SelectColumns(dal.Column{Expression: dal.Field("a*b")})); err != nil {
+		t.Errorf("a column named a*b: %v", err)
+	}
 }
