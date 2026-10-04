@@ -207,6 +207,102 @@ func TestInspectRefusesAJoinTreeNestedTooDeep(t *testing.T) {
 	}
 }
 
+// exGroupChain wraps leaf in n group conditions, each inside the next.
+func exGroupChain(n int, leaf dal.Condition) dal.Condition {
+	for i := 0; i < n; i++ {
+		leaf = dal.NewGroupCondition(dal.And, leaf)
+	}
+	return leaf
+}
+
+// exBinaryChain wraps leaf in n binary expressions, each inside the next.
+func exBinaryChain(n int, leaf dal.Expression) dal.Expression {
+	for i := 0; i < n; i++ {
+		leaf = dal.Binary(leaf, dal.Add, dal.NewConstant(1))
+	}
+	return leaf
+}
+
+func exIDEqualsOne() dal.Condition {
+	return dal.NewComparison(dal.NewFieldRef("", "id"), dal.Equal, dal.NewConstant(1))
+}
+
+// Conditions and expressions nest at most maxWalkNesting levels, counted the way
+// the profile walk of pkg/core counts them (the drift test in pkg/core compares
+// the two). A comparison is one level and each operand is one more, so a group
+// chain of n levels over a comparison reaches n+2, and a binary chain of n levels
+// over a field reaches n+1.
+func TestInspectRefusesConditionsAndExpressionsNestedTooDeep(t *testing.T) {
+	deepest := map[string]dal.StructuredQuery{
+		"group conditions at the bound":      exWithWhere(exGroupChain(maxWalkNesting-2, exIDEqualsOne())),
+		"binary expressions at the bound":    exWithColumn(exBinaryChain(maxWalkNesting-1, dal.NewFieldRef("", "id"))),
+		"a join condition at the bound":      dal.From(exRef("", "a", "a")).Join(dal.NewJoinedSource(exRef("", "b", "b"), dal.JoinInner, exGroupChain(maxWalkNesting-2, exIDEqualsOne()))).NewQuery().SelectIntoRecord(nil),
+		"a having condition at the bound":    exShapeQuery{StructuredQuery: exBase(), having: exGroupChain(maxWalkNesting-2, exIDEqualsOne())},
+		"an order expression at the bound":   exShapeQuery{StructuredQuery: exBase(), orderBy: []dal.OrderExpression{dal.Ascending(exBinaryChain(maxWalkNesting-1, dal.NewFieldRef("", "id")))}},
+		"a group by expression at the bound": exShapeQuery{StructuredQuery: exBase(), groupBy: []dal.Expression{exBinaryChain(maxWalkNesting-1, dal.NewFieldRef("", "id"))}},
+		"a scan order at the bound":          dal.From(exRef("", "a", "").WithScan(1, dal.Ascending(exBinaryChain(maxWalkNesting-1, dal.NewFieldRef("", "id"))))).NewQuery().SelectIntoRecord(nil),
+		"an aggregate argument at the bound": exWithColumn(dal.NewAggregate("sum", false, exBinaryChain(maxWalkNesting-2, dal.NewFieldRef("", "id")))),
+	}
+	for name, q := range deepest {
+		t.Run("accepts "+name, func(t *testing.T) {
+			if _, err := inspect(q); err != nil {
+				t.Fatalf("inspect: %v", err)
+			}
+		})
+	}
+	tooDeep := map[string]dal.StructuredQuery{
+		"group conditions":      exWithWhere(exGroupChain(maxWalkNesting-1, exIDEqualsOne())),
+		"binary expressions":    exWithColumn(exBinaryChain(maxWalkNesting, dal.NewFieldRef("", "id"))),
+		"a join condition":      dal.From(exRef("", "a", "a")).Join(dal.NewJoinedSource(exRef("", "b", "b"), dal.JoinInner, exGroupChain(maxWalkNesting-1, exIDEqualsOne()))).NewQuery().SelectIntoRecord(nil),
+		"a having condition":    exShapeQuery{StructuredQuery: exBase(), having: exGroupChain(maxWalkNesting-1, exIDEqualsOne())},
+		"an order expression":   exShapeQuery{StructuredQuery: exBase(), orderBy: []dal.OrderExpression{dal.Ascending(exBinaryChain(maxWalkNesting, dal.NewFieldRef("", "id")))}},
+		"a group by expression": exShapeQuery{StructuredQuery: exBase(), groupBy: []dal.Expression{exBinaryChain(maxWalkNesting, dal.NewFieldRef("", "id"))}},
+		"a scan order":          dal.From(exRef("", "a", "").WithScan(1, dal.Ascending(exBinaryChain(maxWalkNesting, dal.NewFieldRef("", "id"))))).NewQuery().SelectIntoRecord(nil),
+		"an aggregate argument": exWithColumn(dal.NewAggregate("sum", false, exBinaryChain(maxWalkNesting-1, dal.NewFieldRef("", "id")))),
+		// A bound a request body can reach is not a bound the walk may spend memory
+		// on: a thousand levels are refused, not walked.
+		"a thousand group conditions":   exWithWhere(exGroupChain(1000, exIDEqualsOne())),
+		"a thousand binary expressions": exWithColumn(exBinaryChain(1000, dal.NewFieldRef("", "id"))),
+		// The count runs across subqueries: the outer levels and the inner levels
+		// add up.
+		"levels split between a query and its subquery":      exWithWhere(exGroupChain(maxWalkNesting/2, dal.NewExistsCondition(exWithWhere(exGroupChain(maxWalkNesting/2, exIDEqualsOne()))))),
+		"levels split between a query and a scalar subquery": exWithColumn(exBinaryChain(maxWalkNesting/2, dal.NewQueryExpression(exWithColumn(exBinaryChain(maxWalkNesting/2, dal.NewFieldRef("", "id"))), "q"))),
+	}
+	for name, q := range tooDeep {
+		t.Run("refuses "+name, func(t *testing.T) {
+			doc, err := inspect(q)
+			if !errors.Is(err, ErrInvalidDocument) || !strings.Contains(err.Error(), "nest") {
+				t.Fatalf("err = %v, want ErrInvalidDocument about nesting", err)
+			}
+			if len(err.Error()) > 512 {
+				t.Fatalf("the error is %d bytes long", len(err.Error()))
+			}
+			if !reflect.DeepEqual(doc, document{}) {
+				t.Fatalf("a refused document returned a walk: %+v", doc)
+			}
+		})
+	}
+}
+
+// The count is of levels above a node, not of nodes walked: siblings do not add
+// up, so a wide document is not a deep one.
+func TestInspectDoesNotCountSiblingsAsNesting(t *testing.T) {
+	children := make([]dal.Condition, 500)
+	for i := range children {
+		children[i] = exGroupChain(maxWalkNesting-4, exIDEqualsOne())
+	}
+	if _, err := inspect(exWithWhere(dal.NewGroupCondition(dal.And, children...))); err != nil {
+		t.Fatalf("a wide group of deep conditions: %v", err)
+	}
+	columns := make([]dal.Column, 500)
+	for i := range columns {
+		columns[i] = dal.Column{Expression: exBinaryChain(maxWalkNesting-3, dal.NewFieldRef("", "id"))}
+	}
+	if _, err := inspect(dal.WithColumns(exBase(), columns)); err != nil {
+		t.Fatalf("a wide column list of deep expressions: %v", err)
+	}
+}
+
 func TestInspectChecksEveryNameTheDocumentCarries(t *testing.T) {
 	a := exRef("", "a", "a")
 	for _, tc := range []struct {
@@ -217,6 +313,8 @@ func TestInspectChecksEveryNameTheDocumentCarries(t *testing.T) {
 		{"field with a quote", exWithColumn(dal.NewFieldRef("", `id"; DROP TABLE a; --`)), "field name"},
 		{"field with a space", exWithColumn(dal.NewFieldRef("", "first name")), "field name"},
 		{"field with a comment marker", exWithColumn(dal.NewFieldRef("", "a--b")), "field name"},
+		{"field that starts with a combining mark", exWithColumn(dal.NewFieldRef("", "́e")), "field name"},
+		{"nested segment that starts with a combining mark", exWithColumn(dal.NewFieldRef("", "a.́e")), "field name"},
 		{"field that is too long", exWithColumn(dal.NewFieldRef("", strings.Repeat("x", maxNameLen+1))), "field name"},
 		{"field in a condition", exWithWhere(dal.NewComparison(dal.NewFieldRef("", "x;y"), dal.Equal, dal.Constant{Value: 1})), "field name"},
 		{"qualifier that is not an identifier", exWithColumn(dal.NewFieldRef("a b", "id")), "identifier"},
@@ -226,6 +324,7 @@ func TestInspectChecksEveryNameTheDocumentCarries(t *testing.T) {
 		{"derived source alias", dal.From(dal.NewQuerySource(exPlain("", "b"), "bad alias")).NewQuery().SelectIntoRecord(nil), "identifier"},
 		{"wildcard source", dal.WithColumns(exBase(), []dal.Column{{Wildcard: &dal.WildcardProjection{Source: "x y"}}}), "identifier"},
 		{"wildcard exclusion", dal.WithColumns(exBase(), []dal.Column{{Wildcard: &dal.WildcardProjection{Exclude: []string{"a b"}}}}), "field name"},
+		{"scalar subquery result name", exWithColumn(dal.NewQueryExpression(exPlain("", "b"), "bad alias")), "identifier"},
 		{"parameter name", exWithWhere(dal.NewComparison(dal.NewFieldRef("", "id"), dal.Equal, dal.Param{Name: "bad name"})), "parameter name"},
 		{"field in a scan order", dal.From(exRef("", "a", "").WithScan(1, dal.AscendingField("bad field"))).NewQuery().SelectIntoRecord(nil), "field name"},
 	} {
@@ -250,6 +349,12 @@ func TestInspectChecksEveryNameTheDocumentCarries(t *testing.T) {
 			dal.Column{Wildcard: &dal.WildcardProjection{Source: "a", Exclude: []string{"secret"}}},
 			dal.Column{Expression: dal.Binary(dal.NewFieldRef("a", "x"), dal.Add, dal.Constant{Value: 1}), Alias: "x1"},
 			dal.Column{Expression: dal.NewAggregate("count", false, dal.Star()), Alias: "n"},
+			// A combining mark continues a segment, in decomposed Latin text and in
+			// scripts such as Devanagari, as core's strict rule has it.
+			dal.Column{Expression: dal.NewFieldRef("", "Café"), Alias: "cafe"},
+			dal.Column{Expression: dal.NewFieldRef("a", "नमस्ते.नमस्ते")},
+			dal.Column{Expression: dal.NewQueryExpression(exPlain("", "c"), "total")},
+			dal.Column{Expression: dal.NewQueryExpression(exPlain("", "c"), "")},
 		)
 	if _, err := inspect(ok); err != nil {
 		t.Fatalf("inspect: %v", err)
@@ -399,11 +504,12 @@ func TestDocumentAnyScanLooksAtEverySource(t *testing.T) {
 func TestRefusalsDoNotEchoALongNameWhole(t *testing.T) {
 	long := strings.Repeat("x y ", 1<<18) // 1 MiB, with spaces so that it is refused
 	for name, q := range map[string]dal.StructuredQuery{
-		"field":      exWithColumn(dal.NewFieldRef("", long)),
-		"alias":      dal.WithColumns(exBase(), []dal.Column{{Expression: dal.NewFieldRef("", "id"), Alias: long}}),
-		"qualifier":  exWithColumn(dal.NewFieldRef(long, "id")),
-		"parameter":  exWithWhere(dal.NewComparison(dal.NewFieldRef("", "id"), dal.Equal, dal.Param{Name: long})),
-		"collection": dal.From(exRef("", "a/../"+long, "")).NewQuery().SelectIntoRecord(nil),
+		"field":                       exWithColumn(dal.NewFieldRef("", long)),
+		"alias":                       dal.WithColumns(exBase(), []dal.Column{{Expression: dal.NewFieldRef("", "id"), Alias: long}}),
+		"qualifier":                   exWithColumn(dal.NewFieldRef(long, "id")),
+		"parameter":                   exWithWhere(dal.NewComparison(dal.NewFieldRef("", "id"), dal.Equal, dal.Param{Name: long})),
+		"collection":                  dal.From(exRef("", "a/../"+long, "")).NewQuery().SelectIntoRecord(nil),
+		"scalar subquery result name": exWithColumn(dal.NewQueryExpression(exPlain("", "b"), long)),
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := inspect(q)
@@ -415,9 +521,16 @@ func TestRefusalsDoNotEchoALongNameWhole(t *testing.T) {
 			}
 		})
 	}
-	// Execute does not echo a long collection name either.
+	// Execute does not echo a long collection name either: not where a source has
+	// no database, and not where a scan clause is refused on a protected source.
 	_, err := exRun(t, exPlain("", strings.Repeat("c", 1<<20)), "", newExRegistry(), exAllow, Limits{})
 	if !errors.Is(err, ErrSourceWithoutDatabase) || len(err.Error()) > 512 {
+		t.Fatalf("err = %v (%d bytes)", err, len(err.Error()))
+	}
+	protected := exMount("hr", "sqlite", true, nil)
+	scanned := dal.From(exRef("hr", strings.Repeat("c", 1<<20), "").WithScan(2, dal.AscendingField("id"))).NewQuery().SelectIntoRecord(nil)
+	_, err = exRun(t, scanned, "", newExRegistry(protected), exAllow, Limits{})
+	if !errors.Is(err, ErrScanOnProtectedSource) || len(err.Error()) > 512 {
 		t.Fatalf("err = %v (%d bytes)", err, len(err.Error()))
 	}
 }

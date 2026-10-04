@@ -16,7 +16,8 @@ import (
 //   - every collection the document reads, in the order the classifier lists
 //     them, with whether the read carries a scan clause;
 //   - whether any subquery or null test appears;
-//   - whether every name in the document is a plain name.
+//   - whether every name in the document is a plain name;
+//   - whether conditions and expressions nest within a bound.
 //
 // A node of a type it does not know is refused: whatever such a node holds is
 // out of sight of the authorisation, so the document does not run.
@@ -26,6 +27,15 @@ import (
 // what the profile accepted, and it stops a query graph that refers to itself.
 const maxWalkDepth = 16
 
+// maxWalkNesting bounds how many conditions and expressions sit one inside the
+// next, counted across subqueries. It is the bound of the profile walk of
+// pkg/core (relationalMaxNesting), counted the same way, and the drift test in
+// pkg/core compares the two. A level is one condition or one expression: a
+// comparison is a level and so is each of its operands. The bound keeps the
+// recursion of the walk, and the length of the paths it builds, in proportion
+// whatever the depth of the document.
+const maxWalkNesting = 64
+
 // maxNameLen is the longest field name, qualifier or alias.
 const maxNameLen = 256
 
@@ -34,21 +44,24 @@ const maxNameLen = 256
 // send it back.
 const maxEchoLen = 64
 
-// The name rules mirror pkg/core (ValidateFieldName, ValidateCollectionName and
-// the identifier rule of validateDTQLFields). They are repeated here so that
-// this package does not depend on pkg/core, which imports it to declare that a
-// database is a Source. A test in pkg/core (joinexec_names_drift_test.go) runs
-// one table of documents through both and fails when they answer differently,
-// so a change to one rule without the other is caught. A name is a plain name
-// when it matches, so a character nobody thought of is refused.
+// The name rules mirror pkg/core: ValidateFieldName (the strict field-name
+// rule), ValidateCollectionName and the identifier rule of the name check the
+// profile classifier runs. They are repeated here so that this package depends
+// on DALgo alone, and so that the test in pkg/core that compares the two
+// (joinexec_names_drift_test.go) can import this package. That test runs one
+// table of documents through both and fails when they answer differently, so a
+// change to one rule without the other is caught. A name is a plain name when it
+// matches, so a character nobody thought of is refused.
 //
-// Two differences are known and pinned by that test. A field qualifier may name
-// a source of any query of the document, where pkg/core scopes it to its own
-// query and the queries around it; the name is a validated collection name or
-// alias either way. And pkg/core's name check refuses a null test, which the
-// relational profile accepts and the walk checks.
+// Two differences are known and pinned by that test. The classifier applies a
+// wider quoted-name rule to the field names of a relational document (a column
+// named "zip code" is a name there); the walk applies the strict rule on every
+// route, so Execute refuses a document with a field name that only the wider rule
+// accepts. And a field qualifier may name a source of any query of the document,
+// where the classifier scopes it to its own query and the queries around it; the
+// name is a validated collection name or alias either way.
 var (
-	fieldNameRe  = regexp.MustCompile(`^(\$[\p{L}_]|[\p{L}\p{Nd}_])[\p{L}\p{Nd}_-]*(\.(\$[\p{L}_]|[\p{L}\p{Nd}_])[\p{L}\p{Nd}_-]*)*$`)
+	fieldNameRe  = regexp.MustCompile(`^(\$[\p{L}_]|[\p{L}\p{Nd}_])[\p{L}\p{M}\p{Nd}_-]*(\.(\$[\p{L}_]|[\p{L}\p{Nd}_])[\p{L}\p{M}\p{Nd}_-]*)*$`)
 	identifierRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
@@ -88,6 +101,9 @@ type walker struct {
 	fields      []string
 	identifiers []string
 	qualifiers  []string
+	// nest is the number of conditions and expressions being walked above the
+	// node in hand, across subqueries.
+	nest int
 }
 
 // inspect walks query and checks its names. The returned document is empty
@@ -264,11 +280,35 @@ func (w *walker) collection(ref dal.CollectionRef, path string, depth int) error
 	return nil
 }
 
+// enter counts one more condition or expression level and refuses past the
+// bound. A level that is walked without a refusal ends with w.nest--; the walk
+// stops at its first refusal, so the levels it unwinds through are not counted
+// back.
+func (w *walker) enter(path string) error {
+	w.nest++
+	if w.nest > maxWalkNesting {
+		return refuse(path, "conditions and expressions nest more than %d levels", maxWalkNesting)
+	}
+	return nil
+}
+
 // condition walks a condition tree. A nil condition is an absent clause.
 func (w *walker) condition(condition dal.Condition, path string, depth int) error {
-	switch value := condition.(type) {
-	case nil:
+	if condition == nil {
 		return nil
+	}
+	if err := w.enter(path); err != nil {
+		return err
+	}
+	if err := w.conditionNode(condition, path, depth); err != nil {
+		return err
+	}
+	w.nest--
+	return nil
+}
+
+func (w *walker) conditionNode(condition dal.Condition, path string, depth int) error {
+	switch value := condition.(type) {
 	case dal.Comparison:
 		if err := w.expression(value.Left, path+".left", depth); err != nil {
 			return err
@@ -298,6 +338,17 @@ func (w *walker) condition(condition dal.Condition, path string, depth int) erro
 
 // expression walks an expression tree. Expressions are never absent.
 func (w *walker) expression(expression dal.Expression, path string, depth int) error {
+	if err := w.enter(path); err != nil {
+		return err
+	}
+	if err := w.expressionNode(expression, path, depth); err != nil {
+		return err
+	}
+	w.nest--
+	return nil
+}
+
+func (w *walker) expressionNode(expression dal.Expression, path string, depth int) error {
 	switch value := expression.(type) {
 	case dal.FieldRef:
 		w.fields = append(w.fields, value.Name())
@@ -328,6 +379,10 @@ func (w *walker) expression(expression dal.Expression, path string, depth int) e
 		return nil
 	case dal.QueryExpression:
 		w.doc.hasSubquery = true
+		// The result name becomes a key of the row and a column name.
+		if as := value.As(); as != "" {
+			w.identifiers = append(w.identifiers, as)
+		}
 		return w.query(value.Query(), path+".query", depth+1)
 	default:
 		return refuse(path, "unsupported expression %T", expression)

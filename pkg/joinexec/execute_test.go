@@ -1141,6 +1141,54 @@ func TestExecuteInMemoryRouteSaysWhereAPlainDocumentsFilterRan(t *testing.T) {
 			t.Fatalf("rows = %d, want 2", len(res.Records))
 		}
 	})
+	// A document that names its database but aggregates, or that has a scan clause
+	// beside a WHERE, is not handed to the mount whole either: DALgo reads the
+	// collection with a plain scan (the scan bound apart) and evaluates the
+	// WHERE and the aggregate above the leaf, over the rows the mount delivered.
+	aboveOne := dal.NewComparison(dal.NewFieldRef("", "k"), dal.GreaterThen, dal.NewConstant(1))
+	for _, tc := range []struct {
+		name      string
+		query     dal.StructuredQuery
+		protected bool
+		wantRows  int
+		wantLimit int
+	}{
+		{
+			"qualified count with a WHERE on a protected mount",
+			dal.From(exRef("hr", "A", "")).NewQuery().Where(aboveOne).SelectColumns(dal.CountAs(dal.Star(), "n")),
+			true, 1, 0,
+		},
+		{
+			"qualified GROUP BY with a WHERE on a protected mount",
+			dal.From(exRef("hr", "A", "")).NewQuery().Where(aboveOne).GroupBy(dal.NewFieldRef("", "k")).
+				SelectColumns(dal.Column{Expression: dal.NewFieldRef("", "k")}, dal.CountAs(dal.Star(), "n")),
+			true, 2, 0,
+		},
+		{
+			"qualified scan clause beside a WHERE on a public mount",
+			dal.From(exRef("hr", "A", "").WithScan(3, dal.AscendingField("id"))).NewQuery().Where(aboveOne).SelectIntoRecord(nil),
+			false, 2, 3,
+		},
+	} {
+		t.Run(tc.name+": the mount receives no WHERE and no aggregate", func(t *testing.T) {
+			mount := exMount("hr", "sqlite", tc.protected, map[string][]record.Record{"A": exRows("A", "a", 3)})
+			res, err := exRun(t, tc.query, "", newExRegistry(mount), exAllow, Limits{})
+			if err != nil || res.Execution.Route != RouteInMemory {
+				t.Fatalf("route %s, err %v", res.Execution.Route, err)
+			}
+			if len(res.Records) != tc.wantRows {
+				t.Fatalf("rows = %d, want %d: the filter ran above the leaf", len(res.Records), tc.wantRows)
+			}
+			seen := mount.exec.seen()
+			if len(seen) != 1 {
+				t.Fatalf("the mount received %d queries, want 1", len(seen))
+			}
+			q := seen[0].(dal.StructuredQuery)
+			if q.Where() != nil || dal.HasAggregation(q) || dal.HasSubquery(q) || len(q.From().Joins()) != 0 || q.Limit() != tc.wantLimit {
+				t.Fatalf("the mount received %s, want a plain read of the collection (limit %d) with no WHERE and no aggregate", q, tc.wantLimit)
+			}
+		})
+	}
 }
 
 // Every collection the walk finds is authorised before any mount is resolved,

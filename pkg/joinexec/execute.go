@@ -64,10 +64,12 @@ type Execution struct {
 	// Route is RouteDatabase or RouteInMemory. It names the path, not where every
 	// filter ran: on RouteInMemory DALgo evaluates the document above guarded
 	// single-collection reads, and a document with one source that names its
-	// database and has no subquery or null test is read with one such query that
-	// carries its WHERE, ORDER BY and LIMIT, which the mount's own executor runs.
-	// Every other in-memory document is read with plain scans of each collection
-	// and filtered above them.
+	// database and has no subquery, null test, aggregation or scan clause is read
+	// with one such query that carries its WHERE, ORDER BY and LIMIT, which the
+	// mount's own executor runs. Every other in-memory document (one with a join,
+	// GROUP BY, HAVING, an aggregate, a scan clause, or a source that names no
+	// database) is read with plain scans of each collection and filtered above
+	// them.
 	Route        string            `json:"route"`
 	ElapsedMs    int64             `json:"elapsedMs"`
 	RowsReturned int               `json:"rowsReturned"`
@@ -192,11 +194,16 @@ func withClock(now func() time.Time) Option {
 // join-set check and no join-set setting lifts it.
 //
 // The walk checks every name of a document (fields, aliases, qualifiers,
-// parameters and collections) by the rules of pkg/core. The classifier of
-// pkg/core alone checks the database id format, the limit and offset bounds,
-// money, cursors, the join types and the number of sources; Execute does not
-// repeat them, so a caller must not hand it a document, or a profile, that did
-// not pass the classifier.
+// parameters, the result names of scalar subqueries and collections) by the
+// strict rules of pkg/core, and refuses a document whose conditions and
+// expressions nest more than 64 levels. A field name must pass the strict rule
+// (core.ValidateFieldName) whatever the route and the engine. The classifier of
+// pkg/core applies a wider quoted-name rule to the field names of a relational
+// document, so a name such as "zip code" classifies and Execute then refuses it
+// with ErrInvalidDocument. The classifier alone checks the database id format,
+// the limit and offset bounds, money, cursors, the join types and the number of
+// sources; Execute does not repeat them, so a caller must hand it a document,
+// and a profile, that passed the classifier.
 //
 // opts, limits and the ordering of results are as documented on Option,
 // Limits, MaxResultRows and MaxResultBytes.
@@ -329,7 +336,7 @@ func (c *config) checkEngines(databases []string, sources map[string]Source) err
 func checkScans(targets []walkedSource, sources map[string]Source) error {
 	for _, target := range targets {
 		if target.scan && sources[target.database].HasAccessPolicies() {
-			return fmt.Errorf("%w: %q.%q", ErrScanOnProtectedSource, target.database, target.collection)
+			return fmt.Errorf("%w: %q.%q", ErrScanOnProtectedSource, target.database, clip(target.collection))
 		}
 	}
 	return nil
@@ -405,8 +412,11 @@ func (r *run) database(ctx context.Context, query dal.StructuredQuery, source So
 // inMemory runs the document above guarded leaves. DALgo's federated executor
 // runs a document whose sources all name their database and that has no
 // subquery, one leaf per database: it keeps the streaming join, and a plain
-// one-source document is handed to the mount whole, with its WHERE, ORDER BY and
-// LIMIT. The federated executor cannot read a derived source (it asks every
+// one-source document (no null test, aggregation or scan clause) is handed to
+// the mount whole, with its WHERE, ORDER BY and LIMIT. DALgo reads a one-source
+// document with GROUP BY, HAVING, an aggregate, or a scan clause beside a WHERE,
+// ORDER BY or offset, with a plain scan of the collection and evaluates it above
+// the leaf. The federated executor cannot read a derived source (it asks every
 // FROM node for a database), and a one-source document with a null test would
 // be handed whole to an engine that cannot compile it, so every other document
 // runs through DALgo's recursive executor over a router that picks the leaf of
