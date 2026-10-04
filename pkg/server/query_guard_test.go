@@ -174,3 +174,28 @@ func TestUnsafeFieldNamesRefusedOnEveryEngine(t *testing.T) {
 		})
 	}
 }
+
+// TestAdvertisedQueryCapabilityMatchesGuard checks that metadata never tells a
+// client a mount is queryable when the guard refuses structured queries on it.
+func TestAdvertisedQueryCapabilityMatchesGuard(t *testing.T) {
+	for engine, want := range map[string]bool{"sqlite": true, "ingitdb": true, "firestore": true, "postgres": false, "mysql": false} {
+		t.Run(engine, func(t *testing.T) {
+			ts, _ := guardServer(t, engine)
+			status, body := send(t, ts, guardCall{method: "GET", path: base})
+			caps, _ := body["capabilities"].(map[string]any)
+			if status != http.StatusOK || caps["query"] != want || caps["dtql"] != want || caps["read"] != true {
+				t.Errorf("database metadata: status %d capabilities %v, want query/dtql %v", status, caps, want)
+			}
+			status, body = send(t, ts, guardCall{method: "GET", path: "/.well-known/openvaultdb"})
+			dbs, _ := body["databases"].([]any)
+			if status != http.StatusOK || len(dbs) != 1 {
+				t.Fatalf("well-known: status %d body %v", status, body)
+			}
+			entry, _ := dbs[0].(map[string]any)
+			caps, _ = entry["capabilities"].(map[string]any)
+			if caps["query"] != want || caps["dtql"] != want || caps["read"] != true {
+				t.Errorf("well-known capabilities %v, want query/dtql %v", caps, want)
+			}
+		})
+	}
+}

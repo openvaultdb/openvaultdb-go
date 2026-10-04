@@ -141,11 +141,19 @@ func TestQueryUnsupportedErrorIsNotInvalidQuery(t *testing.T) {
 var unsafeFieldNames = []string{
 	`na"me`, `na'me`, "na me", "name;", "name; DROP TABLE x", "name--", "na--me",
 	"name/*", "na/**/me", "name#", "", ".", "a..b", ".name", "name.", "1name",
-	"name\x00", "na\nme", "na\tme", "naïve", `[name]`, "`name`", "name)", "(name",
+	"name\x00", "na\nme", "na\tme", `[name]`, "`name`", "name)", "(name",
 	"name=1", "name OR 1=1", strings.Repeat("a", maxFieldNameLen+1),
+	"$", "$$id", "a$$", "-name", "a.-b", "a--b", "a---b", `na\me`, "na\u200bme", "na\u2028me",
+	"a/b", "a*b", "a%b", "a,b", "a|b", "a:b", "a<b", "a+b", "a@b", "a!b", "a?b", "a~b", "a^b", "a&b", "a{b", "a}b", "a]b",
+	"$id.", "a$b", "a.$b$", "$.a", "\u00a0name", "name\u00a0",
 }
 
-var safeFieldNames = []string{"name", "_id", "Name2", "a_b", "address.city", "a.b.c", strings.Repeat("a", maxFieldNameLen)}
+// safeFieldNames include the key pseudo-field of the document engines ($id),
+// hyphenated names and non-ASCII letters, none of which are SQL syntax.
+var safeFieldNames = []string{
+	"name", "_id", "Name2", "a_b", "address.city", "a.b.c", strings.Repeat("a", maxFieldNameLen),
+	"$id", "$id.x", "a.$id", "first-name", "a-b-c", "naïve", "名前", "address.zip-code",
+}
 
 func TestValidateFieldName(t *testing.T) {
 	for _, name := range unsafeFieldNames {
@@ -337,7 +345,7 @@ func TestValidateDTQLFieldsAggregatesAliasesSourcesAndDepth(t *testing.T) {
 		t.Errorf("qualified field source: %v", err)
 	}
 	// Deeply nested conditions are refused rather than walked without bound.
-	var deep dal.Condition = dal.WhereField("a", dal.Equal, 1)
+	deep := dal.WhereField("a", dal.Equal, 1)
 	for i := 0; i <= maxQueryTreeDepth+1; i++ {
 		deep = dal.NewGroupCondition(dal.And, deep)
 	}
@@ -372,5 +380,50 @@ func TestValidateDTQLFieldsCoversEveryClause(t *testing.T) {
 	good := root().GroupBy(dal.Field("ok")).Having(dal.NewComparison(dal.Field("ok"), dal.Equal, dal.String("x"))).SelectColumns(dal.AllColumnsExcept("x"))
 	if err := validateDTQLFields(good, 0); err != nil {
 		t.Errorf("good: %v", err)
+	}
+}
+
+// TestDocumentEngineKeyPseudoFieldReachesAdapter is the regression test for
+// the over-strict identifier rule: ordering or filtering by the inGitDB $id
+// key pseudo-field, and firestore names that are not ASCII identifiers, were
+// valid before the guard and must still reach the adapter.
+func TestDocumentEngineKeyPseudoFieldReachesAdapter(t *testing.T) {
+	for _, engine := range []string{"ingitdb", "firestore", "sqlite"} {
+		t.Run(engine, func(t *testing.T) {
+			db, fake := openEngine(t, engine)
+			ctx := context.Background()
+			for _, name := range []string{"$id", "first-name", "naïve"} {
+				q := Query{Collection: "customers", Where: []Filter{{Field: name, Op: ">", Value: "a"}}, OrderBy: []OrderBy{{Field: name}}}
+				if _, err := db.Execute(ctx, q); !errors.Is(err, errFakeReached) {
+					t.Errorf("wire %q: %v", name, err)
+				}
+				root := dal.From(dal.NewRootCollectionRef("customers", "")).NewQuery()
+				dq := root.WhereField(name, dal.Equal, "x").OrderBy(dal.AscendingField(name)).SelectColumns(dal.Column{Expression: dal.Field(name)})
+				if _, err := db.ExecuteDTQLQuery(ctx, dq); !errors.Is(err, errFakeReached) {
+					t.Errorf("dtql %q: %v", name, err)
+				}
+			}
+			if fake.queries != 6 {
+				t.Fatalf("queries = %d, want 6", fake.queries)
+			}
+		})
+	}
+}
+
+func TestCanQueryFollowsTheGuardAllowList(t *testing.T) {
+	for engine, want := range map[string]bool{
+		"sqlite": true, "ingitdb": true, "firestore": true,
+		"postgres": false, "mysql": false, "oracle": false, "": false,
+	} {
+		db, _ := openEngine(t, engine)
+		if got := db.CanQuery(); got != want {
+			t.Errorf("%q: CanQuery = %v, want %v", engine, got, want)
+		}
+		if got := db.guardQuery() == nil; got != want {
+			t.Errorf("%q: guardQuery allows = %v, want %v", engine, got, want)
+		}
+	}
+	if (&Database{}).CanQuery() {
+		t.Error("database without manifest must not advertise query")
 	}
 }

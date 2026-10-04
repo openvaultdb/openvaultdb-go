@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/dal-go/dalgo/dal"
 )
@@ -45,31 +46,45 @@ var queryEngines = map[string]bool{
 // cleared for structured queries. Every path that hands a structured query to
 // the driver calls it first.
 func (d *Database) guardQuery() error {
-	engine := ""
-	if d.Manifest != nil {
-		engine = d.Manifest.Storage.Engine
-	}
-	if !queryEngines[engine] {
-		return &QueryUnsupportedError{Engine: engine}
+	if !d.CanQuery() {
+		return &QueryUnsupportedError{Engine: d.queryEngine()}
 	}
 	return nil
 }
 
+func (d *Database) queryEngine() string {
+	if d.Manifest == nil {
+		return ""
+	}
+	return d.Manifest.Storage.Engine
+}
+
+// CanQuery reports whether structured queries (/query, /dtql) are allowed on
+// this mount. It is the same allow-list guardQuery enforces, so database
+// metadata can advertise exactly what the guard will accept.
+func (d *Database) CanQuery() bool { return queryEngines[d.queryEngine()] }
+
 const maxFieldNameLen = 256
 
-// fieldNameRe is the identifier rule for field names in /query and /dtql:
-// ASCII letters, digits and underscore, not starting with a digit, with
-// optional dot-separated nested segments. Quotes, spaces, semicolons, comment
-// markers and every other character are refused, on every engine.
-var fieldNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$`)
+// fieldNameRe is the field-name rule for /query and /dtql. A name is one or
+// more dot-separated segments (nested fields); a segment is a letter or
+// underscore, optionally preceded by one "$" (the key pseudo-field $id of the
+// document engines), followed by letters, digits, underscore or hyphen.
+// Letters and digits are Unicode, because firestore field names may be
+// non-ASCII; hyphens are legal there too. Everything else is refused on every
+// engine: quotes, backticks, spaces and other whitespace, semicolons, slashes,
+// brackets, "#", backslash, control characters. The comment marker "--" is
+// refused explicitly because hyphens are allowed. It is an allow-list, so a
+// character nobody thought of is refused too.
+var fieldNameRe = regexp.MustCompile(`^\$?[\p{L}_][\p{L}\p{Nd}_-]*(\.\$?[\p{L}_][\p{L}\p{Nd}_-]*)*$`)
 
 // ValidateFieldName checks one field name from a request body.
 func ValidateFieldName(name string) error {
 	if len(name) > maxFieldNameLen {
 		return fmt.Errorf("field name exceeds %d bytes", maxFieldNameLen)
 	}
-	if !fieldNameRe.MatchString(name) {
-		return fmt.Errorf("field name %q is not a plain identifier (letters, digits and underscore, dot-separated for nested fields)", name)
+	if !fieldNameRe.MatchString(name) || strings.Contains(name, "--") {
+		return fmt.Errorf("field name %q is not a plain field name (letters, digits, underscore and hyphen, an optional leading $ per segment, dot-separated for nested fields)", name)
 	}
 	return nil
 }

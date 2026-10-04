@@ -468,7 +468,7 @@ func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
 		"engine":       db.Manifest.Storage.Engine,
 		"schemaMode":   string(db.Manifest.Database.SchemaMode),
 		"collections":  collections,
-		"capabilities": map[string]bool{"read": true, "query": true, "dtql": true, "write": !s.readOnly},
+		"capabilities": map[string]bool{"read": true, "query": db.CanQuery(), "dtql": db.CanQuery(), "write": !s.readOnly},
 		"endpoints":    map[string]string{"dtql": s.humanOrigin(r) + "/v1/databases/" + url.PathEscape(db.ID()) + "/dtql"},
 		"queryFormat":  "dtql-yaml+json",
 	})
