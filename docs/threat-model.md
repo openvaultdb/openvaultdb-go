@@ -40,6 +40,12 @@ engine.
   defense in depth alongside the driver fix.
 - **Capability scope** is checked on the root collection of the same parsed key the driver
   receives (for queries: the parent key's root collection).
+- **Names that reach SQL text** are a separate rule: `ValidateSegment` accepts quotes, spaces and
+  semicolons, which is harmless for a path but not for an adapter that writes a name into a
+  statement. On `sqlite`, `postgres` and `mysql` a key read or write is therefore 404 `not_found`
+  unless every collection of the key is declared in the manifest, and on every engine a field name
+  in a write body must pass `core.ValidateFieldName` (400 `bad_request`); both refusals happen
+  before the adapter is called. See "PostgreSQL engine" below.
 - **Storage paths** in manifests are resolved relative to the manifest file's directory;
   absolute paths in the manifest are accepted. The server does not sanitise manifest paths
   (manifests are operator-controlled, not user-supplied).
@@ -163,9 +169,22 @@ named by `storage.postgres.dsn_env` (default `OVDB_POSTGRES_DSN`) — never from
 the manifest. Use `sslmode=require` (or stronger) for non-local servers; the
 DSN, and thus the password, is visible to anything that can read the ovdb
 process environment. ovdb opens exactly one connection pool per mounted
-Postgres database and issues only parameterized statements (identifiers are
-validated against a safe pattern before quoting), so record data cannot inject
-SQL.
+Postgres database. Record *values* travel as statement parameters, but the
+adapter (`dalgo2sql`) writes collection and field *names* into the statement
+text of key reads and writes without quoting them (read from its source; the
+fix is the `dalgo2sql` task SQL-0W). ovdb therefore does not rely on the
+adapter: before it calls the adapter, a key read or write is refused with 404
+`not_found` unless the key's collection is one the mount declared in the
+manifest's `schemas` when it opened (names match exactly, including case) and
+the key has no parent (a SQL mount has no subcollections), and with 400
+`bad_request` unless every field name that can become a column (the body's
+top-level keys, an update's `fieldName` and the first segment of its
+`fieldPath`, and the later segments too on a SQL engine) passes
+`core.ValidateFieldName`. `core.ValidateSegment` is not enough on
+its own: it is a path-safety rule and accepts quotes, spaces and semicolons.
+Structured queries (`/query`, `/dtql`) are not available on this engine: they
+answer 501 `query_unsupported` until a reviewed query compiler lands, so the
+statements the adapter builds for them are never run.
 
 
 ## CORS (2026-07-09)
@@ -194,9 +213,11 @@ header so the browser can read the error body, but the request is rejected.
 Same posture as the PostgreSQL engine: the DSN carries credentials and is read
 from the environment variable named by `storage.mysql.dsn_env` (default
 `OVDB_MYSQL_DSN`), never from the manifest. Prefer a TLS-enabled DSN
-(`tls=true` or a custom TLS config) for non-local servers. ovdb issues only
-parameterized statements; identifiers are validated against a safe pattern
-before backtick-quoting, so record data cannot inject SQL.
+(`tls=true` or a custom TLS config) for non-local servers. The same limits
+apply as for PostgreSQL: values are bound as parameters but `dalgo2sql` writes
+collection and field names into the statement text (SQL-0W), so ovdb refuses an
+undeclared collection (404) and a field name that is not plain (400) before the
+adapter is called, and answers structured queries with 501 `query_unsupported`.
 
 
 ## GitHub-backed inGitDB (2026-07-09)

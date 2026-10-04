@@ -160,7 +160,11 @@ func (g *Guard) Collect(ctx context.Context, reader dal.RecordsReader, route str
 			break
 		}
 		rec, err := reader.Next()
-		if errors.Is(err, io.EOF) {
+		// The end of the stream is io.EOF itself or dal.ErrNoMoreRecords (which
+		// wraps it), as the leaf and DALgo read it. An error that merely wraps
+		// io.EOF is a failed read, which a reader no leaf guards (the database
+		// route) records nowhere else.
+		if err == io.EOF || errors.Is(err, dal.ErrNoMoreRecords) {
 			break
 		}
 		if err != nil {

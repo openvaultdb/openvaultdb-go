@@ -25,12 +25,15 @@ type QueryLimits struct {
 	MaxSourceRows int
 	// MaxSourceBytes is the most bytes one request may read from sources.
 	MaxSourceBytes int64
-	// JoinEngines lists the storage engines whose databases may take part in
-	// a join.
+	// JoinEngines lists the storage engines whose databases may take part in a
+	// join. "ingitdb" means a local working tree only: a GitHub-backed inGitDB
+	// database (Storage.InGitDB.GitHub != nil) is never eligible, whatever this
+	// list says.
 	JoinEngines []string
 }
 
-// DefaultQueryLimits returns the limits sized for a 512 MiB instance.
+// DefaultQueryLimits returns the default limits. A 512 MiB instance should
+// lower InMemory to 1.
 func DefaultQueryLimits() QueryLimits {
 	return QueryLimits{
 		Timeout:        10 * time.Second,
@@ -117,14 +120,19 @@ func newQueryGate(l QueryLimits, c clock) *queryGate {
 	}
 }
 
+// noRelease is the release function of a refused acquire: calling it does
+// nothing, so `release, ok := g.acquire(...); defer release()` written before
+// the ok check does not panic on a refusal.
+func noRelease() {}
+
 // acquire takes a slot on route, waiting up to the queue wait for one to free.
-// It returns the release function and true, or nil and false when the route is
-// unknown, the context is done, or the wait ran out. The release function is
-// safe to call more than once.
+// It returns the release function and true, or a no-op release function and
+// false when the route is unknown, the context is done, or the wait ran out.
+// The release function is safe to call more than once.
 func (g *queryGate) acquire(ctx context.Context, route queryRoute) (func(), bool) {
 	slots, known := g.slots[route]
 	if !known || ctx.Err() != nil {
-		return nil, false
+		return noRelease, false
 	}
 	select {
 	case slots <- struct{}{}:
@@ -132,15 +140,15 @@ func (g *queryGate) acquire(ctx context.Context, route queryRoute) (func(), bool
 	default:
 	}
 	if g.wait <= 0 {
-		return nil, false
+		return noRelease, false
 	}
 	select {
 	case slots <- struct{}{}:
 		return releaseSlot(slots), true
 	case <-g.clock.After(g.wait):
-		return nil, false
+		return noRelease, false
 	case <-ctx.Done():
-		return nil, false
+		return noRelease, false
 	}
 }
 

@@ -133,9 +133,11 @@ func TestStructuredQueryRefusedOnPostgresAndMySQLEndpoints(t *testing.T) {
 	}
 }
 
+// The collection is declared: since OV-0W a SQL engine answers 404 for a key
+// read of a collection its manifest does not declare (write_guard_test.go).
 func TestKeyReadsStillWorkOnPostgresAndMySQL(t *testing.T) {
 	for _, engine := range []string{"postgres", "mysql"} {
-		ts, fake := guardServer(t, engine)
+		ts, fake := writeGuardServer(t, engine, "customers")
 		status, body := send(t, ts, guardCall{method: "GET", path: base + "/records/customers/1"})
 		if status != http.StatusOK || fake.gets != 1 || fake.queries != 0 {
 			t.Errorf("%s: status %d gets %d queries %d body %v", engine, status, fake.gets, fake.queries, body)
@@ -165,7 +167,10 @@ func TestSchemaDatabaseAndScanRefusedOnRootSourceOnEveryEngine(t *testing.T) {
 				"{name: customers, database: d}",
 			} {
 				status, body := send(t, ts, guardCall{method: "POST", path: base + "/dtql", body: "from: " + from + "\n"})
-				if status != http.StatusBadRequest {
+				detail, _ := body["error"].(map[string]any)
+				// The code is asserted too: a 400 for any other reason would
+				// also pass a status check alone.
+				if status != http.StatusBadRequest || detail["code"] != "invalid_dtql" {
 					t.Errorf("%s: status %d body %v", from, status, body)
 				}
 			}
@@ -177,10 +182,21 @@ func TestSchemaDatabaseAndScanRefusedOnRootSourceOnEveryEngine(t *testing.T) {
 }
 
 func TestUnsafeFieldNamesRefusedOnEveryEngine(t *testing.T) {
-	names := []string{`na"me`, "na me", "name;", "na--me", "na/*me", "name#", "na'me"}
+	// Refused under every engine's rule: what could end a quoted identifier or a
+	// statement.
+	always := []string{`na"me`, "name;", "na'me", "na`me", `na\me`}
+	// Refused under the strict rule only: spaces, comment markers, punctuation.
+	// sqlite and ingitdb quote names and take them (see below); postgres and
+	// mysql keep the strict rule.
+	strictOnly := []string{"na me", "na--me", "na/*me", "name#"}
+	quoting := map[string]bool{"sqlite": true, "ingitdb": true}
 	for _, engine := range []string{"sqlite", "ingitdb", "postgres", "mysql"} {
 		t.Run(engine, func(t *testing.T) {
 			ts, fake := guardServer(t, engine)
+			names := append([]string(nil), always...)
+			if !quoting[engine] {
+				names = append(names, strictOnly...)
+			}
 			for _, name := range names {
 				wireWhere, _ := json.Marshal(map[string]any{"collection": "customers", "where": []map[string]any{{"field": name, "op": "==", "value": 1}}})
 				wireOrder, _ := json.Marshal(map[string]any{"collection": "customers", "orderBy": []map[string]any{{"field": name}}})
@@ -205,6 +221,60 @@ func TestUnsafeFieldNamesRefusedOnEveryEngine(t *testing.T) {
 					if status != http.StatusBadRequest {
 						t.Errorf("%s %q: status %d body %v", call.name, name, status, body)
 					}
+				}
+			}
+			if fake.queries != 0 {
+				t.Fatalf("adapter query path called %d times", fake.queries)
+			}
+		})
+	}
+}
+
+// TestEnginesThatQuoteTakeANameTheStrictRuleRefuses: on sqlite and ingitdb a
+// name with a space or punctuation is not a 400: it reaches the adapter, from
+// the wire query, from DTQL and from a snapshot page. (The fake adapter fails
+// every read, so the answer is not 200; the point is that it was reached.)
+func TestEnginesThatQuoteTakeANameTheStrictRuleRefuses(t *testing.T) {
+	for _, engine := range []string{"sqlite", "ingitdb"} {
+		t.Run(engine, func(t *testing.T) {
+			ts, fake := guardServer(t, engine)
+			for _, name := range []string{"zip code", "na--me", "na/*me", "name#", "a(b)"} {
+				wireWhere, _ := json.Marshal(map[string]any{"collection": "customers", "where": []map[string]any{{"field": name, "op": "==", "value": 1}}})
+				yamlName, _ := json.Marshal(name)
+				for _, call := range []guardCall{
+					{name: "query where", method: "POST", path: base + "/query", body: string(wireWhere)},
+					{name: "dtql where", method: "POST", path: base + "/dtql", body: "from: {name: customers}\nwhere: {op: '==', left: {field: " + string(yamlName) + "}, right: {value: 1}}\n"},
+					{name: "dtql snapshot", method: "POST", path: base + "/dtql", body: "from: {name: customers}\norderBy: [{field: " + string(yamlName) + "}]\n", headers: map[string]string{"OVDB-Page-Size": "5"}},
+				} {
+					before := fake.queries
+					status, body := send(t, ts, call)
+					if status == http.StatusBadRequest || fake.queries != before+1 {
+						t.Errorf("%s %q: status %d body %v, adapter calls %d -> %d", call.name, name, status, body, before, fake.queries)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestUnsafeArithmeticOperatorRefusedOnEveryEngine: the operator of a binary
+// expression is a caller-supplied string, and dalgo parses any text as one. It
+// is a 400 before any adapter call on every engine, including the two the
+// engine guard refuses with 501 for a well-formed query.
+func TestUnsafeArithmeticOperatorRefusedOnEveryEngine(t *testing.T) {
+	doc := "from: {name: customers}\nwhere: {op: '==', left: {binary: {op: \"x; --\", left: {field: a}, right: {value: 1}}}, right: {value: 1}}\n"
+	for _, engine := range []string{"sqlite", "ingitdb", "postgres", "mysql"} {
+		t.Run(engine, func(t *testing.T) {
+			ts, fake := guardServer(t, engine)
+			for _, call := range []guardCall{
+				{name: "dtql POST", method: "POST", path: base + "/dtql", body: doc},
+				{name: "dtql GET", method: "GET", path: base + "/dtql?q=" + url.QueryEscape(doc)},
+				{name: "dtql snapshot page", method: "POST", path: base + "/dtql", body: doc, headers: map[string]string{"OVDB-Page-Size": "5"}},
+			} {
+				status, body := send(t, ts, call)
+				detail, _ := body["error"].(map[string]any)
+				if status != http.StatusBadRequest || detail["code"] != "invalid_dtql" {
+					t.Errorf("%s: status %d body %v", call.name, status, body)
 				}
 			}
 			if fake.queries != 0 {

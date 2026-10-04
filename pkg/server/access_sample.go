@@ -23,6 +23,10 @@ func (s *Server) sampleAccess(w http.ResponseWriter, r *http.Request, db *core.D
 	if !s.authorize(w, r, db.ID(), auth.CapRecordsRead, template.Resource.Table) {
 		return
 	}
+	if err := guardOperation(db, template); err != nil {
+		s.refuseOperation(w, r, az.ModeSample, template, err)
+		return
+	}
 	query, err := request.Sample.Query.Parse(template.Resource.Table)
 	if err != nil {
 		writeError(w, 400, "bad_request", "invalid sample query")
