@@ -373,8 +373,6 @@ func assertRefusal(t *testing.T, profile Profile, err error, rule, path string) 
 	}
 }
 
-func rootRef(name string) dal.RecordsetSource { return dal.NewRootCollectionRef(name, "") }
-
 func buildQuery(from dal.FromSource) *dal.QueryBuilder { return from.NewQuery() }
 
 // unknownExpression and unknownCondition are shapes no DTQL document can
