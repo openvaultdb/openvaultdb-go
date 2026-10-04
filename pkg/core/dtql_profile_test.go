@@ -231,6 +231,28 @@ columns:
 			doc:     "from: {name: Customer, alias: c}\nlimit: 1000\noffset: 10000\n",
 			sources: []ProfileSource{{Collection: "Customer", Alias: "c"}},
 		},
+		{
+			// The caps bound the answer, so they apply to the outermost query
+			// only. A nested read is bounded by the request's read budget, and a
+			// top-N derived source is a valid shape.
+			name: "limit and offset above the caps in a derived source and a subquery",
+			doc: `
+from:
+  query:
+    as: d
+    from: {name: a, alias: x}
+    limit: 5000
+    offset: 20000
+where:
+  exists:
+    query:
+      from: {name: b, alias: y}
+      limit: 100000
+limit: 10
+`,
+			sources:  []ProfileSource{{Collection: "a", Alias: "x"}, {Collection: "b", Alias: "y"}},
+			subquery: true,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			profile, err := ClassifyDTQL(mustDeserialize(t, tc.doc))
@@ -253,6 +275,7 @@ columns:
 func TestClassifyDTQLSingleCollectionMatchesValidateDTQL(t *testing.T) {
 	for _, doc := range []string{
 		"from: {name: customers}\n",
+		"from: {name: customers}\nwhere: {op: '==', left: {field: \"zip code\"}, right: {value: 1}}\norderBy: [{field: \"zip code\"}]\n",
 		"from: {name: customers}\nlimit: 50\noffset: 5\n",
 		"from: {name: customers}\ncolumns: [{field: name}]\n",
 		"from: {name: customers}\nwhere: {op: '==', left: {field: name}, right: {param: n}}\norderBy: [{field: name, desc: true}]\n",
@@ -316,13 +339,6 @@ where:
 `, "money", "where.exists.query"},
 		{"limit above 1000", "from: {name: a, alias: a}\nlimit: 1001\n", "limit", "$"},
 		{"offset above 10000", "from: {name: a, alias: a}\noffset: 10001\n", "offset", "$"},
-		{"limit above 1000 in a derived source", `
-from:
-  query:
-    as: d
-    from: {name: a, alias: a}
-    limit: 5000
-`, "limit", "from.query"},
 		{"collection name with a relative path component", "from: {name: '../b', alias: a}\n", "collection-name", "from"},
 		{"collection name that is a relative path", "from: {name: '..', alias: a}\n", "collection-name", "from"},
 		{"database id with a slash", "from: {database: 'a/b', name: a}\n", "database-id", "from"},
@@ -472,6 +488,7 @@ func TestClassifyDTQLRefusesShapesDTQLCannotProduce(t *testing.T) {
 		{"unknown where condition", withWhere(unknownCondition{}), "condition-shape", "where"},
 		{"pointer comparison", withWhere(&dal.Comparison{Operator: dal.Equal, Left: field, Right: field}), "condition-shape", "where"},
 		{"nil operand in a comparison", withWhere(dal.NewComparison(nil, dal.Equal, field)), "expression-shape", "where.left"},
+		{"nil right operand in a comparison", withWhere(dal.NewComparison(field, dal.Equal, nil)), "expression-shape", "where.right"},
 		{"nil condition in a group", withWhere(dal.NewGroupCondition(dal.And, nil)), "condition-shape", "where.and[0]"},
 		{"unknown condition in an or group", withWhere(dal.NewGroupCondition(dal.Or, dal.NewComparison(field, dal.Equal, field), unknownCondition{})), "condition-shape", "where.or[1]"},
 		{"nil is-null operand", withWhere(dal.NewIsNullCondition(nil)), "expression-shape", "where.isNull"},
@@ -498,7 +515,7 @@ func TestClassifyDTQLRefusesShapesDTQLCannotProduce(t *testing.T) {
 			return buildQuery(from).SelectIntoRecordset()
 		}(), "condition-shape", "from.joins[0].on[0]"},
 		{"nil derived query", buildQuery(dal.From(dal.NewQuerySource(nil, "d"))).SelectIntoRecordset(), "query-shape", "from.query"},
-		{"cycle through derived sources", cyclicQuery(), "subquery-depth", ""},
+		{"cycle through scalar subqueries", cyclicQuery(), "subquery-depth", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			profile, err := ClassifyDTQL(tc.query)
@@ -534,8 +551,8 @@ type selfReferentialPtr struct {
 
 func (q *selfReferentialPtr) Columns() []dal.Column { return q.columns }
 
-func TestClassifyDTQLZeroSubqueryDepthAllowance(t *testing.T) {
-	// Depth 4 is accepted, depth 5 is refused (the refusal is asserted above).
+func TestClassifyDTQLAcceptsSubqueriesFourLevelsDeep(t *testing.T) {
+	// Four levels are accepted, five are refused (the refusal is asserted above).
 	doc := "from: {name: leaf, alias: l}\n"
 	for i := 0; i < 4; i++ {
 		doc = fmt.Sprintf("from:\n  query:\n    as: q%d\n%s", i, indent(doc, "    "))
@@ -557,10 +574,11 @@ func TestClassifyDTQLNilMoneyIsAccepted(t *testing.T) {
 	}
 }
 
-func TestClassifyDTQLSingleCollectionRefusals(t *testing.T) {
-	// These pass the single-collection test today but must not leave the
-	// single-collection class: a database, an alias, a subquery or an
-	// aggregation changes what the server has to authorise.
+func TestClassifyDTQLSubqueryOrDatabaseKeepsASingleSourceRelational(t *testing.T) {
+	// These name one root collection, but must not be classified
+	// single-collection: a subquery or a database changes what the server has
+	// to authorise. (An alias and an aggregate are covered by the accepted
+	// shapes above.)
 	for _, doc := range []string{
 		"from: {name: a}\nwhere:\n  exists:\n    query:\n      from: {name: b, alias: b}\n",
 		"from: {name: a}\nwhere:\n  op: In\n  left: {field: x}\n  right:\n    query:\n      from: {name: b, alias: b}\n      columns: [{field: x, source: b}]\n",
@@ -573,5 +591,231 @@ func TestClassifyDTQLSingleCollectionRefusals(t *testing.T) {
 		if profile.Kind != ProfileRelational {
 			t.Fatalf("%q classified as %q, want relational", doc, profile.Kind)
 		}
+	}
+}
+
+// TestClassifyDTQLRefusesTheNamesTheQueryGuardRefuses is the regression test
+// for the relational walk that checked no name: a name /dtql refuses through
+// ParseDTQL must not become an accepted relational document through
+// ClassifyDTQL, and a refusal returns a zero Profile. (Field names use a
+// semicolon as the unsafe character: a name with a space is a valid name since
+// the quoted-name rule. Aliases and qualifiers keep the identifier rule.)
+func TestClassifyDTQLRefusesTheNamesTheQueryGuardRefuses(t *testing.T) {
+	const joined = `
+from:
+  name: a
+  alias: a
+  joins:
+    - from: {name: b, alias: b}
+      on: [{left: {field: id, source: a}, op: '==', right: {field: id, source: b}}]
+`
+	for _, tc := range []struct{ name, doc string }{
+		{"unsafe field in where of a join document", joined + "where: {op: '==', left: {field: \"first;name\", source: a}, right: {value: 1}}\n"},
+		{"unsafe field in a join condition", strings.Replace(joined, "{field: id, source: b}", "{field: \"i;d\", source: b}", 1)},
+		{"unsafe field in an ordering", joined + "orderBy: [{field: \"a;b\", source: a}]\n"},
+		{"unsafe field in group by", joined + "groupBy: [{field: \"a'b\", source: a}]\n"},
+		{"unsafe field in having", joined + "having: {op: '>', left: {aggregate: {function: sum, args: [{field: \"a;b\", source: a}]}}, right: {value: 1}}\n"},
+		{"unsafe qualifier", "from: {name: a}\ncolumns: [{field: id, source: \"x y\"}]\n"},
+		{"unsafe source alias", "from:\n  name: a\n  alias: a\n  joins:\n    - from: {name: b, alias: \"b b\"}\n      on: [{left: {field: id, source: a}, op: '==', right: {field: id, source: \"b b\"}}]\n"},
+		{"unsafe root alias", "from:\n  name: a\n  alias: \"a;a\"\n  joins:\n    - from: {name: b, alias: b}\n      on: [{left: {field: id, source: \"a;a\"}, op: '==', right: {field: id, source: b}}]\n"},
+		{"unsafe column alias", joined + "columns: [{field: id, source: a, as: \"a b\"}]\n"},
+		{"unsafe wildcard exclude", joined + "columns: [{wildcard: {source: a, exclude: [\"a;b\"]}}]\n"},
+		{"unsafe derived alias", "from:\n  query:\n    as: \"d e\"\n    from: {name: a, alias: a}\n"},
+		{"unsafe field inside a derived source", "from:\n  query:\n    as: d\n    from: {name: a, alias: a}\n    where: {op: '==', left: {field: \"a;b\", source: a}, right: {value: 1}}\n"},
+		{"unsafe field inside an exists subquery", joined + "where:\n  exists:\n    query:\n      from: {name: c, alias: c}\n      where: {op: '==', left: {field: \"a;b\", source: c}, right: {value: 1}}\n"},
+		{"unsafe field in a null test", joined + "where: {isNull: {field: \"a;b\", source: a}}\n"},
+		{"unsafe field in a not-null test", joined + "where: {isNotNull: {field: \"a;b\", source: a}}\n"},
+		{"single source with an unsafe field", "from: {name: customers}\nwhere: {op: '==', left: {field: \"first;name\"}, right: {value: 1}}\n"},
+		{"single source with an unsafe ordering", "from: {name: customers}\norderBy: [{field: \"a;b\"}]\n"},
+		{"single source with an unsafe column", "from: {name: customers}\ncolumns: [{field: \"a'b\"}]\n"},
+		{"database root with an unsafe field", "from: {database: chinook, name: Customer}\nwhere: {op: '==', left: {field: \"a;b\"}, right: {value: 1}}\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			profile, err := ClassifyDTQL(mustDeserialize(t, tc.doc))
+			if !errors.Is(err, ErrInvalidDTQL) {
+				t.Fatalf("err = %v, want ErrInvalidDTQL (profile %+v)", err, profile)
+			}
+			if !reflect.DeepEqual(profile, Profile{}) {
+				t.Fatalf("a refused query returned a profile: %+v", profile)
+			}
+		})
+	}
+}
+
+// boundsQuery overrides the limit and offset of a query, which a DTQL document
+// cannot set to a negative number.
+type boundsQuery struct {
+	dal.StructuredQuery
+	limit, offset int
+}
+
+func (q boundsQuery) Limit() int  { return q.limit }
+func (q boundsQuery) Offset() int { return q.offset }
+
+// TestClassifyDTQLCapsApplyToTheOutermostQueryOnly: a nested query keeps the
+// cursor, money and sign checks, and loses only the two caps.
+func TestClassifyDTQLCapsApplyToTheOutermostQueryOnly(t *testing.T) {
+	base := func() dal.StructuredQuery { return buildQuery(dal.From(rootRef("a"))).SelectIntoRecordset() }
+	derived := func(inner dal.StructuredQuery) dal.StructuredQuery {
+		return buildQuery(dal.From(dal.NewQuerySource(inner, "d"))).SelectIntoRecordset()
+	}
+	for _, tc := range []struct {
+		name  string
+		query dal.StructuredQuery
+		rule  string
+		path  string
+	}{
+		{"negative limit in a derived source", derived(boundsQuery{StructuredQuery: base(), limit: -1}), "limit", "from.query"},
+		{"negative offset in a derived source", derived(boundsQuery{StructuredQuery: base(), offset: -1}), "offset", "from.query"},
+		{"cursor in a derived source", derived(cursorQuery{StructuredQuery: base(), after: "x"}), "cursor", "from.query"},
+		{"money in a derived source", derived(moneyQuery{base()}), "money", "from.query"},
+		{"limit above the cap on the outermost query", boundsQuery{StructuredQuery: base(), limit: relationalMaxLimit + 1}, "limit", "$"},
+		{"offset above the cap on the outermost query", boundsQuery{StructuredQuery: base(), offset: relationalMaxOffset + 1}, "offset", "$"},
+		{"negative limit on the outermost query", boundsQuery{StructuredQuery: base(), limit: -1}, "limit", "$"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			profile, err := ClassifyDTQL(tc.query)
+			assertRefusal(t, profile, err, tc.rule, tc.path)
+		})
+	}
+	// A nested query over the caps is accepted.
+	profile, err := ClassifyDTQL(derived(boundsQuery{StructuredQuery: base(), limit: relationalMaxLimit + 1, offset: relationalMaxOffset + 1}))
+	if err != nil || profile.Kind != ProfileRelational || !profile.HasSubquery {
+		t.Fatalf("profile = %+v err = %v", profile, err)
+	}
+}
+
+// TestClassifyDTQLCollectionNameRefusalKeepsBothSentinels: a collection name
+// /dtql refuses today is 400 invalid_key (the key rule's sentinel), and it must
+// stay so when the document is classified: the refusal carries ErrInvalidKey as
+// well as ErrInvalidDTQL.
+func TestClassifyDTQLCollectionNameRefusalKeepsBothSentinels(t *testing.T) {
+	for _, name := range []string{"../b", "..", "a\x00b"} {
+		query := buildQuery(dal.From(rootRef(name))).SelectIntoRecordset()
+		profile, err := ClassifyDTQL(query)
+		assertRefusal(t, profile, err, "collection-name", "from")
+		if !errors.Is(err, ErrInvalidKey) {
+			t.Errorf("%q: err = %v, want it to wrap ErrInvalidKey as well", name, err)
+		}
+	}
+	// A refusal that is not about a key stays a DTQL refusal only.
+	profile, err := ClassifyDTQL(mustDeserialize(t, "from: {schema: s, name: a, alias: a}\n"))
+	assertRefusal(t, profile, err, "schema", "from")
+	if errors.Is(err, ErrInvalidKey) {
+		t.Errorf("a schema refusal must not be an invalid key: %v", err)
+	}
+}
+
+// TestClassifyDTQLRefusesWhatParseDTQLAcceptsOnlyForMoney documents the one
+// shape the single-collection profile accepts and the classifier refuses: the
+// relational rules are checked for every document, single-collection ones
+// included. (A schema-qualified root, a scan root and a database on the root
+// are refused by ParseDTQL too since the query guard.)
+func TestClassifyDTQLRefusesWhatParseDTQLAcceptsOnlyForMoney(t *testing.T) {
+	const money = "from: {name: a}\nmoney: {minorUnitScale: 2, divisionScale: 4, rounding: halfEven}\n"
+	if _, _, err := ParseDTQL([]byte(money)); err != nil {
+		t.Fatalf("ParseDTQL refuses a money document: %v", err)
+	}
+	profile, err := ClassifyDTQL(mustDeserialize(t, money))
+	assertRefusal(t, profile, err, "money", "$")
+	for label, doc := range map[string]string{
+		"schema-qualified root": "from: {schema: main, name: a}\n",
+		"scan root":             "from: {name: a, scan: {limit: 5, orderBy: [{field: id}]}}\n",
+	} {
+		if _, _, err := ParseDTQL([]byte(doc)); !errors.Is(err, ErrInvalidDTQL) {
+			t.Errorf("%s: ParseDTQL err = %v", label, err)
+		}
+	}
+}
+
+// nestedWhere builds a condition nested depth levels deep, and nestedArithmetic
+// an expression.
+func nestedWhere(depth int) dal.Condition {
+	condition := dal.Condition(dal.NewComparison(dal.NewFieldRef("", "id"), dal.Equal, dal.NewFieldRef("", "id")))
+	for i := 1; i < depth; i++ {
+		condition = dal.NewGroupCondition(dal.And, condition)
+	}
+	return condition
+}
+
+func nestedArithmetic(depth int) dal.Expression {
+	var expression dal.Expression = dal.NewFieldRef("", "id")
+	for i := 1; i < depth; i++ {
+		expression = dal.Binary(expression, dal.Add, dal.NewFieldRef("", "id"))
+	}
+	return expression
+}
+
+// TestClassifyDTQLNestingCap: the relational walk bounds how deep conditions
+// and expressions may nest, as one more relational rule. (The query guard's own
+// tighter limit still applies afterwards; this is the walk's own bound.)
+func TestClassifyDTQLNestingCap(t *testing.T) {
+	base := func() dal.StructuredQuery { return buildQuery(dal.From(rootRef("a"))).SelectIntoRecordset() }
+	cases := map[string]func(depth int) dal.StructuredQuery{
+		"condition": func(depth int) dal.StructuredQuery { return dal.WithWhere(base(), nestedWhere(depth)) },
+		"expression": func(depth int) dal.StructuredQuery {
+			return dal.WithColumns(base(), []dal.Column{{Expression: nestedArithmetic(depth)}})
+		},
+	}
+	for label, build := range cases {
+		t.Run(label, func(t *testing.T) {
+			// At the cap the walk itself accepts the query.
+			if err := (&profileWalk{}).query(build(relationalMaxNesting-2), 0); err != nil {
+				t.Fatalf("below the cap: %v", err)
+			}
+			// Beyond it the walk refuses, naming the rule.
+			err := (&profileWalk{}).query(build(relationalMaxNesting+2), 0)
+			if !errors.Is(err, ErrInvalidDTQL) || !strings.Contains(err.Error(), "relational profile: nesting at ") {
+				t.Fatalf("above the cap: err = %v", err)
+			}
+			// ClassifyDTQL refuses it with a zero profile.
+			profile, err := ClassifyDTQL(build(relationalMaxNesting + 2))
+			if !errors.Is(err, ErrInvalidDTQL) || !strings.Contains(err.Error(), "relational profile: nesting at ") || !reflect.DeepEqual(profile, Profile{}) {
+				t.Fatalf("ClassifyDTQL: profile %+v err %v", profile, err)
+			}
+		})
+	}
+}
+
+// TestClassifyDTQLCollectsSourcesFromEverySubqueryPosition: a subquery in
+// GROUP BY, ORDER BY, HAVING, an aggregate argument or a JOIN ON adds its
+// collection to Sources, so the caller authorises it. (Only the unknown-type
+// refusals proved these positions are walked.) The documents are hand-built
+// because a DTQL document cannot place a subquery in some of them.
+func TestClassifyDTQLCollectsSourcesFromEverySubqueryPosition(t *testing.T) {
+	inner := func(name string) dal.StructuredQuery {
+		return buildQuery(dal.From(rootRef(name))).SelectIntoRecordset()
+	}
+	base := func() dal.StructuredQuery { return buildQuery(dal.From(rootRef("a"))).SelectIntoRecordset() }
+	joinedOn := func(on dal.Condition) dal.StructuredQuery {
+		from := dal.From(rootRef("a"))
+		from.Join(dal.NewJoinedSource(rootRef("b"), dal.JoinInner, on))
+		return buildQuery(from).SelectIntoRecordset()
+	}
+	for _, tc := range []struct {
+		name    string
+		query   dal.StructuredQuery
+		sources []string
+	}{
+		{"group by", shapeQuery{StructuredQuery: base(), groupBy: []dal.Expression{dal.NewQueryExpression(inner("g"), "s")}}, []string{"a", "g"}},
+		{"order by", shapeQuery{StructuredQuery: base(), orderBy: []dal.OrderExpression{dal.Ascending(dal.NewQueryExpression(inner("o"), "s"))}}, []string{"a", "o"}},
+		{"having", shapeQuery{StructuredQuery: base(), having: dal.NewExistsCondition(inner("h"))}, []string{"a", "h"}},
+		{"aggregate argument", dal.WithColumns(base(), []dal.Column{{Expression: dal.NewAggregate("sum", false, dal.NewQueryExpression(inner("m"), "s"))}}), []string{"a", "m"}},
+		{"join on", joinedOn(dal.NewExistsCondition(inner("j"))), []string{"a", "b", "j"}},
+		{"join on comparison", joinedOn(dal.NewComparison(dal.NewFieldRef("", "id"), dal.Equal, dal.NewQueryExpression(inner("k"), "s"))), []string{"a", "b", "k"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			profile, err := ClassifyDTQL(tc.query)
+			if err != nil {
+				t.Fatalf("classify: %v", err)
+			}
+			var got []string
+			for _, source := range profile.Sources {
+				got = append(got, source.Collection)
+			}
+			if profile.Kind != ProfileRelational || !profile.HasSubquery || !reflect.DeepEqual(got, tc.sources) {
+				t.Fatalf("profile = %+v, want relational subquery over %v", profile, tc.sources)
+			}
+		})
 	}
 }

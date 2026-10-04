@@ -38,7 +38,7 @@ func (q sampleQuery) String() string { return dal.QueryString(q) }
 // different key expressions; neither stored document id fields nor post-page
 // sorting substitute for canonical record identity.
 func (d *Database) SelectAccessSample(ctx context.Context, query dal.StructuredQuery, n int, requester access.Principal) ([]Record, []dal.OrderExpression, error) {
-	collection, err := validateDTQL(query)
+	collection, err := validateDTQLFor(query, d.fieldRule())
 	if err != nil {
 		return nil, nil, err
 	}
