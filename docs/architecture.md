@@ -151,18 +151,25 @@ for either:
 
 - **Queries.** `/query` and `/dtql` are refused on `postgres` and `mysql` with
   `501 query_unsupported` before any query reaches the driver. They are not
-  available there today, and the old statement that they were parameterised
-  and available was wrong.
+  available there today.
 - **Collections.** On `sqlite`, `postgres` and `mysql` (and any engine ovdb
-  does not recognise) a key read or write whose collection, at any depth of
-  the key, is not declared in the manifest's `schemas` is `404 not_found`
-  before the adapter is called. The key-segment rule (`core.ValidateSegment`)
-  is a path-safety check only and accepts quotes, spaces and semicolons, so the
-  declaration is the allow-list. `inGitDB` and Firestore keep the key-segment
-  rule alone.
-- **Field names**, on every engine. Every field name in a write body passes
+  does not recognise) a key read or write whose collection is not one the
+  mount declared in the manifest's `schemas` when it opened is `404 not_found`
+  before the adapter is called; so is a key with a parent, because a SQL mount
+  has no subcollections (the adapter would address another table than the root
+  collection the capability was checked on). The allow-list is fixed when the
+  database opens, so an embedder that renames the live manifest's keys
+  afterwards does not change it. Names match exactly, including case. The
+  key-segment rule (`core.ValidateSegment`) is a path-safety check only and
+  accepts quotes, spaces and semicolons, so the declaration is the allow-list.
+  `inGitDB` and Firestore keep the key-segment rule alone.
+- **Field names**, on every engine. The top-level keys of a write body, an
+  update's `fieldName` and the first segment of its `fieldPath` pass
   `core.ValidateFieldName` (the rule `/query` and `/dtql` use) or the request
-  is `400 bad_request` before the adapter is called.
+  is `400 bad_request` before the adapter is called. The later segments of a
+  `fieldPath` are map keys: the same rule on the SQL engines, and on `inGitDB`
+  and Firestore only a non-empty, non-blank segment without control characters
+  (Sneat's linkage writes `id@spaceID` keys there).
 
 The guard sits in `core.Database` (`Get`, `Exists`, `Apply`), so every caller
 is covered; the protected `PATCH` and the authorization endpoints that read by

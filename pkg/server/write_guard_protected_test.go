@@ -75,7 +75,10 @@ func writeGuardProtectedSet(path ...string) *api.Mutation {
 // TestProtectedPathsRefuseUndeclaredTablesAndHostileNamesBeforeTheAdapter: the
 // protected PATCH of /records and the authorization endpoints that read by key
 // (inspect, evidence, sample) get the same refusals as the plain records
-// routes, ahead of the coordinator that reads or writes the adapter.
+// routes, ahead of the coordinator that reads or writes the adapter. A mount
+// with access policies hides which tables it declares (it refuses schema
+// discovery), so an undeclared table is answered like GET answers it: 404
+// resource_unavailable, redacted, with no message that names the table.
 func TestProtectedPathsRefuseUndeclaredTablesAndHostileNamesBeforeTheAdapter(t *testing.T) {
 	ts := writeGuardProtectedServer(t)
 	call := func(method, path, content string, body any) (int, string) {
@@ -107,18 +110,18 @@ func TestProtectedPathsRefuseUndeclaredTablesAndHostileNamesBeforeTheAdapter(t *
 		code         string
 	}{
 		// A protected mount answers a read of an undeclared table exactly as it
-		// answers a hidden or missing record: no declared-or-not oracle.
+		// answers a hidden or missing record, on every route that takes a table.
 		{"GET undeclared table", "GET", "/v1/databases/crm/records/ghost/01", "application/json", nil, 404, "resource_unavailable"},
 		{"GET hostile table", "GET", "/v1/databases/crm/records/cus%22tomers%3B%20--/01", "application/json", nil, 404, "resource_unavailable"},
-		{"PATCH undeclared table", "PATCH", "/v1/databases/crm/records/ghost/01", vnd, writeGuardProtectedOp("update", "/ghost/01", writeGuardProtectedSet("name")), 404, "not_found"},
-		{"PATCH hostile table", "PATCH", "/v1/databases/crm/records/cus%22tomers%3B%20--/01", vnd, writeGuardProtectedOp("update", "/"+hostileTable+"/01", writeGuardProtectedSet("name")), 404, "not_found"},
+		{"PATCH undeclared table", "PATCH", "/v1/databases/crm/records/ghost/01", vnd, writeGuardProtectedOp("update", "/ghost/01", writeGuardProtectedSet("name")), 404, "resource_unavailable"},
+		{"PATCH hostile table", "PATCH", "/v1/databases/crm/records/cus%22tomers%3B%20--/01", vnd, writeGuardProtectedOp("update", "/"+hostileTable+"/01", writeGuardProtectedSet("name")), 404, "resource_unavailable"},
 		{"PATCH hostile column", "PATCH", "/v1/databases/crm/records/customers/01", vnd, writeGuardProtectedOp("update", "/customers/01", writeGuardProtectedSet(`na"me`)), 400, "bad_request"},
 		{"PATCH hostile nested column", "PATCH", "/v1/databases/crm/records/customers/01", vnd, writeGuardProtectedOp("update", "/customers/01", writeGuardProtectedSet("name", "x; DROP TABLE y")), 400, "bad_request"},
-		{"evidence undeclared table", "POST", evidencePath, "application/json", evidence("/ghost/01", "name"), 404, "not_found"},
-		{"evidence hostile table", "POST", evidencePath, "application/json", evidence("/"+hostileTable+"/01", "name"), 404, "not_found"},
+		{"evidence undeclared table", "POST", evidencePath, "application/json", evidence("/ghost/01", "name"), 404, "resource_unavailable"},
+		{"evidence hostile table", "POST", evidencePath, "application/json", evidence("/"+hostileTable+"/01", "name"), 404, "resource_unavailable"},
 		{"evidence hostile column", "POST", evidencePath, "application/json", evidence("/customers/01", `na"me`), 400, "bad_request"},
-		{"inspect undeclared table", "POST", evaluate, "application/json", inspect(writeGuardProtectedOp("update", "/ghost/01", writeGuardProtectedSet("name"))), 404, "not_found"},
-		{"inspect hostile table", "POST", evaluate, "application/json", inspect(writeGuardProtectedOp("get", "/"+hostileTable+"/01", nil)), 404, "not_found"},
+		{"inspect undeclared table", "POST", evaluate, "application/json", inspect(writeGuardProtectedOp("update", "/ghost/01", writeGuardProtectedSet("name"))), 404, "resource_unavailable"},
+		{"inspect hostile table", "POST", evaluate, "application/json", inspect(writeGuardProtectedOp("get", "/"+hostileTable+"/01", nil)), 404, "resource_unavailable"},
 		{"inspect hostile change", "POST", evaluate, "application/json", inspect(writeGuardProtectedOp("update", "/customers/01", writeGuardProtectedSet("na me"))), 400, "bad_request"},
 		{"inspect hostile insert data", "POST", evaluate, "application/json", inspect(writeGuardProtectedOp("insert", "/customers/02", &api.Mutation{Data: map[string]any{"name": "Ada", `na"me`: 1}})), 400, "bad_request"},
 		{"inspect hostile set data", "POST", evaluate, "application/json", inspect(writeGuardProtectedOp("set", "/customers/02", &api.Mutation{Data: map[string]any{"na;me": 1}})), 400, "bad_request"},
@@ -127,18 +130,22 @@ func TestProtectedPathsRefuseUndeclaredTablesAndHostileNamesBeforeTheAdapter(t *
 			op.Resource.Columns = [][]string{{"name"}, {`na"me`}}
 			return op
 		}()), 400, "bad_request"},
-		{"sample undeclared table", "POST", evaluate, "application/json", sample("ghost"), 404, "not_found"},
+		{"sample undeclared table", "POST", evaluate, "application/json", sample("ghost"), 404, "resource_unavailable"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			status, body := call(c.method, c.path, c.content, c.body)
 			var out struct {
 				Error struct {
-					Code string `json:"code"`
+					Code    string `json:"code"`
+					Message string `json:"message"`
 				} `json:"error"`
 			}
 			_ = json.Unmarshal([]byte(body), &out)
 			if status != c.status || out.Error.Code != c.code {
 				t.Fatalf("status %d code %q, want %d %q: %s", status, out.Error.Code, c.status, c.code, body)
+			}
+			if c.code == "resource_unavailable" && out.Error.Message != "" {
+				t.Fatalf("a redacted refusal carries a message: %s", body)
 			}
 		})
 	}

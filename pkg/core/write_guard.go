@@ -6,8 +6,11 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/dal-go/record"
+
+	"github.com/openvaultdb/openvaultdb-go/pkg/manifest"
 )
 
 // ErrInvalidFieldName identifies a write that carries a field name that is not
@@ -24,17 +27,28 @@ var documentEngines = map[string]bool{
 	"firestore": true,
 }
 
-// GuardKey refuses, before any adapter call, a key that names a collection the
-// database does not declare (see GuardCollection). Every collection of a nested
-// key is checked, not only the leaf: the adapter of a SQL engine receives the
-// whole chain. The error wraps ErrNotFound (HTTP 404 not_found).
+// isDocumentEngine reports whether the mount's adapter addresses records as
+// documents (see documentEngines). It is false for an engine nobody classified
+// and for a database without a manifest: those are held to the SQL rules.
+func (d *Database) isDocumentEngine() bool { return documentEngines[d.queryEngine()] }
+
+// GuardKey refuses, before any adapter call, a key the adapter of a SQL engine
+// cannot address safely: a key with a parent, because a SQL mount has no
+// subcollections (dalgo2sql maps such a key to a recordset named
+// <leaf>_<parent> that no mount registers, and its delete statement names only
+// the leaf table, so the capability checked on the root collection would not be
+// the table written), and a collection the database does not declare (see
+// GuardCollection). Document engines address nested keys natively and are not
+// refused here. A nil key names nothing and is left to the caller. The error
+// wraps ErrNotFound (HTTP 404 not_found).
 func (d *Database) GuardKey(key *record.Key) error {
-	for cur := key; cur != nil; cur = cur.Parent() {
-		if err := d.GuardCollection(cur.Collection()); err != nil {
-			return err
-		}
+	if key == nil {
+		return nil
 	}
-	return nil
+	if key.Parent() != nil && !d.isDocumentEngine() {
+		return fmt.Errorf("%w: collection %q cannot be nested under a record on this database", ErrNotFound, key.Collection())
+	}
+	return d.GuardCollection(key.Collection())
 }
 
 // GuardCollection refuses, before any adapter call, a collection the database
@@ -42,43 +56,50 @@ func (d *Database) GuardKey(key *record.Key) error {
 // any engine not known to be a document engine). dalgo2sql writes the
 // collection name into the text of key reads and writes, and
 // ValidateCollectionName is only a path-safety rule that accepts quotes,
-// spaces and semicolons, so the declaration in the manifest's schemas is the
-// allow-list. Document engines keep their own rule: any collection that passes
+// spaces and semicolons, so the set of collections the mount declared when it
+// opened is the allow-list. Names match exactly, case included. Document
+// engines keep their own rule: any collection that passes
 // ValidateCollectionName. The error wraps ErrNotFound.
 func (d *Database) GuardCollection(name string) error {
-	if documentEngines[d.queryEngine()] || d.declares(name) {
+	if d.isDocumentEngine() {
+		return nil
+	}
+	if _, ok := d.declared[name]; ok {
 		return nil
 	}
 	return fmt.Errorf("%w: collection %q is not declared by this database", ErrNotFound, name)
 }
 
-// declares reports whether the manifest's schemas declare the collection. A
-// SQLite manifest may key a collection by its SQL-quoted storage identifier
-// ("Order Details" with the quotes); the mount registers the public name
-// (Order Details) for it too, so that name is declared as well.
-func (d *Database) declares(name string) bool {
-	if d.Manifest == nil || d.Manifest.Schemas == nil {
-		return false
+// declaredCollections is the allow-list of a mount, fixed when the database
+// opens: every key of the manifest's schemas, and on SQLite the public name of
+// a key that is a quoted SQL identifier ("Order Details" with the quotes), the
+// name the mount registers with the driver for it too. It is built from the
+// manifest as the mount saw it, not read from the live manifest afterwards:
+// an embedder may rename the manifest's keys once mounted (openvaultdb/cloud
+// publishes the public names and rewrites key reads to the quoted ones), and
+// the name the driver was given must stay declared.
+func declaredCollections(m *manifest.Manifest) map[string]struct{} {
+	if m.Schemas == nil {
+		return nil
 	}
-	if _, ok := d.Manifest.Schemas.Collections[name]; ok {
-		return true
-	}
-	if d.Manifest.Storage.Engine != "sqlite" {
-		return false
-	}
-	for declared := range d.Manifest.Schemas.Collections {
-		if logical, ok := sqliteLogicalName(declared); ok && logical == name {
-			return true
+	declared := make(map[string]struct{}, len(m.Schemas.Collections))
+	for name := range m.Schemas.Collections {
+		declared[name] = struct{}{}
+		if m.Storage.Engine != "sqlite" {
+			continue
+		}
+		if logical, ok := SQLiteLogicalName(name); ok {
+			declared[logical] = struct{}{}
 		}
 	}
-	return false
+	return declared
 }
 
-// sqliteLogicalName returns the public identifier inside a SQL-quoted schema
-// key, where a doubled quote stands for one literal quote. It mirrors
-// sqliteLogicalRecordsetName in pkg/mount, which registers the same name with
-// the driver; the two must agree.
-func sqliteLogicalName(name string) (string, bool) {
+// SQLiteLogicalName returns the public identifier inside a SQL-quoted schema
+// key of a SQLite manifest, where a doubled quote stands for one literal quote.
+// It is the one definition the guard (declaredCollections) and the mount (the
+// recordsets it registers with the driver) share.
+func SQLiteLogicalName(name string) (string, bool) {
 	if len(name) < 2 || name[0] != '"' || name[len(name)-1] != '"' {
 		return "", false
 	}
@@ -99,14 +120,44 @@ func sqliteLogicalName(name string) (string, bool) {
 	return logical.String(), true
 }
 
-// ValidateFieldPath checks every segment of a field path from a write body with
-// ValidateFieldName. An empty path is refused. The error wraps
-// ErrInvalidFieldName.
-func ValidateFieldPath(path []string) error {
+// ValidateFieldPath checks the path of an update from a write body. The first
+// segment is a field of the record, so it must be a plain name
+// (ValidateFieldName) on every engine. The segments after it are map keys: on
+// a SQL engine (or one nobody classified) they are held to the same rule, to
+// fail closed; on a document engine they never reach SQL and are data
+// (Sneat's linkage writes ["related", ext, collection, "id@spaceID"]), so only
+// a segment that is empty, blank or carries a control character is refused (an
+// empty one panics in update.ByFieldPath inside the transaction). An empty
+// path is refused. The error wraps ErrInvalidFieldName.
+func (d *Database) ValidateFieldPath(path []string) error {
 	if len(path) == 0 {
 		return fmt.Errorf("%w: field path is empty", ErrInvalidFieldName)
 	}
-	return ValidateFieldNames(path)
+	if err := ValidateFieldNames(path[:1]); err != nil {
+		return err
+	}
+	check := ValidateFieldName
+	if d.isDocumentEngine() {
+		check = validateMapKey
+	}
+	for _, segment := range path[1:] {
+		if err := check(segment); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidFieldName, err)
+		}
+	}
+	return nil
+}
+
+// validateMapKey is the rule for a key inside a document: anything but an
+// empty or blank key or one with a control character.
+func validateMapKey(key string) error {
+	if strings.TrimSpace(key) == "" {
+		return errors.New("map key is empty or blank")
+	}
+	if strings.IndexFunc(key, unicode.IsControl) >= 0 {
+		return fmt.Errorf("map key %q has a control character", key)
+	}
+	return nil
 }
 
 // ValidateFieldNames checks every name with ValidateFieldName, in order; no
@@ -120,22 +171,32 @@ func ValidateFieldNames(names []string) error {
 	return nil
 }
 
-// fieldNames lists every field name an update op carries.
-func (u UpdateOp) fieldNames() []string {
-	if u.FieldName == "" {
-		return u.FieldPath
+// validateUpdate refuses an update that names no field, and one whose
+// fieldName or fieldPath is not plain (ValidateFieldPath for the path).
+func (d *Database) validateUpdate(u UpdateOp) error {
+	if u.FieldName == "" && len(u.FieldPath) == 0 {
+		return fmt.Errorf("%w: update names no field (fieldName or fieldPath)", ErrInvalidFieldName)
 	}
-	return append([]string{u.FieldName}, u.FieldPath...)
+	if u.FieldName != "" {
+		if err := ValidateFieldNames([]string{u.FieldName}); err != nil {
+			return err
+		}
+	}
+	if len(u.FieldPath) > 0 {
+		return d.ValidateFieldPath(u.FieldPath)
+	}
+	return nil
 }
 
 // guardWrite refuses a whole batch, before any adapter call (the validation
 // that follows reads the adapter by key), when any op names an undeclared
 // collection on a SQL engine (GuardKey) or carries a field name that is not
-// plain on any engine: the top-level keys of its data and every name of its
-// updates, delete-field included; an update that names no field is refused too
-// (it used to reach the adapter for a key read and then fail as a 500). An op's
-// collection is checked before its fields, so a request for a collection the
-// database does not declare is a 404 whatever its body carries. An op without
+// plain on any engine: the top-level keys of its data, the fieldName and the
+// first path segment of its updates, delete-field included, and the later
+// segments as ValidateFieldPath says; an update that names no field is refused
+// too (it used to reach the adapter for a key read and then fail as a 500). An
+// op's collection is checked before its fields, so a request for a collection
+// the database does not declare is a 404 whatever its body carries. An op without
 // a key carries nothing to the adapter; the validation that follows refuses it.
 func (d *Database) guardWrite(ops []Op) error {
 	for i, op := range ops {
@@ -148,7 +209,7 @@ func (d *Database) guardWrite(ops []Op) error {
 			return fmt.Errorf("op %d (%s) data: %w", i, op.Op, err)
 		}
 		for j, u := range op.Updates {
-			if err := ValidateFieldPath(u.fieldNames()); err != nil {
+			if err := d.validateUpdate(u); err != nil {
 				return fmt.Errorf("op %d (%s) update %d: %w", i, op.Op, j, err)
 			}
 		}

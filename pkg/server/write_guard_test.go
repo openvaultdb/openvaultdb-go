@@ -150,6 +150,36 @@ func TestUndeclaredCollectionIs404BeforeAdapterOnSQLEngines(t *testing.T) {
 	}
 }
 
+// TestNestedKeysAre404BeforeAdapterOnSQLEngines: a SQL mount has no
+// subcollections. Even with every segment declared, dalgo2sql would address
+// another table than the root collection the capability was checked on (its
+// delete names only the leaf table), so a key with a parent is a 404.
+func TestNestedKeysAre404BeforeAdapterOnSQLEngines(t *testing.T) {
+	for _, engine := range writeGuardSQLEngines {
+		t.Run(engine, func(t *testing.T) {
+			ts, fake := writeGuardServer(t, engine, "customers", "Order Details")
+			for label, keyPath := range map[string]string{
+				"same collection": "customers/c1/customers/c2",
+				"spaced leaf":     "customers/c1/" + url.PathEscape("Order Details") + "/1",
+				"three levels":    "customers/c1/" + url.PathEscape("Order Details") + "/1/customers/c3",
+			} {
+				for _, call := range writeGuardKeyCalls(keyPath) {
+					status, body := send(t, ts, call)
+					if status != http.StatusNotFound {
+						t.Errorf("%s %s: status %d body %v", label, call.name, status, body)
+					}
+					if call.method != "HEAD" && writeGuardErrorCode(body) != "not_found" {
+						t.Errorf("%s %s: code %v", label, call.name, writeGuardErrorCode(body))
+					}
+				}
+			}
+			if fake.reached() != 0 {
+				t.Fatalf("adapter reached %d times (gets %d, exists %d, transactions %d)", fake.reached(), fake.gets, fake.exists, fake.transactions)
+			}
+		})
+	}
+}
+
 func TestDeclaredCollectionsBehaveAsBeforeOnSQLEngines(t *testing.T) {
 	want := map[string]int{
 		"GET": http.StatusOK, "GET read?key": http.StatusOK, "HEAD": http.StatusOK,
@@ -157,7 +187,7 @@ func TestDeclaredCollectionsBehaveAsBeforeOnSQLEngines(t *testing.T) {
 		"batch set": http.StatusOK, "batch insert": http.StatusOK, "batch update": http.StatusOK, "batch delete first": http.StatusOK,
 	}
 	for _, engine := range writeGuardSQLEngines {
-		for _, keyPath := range []string{"customers/c1", url.PathEscape("Order Details") + "/1", "customers/c1/" + url.PathEscape("Order Details") + "/1"} {
+		for _, keyPath := range []string{"customers/c1", url.PathEscape("Order Details") + "/1"} {
 			t.Run(engine+"/"+keyPath, func(t *testing.T) {
 				ts, fake := writeGuardServer(t, engine, "customers", "Order Details")
 				for _, call := range writeGuardKeyCalls(keyPath) {
@@ -197,6 +227,10 @@ func TestDocumentEnginesKeepTodaysCollectionRuleOverHTTP(t *testing.T) {
 			if status, body = send(t, ts, guardCall{method: "PUT", path: base + "/records/ghost/1", body: writeGuardData}); status != http.StatusNoContent || fake.transactions != 1 {
 				t.Fatalf("status %d transactions %d body %v", status, fake.transactions, body)
 			}
+			// Subcollections are native to the document engines.
+			if status, body = send(t, ts, guardCall{method: "PUT", path: base + "/records/spaces/s1/ext/contactus", body: writeGuardData}); status != http.StatusNoContent || fake.transactions != 2 {
+				t.Fatalf("nested: status %d transactions %d body %v", status, fake.transactions, body)
+			}
 		})
 	}
 }
@@ -219,7 +253,8 @@ func TestHostileFieldNamesAre400BeforeAdapterOnEveryEngine(t *testing.T) {
 					{name: "POST", method: "POST", path: path, body: `{"data":{` + quoted + `:1}}`},
 					{name: "PATCH fieldName", method: "PATCH", path: path, body: `{"updates":[{"fieldName":` + quoted + `,"value":1}]}`},
 					{name: "PATCH delete-field", method: "PATCH", path: path, body: `{"updates":[{"fieldName":` + quoted + `,"delete":true}]}`},
-					{name: "PATCH fieldPath", method: "PATCH", path: path, body: `{"updates":[{"fieldPath":["profile",` + quoted + `],"value":1}]}`},
+					{name: "PATCH fieldPath", method: "PATCH", path: path, body: `{"updates":[{"fieldPath":[` + quoted + `],"value":1}]}`},
+					{name: "PATCH fieldPath, first segment", method: "PATCH", path: path, body: `{"updates":[{"fieldPath":[` + quoted + `,"city"],"value":1}]}`},
 					{name: "batch set", method: "POST", path: base + "/batch", body: `{"ops":[{"op":"set","key":"customers/good","data":{"name":"Ada"}},{"op":"set","key":"customers/c1","data":{` + quoted + `:1}}]}`},
 					{name: "batch update", method: "POST", path: base + "/batch", body: `{"ops":[{"op":"update","key":"customers/c1","updates":[{"fieldName":` + quoted + `,"delete":true}]}]}`},
 				}
@@ -232,6 +267,56 @@ func TestHostileFieldNamesAre400BeforeAdapterOnEveryEngine(t *testing.T) {
 			}
 			if fake.reached() != 0 {
 				t.Fatalf("adapter reached %d times", fake.reached())
+			}
+		})
+	}
+}
+
+// TestLaterFieldPathSegmentsOverHTTP: the segments of an update path after the
+// first are map keys. A SQL engine holds them to the plain-name rule; a
+// document engine accepts what Sneat's linkage writes (`id@spaceID`) and
+// refuses only an empty, blank or control-character segment, before the
+// adapter either way.
+func TestLaterFieldPathSegmentsOverHTTP(t *testing.T) {
+	patch := func(path string) guardCall {
+		return guardCall{method: "PATCH", path: base + "/records/customers/c1", body: `{"updates":[{"fieldPath":` + path + `,"value":1}]}`}
+	}
+	linkage := patch(`["related","contactus","contacts","c1@space2"]`)
+	refusedEverywhere := []guardCall{
+		patch(`["related",""]`),
+		patch(`["related"," "]`),
+		patch(`["related","a\u0000b"]`),
+		patch(`["related","a\nb"]`),
+	}
+	for _, engine := range writeGuardSQLEngines {
+		t.Run(engine, func(t *testing.T) {
+			ts, fake := writeGuardServer(t, engine, "customers")
+			for _, call := range append([]guardCall{linkage, patch(`["related","a b"]`)}, refusedEverywhere...) {
+				if status, body := send(t, ts, call); status != http.StatusBadRequest || writeGuardErrorCode(body) != "bad_request" {
+					t.Errorf("%s: status %d body %v", call.body, status, body)
+				}
+			}
+			if fake.reached() != 0 {
+				t.Fatalf("adapter reached %d times", fake.reached())
+			}
+		})
+	}
+	for _, engine := range writeGuardDocumentEngines {
+		t.Run(engine, func(t *testing.T) {
+			ts, fake := writeGuardServer(t, engine, "customers")
+			for _, call := range []guardCall{linkage, patch(`["related","a b"]`)} {
+				if status, body := send(t, ts, call); status != http.StatusNoContent {
+					t.Errorf("%s: status %d body %v", call.body, status, body)
+				}
+			}
+			reached := fake.reached()
+			for _, call := range refusedEverywhere {
+				if status, body := send(t, ts, call); status != http.StatusBadRequest || writeGuardErrorCode(body) != "bad_request" {
+					t.Errorf("%s: status %d body %v", call.body, status, body)
+				}
+			}
+			if fake.reached() != reached {
+				t.Fatalf("a refused path reached the adapter %d times", fake.reached()-reached)
 			}
 		})
 	}

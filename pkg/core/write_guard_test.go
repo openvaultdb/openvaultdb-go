@@ -168,13 +168,25 @@ func TestUnrecognisedEngineIsHeldToDeclaredCollections(t *testing.T) {
 	if err := bare.GuardCollection("customers"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("database without a manifest: %v", err)
 	}
+	// Nor does it have subcollections.
+	nested := record.NewKeyWithParentAndID(record.NewKeyWithID("customers", "c1"), "customers", "c2")
+	if err := bare.GuardKey(nested); !errors.Is(err, ErrNotFound) {
+		t.Errorf("nested key on a database without a manifest: %v", err)
+	}
+	unclassified, fake := writeGuardOpen(t, "oracle", "customers")
+	if _, err := unclassified.Get(context.Background(), nested); !errors.Is(err, ErrNotFound) || fake.reached() != 0 {
+		t.Errorf("nested key on an unrecognised engine: err=%v reached=%d", err, fake.reached())
+	}
+	// A nil key names nothing; the callers that can see one leave it to their own validation.
+	if err := bare.GuardKey(nil); err != nil {
+		t.Errorf("nil key: %v", err)
+	}
 }
 
 func TestDeclaredCollectionsReachAdapterOnSQLEngines(t *testing.T) {
 	keys := []*record.Key{
 		record.NewKeyWithID("customers", "c1"),
 		record.NewKeyWithID("Order Details", "1"), // declared with a space in its name
-		record.NewKeyWithParentAndID(record.NewKeyWithID("customers", "c1"), "Order Details", "1"),
 	}
 	for _, engine := range writeGuardSQLEngines {
 		for _, key := range keys {
@@ -203,6 +215,35 @@ func TestDeclaredCollectionsReachAdapterOnSQLEngines(t *testing.T) {
 				}
 				if fake.exists != 1 || fake.transactions != 4 {
 					t.Errorf("exists %d transactions %d, want 1 and 4", fake.exists, fake.transactions)
+				}
+			})
+		}
+	}
+}
+
+// TestNestedKeysRefusedOnSQLEngines: a SQL mount has no subcollections.
+// dalgo2sql maps a key with a parent to the recordset <leaf>_<parent>, which no
+// mount registers, and its delete statement names only the leaf table, so the
+// capability checked on the root collection would not be the table written.
+// Even with every segment declared, the key is a 404 before any adapter call.
+func TestNestedKeysRefusedOnSQLEngines(t *testing.T) {
+	customer := record.NewKeyWithID("customers", "c1")
+	keys := map[string]*record.Key{
+		"declared leaf under declared root": record.NewKeyWithParentAndID(customer, "Order Details", "1"),
+		"same collection twice":             record.NewKeyWithParentAndID(customer, "customers", "c2"),
+		"three levels":                      record.NewKeyWithParentAndID(record.NewKeyWithParentAndID(customer, "Order Details", "1"), "customers", "c3"),
+	}
+	for _, engine := range writeGuardSQLEngines {
+		for label, key := range keys {
+			t.Run(engine+"/"+label, func(t *testing.T) {
+				db, fake := writeGuardOpen(t, engine, "customers", "Order Details")
+				for name, err := range writeGuardEntryPoints(db, key, writeGuardPlain, writeGuardPlainUpdate) {
+					if !errors.Is(err, ErrNotFound) {
+						t.Errorf("%s: want ErrNotFound, got %v", name, err)
+					}
+				}
+				if fake.reached() != 0 {
+					t.Fatalf("adapter reached %d times (gets %d, exists %d, transactions %d)", fake.reached(), fake.gets, fake.exists, fake.transactions)
 				}
 			})
 		}
@@ -249,7 +290,7 @@ func TestHostileFieldNamesRefusedBeforeAdapterOnEveryEngine(t *testing.T) {
 					"update fieldName":        {{Op: "update", Key: key, Updates: []UpdateOp{{FieldName: name, Value: 1}}}},
 					"update delete-field":     {{Op: "update", Key: key, Updates: []UpdateOp{{FieldName: name, Delete: true}}}},
 					"update fieldPath":        {{Op: "update", Key: key, Updates: []UpdateOp{{FieldPath: []string{name}, Value: 1}}}},
-					"update nested fieldPath": {{Op: "update", Key: key, Updates: []UpdateOp{{FieldPath: []string{"profile", name}, Value: 1}}}},
+					"update fieldPath, first": {{Op: "update", Key: key, Updates: []UpdateOp{{FieldPath: []string{name, "city"}, Value: 1}}}},
 					"update after a good one": {{Op: "update", Key: key, Updates: []UpdateOp{{FieldName: "name", Value: "x"}, {FieldName: name, Value: 1}}}},
 					"batch, bad op last": {
 						{Op: "set", Key: key, Data: writeGuardPlain},
@@ -323,16 +364,121 @@ func TestOpWithoutAKeyIsLeftToTheExistingValidation(t *testing.T) {
 	}
 }
 
+// linkagePath is what Sneat's linkage writes through dalgo2openvaultdb: the
+// last segment is a map key, `id@spaceID` for a cross-space reference.
+var linkagePath = []string{"related", "contactus", "contacts", "c1@space2"}
+
+// mapKeysOnlyDocumentEnginesAccept are later path segments that are not plain
+// names but are legal map keys of a document.
+var mapKeysOnlyDocumentEnginesAccept = []string{"c1@space2", "na me", `na"me`, "name;", "a--b", "a/b", "名前", "$id", "a.b", "name\u200b"}
+
+// blankOrControlSegments are refused on every engine: update.ByFieldPath
+// panics on an empty segment, and a control character is never a map key.
+var blankOrControlSegments = []string{"", " ", "  ", "\t", "\n", "\u00a0", "name\x00", "na\nme", "na\tme", "\x7f", "a\u0085b"}
+
 func TestValidateFieldPath(t *testing.T) {
-	for _, path := range [][]string{nil, {}, {""}, {"name", `a"b`}, {"a", "b", "c d"}} {
-		if err := ValidateFieldPath(path); !errors.Is(err, ErrInvalidFieldName) {
-			t.Errorf("%q accepted: %v", path, err)
+	sql, _ := writeGuardOpen(t, "sqlite", "customers")
+	document, _ := writeGuardOpen(t, "ingitdb", "customers")
+	unrecognised, _ := writeGuardOpen(t, "oracle", "customers")
+	bare := &Database{}
+
+	for label, db := range map[string]*Database{"sqlite": sql, "ingitdb": document, "unrecognised": unrecognised, "no manifest": bare} {
+		for _, path := range [][]string{nil, {}, {""}, {`a"b`}, {"a b", "x"}, {"name;", "x"}, {"$", "x"}} {
+			if err := db.ValidateFieldPath(path); !errors.Is(err, ErrInvalidFieldName) {
+				t.Errorf("%s: %q accepted: %v", label, path, err)
+			}
+		}
+		for _, path := range [][]string{{"name"}, {"address", "city"}, {"$id"}, {"byYear", "2024"}} {
+			if err := db.ValidateFieldPath(path); err != nil {
+				t.Errorf("%s: %q refused: %v", label, path, err)
+			}
+		}
+		for _, segment := range blankOrControlSegments {
+			if err := db.ValidateFieldPath([]string{"profile", segment}); !errors.Is(err, ErrInvalidFieldName) {
+				t.Errorf("%s: later segment %q accepted: %v", label, segment, err)
+			}
 		}
 	}
-	for _, path := range [][]string{{"name"}, {"address", "city"}, {"$id"}, {"byYear", "2024"}} {
-		if err := ValidateFieldPath(path); err != nil {
-			t.Errorf("%q refused: %v", path, err)
+
+	// Later segments are map keys: the SQL rule applies on every engine that
+	// builds SQL (and on one nobody classified), the document engines refuse
+	// only what cannot be a key.
+	for label, db := range map[string]*Database{"sqlite": sql, "unrecognised": unrecognised, "no manifest": bare} {
+		for _, path := range append([][]string{linkagePath}, pathsEndingIn(unsafeFieldNames)...) {
+			if err := db.ValidateFieldPath(path); !errors.Is(err, ErrInvalidFieldName) {
+				t.Errorf("%s: %.40q accepted: %v", label, path, err)
+			}
 		}
+	}
+	for _, path := range append([][]string{linkagePath}, pathsEndingIn(mapKeysOnlyDocumentEnginesAccept)...) {
+		if err := document.ValidateFieldPath(path); err != nil {
+			t.Errorf("ingitdb: %q refused: %v", path, err)
+		}
+	}
+}
+
+// pathsEndingIn lists a two-segment path for each name: a plain first segment
+// and the name as the map key below it.
+func pathsEndingIn(names []string) [][]string {
+	paths := make([][]string, len(names))
+	for i, name := range names {
+		paths[i] = []string{"profile", name}
+	}
+	return paths
+}
+
+// TestLaterFieldPathSegmentsOnSQLEngines: a SQL mount holds every segment of an
+// update path to the plain-name rule (fail closed), and Sneat's linkage path is
+// no exception there.
+func TestLaterFieldPathSegmentsOnSQLEngines(t *testing.T) {
+	key := record.NewKeyWithID("customers", "c1")
+	for _, engine := range writeGuardSQLEngines {
+		t.Run(engine, func(t *testing.T) {
+			db, fake := writeGuardOpen(t, engine, "customers")
+			for _, path := range append([][]string{linkagePath}, pathsEndingIn(unsafeFieldNames)...) {
+				op := Op{Op: "update", Key: key, Updates: []UpdateOp{{FieldPath: path, Value: 1}}}
+				if _, err := db.Apply(context.Background(), []Op{op}, ""); !errors.Is(err, ErrInvalidFieldName) {
+					t.Errorf("%.40q: %v", path, err)
+				}
+			}
+			if fake.reached() != 0 {
+				t.Fatalf("adapter reached %d times", fake.reached())
+			}
+		})
+	}
+}
+
+// TestLaterFieldPathSegmentsOnDocumentEngines: segments after the first are map
+// keys and never reach SQL on ingitdb and firestore. Sneat's linkage writes
+// `id@spaceID` keys through dalgo2openvaultdb, so they stay accepted; a
+// segment that is empty, blank or carries a control character is refused
+// before the adapter (an empty one panics in update.ByFieldPath).
+func TestLaterFieldPathSegmentsOnDocumentEngines(t *testing.T) {
+	key := record.NewKeyWithID("customers", "c1")
+	for _, engine := range writeGuardDocumentEngines {
+		t.Run(engine, func(t *testing.T) {
+			db, fake := writeGuardOpen(t, engine, "customers")
+			paths := append([][]string{linkagePath}, pathsEndingIn(mapKeysOnlyDocumentEnginesAccept)...)
+			for _, path := range paths {
+				op := Op{Op: "update", Key: key, Updates: []UpdateOp{{FieldPath: path, Value: 1}}}
+				if n, err := db.Apply(context.Background(), []Op{op}, ""); err != nil || n != 1 {
+					t.Errorf("%q: %d %v", path, n, err)
+				}
+			}
+			if fake.transactions != len(paths) {
+				t.Fatalf("transactions = %d, want %d", fake.transactions, len(paths))
+			}
+			reached := fake.reached()
+			for _, path := range pathsEndingIn(blankOrControlSegments) {
+				op := Op{Op: "update", Key: key, Updates: []UpdateOp{{FieldPath: path, Value: 1}}}
+				if _, err := db.Apply(context.Background(), []Op{op}, ""); !errors.Is(err, ErrInvalidFieldName) {
+					t.Errorf("%q: %v", path, err)
+				}
+			}
+			if fake.reached() != reached {
+				t.Fatalf("a refused path reached the adapter %d times", fake.reached()-reached)
+			}
+		})
 	}
 }
 
@@ -378,6 +524,55 @@ func TestSQLiteQuotedDeclarationsDeclareTheirPublicName(t *testing.T) {
 		}
 		if err := db.GuardCollection(`"Order Details"`); err != nil {
 			t.Errorf("%s: exact declaration refused: %v", engine, err)
+		}
+	}
+}
+
+// TestDeclaredSetIsFixedWhenTheMountOpens: the allow-list is what the mount
+// registered with the driver, not the live manifest. The cloud embedder mounts
+// SQLite manifests keyed by the quoted identifier ("Order Details" with the
+// quotes), renames the manifest keys to the public names, and rewrites key
+// reads to the quoted name: that name must stay declared after the rename.
+func TestDeclaredSetIsFixedWhenTheMountOpens(t *testing.T) {
+	db, fake := writeGuardOpen(t, "sqlite", `"Order Details"`, `"a""b"`, "customers")
+	db.Manifest.Schemas.Collections = map[string]schema.Collection{
+		"Order Details": {}, `a"b`: {}, "customers": {},
+	}
+	for _, name := range []string{`"Order Details"`, "Order Details", `"a""b"`, `a"b`, "customers"} {
+		if err := db.GuardCollection(name); err != nil {
+			t.Errorf("%s refused after the rename: %v", name, err)
+		}
+	}
+	if _, err := db.Get(context.Background(), record.NewKeyWithID(`"Order Details"`, "1")); err != nil || fake.gets != 1 {
+		t.Errorf("read of the quoted name: err=%v gets=%d", err, fake.gets)
+	}
+	for _, name := range []string{"ghost", `Order Details"`, `"Order Details`, "Order"} {
+		if err := db.GuardCollection(name); !errors.Is(err, ErrNotFound) {
+			t.Errorf("%q accepted: %v", name, err)
+		}
+	}
+	// Nothing that appears in the live manifest after open is declared: the
+	// mount registered no recordset for it, so no adapter may be asked.
+	db.Manifest.Schemas.Collections["late"] = schema.Collection{}
+	if err := db.GuardCollection("late"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a collection added to the live manifest after open is declared: %v", err)
+	}
+	// A Database that was not built by Open declares nothing.
+	built := &Database{Manifest: db.Manifest}
+	if err := built.GuardCollection("customers"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a database not built by Open declares %q: %v", "customers", err)
+	}
+}
+
+func TestSQLiteLogicalName(t *testing.T) {
+	for in, want := range map[string]string{`"Order Details"`: "Order Details", `"a""b"`: `a"b`, `"x"`: "x", `""""`: `"`} {
+		if got, ok := SQLiteLogicalName(in); !ok || got != want {
+			t.Errorf("%s: got %q %v, want %q", in, got, ok, want)
+		}
+	}
+	for _, in := range []string{"", `"`, `""`, "Order Details", `"a"b"`, `"a""`, `"a`, `a"`, "'a'"} {
+		if got, ok := SQLiteLogicalName(in); ok {
+			t.Errorf("%q accepted as %q", in, got)
 		}
 	}
 }

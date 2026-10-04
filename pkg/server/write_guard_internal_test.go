@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/dal-go/dalgo/dal"
 	az "github.com/dal-go/dalgo/dtql/authorization"
 
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
@@ -18,10 +19,17 @@ import (
 // future change to Normalize cannot reopen the hole.
 func TestGuardOperation(t *testing.T) {
 	declared := func(engine string) *core.Database {
-		return &core.Database{Manifest: &manifest.Manifest{
-			Storage: manifest.Storage{Engine: engine},
-			Schemas: &schema.Schemas{Collections: map[string]schema.Collection{"customers": {Fields: map[string]schema.Field{"name": {Type: schema.TypeString}}}}},
-		}}
+		t.Helper()
+		m := &manifest.Manifest{
+			Database: manifest.Database{ID: "crm", SchemaMode: schema.ModeStrict},
+			Storage:  manifest.Storage{Engine: engine},
+			Schemas:  &schema.Schemas{Collections: map[string]schema.Collection{"customers": {Fields: map[string]schema.Field{"name": {Type: schema.TypeString}}}}},
+		}
+		db, err := core.Open(m, guardOperationDB{}, []schema.Mode{schema.ModeStrict}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return db
 	}
 	resource := func(table string, columns ...[]string) az.Resource {
 		return az.Resource{DatabaseID: "crm", Table: table, RowID: "01", Columns: columns}
@@ -42,7 +50,12 @@ func TestGuardOperation(t *testing.T) {
 		{"undeclared table on a document engine", "ingitdb", api.Operation{Resource: resource("ghost")}, nil},
 		{"hostile column", "ingitdb", api.Operation{Resource: resource("customers", []string{"name"}, []string{`a"b`})}, core.ErrInvalidFieldName},
 		{"hostile data key", "ingitdb", api.Operation{Resource: resource("customers"), Mutation: &api.Mutation{Data: map[string]any{"a;b": 1}}}, core.ErrInvalidFieldName},
-		{"hostile change path, columns not mirrored", "ingitdb", api.Operation{Resource: resource("customers"), Mutation: set("name", "a b")}, core.ErrInvalidFieldName},
+		{"hostile first change segment, columns not mirrored", "ingitdb", api.Operation{Resource: resource("customers"), Mutation: set("a b", "x")}, core.ErrInvalidFieldName},
+		{"hostile later change segment on SQL, columns not mirrored", "sqlite", api.Operation{Resource: resource("customers"), Mutation: set("name", "a b")}, core.ErrInvalidFieldName},
+		{"map key as later change segment on a document engine", "ingitdb", api.Operation{Resource: resource("customers"), Mutation: set("related", "c1@space2")}, nil},
+		{"map key as later column segment on a document engine", "ingitdb", api.Operation{Resource: resource("customers", []string{"related", "c1@space2"})}, nil},
+		{"map key as later column segment on SQL", "sqlite", api.Operation{Resource: resource("customers", []string{"related", "c1@space2"})}, core.ErrInvalidFieldName},
+		{"blank later change segment on a document engine", "ingitdb", api.Operation{Resource: resource("customers"), Mutation: set("related", " ")}, core.ErrInvalidFieldName},
 		{"empty change path", "ingitdb", api.Operation{Resource: resource("customers"), Mutation: set()}, core.ErrInvalidFieldName},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -53,3 +66,7 @@ func TestGuardOperation(t *testing.T) {
 		})
 	}
 }
+
+// guardOperationDB is a dal.DB with no behaviour: guardOperation never reaches
+// the adapter, and every method panics (nil embedded DB) if it ever did.
+type guardOperationDB struct{ dal.DB }

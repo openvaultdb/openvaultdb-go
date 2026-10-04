@@ -24,7 +24,7 @@ func (s *Server) sampleAccess(w http.ResponseWriter, r *http.Request, db *core.D
 		return
 	}
 	if err := guardOperation(db, template); err != nil {
-		s.writeMappedError(w, r, err)
+		s.refuseOperation(w, r, az.ModeSample, template, err)
 		return
 	}
 	query, err := request.Sample.Query.Parse(template.Resource.Table)

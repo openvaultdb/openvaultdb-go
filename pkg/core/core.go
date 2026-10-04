@@ -61,6 +61,11 @@ type Database struct {
 	coordinator      *access.EnforcementCoordinator
 	cat              *inferred.Catalogue // nil in strict mode
 
+	// declared is the collections the mount declared when it opened, the
+	// allow-list of key reads and writes on an engine whose adapter builds SQL
+	// (see GuardCollection). A Database not built by Open declares nothing.
+	declared map[string]struct{}
+
 	// afterWrite, when set, runs after each successfully applied write batch
 	// (e.g. git push for inGitDB-backed databases). A returned error is
 	// reported to the client, but the batch itself is already applied.
@@ -115,7 +120,7 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 	if !supported {
 		return nil, &ModeCompatibilityError{Engine: m.Storage.Engine, Requested: mode, Supported: supportedModes}
 	}
-	d := &Database{Manifest: m, db: db, modes: supportedModes, policyController: controller}
+	d := &Database{Manifest: m, db: db, modes: supportedModes, policyController: controller, declared: declaredCollections(m)}
 	// Retain the raw driver's Close: protected/secured wrappers installed
 	// below replace d.db but share the driver's underlying handle.
 	if closer, ok := db.(io.Closer); ok {

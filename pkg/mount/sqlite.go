@@ -5,13 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/dalgo2sql"
 	"github.com/dal-go/dalgo2sqlite"
 
+	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 	"github.com/openvaultdb/openvaultdb-go/pkg/manifest"
 	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 )
@@ -38,7 +38,7 @@ func openSQLite(path string, m *manifest.Manifest) (dal.DB, []schema.Mode, error
 		for _, name := range names {
 			recordset := dalgo2sql.NewRecordset(name, dalgo2sql.Table, []dal.FieldRef{dal.Field("id")})
 			recordsets[name] = recordset
-			if logicalName, ok := sqliteLogicalRecordsetName(name); ok {
+			if logicalName, ok := core.SQLiteLogicalName(name); ok {
 				// Quoted schema keys preserve the driver's storage identifier. Queries
 				// use the public name, so register that lookup too for query identity.
 				if _, exists := recordsets[logicalName]; !exists {
@@ -53,29 +53,6 @@ func openSQLite(path string, m *manifest.Manifest) (dal.DB, []schema.Mode, error
 		return nil, nil, fmt.Errorf("failed to open SQLite at %s: %w", path, err)
 	}
 	return &sqliteMount{Database: db}, []schema.Mode{schema.ModeStrict}, nil
-}
-
-// sqliteLogicalRecordsetName returns the public identifier inside a SQL-quoted
-// schema key. Doubled quotes represent one literal quote in SQLite identifiers.
-func sqliteLogicalRecordsetName(name string) (string, bool) {
-	if len(name) < 2 || name[0] != '"' || name[len(name)-1] != '"' {
-		return "", false
-	}
-	quoted := name[1 : len(name)-1]
-	var logical strings.Builder
-	for i := 0; i < len(quoted); i++ {
-		if quoted[i] == '"' {
-			if i+1 >= len(quoted) || quoted[i+1] != '"' {
-				return "", false
-			}
-			i++
-		}
-		logical.WriteByte(quoted[i])
-	}
-	if logical.Len() == 0 {
-		return "", false
-	}
-	return logical.String(), true
 }
 
 // The SQLite driver embeds dal.DB, so explicitly forward the trusted mount

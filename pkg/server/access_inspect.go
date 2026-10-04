@@ -218,7 +218,7 @@ func (s *Server) inspectAccess(w http.ResponseWriter, r *http.Request, db *core.
 	ops := make([]access.ProtectedOperation, len(request.Operations))
 	for i, op := range request.Operations {
 		if err := guardOperation(db, op); err != nil {
-			s.writeMappedError(w, r, err)
+			s.refuseOperation(w, r, az.ModeInspect, op, err)
 			return
 		}
 		var err error
@@ -294,7 +294,7 @@ func (s *Server) handleProtectedUpdate(w http.ResponseWriter, r *http.Request, d
 		return
 	}
 	if err = guardOperation(db, op); err != nil {
-		s.writeMappedError(w, r, err)
+		s.refuseOperation(w, r, az.ModeExecution, op, err)
 		return
 	}
 	internal, err := protectedOperation(op)
@@ -400,7 +400,7 @@ func (s *Server) handleAccessEvidence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err = guardOperation(db, op); err != nil {
-		s.writeMappedError(w, r, err)
+		s.refuseOperation(w, r, az.ModeInspect, op, err)
 		return
 	}
 	internal, err := protectedOperation(op)
@@ -446,10 +446,19 @@ func (s *Server) handleAccessEvidence(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeUnavailablePoint(w http.ResponseWriter, db *core.Database, key *record.Key, action string) {
-	result := newAuthorization(az.ModeExecution)
 	resource := az.Resource{DatabaseID: db.ID(), Path: "/" + key.Collection() + "/" + fmt.Sprint(key.ID), Table: key.Collection(), RowID: fmt.Sprint(key.ID)}
-	result.Operations = append(result.Operations, az.OperationResult{ID: "op1", RequestOperationID: "op1", Action: action, Resource: resource, Result: az.OutcomeDeny, RestrictionIDs: []string{}, AllOf: []string{}, ExecutionClass: az.ExecutionDTQL})
-	redactPoint(&result, "op1")
+	writeUnavailableOperation(w, az.ModeExecution, api.Operation{ID: "op1", Action: action, Resource: resource, ExecutionClass: az.ExecutionDTQL})
+}
+
+// writeUnavailableOperation answers 404 resource_unavailable for one operation:
+// the redacted denial a hidden or missing record gets, which says nothing of
+// why. The columns of the resource are not echoed.
+func writeUnavailableOperation(w http.ResponseWriter, mode az.Mode, op api.Operation) {
+	resource := op.Resource
+	resource.Columns = nil
+	result := newAuthorization(mode)
+	result.Operations = append(result.Operations, az.OperationResult{ID: op.ID, RequestOperationID: op.ID, Action: op.Action, Resource: resource, Result: az.OutcomeDeny, RestrictionIDs: []string{}, AllOf: []string{}, ExecutionClass: op.ExecutionClass})
+	redactPoint(&result, op.ID)
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, 404, errorBody{Error: errorDetail{Code: "resource_unavailable", RequestID: result.RequestID, Authorization: &result}})
 }
