@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/dal-go/dalgo/dal"
 )
@@ -14,7 +15,7 @@ import (
 //
 //   - every collection the document reads, in the order the classifier lists
 //     them, with whether the read carries a scan clause;
-//   - whether any subquery appears;
+//   - whether any subquery or null test appears;
 //   - whether every name in the document is a plain name.
 //
 // A node of a type it does not know is refused: whatever such a node holds is
@@ -28,11 +29,24 @@ const maxWalkDepth = 16
 // maxNameLen is the longest field name, qualifier or alias.
 const maxNameLen = 256
 
-// The name rules mirror pkg/core (ValidateFieldName and the identifier rule of
-// validateDTQLFields). They are repeated here because pkg/core imports this
-// package; keep them in step, and replace them with a shared exported check
-// when one exists. A name is a plain name when it matches, so a character
-// nobody thought of is refused.
+// maxEchoLen is the most bytes of a refused name an error message repeats. A
+// name can be as long as the request body, and an error is not the place to
+// send it back.
+const maxEchoLen = 64
+
+// The name rules mirror pkg/core (ValidateFieldName, ValidateCollectionName and
+// the identifier rule of validateDTQLFields). They are repeated here so that
+// this package does not depend on pkg/core, which imports it to declare that a
+// database is a Source. A test in pkg/core (joinexec_names_drift_test.go) runs
+// one table of documents through both and fails when they answer differently,
+// so a change to one rule without the other is caught. A name is a plain name
+// when it matches, so a character nobody thought of is refused.
+//
+// Two differences are known and pinned by that test. A field qualifier may name
+// a source of any query of the document, where pkg/core scopes it to its own
+// query and the queries around it; the name is a validated collection name or
+// alias either way. And pkg/core's name check refuses a null test, which the
+// relational profile accepts and the walk checks.
 var (
 	fieldNameRe  = regexp.MustCompile(`^(\$[\p{L}_]|[\p{L}\p{Nd}_])[\p{L}\p{Nd}_-]*(\.(\$[\p{L}_]|[\p{L}\p{Nd}_])[\p{L}\p{Nd}_-]*)*$`)
 	identifierRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -50,6 +64,20 @@ type walkedSource struct {
 type document struct {
 	sources     []walkedSource
 	hasSubquery bool
+	// hasNull is true when any condition tests for null (IS NULL, IS NOT NULL).
+	// The SQL adapters cannot compile such a test, so a document with one is
+	// never sent to an engine whole.
+	hasNull bool
+}
+
+// anyScan reports whether any source carries a scan limit or scan order.
+func (d document) anyScan() bool {
+	for _, source := range d.sources {
+		if source.scan {
+			return true
+		}
+	}
+	return false
 }
 
 type walker struct {
@@ -77,8 +105,9 @@ func inspect(query dal.StructuredQuery) (document, error) {
 
 // checkProfile reports whether profile describes doc: the same collections as
 // many times over (in any order) and the same answer about subqueries. The
-// execution authorises the profile's sources and routes by its subquery flag,
-// so a profile that says less than the document reads must not pass.
+// profile is a claim: the execution authorises and routes by what the walk
+// found, and refuses a profile that says less than the document reads, so a
+// classifier that misses a source is caught here rather than trusted.
 func checkProfile(doc document, profile Profile) error {
 	if profile.HasSubquery != doc.hasSubquery {
 		return fmt.Errorf("%w: the profile does not match the query: subqueries", ErrInvalidDocument)
@@ -210,6 +239,9 @@ func (w *walker) collection(ref dal.CollectionRef, path string, depth int) error
 	if ref.Parent() != nil || ref.Schema() != "" {
 		return refuse(path, "only plain root collections are supported")
 	}
+	if !isCollectionName(ref.Name()) {
+		return refuse(path, "collection name %q is not a plain collection name", clip(ref.Name()))
+	}
 	w.doc.sources = append(w.doc.sources, walkedSource{
 		database:   ref.Database(),
 		collection: ref.Name(),
@@ -254,6 +286,7 @@ func (w *walker) condition(condition dal.Condition, path string, depth int) erro
 		}
 		return nil
 	case dal.IsNullCondition:
+		w.doc.hasNull = true
 		return w.expression(value.Operand(), path+".isNull", depth)
 	case dal.ExistsCondition:
 		w.doc.hasSubquery = true
@@ -276,7 +309,7 @@ func (w *walker) expression(expression dal.Expression, path string, depth int) e
 		return nil
 	case dal.Param:
 		if !dal.ValidParamName(value.Name) {
-			return refuse(path, "parameter name %q is not valid", value.Name)
+			return refuse(path, "parameter name %q is not valid", clip(value.Name))
 		}
 		return nil
 	case dal.StarExpression:
@@ -307,17 +340,17 @@ func (w *walker) expression(expression dal.Expression, path string, depth int) e
 func (w *walker) checkNames() error {
 	for _, name := range w.fields {
 		if len(name) > maxNameLen || !fieldNameRe.MatchString(name) || strings.Contains(name, "--") {
-			return refuse("$", "field name %q is not a plain field name", name)
+			return refuse("$", "field name %q is not a plain field name", clip(name))
 		}
 	}
 	for _, name := range w.identifiers {
 		if !isIdentifier(name) {
-			return refuse("$", "%q is not a plain identifier", name)
+			return refuse("$", "%q is not a plain identifier", clip(name))
 		}
 	}
 	for _, name := range w.qualifiers {
 		if !w.scope[name] && !isIdentifier(name) {
-			return refuse("$", "qualifier %q is not a plain identifier or a source of the document", name)
+			return refuse("$", "qualifier %q is not a plain identifier or a source of the document", clip(name))
 		}
 	}
 	return nil
@@ -325,4 +358,44 @@ func (w *walker) checkNames() error {
 
 func isIdentifier(name string) bool {
 	return len(name) <= maxNameLen && identifierRe.MatchString(name)
+}
+
+// isCollectionName applies the rule of pkg/core's ValidateCollectionName, which
+// is ValidateSegment: the name is not empty, has no control character, and none
+// of its '/'- or '\'-separated components is "." or "..". The collection name is
+// the one name that becomes a path on a file-backed engine such as inGitDB, so
+// it is checked here too, even though the classifier checks it before the
+// document gets this far.
+func isCollectionName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	parts := strings.FieldsFunc(name, func(r rune) bool { return r == '/' || r == '\\' })
+	if len(parts) == 0 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "." || part == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+// clip shortens name to maxEchoLen bytes, on a character boundary, for an
+// error message.
+func clip(name string) string {
+	if len(name) <= maxEchoLen {
+		return name
+	}
+	cut := maxEchoLen
+	for cut > 0 && !utf8.RuneStart(name[cut]) {
+		cut--
+	}
+	return name[:cut] + "..."
 }

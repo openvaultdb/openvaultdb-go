@@ -3,6 +3,8 @@ package joinexec
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"reflect"
 	"sort"
 	"strings"
@@ -160,6 +162,8 @@ func TestExecuteUnqualifiedDocumentRunsThroughOneLeaf(t *testing.T) {
 func TestExecuteRoutesByMountEngineProtectionAndSubquery(t *testing.T) {
 	subquery := dal.NewExistsCondition(exPlain("", "B"))
 	withSubquery := dal.From(exRef("", "A", "")).NewQuery().Where(subquery).SelectIntoRecord(nil)
+	withScan := dal.From(exRef("", "A", "").WithScan(1)).NewQuery().SelectIntoRecord(nil)
+	withNullTest := dal.From(exRef("", "A", "")).NewQuery().Where(dal.NewIsNullCondition(dal.NewFieldRef("", "k"))).SelectIntoRecord(nil)
 	plain := exPlain("", "A")
 	for _, tc := range []struct {
 		name     string
@@ -171,6 +175,9 @@ func TestExecuteRoutesByMountEngineProtectionAndSubquery(t *testing.T) {
 	}{
 		{"unprotected native engine", "sqlite", false, plain, nil, RouteDatabase},
 		{"subquery", "sqlite", false, withSubquery, nil, RouteInMemory},
+		{"scan clause", "sqlite", false, withScan, nil, RouteInMemory},
+		{"null test", "sqlite", false, withNullTest, nil, RouteInMemory},
+		{"scan clause on an engine made native", "ingitdb", false, withScan, []Option{WithNativeEngines("ingitdb")}, RouteInMemory},
 		{"access policies", "sqlite", true, plain, nil, RouteInMemory},
 		{"engine in the join set but not native", "ingitdb", false, plain, nil, RouteInMemory},
 		{"engine made native", "ingitdb", false, plain, []Option{WithNativeEngines("ingitdb")}, RouteDatabase},
@@ -393,7 +400,8 @@ func TestExecuteNamesTheDefaultDatabase(t *testing.T) {
 func TestExecuteRefusesAnEngineThatCannotBeQueriedBeforeTheJoinSetCheck(t *testing.T) {
 	rows := map[string][]record.Record{"A": exRows("A", "a", 1), "B": exRows("B", "b", 1)}
 	t.Run("even when the operator lists it as a join engine", func(t *testing.T) {
-		pg := exGated{exMount("pg", "postgres", false, rows), false}
+		pg := exMount("pg", "postgres", false, rows)
+		pg.noQuery = true
 		registry := newExRegistry(pg)
 		_, err := exRun(t, exPlain("", "A"), "pg", registry, exAllow, Limits{}, WithJoinEngines("sqlite", "postgres"), WithNativeEngines("sqlite", "postgres"))
 		var unsupported *EngineNotQueryableError
@@ -408,7 +416,8 @@ func TestExecuteRefusesAnEngineThatCannotBeQueriedBeforeTheJoinSetCheck(t *testi
 		// The first source is outside the join set; the second cannot be
 		// queried at all. The second refusal wins: 501 before 422.
 		mysql := exMount("my", "mysql", false, rows)
-		pg := exGated{exMount("pg", "postgres", false, rows), false}
+		pg := exMount("pg", "postgres", false, rows)
+		pg.noQuery = true
 		_, err := exRun(t, exJoin(exRef("my", "A", "a"), exRef("pg", "B", "b"), true), "", newExRegistry(mysql, pg), exAllow, Limits{})
 		var unsupported *EngineNotQueryableError
 		if !errors.As(err, &unsupported) || unsupported.Database != "pg" {
@@ -416,7 +425,7 @@ func TestExecuteRefusesAnEngineThatCannotBeQueriedBeforeTheJoinSetCheck(t *testi
 		}
 	})
 	t.Run("a queryable engine passes", func(t *testing.T) {
-		lite := exGated{exMount("lite", "sqlite", false, rows), true}
+		lite := exMount("lite", "sqlite", false, rows)
 		if _, err := exRun(t, exPlain("", "A"), "lite", newExRegistry(lite), exAllow, Limits{}); err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
@@ -480,13 +489,19 @@ func TestExecuteRefusesAScanOnAProtectedSource(t *testing.T) {
 	if _, err := exRun(t, joined, "", newExRegistry(protected, public), exAllow, Limits{}); !errors.Is(err, ErrScanOnProtectedSource) {
 		t.Fatalf("scan in a join: %v", err)
 	}
-	// A scan on a source without policies is not refused here.
-	if _, err := exRun(t, dal.From(exRef("pub", "B", "").WithScan(2, dal.AscendingField("id"))).NewQuery().SelectIntoRecord(nil), "", newExRegistry(protected, public), exAllow, Limits{}); err != nil {
+	// A scan on a public source is not refused, alone or beside a protected
+	// source that carries no scan of its own.
+	publicScan := dal.From(exRef("pub", "B", "").WithScan(2, dal.AscendingField("id"))).NewQuery().SelectIntoRecord(nil)
+	if _, err := exRun(t, publicScan, "", newExRegistry(protected, public), exAllow, Limits{}); err != nil {
 		t.Fatalf("scan on a public source: %v", err)
 	}
-	// A protected source with no scan is not refused either.
-	if _, err := exRun(t, scanned("pub"), "", newExRegistry(protected, public), exAllow, Limits{}); err != nil {
-		t.Fatalf("scan on the public mount's collection: %v", err)
+	beside := dal.From(exRef("pub", "B", "b").WithScan(2)).Join(dal.NewJoinedSource(exRef("hr", "A", "a"), dal.JoinInner, exKeyEquals(exRef("pub", "B", "b"), exRef("hr", "A", "a")))).NewQuery().SelectIntoRecord(nil)
+	if _, err := exRun(t, beside, "", newExRegistry(protected, public), exAllow, Limits{}); err != nil {
+		t.Fatalf("scan on a public source beside a protected one: %v", err)
+	}
+	// A protected source with no scan clause is not refused either.
+	if _, err := exRun(t, exPlain("hr", "A"), "", newExRegistry(protected, public), exAllow, Limits{}); err != nil {
+		t.Fatalf("protected source without a scan: %v", err)
 	}
 }
 
@@ -847,5 +862,453 @@ func TestExecuteOptionsKeepTheirDefaultsWhenEmpty(t *testing.T) {
 	engines[0] = "y"
 	if !c.joinEngines["x"] || c.joinEngines["y"] {
 		t.Fatalf("join engines = %v", c.joinEngines)
+	}
+}
+
+// A source that does not answer CanQuery is not queryable: the gate that keeps
+// an operator's join set from sending a relational document to the legacy text
+// emitter does not depend on the method set of whatever type a registry returns.
+func TestExecuteRefusesASourceThatDoesNotAnswerCanQuery(t *testing.T) {
+	rows := map[string][]record.Record{"A": exRows("A", "a", 1)}
+	for name, opts := range map[string][]Option{
+		"default engines":                {},
+		"engine listed as join engine":   {WithJoinEngines("sqlite", "postgres")},
+		"engine listed as native engine": {WithJoinEngines("sqlite", "postgres"), WithNativeEngines("sqlite", "postgres")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			inner := exMount("pg", "postgres", false, rows)
+			registry := newExRegistry(exBare{inner})
+			_, err := exRun(t, exPlain("", "A"), "pg", registry, exAllow, Limits{}, opts...)
+			var unsupported *EngineNotQueryableError
+			if !errors.As(err, &unsupported) || unsupported.Database != "pg" || unsupported.Engine != "postgres" {
+				t.Fatalf("err = %v, want *EngineNotQueryableError", err)
+			}
+			if executorCalls, txCalls := inner.counts(); executorCalls != 0 || txCalls != 0 {
+				t.Fatal("a source that does not answer CanQuery was read")
+			}
+		})
+	}
+	// Not even sqlite, a native engine in every default, passes without the answer.
+	inner := exMount("lite", "sqlite", false, rows)
+	_, err := exRun(t, exPlain("", "A"), "lite", newExRegistry(exBare{inner}), exAllow, Limits{})
+	var unsupported *EngineNotQueryableError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("err = %v, want *EngineNotQueryableError", err)
+	}
+	if executorCalls, txCalls := inner.counts(); executorCalls != 0 || txCalls != 0 {
+		t.Fatal("a sqlite source that does not answer CanQuery was read")
+	}
+}
+
+// exDerived is SELECT id, k, name FROM database.collection, as a derived source.
+func exDerived(database, collection, alias string) dal.QuerySource {
+	inner := dal.From(exRef(database, collection, "")).NewQuery().SelectColumns(
+		dal.Column{Expression: dal.NewFieldRef("", "id")},
+		dal.Column{Expression: dal.NewFieldRef("", "k")},
+		dal.Column{Expression: dal.NewFieldRef("", "name")},
+	)
+	return dal.NewQuerySource(inner, alias)
+}
+
+// A derived source must run on every document a caller may send, and a fully
+// qualified one is the only kind the multi-database endpoint accepts.
+func TestExecuteRunsADerivedSourceOnAFullyQualifiedDocument(t *testing.T) {
+	onEdge := func(left dal.CollectionRef, derived dal.QuerySource) dal.StructuredQuery {
+		return dal.From(left).Join(dal.NewJoinedSource(derived, dal.JoinInner,
+			dal.NewComparison(dal.NewFieldRef(left.Alias(), "k"), dal.Equal, dal.NewFieldRef(derived.Alias(), "k")))).NewQuery().
+			SelectColumns(
+				dal.Column{Expression: dal.NewFieldRef(left.Alias(), "id"), Alias: "aid"},
+				dal.Column{Expression: dal.NewFieldRef(derived.Alias(), "name"), Alias: "bname"},
+			)
+	}
+	asBase := func(derived dal.QuerySource, right dal.CollectionRef) dal.StructuredQuery {
+		return dal.From(derived).Join(dal.NewJoinedSource(right, dal.JoinInner,
+			dal.NewComparison(dal.NewFieldRef(derived.Alias(), "k"), dal.Equal, dal.NewFieldRef(right.Alias(), "k")))).NewQuery().
+			SelectColumns(
+				dal.Column{Expression: dal.NewFieldRef(right.Alias(), "id"), Alias: "aid"},
+				dal.Column{Expression: dal.NewFieldRef(derived.Alias(), "name"), Alias: "bname"},
+			)
+	}
+	aloneAsBase := dal.From(exDerived("one", "B", "d")).NewQuery().SelectColumns(
+		dal.Column{Expression: dal.NewFieldRef("d", "id"), Alias: "aid"},
+		dal.Column{Expression: dal.NewFieldRef("d", "name"), Alias: "bname"},
+	)
+	want := []map[string]any{{"aid": 1.0, "bname": "b1"}, {"aid": 2.0, "bname": "b2"}, {"aid": 3.0, "bname": "b3"}}
+	for _, tc := range []struct {
+		name  string
+		query dal.StructuredQuery
+		// reads lists the collections the document must have read, by database. A
+		// derived source on a join edge is read again for every row on its left, so
+		// the collections are compared as a set.
+		reads map[string][]string
+	}{
+		{"one database, alone as the base", aloneAsBase, map[string][]string{"one": {"B"}}},
+		{"one database, as the base of a join", asBase(exDerived("one", "B", "d"), exRef("one", "A", "a")), map[string][]string{"one": {"A", "B"}}},
+		{"one database, on a join edge", onEdge(exRef("one", "A", "a"), exDerived("one", "B", "d")), map[string][]string{"one": {"A", "B"}}},
+		{"two databases, as the base of a join", asBase(exDerived("two", "B", "d"), exRef("one", "A", "a")), map[string][]string{"one": {"A"}, "two": {"B"}}},
+		{"two databases, on a join edge", onEdge(exRef("one", "A", "a"), exDerived("two", "B", "d")), map[string][]string{"one": {"A"}, "two": {"B"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			one := exMount("one", "sqlite", false, map[string][]record.Record{"A": exRows("A", "a", 3), "B": exRows("B", "b", 3)})
+			two := exMount("two", "sqlite", false, map[string][]record.Record{"B": exRows("B", "b", 3)})
+			res, err := exRun(t, tc.query, "", newExRegistry(one, two), exAllow, Limits{})
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if res.Execution.Route != RouteInMemory {
+				t.Fatalf("route = %s, a subquery never runs on the database route", res.Execution.Route)
+			}
+			if got := exAsRows(t, res.Records); !reflect.DeepEqual(got, want) {
+				t.Fatalf("rows = %v, want %v", got, want)
+			}
+			read := map[string][]string{}
+			for database, mount := range map[string]*exSource{"one": one, "two": two} {
+				seenCollections := map[string]bool{}
+				for _, query := range mount.exec.seen() {
+					seenCollections[query.(dal.StructuredQuery).From().Base().Name()] = true
+				}
+				for collection := range seenCollections {
+					read[database] = append(read[database], collection)
+				}
+				sort.Strings(read[database])
+				if _, txCalls := mount.counts(); txCalls != 0 {
+					t.Fatalf("mount %s ran a transaction of its own", database)
+				}
+			}
+			if !reflect.DeepEqual(read, tc.reads) {
+				t.Fatalf("reads = %v, want %v", read, tc.reads)
+			}
+		})
+	}
+}
+
+// A reader that fails part way with an error that wraps io.EOF has not reached
+// the end of the result: the database route answers it with an error, as the
+// guarded leaf does in memory, never with the rows read so far.
+func TestExecuteDatabaseRouteRefusesAReaderThatFailsWithAWrappedEOF(t *testing.T) {
+	mount := exMount("db", "sqlite", false, nil)
+	mount.exec.whole = exAnswer(map[string]any{"a": 1})
+	mount.exec.readerErr = fmt.Errorf("conn: %w", io.EOF)
+	res, err := exRun(t, exPlain("", "A"), "db", newExRegistry(mount), exAllow, Limits{})
+	if !errors.Is(err, ErrReadTruncated) || res.Records != nil {
+		t.Fatalf("a read cut short became %d rows and %v", len(res.Records), err)
+	}
+	if errors.Is(err, io.EOF) {
+		t.Fatalf("err = %v: the end-of-stream chain must not survive, or a caller reads the failure as the end", err)
+	}
+}
+
+// A scan clause bounds the read of its source, and no engine adapter applies it:
+// a document with one runs in memory, where DALgo hands the bound to the mount.
+func TestExecuteReadsAScannedSourceInMemoryWithItsBound(t *testing.T) {
+	for name, database := range map[string]string{"qualified": "pub", "unqualified": ""} {
+		t.Run(name, func(t *testing.T) {
+			mount := exMount("pub", "sqlite", false, map[string][]record.Record{"B": exRows("B", "b", 3)})
+			q := dal.From(exRef(database, "B", "").WithScan(2, dal.AscendingField("id"))).NewQuery().SelectIntoRecord(nil)
+			res, err := exRun(t, q, "pub", newExRegistry(mount), exAllow, Limits{})
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if res.Execution.Route != RouteInMemory {
+				t.Fatalf("route = %s, want in-memory", res.Execution.Route)
+			}
+			if _, txCalls := mount.counts(); txCalls != 0 {
+				t.Fatal("a scanned document ran on the database route, where the bound is dropped")
+			}
+			seen := mount.exec.seen()
+			if len(seen) != 1 {
+				t.Fatalf("the mount received %d queries, want 1", len(seen))
+			}
+			received := seen[0].(dal.StructuredQuery)
+			if received.Limit() != 2 {
+				t.Fatalf("limit = %d, want the scan bound 2", received.Limit())
+			}
+			orders := received.OrderBy()
+			if len(orders) != 1 || orders[0].Descending() || orders[0].Expression().(dal.FieldRef).Name() != "id" {
+				t.Fatalf("order = %v, want the scan order id ascending", orders)
+			}
+		})
+	}
+}
+
+// The SQL adapters cannot compile a null test and refuse it with an access
+// error, which a caller would answer as a 403. A document with one is evaluated
+// by DALgo instead, over plain reads, so it works and no engine ever sees it.
+func TestExecuteEvaluatesNullTestsInMemory(t *testing.T) {
+	isNull := func(operand dal.Expression) dal.Condition { return dal.NewIsNullCondition(operand) }
+	notNull := func(operand dal.Expression) dal.Condition { return dal.NewIsNotNullCondition(operand) }
+	antiJoin := func(database string) dal.StructuredQuery {
+		a, b := exRef(database, "A", "a"), exRef(database, "B", "b")
+		return dal.From(a).Join(dal.NewJoinedSource(b, dal.JoinLeft, exKeyEquals(a, b))).NewQuery().
+			Where(isNull(dal.NewFieldRef("b", "id"))).
+			SelectColumns(dal.Column{Expression: dal.NewFieldRef("a", "id"), Alias: "aid"})
+	}
+	plain := func(database string, test func(dal.Expression) dal.Condition) dal.StructuredQuery {
+		return dal.From(exRef(database, "A", "")).NewQuery().
+			Where(test(dal.NewFieldRef("", "name"))).
+			SelectColumns(dal.Column{Expression: dal.NewFieldRef("", "id"), Alias: "aid"})
+	}
+	for _, tc := range []struct {
+		name     string
+		query    dal.StructuredQuery
+		policies bool
+		engine   string
+		want     []int
+	}{
+		{"anti-join, qualified", antiJoin("db"), false, "sqlite", []int{2, 3}},
+		{"anti-join, qualified, on a protected mount", antiJoin("db"), true, "sqlite", []int{2, 3}},
+		{"anti-join, unqualified", antiJoin(""), false, "sqlite", []int{2, 3}},
+		{"IS NULL on one source, qualified", plain("db", isNull), false, "sqlite", []int{2}},
+		{"IS NULL on one source, unqualified", plain("", isNull), false, "sqlite", []int{2}},
+		{"IS NOT NULL on one source, qualified", plain("db", notNull), false, "sqlite", []int{1, 3}},
+		{"IS NULL on one source of a protected mount", plain("db", isNull), true, "sqlite", []int{2}},
+		{"IS NULL on one source of an engine that is not native", plain("db", isNull), false, "ingitdb", []int{2}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mount := exMount("db", tc.engine, tc.policies, exNullRows())
+			res, err := exRun(t, tc.query, "db", newExRegistry(mount), exAllow, Limits{})
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if res.Execution.Route != RouteInMemory {
+				t.Fatalf("route = %s, a null test never takes the database route", res.Execution.Route)
+			}
+			if _, txCalls := mount.counts(); txCalls != 0 {
+				t.Fatal("a document with a null test ran a transaction")
+			}
+			for _, query := range mount.exec.seen() {
+				q := query.(dal.StructuredQuery)
+				if q.Where() != nil || len(q.From().Joins()) != 0 {
+					t.Fatalf("the mount received %s: a null test or a join reached an engine", q)
+				}
+			}
+			if got := exAids(t, res.Records); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("aid = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The in-memory label names the path. A document with one source that names its
+// database and has no subquery or null test is read with one query that carries
+// its WHERE, ORDER BY and LIMIT, for the mount's executor to run. The same
+// document without the database name is read with a plain scan and filtered
+// above the leaf. Both are pinned here, on a protected mount, so a change to
+// either is a decision and not an accident.
+func TestExecuteInMemoryRouteSaysWhereAPlainDocumentsFilterRan(t *testing.T) {
+	filtered := func(database string) dal.StructuredQuery {
+		return dal.From(exRef(database, "A", "")).NewQuery().
+			Where(dal.NewComparison(dal.NewFieldRef("", "k"), dal.GreaterThen, dal.NewConstant(1))).
+			OrderBy(dal.DescendingField("id")).
+			Limit(5).
+			SelectIntoRecord(nil)
+	}
+	t.Run("qualified: the mount receives the filter, the order and the limit", func(t *testing.T) {
+		mount := exMount("hr", "sqlite", true, map[string][]record.Record{"A": exRows("A", "a", 3)})
+		res, err := exRun(t, filtered("hr"), "", newExRegistry(mount), exAllow, Limits{})
+		if err != nil || res.Execution.Route != RouteInMemory {
+			t.Fatalf("route %s, err %v", res.Execution.Route, err)
+		}
+		seen := mount.exec.seen()
+		if len(seen) != 1 {
+			t.Fatalf("the mount received %d queries, want 1", len(seen))
+		}
+		q := seen[0].(dal.StructuredQuery)
+		if q.Where() == nil || q.Limit() != 5 || len(q.OrderBy()) != 1 || !q.OrderBy()[0].Descending() {
+			t.Fatalf("the mount received %s, want the caller's filter, order and limit", q)
+		}
+		if len(q.From().Joins()) != 0 || dal.HasAggregation(q) || dal.HasSubquery(q) {
+			t.Fatalf("the mount received %s", q)
+		}
+	})
+	t.Run("unqualified: the mount receives a plain scan", func(t *testing.T) {
+		mount := exMount("hr", "sqlite", true, map[string][]record.Record{"A": exRows("A", "a", 3)})
+		res, err := exRun(t, filtered(""), "hr", newExRegistry(mount), exAllow, Limits{})
+		if err != nil || res.Execution.Route != RouteInMemory {
+			t.Fatalf("route %s, err %v", res.Execution.Route, err)
+		}
+		seen := mount.exec.seen()
+		if len(seen) != 1 {
+			t.Fatalf("the mount received %d queries, want 1", len(seen))
+		}
+		q := seen[0].(dal.StructuredQuery)
+		if q.Where() != nil || q.Limit() != 0 || len(q.OrderBy()) != 0 {
+			t.Fatalf("the mount received %s, want a plain scan", q)
+		}
+		// DALgo applied the filter, the order and the limit above the leaf: rows
+		// with k > 1, highest id first.
+		if len(res.Records) != 2 {
+			t.Fatalf("rows = %d, want 2", len(res.Records))
+		}
+	})
+}
+
+// Every collection the walk finds is authorised before any mount is resolved,
+// wherever in the document it sits: in a nested join tree, a derived source, an
+// EXISTS or a scalar subquery.
+func TestExecuteDeniesASourceWhereverTheDocumentHidesIt(t *testing.T) {
+	a := exRef("one", "A", "a")
+	b := exRef("one", "B", "b")
+	secret := func(database string) dal.StructuredQuery {
+		return dal.From(exRef(database, "Secret", "")).NewQuery().SelectColumns(dal.Column{Expression: dal.NewFieldRef("", "id")})
+	}
+	nested := dal.From(b)
+	nested.Join(dal.NewJoinedSource(exRef("one", "Secret", "s"), dal.JoinInner, exKeyEquals(b, exRef("one", "Secret", "s"))))
+	nestedTree := dal.From(a)
+	nestedTree.Join(dal.NewJoinedFrom(nested, dal.JoinInner, exKeyEquals(a, b)))
+	for name, query := range map[string]dal.StructuredQuery{
+		"a nested join tree":      nestedTree.NewQuery().SelectIntoRecord(nil),
+		"a derived source":        dal.From(a).Join(dal.NewJoinedSource(dal.NewQuerySource(secret("one"), "d"), dal.JoinInner, dal.NewComparison(dal.NewFieldRef("a", "k"), dal.Equal, dal.NewFieldRef("d", "id")))).NewQuery().SelectIntoRecord(nil),
+		"a derived base source":   dal.From(dal.NewQuerySource(secret("two"), "d")).NewQuery().SelectIntoRecord(nil),
+		"an EXISTS":               dal.From(a).NewQuery().Where(dal.NewExistsCondition(secret("one"))).SelectIntoRecord(nil),
+		"an EXISTS in another db": dal.From(a).NewQuery().Where(dal.NewExistsCondition(secret("two"))).SelectIntoRecord(nil),
+		"a scalar subquery":       dal.From(a).NewQuery().SelectColumns(dal.Column{Expression: dal.NewQueryExpression(secret("one"), "s")}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			one := exMount("one", "sqlite", false, map[string][]record.Record{"A": exRows("A", "a", 1), "B": exRows("B", "b", 1), "Secret": exRows("Secret", "s", 1)})
+			two := exMount("two", "sqlite", false, map[string][]record.Record{"Secret": exRows("Secret", "s", 1)})
+			registry := newExRegistry(one, two)
+			var asked [][2]string
+			authorize := func(database, collection string) bool {
+				asked = append(asked, [2]string{database, collection})
+				return collection != "Secret"
+			}
+			_, err := exRun(t, query, "", registry, authorize, Limits{})
+			if denied := exAsDenied(t, err); denied.Collection != "Secret" {
+				t.Fatalf("denied = %+v", denied)
+			}
+			sawSecret := false
+			for _, ask := range asked {
+				sawSecret = sawSecret || ask[1] == "Secret"
+			}
+			if !sawSecret {
+				t.Fatalf("the secret collection was never authorised: %v", asked)
+			}
+			if len(registry.lookups) != 0 {
+				t.Fatalf("a mount was resolved before authorisation finished: %v", registry.lookups)
+			}
+			for _, mount := range []*exSource{one, two} {
+				if executorCalls, txCalls := mount.counts(); executorCalls != 0 || txCalls != 0 {
+					t.Fatalf("mount %s was read although a source was denied", mount.id)
+				}
+			}
+		})
+	}
+}
+
+// A protected mount only ever receives plain single-collection reads, whatever
+// subquery shape the document wraps them in. DALgo evaluates the subquery above
+// the leaf, over the rows the policy-checked executor returns.
+func TestExecuteNeverHandsASubqueryToAPolicyProtectedMount(t *testing.T) {
+	rows := func() map[string][]record.Record {
+		return map[string][]record.Record{"A": exRows("A", "a", 3), "B": exRows("B", "b", 3)}
+	}
+	exists := func(database string) dal.StructuredQuery {
+		return dal.From(exRef(database, "A", "")).NewQuery().
+			Where(dal.NewExistsCondition(exPlain(database, "B"))).
+			SelectColumns(dal.Column{Expression: dal.NewFieldRef("", "id"), Alias: "aid"})
+	}
+	derived := func(database string) dal.StructuredQuery {
+		return dal.From(exDerived(database, "B", "d")).NewQuery().SelectColumns(
+			dal.Column{Expression: dal.NewFieldRef("d", "id"), Alias: "aid"},
+			dal.Column{Expression: dal.NewFieldRef("d", "name"), Alias: "bname"},
+		)
+	}
+	for _, tc := range []struct {
+		name  string
+		query dal.StructuredQuery
+		def   string
+	}{
+		{"EXISTS, unqualified", exists(""), "hr"},
+		{"EXISTS, qualified", exists("hr"), ""},
+		{"derived source, unqualified", derived(""), "hr"},
+		{"derived source, qualified", derived("hr"), ""},
+		{"EXISTS across a protected and a public mount", dal.From(exRef("hr", "A", "")).NewQuery().Where(dal.NewExistsCondition(exPlain("pub", "B"))).SelectColumns(dal.Column{Expression: dal.NewFieldRef("", "id"), Alias: "aid"}), ""},
+		{"derived source of the public mount beside the protected mount", dal.From(exRef("hr", "A", "a")).Join(dal.NewJoinedSource(exDerived("pub", "B", "d"), dal.JoinInner, dal.NewComparison(dal.NewFieldRef("a", "k"), dal.Equal, dal.NewFieldRef("d", "k")))).NewQuery().SelectColumns(dal.Column{Expression: dal.NewFieldRef("a", "id"), Alias: "aid"}), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			protected := exMount("hr", "sqlite", true, rows())
+			public := exMount("pub", "sqlite", false, rows())
+			res, err := exRun(t, tc.query, tc.def, newExRegistry(protected, public), exAllow, Limits{})
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if res.Execution.Route != RouteInMemory || len(res.Records) != 3 {
+				t.Fatalf("route %s, %d rows", res.Execution.Route, len(res.Records))
+			}
+			if _, txCalls := protected.counts(); txCalls != 0 {
+				t.Fatal("a policy-protected mount never runs a transaction of its own")
+			}
+			seen := protected.exec.seen()
+			if len(seen) == 0 {
+				t.Fatal("the protected mount was not read")
+			}
+			for _, query := range seen {
+				q := query.(dal.StructuredQuery)
+				if len(q.From().Joins()) != 0 || dal.HasAggregation(q) || dal.HasSubquery(q) || len(q.GroupBy()) != 0 || q.Where() != nil {
+					t.Fatalf("the protected mount received %s", q)
+				}
+			}
+			for _, s := range res.Execution.Sources {
+				if s.Database == "hr" && s.Rows != nil {
+					t.Fatalf("the protected source reports %d rows", *s.Rows)
+				}
+			}
+		})
+	}
+}
+
+// A reader that ends with a bare io.EOF has reached the end of its result.
+func TestExecuteDatabaseRouteReadsABareEOFAsTheEnd(t *testing.T) {
+	mount := exMount("db", "sqlite", false, nil)
+	mount.exec.whole = exAnswer(map[string]any{"a": 1}, map[string]any{"a": 2})
+	mount.exec.readerErr = io.EOF
+	res, err := exRun(t, exPlain("", "A"), "db", newExRegistry(mount), exAllow, Limits{})
+	if err != nil || len(res.Records) != 2 {
+		t.Fatalf("a result that ends with io.EOF: %d rows, %v", len(res.Records), err)
+	}
+}
+
+// A cross-database EXISTS runs through the router, which reads each side from
+// its own database.
+func TestExecuteRunsAnExistsAcrossTwoDatabases(t *testing.T) {
+	one := exMount("one", "sqlite", false, map[string][]record.Record{"A": exRows("A", "a", 3)})
+	two := exMount("two", "sqlite", false, map[string][]record.Record{"B": exRows("B", "b", 1)})
+	q := dal.From(exRef("one", "A", "")).NewQuery().
+		Where(dal.NewExistsCondition(exPlain("two", "B"))).
+		SelectColumns(dal.Column{Expression: dal.NewFieldRef("", "id"), Alias: "aid"})
+	res, err := exRun(t, q, "", newExRegistry(one, two), exAllow, Limits{})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := exAids(t, res.Records); !reflect.DeepEqual(got, []int{1, 2, 3}) {
+		t.Fatalf("aid = %v", got)
+	}
+	if len(one.exec.seen()) != 1 || len(two.exec.seen()) == 0 {
+		t.Fatalf("one saw %d reads and two saw %d", len(one.exec.seen()), len(two.exec.seen()))
+	}
+}
+
+// A scan clause on one source of a join is handed to the mount for that source
+// alone, and the document runs in memory.
+func TestExecuteReadsAScannedSourceOfAJoinInMemoryWithItsBound(t *testing.T) {
+	mount := exMount("pub", "sqlite", false, map[string][]record.Record{"A": exRows("A", "a", 3), "B": exRows("B", "b", 3)})
+	a, b := exRef("pub", "A", "a").WithScan(2, dal.AscendingField("id")), exRef("pub", "B", "b")
+	q := dal.From(a).Join(dal.NewJoinedSource(b, dal.JoinInner, exKeyEquals(a, b))).NewQuery().SelectIntoRecord(nil)
+	res, err := exRun(t, q, "", newExRegistry(mount), exAllow, Limits{})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if _, txCalls := mount.counts(); res.Execution.Route != RouteInMemory || txCalls != 0 {
+		t.Fatalf("route = %s, ReadTx called %d times", res.Execution.Route, txCalls)
+	}
+	var limits []int
+	for _, query := range mount.exec.seen() {
+		if received := query.(dal.StructuredQuery); received.From().Base().Name() == "A" {
+			limits = append(limits, received.Limit())
+		}
+	}
+	if !reflect.DeepEqual(limits, []int{2}) {
+		t.Fatalf("limits of the reads of A = %v, want the scan bound once", limits)
 	}
 }

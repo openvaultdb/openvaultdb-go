@@ -3,7 +3,9 @@ package joinexec
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/dal-go/dalgo/dal"
@@ -59,7 +61,13 @@ type Result struct {
 // response and never reports how many rows a source holds or was read for,
 // only how many rows it delivered (and not even that for a protected source).
 type Execution struct {
-	// Route is RouteDatabase or RouteInMemory.
+	// Route is RouteDatabase or RouteInMemory. It names the path, not where every
+	// filter ran: on RouteInMemory DALgo evaluates the document above guarded
+	// single-collection reads, and a document with one source that names its
+	// database and has no subquery or null test is read with one such query that
+	// carries its WHERE, ORDER BY and LIMIT, which the mount's own executor runs.
+	// Every other in-memory document is read with plain scans of each collection
+	// and filtered above them.
 	Route        string            `json:"route"`
 	ElapsedMs    int64             `json:"elapsedMs"`
 	RowsReturned int               `json:"rowsReturned"`
@@ -147,7 +155,8 @@ func withClock(now func() time.Time) Option {
 // defaultDatabase is the database of a source that names none; it is empty on
 // an endpoint that serves several databases, where every source must name one.
 // A source with a database of its own is read from that database whatever the
-// default is.
+// default is: an endpoint that serves one database must refuse a document that
+// names another itself.
 //
 // Execute works in this order, and a request that fails at one step has done
 // nothing of the steps after it:
@@ -155,9 +164,9 @@ func withClock(now func() time.Time) Option {
 //  1. Walk the document, check every name in it and check the profile against
 //     the walk (ErrInvalidDocument).
 //  2. Settle the database of every source (ErrSourceWithoutDatabase).
-//  3. Authorise every source (SourceDeniedError), before any mount is resolved,
-//     so a caller learns nothing about databases it may not read: 403 before
-//     404.
+//  3. Authorise every source the walk found (SourceDeniedError), before any
+//     mount is resolved, so a caller learns nothing about databases it may not
+//     read: 403 before 404.
 //  4. Resolve each database once (UnknownDatabaseError).
 //  5. Refuse an engine that cannot be queried (EngineNotQueryableError), for
 //     every source, and then one outside the join set (EngineNotJoinableError).
@@ -166,17 +175,28 @@ func withClock(now func() time.Time) Option {
 //  7. Choose the route and run.
 //
 // The database route is chosen when every source is in one database, that
-// database's engine is native, it has no access policies and the document has
-// no subquery. The whole document then runs in one read transaction of the
-// database. Every other document runs in memory: DALgo reads each source with a
-// single-collection query through a guarded leaf and joins, filters and
-// aggregates above the leaves, so a source with access policies is only ever
-// read through its policy-checked executor and only rows the caller may read
-// reach a join or an aggregate.
+// database's engine is native, it has no access policies, the document has no
+// subquery and no null test, and no source has a scan clause (no engine adapter
+// applies a scan bound or compiles a null test). The whole document then runs in
+// one read transaction of the database. Every other document runs in memory:
+// DALgo reads each source with a single-collection query through a guarded leaf
+// and joins, filters and aggregates above the leaves, so a source with access
+// policies is only ever read through its policy-checked executor and only rows
+// the caller may read reach a join or an aggregate. See Execution.Route for what
+// the in-memory label does and does not say about where a filter ran.
 //
-// An engine's CanQuery method, when the Source has one, says whether the engine
-// can run structured queries at all (core.Database has it). The check here
-// comes before the join-set check and no join-set setting lifts it.
+// A Source must answer CanQuery, which says whether its engine can run
+// structured queries at all (core.Database has it). A Source without the method
+// is treated as one that cannot be queried, so the gate does not depend on the
+// method set of whatever type a registry returns. The check comes before the
+// join-set check and no join-set setting lifts it.
+//
+// The walk checks every name of a document (fields, aliases, qualifiers,
+// parameters and collections) by the rules of pkg/core. The classifier of
+// pkg/core alone checks the database id format, the limit and offset bounds,
+// money, cursors, the join types and the number of sources; Execute does not
+// repeat them, so a caller must not hand it a document, or a profile, that did
+// not pass the classifier.
 //
 // opts, limits and the ordering of results are as documented on Option,
 // Limits, MaxResultRows and MaxResultBytes.
@@ -213,7 +233,7 @@ func Execute(ctx context.Context, query dal.StructuredQuery, profile Profile, de
 		return Result{}, err
 	}
 
-	route := cfg.route(databases, sources, doc.hasSubquery)
+	route := cfg.route(doc, databases, sources)
 	guard := NewGuard(authorize, limits)
 	ctx, cancel := guard.Context(ctx)
 	defer cancel()
@@ -222,7 +242,7 @@ func Execute(ctx context.Context, query dal.StructuredQuery, profile Profile, de
 	if route == RouteDatabase {
 		records, err = r.database(ctx, query, sources[databases[0]])
 	} else {
-		records, err = r.inMemory(ctx, query, databases, qualified)
+		records, err = r.inMemory(ctx, query, doc, databases, qualified)
 	}
 	if err != nil {
 		return Result{}, err
@@ -255,7 +275,7 @@ func settle(sources []walkedSource, defaultDatabase string) (targets []walkedSou
 			source.database = defaultDatabase
 		}
 		if source.database == "" {
-			return nil, nil, false, fmt.Errorf("%w: collection %q", ErrSourceWithoutDatabase, source.collection)
+			return nil, nil, false, fmt.Errorf("%w: collection %q", ErrSourceWithoutDatabase, clip(source.collection))
 		}
 		targets = append(targets, source)
 		if !seen[source.database] {
@@ -287,11 +307,13 @@ func resolveSources(registry Registry, databases []string) (map[string]Source, e
 
 // checkEngines refuses a database whose engine cannot be queried, for every
 // database, before it refuses one outside the join set: the first is the
-// stronger statement and an operator's join set cannot lift it.
+// stronger statement and an operator's join set cannot lift it. A source that
+// does not answer the question is one that cannot be queried.
 func (c *config) checkEngines(databases []string, sources map[string]Source) error {
 	for _, database := range databases {
 		source := sources[database]
-		if gate, ok := source.(interface{ CanQuery() bool }); ok && !gate.CanQuery() {
+		gate, ok := source.(interface{ CanQuery() bool })
+		if !ok || !gate.CanQuery() {
 			return &EngineNotQueryableError{Database: database, Engine: source.Engine()}
 		}
 	}
@@ -313,9 +335,11 @@ func checkScans(targets []walkedSource, sources map[string]Source) error {
 	return nil
 }
 
-// route chooses where the document runs.
-func (c *config) route(databases []string, sources map[string]Source, hasSubquery bool) string {
-	if len(databases) == 1 && !hasSubquery {
+// route chooses where the document runs. Only a document the whole database can
+// run goes to it: the SQL adapters drop a scan bound without an error and refuse
+// a null test, so a document with either is evaluated by DALgo instead.
+func (c *config) route(doc document, databases []string, sources map[string]Source) string {
+	if len(databases) == 1 && !doc.hasSubquery && !doc.hasNull && !doc.anyScan() {
 		source := sources[databases[0]]
 		if c.nativeEngines[source.Engine()] && !source.HasAccessPolicies() {
 			return RouteDatabase
@@ -330,14 +354,24 @@ type run struct {
 	sources map[string]Source
 }
 
-// resolve is the dal.DatabaseResolver of the in-memory route: the guarded leaf
-// of a database the preflight resolved and authorised, and nothing else.
-func (r *run) resolve(_ context.Context, database string) (dal.QueryExecutor, error) {
+// leaf returns the guarded leaf of a database the preflight resolved and
+// authorised, and nothing else. The failure is recorded on the guard, so that
+// DALgo rewrapping it as text does not hide its type.
+func (r *run) leaf(database string) (guardedLeaf, error) {
 	source, ok := r.sources[database]
 	if !ok {
-		return nil, &UnknownDatabaseError{Database: database}
+		return nil, r.guard.fail(&UnknownDatabaseError{Database: database})
 	}
-	return r.guard.Leaf(source), nil
+	return r.guard.Leaf(source).(guardedLeaf), nil
+}
+
+// resolve is the dal.DatabaseResolver of DALgo's federated executor.
+func (r *run) resolve(_ context.Context, database string) (dal.QueryExecutor, error) {
+	leaf, err := r.leaf(database)
+	if err != nil {
+		return nil, err
+	}
+	return leaf, nil
 }
 
 // database runs the whole document in one read transaction of source. The
@@ -368,18 +402,26 @@ func (r *run) database(ctx context.Context, query dal.StructuredQuery, source So
 	return records, nil
 }
 
-// inMemory runs the document above guarded leaves. A document whose sources all
-// name their database is routed by DALgo's federated executor, one leaf per
-// database; any other document lives in one database and reads through one leaf.
-func (r *run) inMemory(ctx context.Context, query dal.StructuredQuery, databases []string, qualified bool) ([]record.Record, error) {
+// inMemory runs the document above guarded leaves. DALgo's federated executor
+// runs a document whose sources all name their database and that has no
+// subquery, one leaf per database: it keeps the streaming join, and a plain
+// one-source document is handed to the mount whole, with its WHERE, ORDER BY and
+// LIMIT. The federated executor cannot read a derived source (it asks every
+// FROM node for a database), and a one-source document with a null test would
+// be handed whole to an engine that cannot compile it, so every other document
+// runs through DALgo's recursive executor over a router that picks the leaf of
+// each source's database. A join with a null test stays with the federated
+// executor: it reads plain collections and evaluates the test above them.
+func (r *run) inMemory(ctx context.Context, query dal.StructuredQuery, doc document, databases []string, qualified bool) ([]record.Record, error) {
 	var (
 		reader dal.RecordsReader
 		err    error
 	)
-	if qualified {
+	handedWhole := doc.hasNull && len(doc.sources) == 1
+	if qualified && !doc.hasSubquery && !handedWhole {
 		reader, err = dal.ExecuteFederatedQueryWithOptions(ctx, query, r.resolve, dal.FederatedQueryOptions{})
 	} else {
-		reader, err = dal.ExecuteRecursiveQuery(ctx, r.guard.Leaf(r.sources[databases[0]]), query)
+		reader, err = dal.ExecuteRecursiveQuery(ctx, newRouter(r, databases), query)
 	}
 	return r.collect(ctx, reader, err, RouteInMemory)
 }
@@ -408,7 +450,15 @@ type resultCap struct {
 
 func (c *resultCap) Next() (record.Record, error) {
 	rec, err := c.RecordsReader.Next()
-	if err != nil {
+	switch {
+	case err == nil:
+	case err == io.EOF || errors.Is(err, dal.ErrNoMoreRecords):
+		return nil, err
+	case errors.Is(err, io.EOF):
+		// Guard.Collect ends a read at any error that wraps io.EOF. This one is a
+		// failure: hand it on without the chain.
+		return nil, fmt.Errorf("%w: %v", ErrReadTruncated, err)
+	default:
 		return nil, err
 	}
 	encoded, err := json.Marshal(rec.Data())

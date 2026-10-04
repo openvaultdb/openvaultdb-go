@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -36,6 +37,15 @@ type exExecutor struct {
 	queries   []dal.Query
 	// deadlineSeen holds the context deadline of every read.
 	deadlineSeen []time.Time
+	// fields and fieldsErr answer JoinFields, as an adapter that knows its
+	// schema does. With neither set the answer is no fields, the same as an
+	// executor that does not offer the method.
+	fields    []string
+	fieldsErr error
+}
+
+func (e *exExecutor) JoinFields(context.Context, dal.RecordsetSource) ([]string, error) {
+	return e.fields, e.fieldsErr
 }
 
 func (e *exExecutor) ExecuteQueryToRecordsReader(ctx context.Context, query dal.Query) (dal.RecordsReader, error) {
@@ -96,7 +106,10 @@ type exSource struct {
 	id       string
 	engine   string
 	policies bool
-	exec     *exExecutor
+	// noQuery makes CanQuery answer false, as the mount of an engine that cannot
+	// run structured queries does.
+	noQuery bool
+	exec    *exExecutor
 
 	mu            sync.Mutex
 	executorCalls int
@@ -110,6 +123,7 @@ type exSource struct {
 func (s *exSource) ID() string              { return s.id }
 func (s *exSource) Engine() string          { return s.engine }
 func (s *exSource) HasAccessPolicies() bool { return s.policies }
+func (s *exSource) CanQuery() bool          { return !s.noQuery }
 
 func (s *exSource) Executor() dal.QueryExecutor {
 	s.mu.Lock()
@@ -144,13 +158,18 @@ func (s *exSource) counts() (executorCalls, txCalls int) {
 	return s.executorCalls, s.txCalls
 }
 
-// exGated is an exSource that also answers CanQuery, as core.Database does.
-type exGated struct {
-	*exSource
-	can bool
-}
+// exBare is a Source that does not answer CanQuery: a wrapper that holds the
+// mount in a named field instead of embedding it, so the method is lost and
+// nothing fails to compile. The executor must treat it as not queryable.
+type exBare struct{ inner *exSource }
 
-func (g exGated) CanQuery() bool { return g.can }
+func (b exBare) ID() string                  { return b.inner.ID() }
+func (b exBare) Engine() string              { return b.inner.Engine() }
+func (b exBare) HasAccessPolicies() bool     { return b.inner.HasAccessPolicies() }
+func (b exBare) Executor() dal.QueryExecutor { return b.inner.Executor() }
+func (b exBare) ReadTx(ctx context.Context, fn func(dal.QueryExecutor) error) error {
+	return b.inner.ReadTx(ctx, fn)
+}
 
 // exRegistry resolves sources by id and remembers every lookup.
 type exRegistry struct {
@@ -299,3 +318,35 @@ func exJSON(v any) (string, error) {
 }
 
 var errExBoom = errors.New("ex boom")
+
+// exNullRows holds the rows the null tests run over. In A, row 2 has no name; in
+// B, only the row with k=1 matches a row of A.
+func exNullRows() map[string][]record.Record {
+	row := func(collection string, id int, k int, name any) record.Record {
+		return record.NewRecordWithData(record.NewKeyWithID(collection, id), map[string]any{"id": id, "k": k, "name": name})
+	}
+	return map[string][]record.Record{
+		"A": {row("A", 1, 1, "a1"), row("A", 2, 2, nil), row("A", 3, 3, "a3")},
+		"B": {row("B", 1, 1, "b1"), row("B", 2, 9, "b9")},
+	}
+}
+
+// exAids lists the aid column of the records, sorted.
+func exAids(t *testing.T, records []record.Record) []int {
+	t.Helper()
+	aids := make([]int, len(records))
+	for i, rec := range records {
+		switch n := rec.Data().(map[string]any)["aid"].(type) {
+		case int:
+			aids[i] = n
+		case int64:
+			aids[i] = int(n)
+		case float64:
+			aids[i] = int(n)
+		default:
+			t.Fatalf("aid = %v (%T)", n, n)
+		}
+	}
+	sort.Ints(aids)
+	return aids
+}

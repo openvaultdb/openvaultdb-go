@@ -41,6 +41,14 @@ var (
 	// error.
 	ErrNoReader = errors.New("joinexec: the executor returned no reader")
 
+	// ErrReadTruncated is returned when the reader of the database route failed
+	// with an error that wraps io.EOF. A reader's end is a bare io.EOF; an error
+	// that merely wraps it is a failure part way (a dropped connection reports
+	// itself this way), and answering it as the end would return the rows read
+	// so far as a complete result. The original error is in the message, not in
+	// the chain, so that nothing reads it as the end of the stream.
+	ErrReadTruncated = errors.New("joinexec: the read ended with a failure that looks like the end of the stream")
+
 	// ErrRegistryMismatch is returned when the registry answers a database id
 	// with a source of another id. The leaf authorises a read under the source's
 	// own id, so such a source would be authorised under the wrong name.

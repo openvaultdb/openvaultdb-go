@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/record"
@@ -307,5 +308,135 @@ func TestCheckProfileComparesTheProfileToTheWalk(t *testing.T) {
 	profile.HasSubquery = true
 	if err := checkProfile(withSubquery, profile); err != nil {
 		t.Fatalf("a declared subquery: %v", err)
+	}
+}
+
+// The collection name is the one name that becomes a path on a file-backed
+// engine. The walk applies the rule of pkg/core's ValidateCollectionName to it,
+// so a collection that is not a plain name is not authorised, resolved or read,
+// and does not become a qualifier either.
+func TestInspectChecksCollectionNames(t *testing.T) {
+	for name, collection := range map[string]string{
+		"dot":                      ".",
+		"dot dot":                  "..",
+		"parent component":         "a/../b",
+		"backslash parent":         `a\..\b`,
+		"leading parent":           "../secrets",
+		"only separators":          "//",
+		"control character":        "a\x00b",
+		"newline":                  "a\nb",
+		"delete character":         "a\x7fb",
+		"relative component alone": "x/./y",
+	} {
+		t.Run(name, func(t *testing.T) {
+			doc, err := inspect(dal.From(exRef("one", collection, "")).NewQuery().SelectIntoRecord(nil))
+			if !errors.Is(err, ErrInvalidDocument) || !strings.Contains(err.Error(), "collection name") {
+				t.Fatalf("err = %v, want ErrInvalidDocument naming the collection", err)
+			}
+			if !reflect.DeepEqual(doc, document{}) {
+				t.Fatalf("a refused document returned a walk: %+v", doc)
+			}
+		})
+	}
+	// DALgo will not build a collection without a name, but the zero value is
+	// one, and the walk refuses it.
+	if _, err := inspect(dal.From(dal.CollectionRef{}).NewQuery().SelectIntoRecord(nil)); !errors.Is(err, ErrInvalidDocument) || !strings.Contains(err.Error(), "collection name") {
+		t.Fatalf("an empty collection name: %v", err)
+	}
+	// The same rule accepts the names real schemas use: spaces, hyphens, dots
+	// inside a component, non-ASCII letters and an escaped separator.
+	for _, collection := range []string{"Order Details", "order-items", "a.b", "a..b", "Données", "x/y", "$special"} {
+		if _, err := inspect(dal.From(exRef("one", collection, "")).NewQuery().SelectIntoRecord(nil)); err != nil {
+			t.Fatalf("collection %q: %v", collection, err)
+		}
+	}
+	// A collection that is refused is not in scope, so no qualifier can borrow
+	// its name.
+	q := dal.From(exRef("", "..", "")).NewQuery().SelectColumns(dal.Column{Expression: dal.NewFieldRef("..", "id")})
+	if _, err := inspect(q); !errors.Is(err, ErrInvalidDocument) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestInspectRecordsNullTestsWhereverTheyAre(t *testing.T) {
+	field := dal.NewFieldRef("", "id")
+	a, b := exRef("", "a", "a"), exRef("", "b", "b")
+	onEdge := dal.From(a).Join(dal.NewJoinedSource(b, dal.JoinLeft, dal.NewIsNullCondition(dal.NewFieldRef("b", "id")))).NewQuery().SelectIntoRecord(nil)
+	inGroup := exWithWhere(dal.NewGroupCondition(dal.And, dal.NewComparison(field, dal.Equal, dal.Constant{Value: 1}), dal.NewIsNotNullCondition(field)))
+	inSubquery := exWithWhere(dal.NewExistsCondition(exWithWhere(dal.NewIsNullCondition(field))))
+	inHaving := dal.From(a).NewQuery().GroupBy(field).Having(dal.NewIsNullCondition(field)).SelectColumns(dal.Column{Expression: field})
+	for name, q := range map[string]dal.StructuredQuery{
+		"in WHERE":       exWithWhere(dal.NewIsNullCondition(field)),
+		"negated":        exWithWhere(dal.NewIsNotNullCondition(field)),
+		"in a group":     inGroup,
+		"on a join edge": onEdge,
+		"in a subquery":  inSubquery,
+		"in HAVING":      inHaving,
+	} {
+		doc, err := inspect(q)
+		if err != nil || !doc.hasNull {
+			t.Fatalf("%s: hasNull = %v, err = %v", name, doc.hasNull, err)
+		}
+	}
+	plain, err := inspect(exWithWhere(dal.NewComparison(field, dal.Equal, dal.Constant{Value: 1})))
+	if err != nil || plain.hasNull {
+		t.Fatalf("a document without a null test: hasNull = %v, err = %v", plain.hasNull, err)
+	}
+}
+
+func TestDocumentAnyScanLooksAtEverySource(t *testing.T) {
+	none := document{sources: []walkedSource{{collection: "A"}, {collection: "B"}}}
+	if none.anyScan() || (document{}).anyScan() {
+		t.Fatal("a document without a scan clause has none")
+	}
+	last := document{sources: []walkedSource{{collection: "A"}, {collection: "B", scan: true}}}
+	if !last.anyScan() {
+		t.Fatal("a scan clause on the last source is missed")
+	}
+}
+
+// A name of the size of the request body must not come back in an error.
+func TestRefusalsDoNotEchoALongNameWhole(t *testing.T) {
+	long := strings.Repeat("x y ", 1<<18) // 1 MiB, with spaces so that it is refused
+	for name, q := range map[string]dal.StructuredQuery{
+		"field":      exWithColumn(dal.NewFieldRef("", long)),
+		"alias":      dal.WithColumns(exBase(), []dal.Column{{Expression: dal.NewFieldRef("", "id"), Alias: long}}),
+		"qualifier":  exWithColumn(dal.NewFieldRef(long, "id")),
+		"parameter":  exWithWhere(dal.NewComparison(dal.NewFieldRef("", "id"), dal.Equal, dal.Param{Name: long})),
+		"collection": dal.From(exRef("", "a/../"+long, "")).NewQuery().SelectIntoRecord(nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := inspect(q)
+			if !errors.Is(err, ErrInvalidDocument) {
+				t.Fatalf("err = %v, want ErrInvalidDocument", err)
+			}
+			if len(err.Error()) > 512 {
+				t.Fatalf("the error is %d bytes long: the name came back", len(err.Error()))
+			}
+		})
+	}
+	// Execute does not echo a long collection name either.
+	_, err := exRun(t, exPlain("", strings.Repeat("c", 1<<20)), "", newExRegistry(), exAllow, Limits{})
+	if !errors.Is(err, ErrSourceWithoutDatabase) || len(err.Error()) > 512 {
+		t.Fatalf("err = %v (%d bytes)", err, len(err.Error()))
+	}
+}
+
+func TestClipKeepsShortNamesAndCutsLongOnesOnACharacterBoundary(t *testing.T) {
+	if got := clip("short"); got != "short" {
+		t.Fatalf("clip = %q", got)
+	}
+	exact := strings.Repeat("a", maxEchoLen)
+	if got := clip(exact); got != exact {
+		t.Fatalf("a name of exactly %d bytes is kept whole, got %q", maxEchoLen, got)
+	}
+	if got := clip(exact + "b"); got != exact+"..." {
+		t.Fatalf("clip = %q", got)
+	}
+	// A three-byte character straddles the cut: it is dropped, not split.
+	straddling := strings.Repeat("a", maxEchoLen-1) + "€€"
+	got := clip(straddling)
+	if got != strings.Repeat("a", maxEchoLen-1)+"..." || !utf8.ValidString(got) {
+		t.Fatalf("clip = %q", got)
 	}
 }
