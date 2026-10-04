@@ -151,6 +151,8 @@ var unsafeFieldNames = []string{
 	"$", "$$id", "a$$", "-name", "a.-b", "a--b", "a---b", `na\me`, "na\u200bme", "na\u2028me",
 	"a/b", "a*b", "a%b", "a,b", "a|b", "a:b", "a<b", "a+b", "a@b", "a!b", "a?b", "a~b", "a^b", "a&b", "a{b", "a}b", "a]b",
 	"$id.", "$1", "a.$1", "$1a", "a$b", "a.$b$", "$.a", "\u00a0name", "name\u00a0",
+	// A combining mark continues a segment but never starts one.
+	"\u0308name", "a.\u0308b", "$\u0308a", "\u093e", "\u0e48a",
 }
 
 // safeFieldNames include the key pseudo-field of the document engines ($id),
@@ -159,6 +161,9 @@ var safeFieldNames = []string{
 	"name", "_id", "Name2", "a_b", "address.city", "a.b.c", strings.Repeat("a", maxFieldNameLen),
 	"$id", "$id.x", "a.$id", "first-name", "a-b-c", "naïve", "名前", "address.zip-code",
 	"1name", "byYear.2024", "1st_line", "2024", "a.1.b",
+	// Scripts that need combining marks: Devanagari (U+093E is Mc), Thai
+	// (U+0E37 and U+0E48 are Mn) and a decomposed Latin letter (U+0308 is Mn).
+	"\u0928\u093e\u092e", "\u0e0a\u0e37\u0e48\u0e2d", "nai\u0308ve", "a.\u0928\u093e\u092e", "$\u0e0a\u0e37\u0e48\u0e2d",
 }
 
 func TestValidateFieldName(t *testing.T) {
@@ -288,28 +293,28 @@ type otherExpression struct{}
 func (otherExpression) String() string { return "other" }
 
 func TestValidateDTQLFieldsFailsClosedOnUnknownShapes(t *testing.T) {
-	if err := validateCondition(otherCondition{}, 0, nil); !errors.Is(err, ErrInvalidDTQL) {
+	if err := (nameWalker{}).condition(otherCondition{}, 0, nil); !errors.Is(err, ErrInvalidDTQL) {
 		t.Errorf("unknown condition: %v", err)
 	}
-	if err := validateExpression(otherExpression{}, 0, nil); !errors.Is(err, ErrInvalidDTQL) {
+	if err := (nameWalker{}).expression(otherExpression{}, 0, nil); !errors.Is(err, ErrInvalidDTQL) {
 		t.Errorf("unknown expression: %v", err)
 	}
-	if err := validateExpression(dal.NewComparison(nil, dal.Equal, nil), 0, nil); !errors.Is(err, ErrInvalidDTQL) {
+	if err := (nameWalker{}).expression(dal.NewComparison(nil, dal.Equal, nil), 0, nil); !errors.Is(err, ErrInvalidDTQL) {
 		t.Errorf("comparison used as expression: %v", err)
 	}
-	if err := validateExpression(dal.Param{Name: "bad name"}, 0, nil); !errors.Is(err, ErrInvalidDTQL) {
+	if err := (nameWalker{}).expression(dal.Param{Name: "bad name"}, 0, nil); !errors.Is(err, ErrInvalidDTQL) {
 		t.Errorf("bad param: %v", err)
 	}
-	if err := validateExpression(dal.NewParam("currentUser"), 0, nil); err != nil {
+	if err := (nameWalker{}).expression(dal.NewParam("currentUser"), 0, nil); err != nil {
 		t.Errorf("good param: %v", err)
 	}
-	if err := validateCondition(dal.NewComparison(dal.Field("a"), dal.In, dal.Array{Value: []string{"x"}}), 0, nil); err != nil {
+	if err := (nameWalker{}).condition(dal.NewComparison(dal.Field("a"), dal.In, dal.Array{Value: []string{"x"}}), 0, nil); err != nil {
 		t.Errorf("array: %v", err)
 	}
-	if err := validateCondition(nil, 0, nil); err != nil {
+	if err := (nameWalker{}).condition(nil, 0, nil); err != nil {
 		t.Errorf("nil condition: %v", err)
 	}
-	if err := validateExpression(nil, 0, nil); err != nil {
+	if err := (nameWalker{}).expression(nil, 0, nil); err != nil {
 		t.Errorf("nil expression: %v", err)
 	}
 }
@@ -344,10 +349,10 @@ func TestValidateDTQLFieldsAggregatesAliasesSourcesAndDepth(t *testing.T) {
 	if err := validateDTQLFields(root.SelectColumns(dal.AllColumnsExceptFrom("c d", "x")), 0); !errors.Is(err, ErrInvalidDTQL) {
 		t.Errorf("wildcard source: %v", err)
 	}
-	if err := validateExpression(dal.NewFieldRef("c", "x"), 0, nil); err != nil {
+	if err := (nameWalker{}).expression(dal.NewFieldRef("c", "x"), 0, nil); err != nil {
 		t.Errorf("qualified field: %v", err)
 	}
-	if err := validateExpression(dal.NewFieldRef("c;", "x"), 0, nil); !errors.Is(err, ErrInvalidDTQL) {
+	if err := (nameWalker{}).expression(dal.NewFieldRef("c;", "x"), 0, nil); !errors.Is(err, ErrInvalidDTQL) {
 		t.Errorf("qualified field source: %v", err)
 	}
 	// Deeply nested conditions are refused rather than walked without bound.
@@ -355,14 +360,14 @@ func TestValidateDTQLFieldsAggregatesAliasesSourcesAndDepth(t *testing.T) {
 	for i := 0; i <= maxQueryTreeDepth+1; i++ {
 		deep = dal.NewGroupCondition(dal.And, deep)
 	}
-	if err := validateCondition(deep, 0, nil); !errors.Is(err, ErrInvalidDTQL) {
+	if err := (nameWalker{}).condition(deep, 0, nil); !errors.Is(err, ErrInvalidDTQL) {
 		t.Errorf("deep condition: %v", err)
 	}
 	var deepExpr dal.Expression = dal.Field("a")
 	for i := 0; i <= maxQueryTreeDepth+1; i++ {
 		deepExpr = dal.Binary(deepExpr, dal.Add, dal.String("x"))
 	}
-	if err := validateExpression(deepExpr, 0, nil); !errors.Is(err, ErrInvalidDTQL) {
+	if err := (nameWalker{}).expression(deepExpr, 0, nil); !errors.Is(err, ErrInvalidDTQL) {
 		t.Errorf("deep expression: %v", err)
 	}
 	if err := validateDTQLFields(build(root), maxQueryTreeDepth+1); !errors.Is(err, ErrInvalidDTQL) {
@@ -595,5 +600,156 @@ func TestParseDTQLRefusesQualifiedAndScannedTopLevelSource(t *testing.T) {
 		if _, _, err := ParseDTQL([]byte(doc)); !errors.Is(err, ErrInvalidDTQL) {
 			t.Errorf("%s: %v", label, err)
 		}
+	}
+}
+
+// TestNameWalkerVariantsDifferInTwoPlaces pins what the relational variant
+// changes and what it leaves alone: a database on a source is accepted, an IS
+// NULL test is walked, and every name rule still applies.
+func TestNameWalkerVariantsDifferInTwoPlaces(t *testing.T) {
+	onDatabase := selectQuery(fromTree(dal.NewDatabaseCollectionRef("chinook", "", "Customer", "")).NewQuery())
+	if err := validateDTQLFields(onDatabase, 0); !errors.Is(err, ErrInvalidDTQL) {
+		t.Errorf("single-collection variant, source with a database: %v", err)
+	}
+	if err := validateRelationalNames(onDatabase); err != nil {
+		t.Errorf("relational variant, source with a database: %v", err)
+	}
+
+	isNull := func(operand dal.Expression, negated bool) dal.StructuredQuery {
+		condition := dal.NewIsNullCondition(operand)
+		if negated {
+			condition = dal.NewIsNotNullCondition(operand)
+		}
+		return selectQuery(fromTree(rootRef("customers")).NewQuery().Where(condition))
+	}
+	for _, negated := range []bool{false, true} {
+		if err := validateDTQLFields(isNull(dal.Field("a"), negated), 0); !errors.Is(err, ErrInvalidDTQL) {
+			t.Errorf("single-collection variant, null test (negated %v): %v", negated, err)
+		}
+		if err := validateRelationalNames(isNull(dal.Field("a"), negated)); err != nil {
+			t.Errorf("relational variant, null test (negated %v): %v", negated, err)
+		}
+		if err := validateRelationalNames(isNull(dal.Field("a b"), negated)); !errors.Is(err, ErrInvalidDTQL) {
+			t.Errorf("relational variant, null test of an unsafe field (negated %v): %v", negated, err)
+		}
+	}
+	// A null test nested in a group and in a subquery is walked too.
+	nested := selectQuery(fromTree(rootRef("customers")).NewQuery().Where(dal.NewGroupCondition(dal.And,
+		dal.NewComparison(dal.Field("ok"), dal.Equal, dal.String("x")),
+		dal.NewExistsCondition(selectQuery(fromTree(rootRef("other")).NewQuery().Where(dal.NewIsNotNullCondition(dal.Field("a;b"))))))))
+	if err := validateRelationalNames(nested); !errors.Is(err, ErrInvalidDTQL) {
+		t.Errorf("relational variant, nested null test: %v", err)
+	}
+
+	// Everything else is shared: parent, schema, names, aliases and depth.
+	for label, query := range map[string]dal.StructuredQuery{
+		"parent":       selectQuery(fromTree(dal.NewCollectionRef("other", "", record.NewKeyWithID("p", "1"))).NewQuery()),
+		"schema":       selectQuery(fromTree(dal.NewQualifiedRootCollectionRef("s", "other", "")).NewQuery()),
+		"name":         selectQuery(fromTree(rootRef("ot\x00her")).NewQuery()),
+		"alias":        selectQuery(fromTree(dal.NewDatabaseCollectionRef("d", "", "other", "a b")).NewQuery()),
+		"unsafe field": selectQuery(fromTree(dal.NewDatabaseCollectionRef("d", "", "other", "")).NewQuery().WhereField("a b", dal.Equal, 1)),
+	} {
+		if err := validateRelationalNames(query); !errors.Is(err, ErrInvalidDTQL) {
+			t.Errorf("relational variant, %s: %v", label, err)
+		}
+	}
+	if err := (nameWalker{relational: true}).query(selectQuery(fromTree(rootRef("customers")).NewQuery()), maxQueryTreeDepth+1, nil); !errors.Is(err, ErrInvalidDTQL) {
+		t.Errorf("relational variant, deep query: %v", err)
+	}
+}
+
+// TestParseDTQLRefusesNullTestsThatNoAdapterImplements pins what dalgo
+// v0.89.1 (which parses isNull and isNotNull) does to today's endpoint: no
+// adapter pinned here implements the node, so ParseDTQL refuses it with
+// ErrInvalidDTQL, a 400, instead of handing it to an adapter.
+func TestParseDTQLRefusesNullTestsThatNoAdapterImplements(t *testing.T) {
+	for label, doc := range map[string]string{
+		"isNull":     "from: {name: customers}\nwhere: {isNull: {field: x}}\n",
+		"isNotNull":  "from: {name: customers}\nwhere: {isNotNull: {field: x}}\n",
+		"in a group": "from: {name: customers}\nwhere:\n  and:\n    - op: '=='\n      left: {field: a}\n      right: {value: 1}\n    - isNull: {field: x}\n",
+	} {
+		if _, _, err := ParseDTQL([]byte(doc)); !errors.Is(err, ErrInvalidDTQL) {
+			t.Errorf("%s: %v", label, err)
+		}
+	}
+}
+
+// TestNameWalkerChecksTheStringsThatAreNotFieldNames covers three
+// caller-supplied strings /dtql carries besides names: the operator of an
+// arithmetic expression, the name of an aggregate function, and the result name
+// of a scalar subquery. None is exploitable today (the SQLite compiler
+// allow-lists operators and function names, no adapter compiles a subquery),
+// but the legacy text emitter would write all three into SQL.
+func TestNameWalkerChecksTheStringsThatAreNotFieldNames(t *testing.T) {
+	const injected = "x; --"
+	where := func(left dal.Expression) dal.StructuredQuery {
+		return selectQuery(fromTree(rootRef("customers")).NewQuery().Where(dal.NewComparison(left, dal.Equal, dal.String("y"))))
+	}
+	sub := selectQuery(fromTree(rootRef("other")).NewQuery())
+	for label, query := range map[string]dal.StructuredQuery{
+		"binary operator":           where(dal.Binary(dal.Field("a"), dal.ArithmeticOperator(injected), dal.String("1"))),
+		"nested binary operator":    where(dal.Binary(dal.Binary(dal.Field("a"), dal.Add, dal.String("1")), dal.ArithmeticOperator("%"), dal.String("1"))),
+		"empty binary operator":     where(dal.Binary(dal.Field("a"), dal.ArithmeticOperator(""), dal.String("1"))),
+		"aggregate function":        where(dal.NewAggregate(injected, false, dal.Field("a"))),
+		"unknown aggregate":         where(dal.NewAggregate("MEDIAN", false, dal.Field("a"))),
+		"empty aggregate":           where(dal.NewAggregate("", false, dal.Field("a"))),
+		"aggregate in a scan order": selectQuery(fromTree(rootRef("customers").WithScan(1, dal.Ascending(dal.NewAggregate(injected, false, dal.Field("a"))))).NewQuery()),
+		"aggregate in a join on": selectQuery(fromTree(rootRef("customers"), dal.NewJoinedSource(rootRef("o2"), dal.JoinInner,
+			eqCondition(dal.NewAggregate(injected, false, dal.Field("a")), dal.Field("b")))).NewQuery()),
+		"scalar subquery name":     where(dal.NewQueryExpression(sub, injected)),
+		"scalar subquery in a col": fromTree(rootRef("customers")).NewQuery().SelectColumns(dal.Column{Expression: dal.NewQueryExpression(sub, "a b")}),
+	} {
+		if err := validateDTQLFields(query, 0); !errors.Is(err, ErrInvalidDTQL) {
+			t.Errorf("single-collection variant, %s: %v", label, err)
+		}
+		if err := validateRelationalNames(query); !errors.Is(err, ErrInvalidDTQL) {
+			t.Errorf("relational variant, %s: %v", label, err)
+		}
+	}
+	for _, operator := range []dal.ArithmeticOperator{dal.Add, dal.Subtract, dal.Multiply, dal.Divide} {
+		if err := validateDTQLFields(where(dal.Binary(dal.Field("a"), operator, dal.String("1"))), 0); err != nil {
+			t.Errorf("operator %q: %v", operator, err)
+		}
+	}
+	for _, name := range []string{"COUNT", "SUM", "AVG", "MIN", "MAX", "FIRST", "LAST", "sum", "Avg", "last"} {
+		if err := validateDTQLFields(where(dal.NewAggregate(name, false, dal.Field("a"))), 0); err != nil {
+			t.Errorf("aggregate %q: %v", name, err)
+		}
+	}
+	for _, name := range []string{"", "s", "total_2"} {
+		if err := validateDTQLFields(where(dal.NewQueryExpression(sub, name)), 0); err != nil {
+			t.Errorf("scalar subquery name %q: %v", name, err)
+		}
+	}
+}
+
+// TestValidateIdentifierDoesNotEchoAnOverLongName: an alias or qualifier over
+// the length limit is answered with the limit, not with the caller's text,
+// which can be as large as the request body. ValidateFieldName already does
+// the same.
+func TestValidateIdentifierDoesNotEchoAnOverLongName(t *testing.T) {
+	long := strings.Repeat("a", maxFieldNameLen+1)
+	err := validateIdentifier(long)
+	if !errors.Is(err, ErrInvalidDTQL) {
+		t.Fatalf("err = %v, want ErrInvalidDTQL", err)
+	}
+	if strings.Contains(err.Error(), "aaaa") || !strings.Contains(err.Error(), "256") {
+		t.Fatalf("message must state the limit and omit the name: %q", err)
+	}
+	// An over-long name that is not an identifier is still refused without the echo.
+	err = validateIdentifier(strings.Repeat("a b", maxFieldNameLen))
+	if !errors.Is(err, ErrInvalidDTQL) || strings.Contains(err.Error(), "a b") {
+		t.Fatalf("err = %v", err)
+	}
+	// A short refused name is still quoted, so the caller can see which one it was.
+	if err := validateIdentifier("a b"); !errors.Is(err, ErrInvalidDTQL) || !strings.Contains(err.Error(), `"a b"`) {
+		t.Fatalf("err = %v", err)
+	}
+	if err := validateIdentifier(strings.Repeat("a", maxFieldNameLen)); err != nil {
+		t.Fatalf("a name at the limit: %v", err)
+	}
+	// The same through a source qualifier that names no source in scope.
+	if err := validateQualifier(long, nil); !errors.Is(err, ErrInvalidDTQL) || strings.Contains(err.Error(), "aaaa") {
+		t.Fatalf("qualifier err = %v", err)
 	}
 }

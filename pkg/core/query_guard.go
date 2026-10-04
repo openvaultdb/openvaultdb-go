@@ -72,15 +72,18 @@ const maxFieldNameLen = 256
 // a digit or an underscore, or with "$" immediately followed by a letter or
 // underscore (the key pseudo-field $id of the document engines; "$1" is
 // refused because it reads as a positional parameter), and continues with
-// letters, digits, underscore or hyphen. Letters and digits are Unicode,
-// because firestore field names may be non-ASCII; hyphens and digit-leading
-// segments (numeric map keys such as byYear.2024) are legal there too.
+// letters, combining marks, digits, underscore or hyphen. Letters, marks and
+// digits are Unicode, because firestore field names may be non-ASCII: a
+// combining mark (category M) is part of a letter in scripts such as
+// Devanagari and Thai and in decomposed Latin text, so it may continue a
+// segment, but it never starts one. Hyphens and digit-leading segments
+// (numeric map keys such as byYear.2024) are legal there too.
 // Everything else is refused on every engine: quotes, backticks, spaces and
 // other whitespace, semicolons, slashes, brackets, "#", backslash, control
 // characters. The comment marker "--" is refused explicitly because hyphens
 // are allowed. It is an allow-list, so a character nobody thought of is
 // refused too.
-var fieldNameRe = regexp.MustCompile(`^(\$[\p{L}_]|[\p{L}\p{Nd}_])[\p{L}\p{Nd}_-]*(\.(\$[\p{L}_]|[\p{L}\p{Nd}_])[\p{L}\p{Nd}_-]*)*$`)
+var fieldNameRe = regexp.MustCompile(`^(\$[\p{L}_]|[\p{L}\p{Nd}_])[\p{L}\p{M}\p{Nd}_-]*(\.(\$[\p{L}_]|[\p{L}\p{Nd}_])[\p{L}\p{M}\p{Nd}_-]*)*$`)
 
 // ValidateFieldName checks one field name from a request body.
 func ValidateFieldName(name string) error {
@@ -118,16 +121,36 @@ type sourceScope []string
 
 func (s sourceScope) has(name string) bool { return slices.Contains(s, name) }
 
-// validateDTQLFields walks a parsed DTQL query and refuses a name that is not
-// plain: its sources (collections, aliases, scan orders, joins with their ON
+// nameWalker walks a parsed DTQL query and refuses a name that is not plain:
+// its sources (collections, aliases, scan orders, joins with their ON
 // conditions, derived queries) and every expression position (columns,
 // where, orderBy, groupBy, having, and nested subqueries). Expression,
 // condition or source shapes it does not know are refused too: fail closed.
-func validateDTQLFields(query dal.StructuredQuery, depth int) error {
-	return validateQuery(query, depth, nil)
+//
+// The zero value is the single-collection variant, used by validateDTQL for
+// the one-collection profile /dtql serves today.
+type nameWalker struct {
+	// relational selects the relational profile's variant (ClassifyDTQL). It
+	// differs in two places: a source may name a database (the profile walk
+	// validates the id), and an IS NULL test is walked. The single-collection
+	// variant refuses both, because its adapters name no other database and
+	// implement no null test.
+	relational bool
 }
 
-func validateQuery(query dal.StructuredQuery, depth int, outer sourceScope) error {
+// validateDTQLFields applies the single-collection variant of the name walk.
+func validateDTQLFields(query dal.StructuredQuery, depth int) error {
+	return nameWalker{}.query(query, depth, nil)
+}
+
+// validateRelationalNames applies the relational variant of the name walk to a
+// whole query. ClassifyDTQL calls it, so that a relational document is held to
+// the names rule ParseDTQL holds a single-collection one to.
+func validateRelationalNames(query dal.StructuredQuery) error {
+	return nameWalker{relational: true}.query(query, 0, nil)
+}
+
+func (w nameWalker) query(query dal.StructuredQuery, depth int, outer sourceScope) error {
 	if depth > maxQueryTreeDepth {
 		return fmt.Errorf("%w: query nesting is too deep", ErrInvalidDTQL)
 	}
@@ -138,13 +161,13 @@ func validateQuery(query dal.StructuredQuery, depth int, outer sourceScope) erro
 	if err != nil {
 		return err
 	}
-	scope, err := validateSources(sources, depth, outer)
+	scope, err := w.sources(sources, depth, outer)
 	if err != nil {
 		return err
 	}
 	for _, join := range joins {
 		for _, on := range join.On() {
-			if err := validateCondition(on, depth+1, scope); err != nil {
+			if err := w.condition(on, depth+1, scope); err != nil {
 				return err
 			}
 		}
@@ -167,23 +190,23 @@ func validateQuery(query dal.StructuredQuery, depth int, outer sourceScope) erro
 				}
 			}
 		}
-		if err := validateExpression(column.Expression, depth, scope); err != nil {
+		if err := w.expression(column.Expression, depth, scope); err != nil {
 			return err
 		}
 	}
-	if err := validateCondition(query.Where(), depth, scope); err != nil {
+	if err := w.condition(query.Where(), depth, scope); err != nil {
 		return err
 	}
-	if err := validateCondition(query.Having(), depth, scope); err != nil {
+	if err := w.condition(query.Having(), depth, scope); err != nil {
 		return err
 	}
 	for _, group := range query.GroupBy() {
-		if err := validateExpression(group, depth, scope); err != nil {
+		if err := w.expression(group, depth, scope); err != nil {
 			return err
 		}
 	}
 	for _, order := range query.OrderBy() {
-		if err := validateExpression(order.Expression(), depth, scope); err != nil {
+		if err := w.expression(order.Expression(), depth, scope); err != nil {
 			return err
 		}
 	}
@@ -219,16 +242,16 @@ func flattenFrom(from dal.FromSource, depth int) ([]dal.RecordsetSource, []dal.J
 	return sources, joins, nil
 }
 
-// validateSources checks every source of one query and returns the scope its
+// sources checks every source of one query and returns the scope its
 // expressions run in. Names and aliases are validated for all sources before
 // any scan order or derived query is walked, because those may qualify a
 // field with a sibling source's name.
-func validateSources(sources []dal.RecordsetSource, depth int, outer sourceScope) (sourceScope, error) {
+func (w nameWalker) sources(sources []dal.RecordsetSource, depth int, outer sourceScope) (sourceScope, error) {
 	scope := slices.Clone(outer)
 	for _, source := range sources {
 		switch s := source.(type) {
 		case dal.CollectionRef:
-			if s.Parent() != nil || s.Schema() != "" || s.Database() != "" {
+			if s.Parent() != nil || s.Schema() != "" || (s.Database() != "" && !w.relational) {
 				return nil, fmt.Errorf("%w: only plain root collections are supported as sources", ErrInvalidDTQL)
 			}
 			if err := ValidateCollectionName(s.Name()); err != nil {
@@ -254,17 +277,24 @@ func validateSources(sources []dal.RecordsetSource, depth int, outer sourceScope
 		switch s := source.(type) {
 		case dal.CollectionRef:
 			for _, order := range s.ScanOrders() {
-				if err := validateExpression(order.Expression(), depth+1, scope); err != nil {
+				if err := w.expression(order.Expression(), depth+1, scope); err != nil {
 					return nil, err
 				}
 			}
 		case dal.QuerySource:
-			if err := validateQuery(s.Query(), depth+1, scope); err != nil {
+			if err := w.query(s.Query(), depth+1, scope); err != nil {
 				return nil, err
 			}
 		}
 	}
 	return scope, nil
+}
+
+// aggregateFunctions lists the aggregate function names the walker accepts, in
+// any position. DALgo validates the name only where it runs an aggregation, so
+// a name in a where, scan or ON operand would otherwise reach an adapter.
+var aggregateFunctions = map[string]bool{
+	"COUNT": true, "SUM": true, "AVG": true, "MIN": true, "MAX": true, "FIRST": true, "LAST": true,
 }
 
 func validateField(name string) error {
@@ -283,7 +313,12 @@ var identifierRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // validateIdentifier checks an alias or source qualifier: a single plain
 // identifier segment, no dots.
 func validateIdentifier(name string) error {
-	if len(name) > maxFieldNameLen || !identifierRe.MatchString(name) {
+	// An over-long name is not echoed: the text is the caller's and can be as
+	// large as the request body. ValidateFieldName does the same.
+	if len(name) > maxFieldNameLen {
+		return fmt.Errorf("%w: an alias or qualifier exceeds %d bytes", ErrInvalidDTQL, maxFieldNameLen)
+	}
+	if !identifierRe.MatchString(name) {
 		return fmt.Errorf("%w: %q is not a plain identifier", ErrInvalidDTQL, name)
 	}
 	return nil
@@ -300,7 +335,7 @@ func validateQualifier(name string, scope sourceScope) error {
 	return validateIdentifier(name)
 }
 
-func validateCondition(condition dal.Condition, depth int, scope sourceScope) error {
+func (w nameWalker) condition(condition dal.Condition, depth int, scope sourceScope) error {
 	if depth > maxQueryTreeDepth {
 		return fmt.Errorf("%w: query nesting is too deep", ErrInvalidDTQL)
 	}
@@ -308,25 +343,30 @@ func validateCondition(condition dal.Condition, depth int, scope sourceScope) er
 	case nil:
 		return nil
 	case dal.Comparison:
-		if err := validateExpression(c.Left, depth+1, scope); err != nil {
+		if err := w.expression(c.Left, depth+1, scope); err != nil {
 			return err
 		}
-		return validateExpression(c.Right, depth+1, scope)
+		return w.expression(c.Right, depth+1, scope)
 	case dal.GroupCondition:
 		for _, child := range c.Conditions() {
-			if err := validateCondition(child, depth+1, scope); err != nil {
+			if err := w.condition(child, depth+1, scope); err != nil {
 				return err
 			}
 		}
 		return nil
+	case dal.IsNullCondition:
+		if !w.relational {
+			return fmt.Errorf("%w: unsupported condition %T", ErrInvalidDTQL, condition)
+		}
+		return w.expression(c.Operand(), depth+1, scope)
 	case dal.ExistsCondition:
-		return validateQuery(c.Query(), depth+1, scope)
+		return w.query(c.Query(), depth+1, scope)
 	default:
 		return fmt.Errorf("%w: unsupported condition %T", ErrInvalidDTQL, condition)
 	}
 }
 
-func validateExpression(expression dal.Expression, depth int, scope sourceScope) error {
+func (w nameWalker) expression(expression dal.Expression, depth int, scope sourceScope) error {
 	if depth > maxQueryTreeDepth {
 		return fmt.Errorf("%w: query nesting is too deep", ErrInvalidDTQL)
 	}
@@ -348,17 +388,32 @@ func validateExpression(expression dal.Expression, depth int, scope sourceScope)
 		}
 		return nil
 	case dal.BinaryExpression:
-		if err := validateExpression(e.Left, depth+1, scope); err != nil {
+		// dalgo reads any text as an arithmetic operator and checks it only in
+		// an aggregate position, so it is checked here. The text is not echoed.
+		switch e.Operator {
+		case dal.Add, dal.Subtract, dal.Multiply, dal.Divide:
+		default:
+			return fmt.Errorf("%w: an arithmetic operator must be one of + - * /", ErrInvalidDTQL)
+		}
+		if err := w.expression(e.Left, depth+1, scope); err != nil {
 			return err
 		}
-		return validateExpression(e.Right, depth+1, scope)
+		return w.expression(e.Right, depth+1, scope)
 	case dal.QueryExpression:
-		return validateQuery(e.Query(), depth+1, scope)
+		if as := e.As(); as != "" {
+			if err := validateIdentifier(as); err != nil {
+				return err
+			}
+		}
+		return w.query(e.Query(), depth+1, scope)
 	case dal.StarExpression:
 		return nil
 	case dal.AggregateFunc:
+		if !aggregateFunctions[strings.ToUpper(e.FuncName())] {
+			return fmt.Errorf("%w: an aggregate function must be one of COUNT, SUM, AVG, MIN, MAX, FIRST, LAST", ErrInvalidDTQL)
+		}
 		for _, arg := range e.FuncArgs() {
-			if err := validateExpression(arg, depth+1, scope); err != nil {
+			if err := w.expression(arg, depth+1, scope); err != nil {
 				return err
 			}
 		}

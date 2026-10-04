@@ -165,7 +165,10 @@ func TestSchemaDatabaseAndScanRefusedOnRootSourceOnEveryEngine(t *testing.T) {
 				"{name: customers, database: d}",
 			} {
 				status, body := send(t, ts, guardCall{method: "POST", path: base + "/dtql", body: "from: " + from + "\n"})
-				if status != http.StatusBadRequest {
+				detail, _ := body["error"].(map[string]any)
+				// The code is asserted too: a 400 for any other reason would
+				// also pass a status check alone.
+				if status != http.StatusBadRequest || detail["code"] != "invalid_dtql" {
 					t.Errorf("%s: status %d body %v", from, status, body)
 				}
 			}
@@ -205,6 +208,33 @@ func TestUnsafeFieldNamesRefusedOnEveryEngine(t *testing.T) {
 					if status != http.StatusBadRequest {
 						t.Errorf("%s %q: status %d body %v", call.name, name, status, body)
 					}
+				}
+			}
+			if fake.queries != 0 {
+				t.Fatalf("adapter query path called %d times", fake.queries)
+			}
+		})
+	}
+}
+
+// TestUnsafeArithmeticOperatorRefusedOnEveryEngine: the operator of a binary
+// expression is a caller-supplied string, and dalgo parses any text as one. It
+// is a 400 before any adapter call on every engine, including the two the
+// engine guard refuses with 501 for a well-formed query.
+func TestUnsafeArithmeticOperatorRefusedOnEveryEngine(t *testing.T) {
+	doc := "from: {name: customers}\nwhere: {op: '==', left: {binary: {op: \"x; --\", left: {field: a}, right: {value: 1}}}, right: {value: 1}}\n"
+	for _, engine := range []string{"sqlite", "ingitdb", "postgres", "mysql"} {
+		t.Run(engine, func(t *testing.T) {
+			ts, fake := guardServer(t, engine)
+			for _, call := range []guardCall{
+				{name: "dtql POST", method: "POST", path: base + "/dtql", body: doc},
+				{name: "dtql GET", method: "GET", path: base + "/dtql?q=" + url.QueryEscape(doc)},
+				{name: "dtql snapshot page", method: "POST", path: base + "/dtql", body: doc, headers: map[string]string{"OVDB-Page-Size": "5"}},
+			} {
+				status, body := send(t, ts, call)
+				detail, _ := body["error"].(map[string]any)
+				if status != http.StatusBadRequest || detail["code"] != "invalid_dtql" {
+					t.Errorf("%s: status %d body %v", call.name, status, body)
 				}
 			}
 			if fake.queries != 0 {

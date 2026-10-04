@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -269,6 +270,19 @@ var pinnedMessages = map[string][]string{
 		`maxJoinRows    = 10000`,
 		`maxJoinBytes   = 16 << 20`,
 		`maxJoinRows*10`,
+		// A bound raised inside a derived source arrives flattened into the
+		// message of a join_plan error built from these two formats.
+		`fmt.Sprintf("cannot scan %s: %v", alias, err)`,
+		`fmt.Sprintf("scan %s: %v", alias, err)`,
+	},
+	// The flattened-bound patterns read the text of these Error() formats:
+	// "category at path: message", and "category: message" when the path is empty.
+	"q_join_validate.go": {
+		`fmt.Sprintf("%s at %s: %s", e.Category, e.Path, e.Message)`,
+	},
+	"q_subquery.go": {
+		`fmt.Sprintf("%s: %s", e.Category, e.Message)`,
+		`fmt.Sprintf("%s at %s: %s", e.Category, e.Path, e.Message)`,
 	},
 	"aggregation_execute.go": {
 		`"dalgo aggregation: group limit %d exceeded"`,
@@ -379,6 +393,12 @@ func TestSourceBudgetOnDalgosStreamingPathArrivesFromALaterNext(t *testing.T) {
 		if err == nil {
 			t.Fatalf("drained %d rows without an error", n)
 		}
+		// Rows flow before the error: with 3 dimension rows and a budget of 5,
+		// two fact rows are read and joined first. That is the behaviour Collect
+		// exists for, so it is asserted rather than assumed.
+		if n != 2 {
+			t.Fatalf("rows delivered before the budget error = %d, want 2", n)
+		}
 		_ = reader.Close()
 		if budget := mustBudget(t, guard.Classify(err, RouteInMemory)); budget.Name != BudgetSourceRows || budget.Limit != 5 {
 			t.Fatalf("budget = %+v", budget)
@@ -478,5 +498,95 @@ func TestMapDalgoErrorIgnoresAggregationTextThatIsNotDalgosOwn(t *testing.T) {
 	wrapped := fmt.Errorf("scan a: %w", errors.New(forged))
 	if budget := mustBudget(t, MapDalgoError(wrapped, RouteInMemory)); budget.Name != BudgetAggregationGroups || budget.Limit != 7 {
 		t.Fatalf("budget = %+v", budget)
+	}
+}
+
+// TestDalgoStreamingJoinDoesNotReadAFailedSourceAsTheEnd is the DALgo-driven
+// case for a source failure whose chain holds io.EOF. DALgo's streaming join
+// (a flat equality join without ORDER BY) takes such an error for the end of the
+// stream and would return the rows read so far with a nil error; a caller that
+// skips Collect and Classify would answer with a truncated result.
+func TestDalgoStreamingJoinDoesNotReadAFailedSourceAsTheEnd(t *testing.T) {
+	cause := fmt.Errorf("lost: %w", io.EOF)
+	newRun := func(t *testing.T) (*Guard, dal.RecordsReader) {
+		t.Helper()
+		guard := NewGuard(allowAll, Limits{})
+		a := &fakeExecutor{rows: map[string][]record.Record{"A": keyedRows("A", 3, func(i int) any { return i })}, readerError: cause}
+		b := &fakeExecutor{rows: map[string][]record.Record{"B": keyedRows("B", 3, func(i int) any { return i })}}
+		reader, err := dal.ExecuteFederatedQuery(context.Background(), joinQuery(), joinFixtureWith(t, guard, a, b))
+		if err != nil {
+			t.Fatalf("the streaming path returns its reader first: %v", err)
+		}
+		return guard, reader
+	}
+
+	t.Run("draining ends in an error", func(t *testing.T) {
+		guard, reader := newRun(t)
+		n, err := drain(t, reader)
+		if err == nil {
+			t.Fatalf("a failed source read ended the stream cleanly after %d rows", n)
+		}
+		_ = reader.Close()
+		got := guard.Classify(err, RouteInMemory)
+		if se := mustSourceError(t, got); !errors.Is(got, cause) || se.Database != "one" || se.Collection != "A" {
+			t.Fatalf("Classify = %v", got)
+		}
+	})
+
+	t.Run("Collect returns no rows and the source error", func(t *testing.T) {
+		guard, reader := newRun(t)
+		records, err := guard.Collect(context.Background(), reader, RouteInMemory)
+		if records != nil {
+			t.Fatalf("Collect returned %d rows for a failed read", len(records))
+		}
+		if se := mustSourceError(t, err); !errors.Is(err, cause) || se.Database != "one" || se.Collection != "A" {
+			t.Fatalf("Collect = %v", err)
+		}
+	})
+}
+
+// TestDalgoOrderedJoinReadsABareEOFAsTheEnd: only some of DALgo's read paths
+// take a bare io.EOF for the end of a stream; an ordered join tests for
+// dal.ErrNoMoreRecords and would fail with "scan a: EOF". The leaf hands it the
+// sentinel, so a source that ends with io.EOF ends cleanly on every path.
+func TestDalgoOrderedJoinReadsABareEOFAsTheEnd(t *testing.T) {
+	guard := NewGuard(allowAll, Limits{})
+	a := &fakeExecutor{rows: map[string][]record.Record{"A": keyedRows("A", 3, func(i int) any { return i })}, readerError: io.EOF}
+	b := &fakeExecutor{rows: map[string][]record.Record{"B": keyedRows("B", 3, func(i int) any { return i })}, readerError: io.EOF}
+	reader, err := dal.ExecuteFederatedQuery(context.Background(), orderedJoinQuery(), joinFixtureWith(t, guard, a, b))
+	if err != nil {
+		t.Fatalf("execute: %v (recorded failure %v)", err, guard.Err())
+	}
+	rows, err := guard.Collect(context.Background(), reader, RouteInMemory)
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("rows=%d err=%v", len(rows), err)
+	}
+	if guard.Err() != nil {
+		t.Fatalf("an io.EOF end of stream is not a failure: %v", guard.Err())
+	}
+}
+
+// TestDalgoSourceCloseErrorSurvivesClassify: DALgo flattens the error of a scan
+// reader's Close into a join_plan message ("close scan a: ..."), which drops the
+// chain. The leaf records it, so Classify returns the source's own error.
+func TestDalgoSourceCloseErrorSurvivesClassify(t *testing.T) {
+	guard := NewGuard(allowAll, Limits{})
+	inner := &fakeExecutor{rows: map[string][]record.Record{"A": keyedRows("A", 3, func(i int) any { return i })}}
+	b := &fakeExecutor{rows: map[string][]record.Record{"B": keyedRows("B", 3, func(i int) any { return i })}}
+	sources := map[string]Source{
+		"one": newSource("one", closeFailingExecutor{QueryExecutor: inner, err: errCloseFailed}),
+		"two": newSource("two", b),
+	}
+	resolve := func(_ context.Context, database string) (dal.QueryExecutor, error) {
+		return guard.Leaf(sources[database]), nil
+	}
+	err := runOrdered(t, resolve)
+	var flattened *dal.JoinValidationError
+	if !errors.As(err, &flattened) || errors.Is(err, errCloseFailed) {
+		t.Fatalf("DALgo is expected to flatten the close error, got %T: %v", err, err)
+	}
+	got := guard.Classify(err, RouteInMemory)
+	if se := mustSourceError(t, got); !errors.Is(got, errCloseFailed) || se.Database != "one" || se.Collection != "A" {
+		t.Fatalf("Classify = %T %v, want the source's own close error", got, got)
 	}
 }

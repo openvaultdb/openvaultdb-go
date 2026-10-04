@@ -148,26 +148,37 @@ type countingReader struct {
 // Next returns the next row. Anything but the end of the stream ends the
 // request: a source error or the end of the request context is recorded with
 // its chain intact (see SourceError), and the row that would cross the budget
-// is withheld. A bare io.EOF is read as the end of the stream, as DALgo reads
-// it; an error that merely wraps io.EOF is a failure, recorded so that
-// Guard.Classify reports it even though DALgo would take it for the end.
+// is withheld.
+//
+// A bare io.EOF from the source is the end of the stream and reaches DALgo as
+// dal.ErrNoMoreRecords. DALgo reads a bare io.EOF as the end on two of its read
+// paths only (a streaming join and ReadAllToRecords); an ordered join and an
+// aggregate scan test for dal.ErrNoMoreRecords and would fail on it.
+//
+// An error that merely wraps io.EOF is a failure, recorded so that
+// Guard.Classify reports it. DALgo takes any error satisfying
+// errors.Is(err, io.EOF) for the end of a stream, so a failure never reaches it
+// with that chain: see withoutEOFChain.
 func (r *countingReader) Next() (record.Record, error) {
 	g := r.leaf.guard
 	if err := g.Err(); err != nil {
 		r.finish()
-		return nil, err
+		return nil, withoutEOFChain(err)
 	}
 	if err := r.ctx.Err(); err != nil {
 		r.finish()
-		return nil, r.leaf.failSource(r.collection, err)
+		return nil, withoutEOFChain(r.leaf.failSource(r.collection, err))
 	}
 	rec, err := r.RecordsReader.Next()
 	if err != nil {
 		r.finish()
-		if err == io.EOF || errors.Is(err, dal.ErrNoMoreRecords) {
+		if err == io.EOF {
+			return nil, dal.ErrNoMoreRecords
+		}
+		if errors.Is(err, dal.ErrNoMoreRecords) {
 			return nil, err
 		}
-		return nil, r.leaf.failSource(r.collection, err)
+		return nil, withoutEOFChain(r.leaf.failSource(r.collection, err))
 	}
 	encoded, err := json.Marshal(rec.Data())
 	if err != nil {
@@ -182,9 +193,27 @@ func (r *countingReader) Next() (record.Record, error) {
 	return rec, nil
 }
 
+// withoutEOFChain returns err, or a copy of its text with no chain when the
+// chain holds io.EOF, which DALgo would read as the end of a stream and answer
+// with the rows read so far and no error. The guard keeps the original error,
+// so Classify still returns it with its chain.
+func withoutEOFChain(err error) error {
+	if errors.Is(err, io.EOF) {
+		return errors.New(err.Error())
+	}
+	return err
+}
+
+// Close closes the source's reader and records its error as the request
+// failure, with the chain intact (see SourceError). DALgo flattens a Close error
+// into text, which would drop the chain; Guard.fail keeps the first failure, so
+// an earlier failure is not shadowed.
 func (r *countingReader) Close() error {
 	r.finish()
-	return r.RecordsReader.Close()
+	if err := r.RecordsReader.Close(); err != nil {
+		return withoutEOFChain(r.leaf.failSource(r.collection, err))
+	}
+	return nil
 }
 
 // finish records the statistics once, however the read ends.
