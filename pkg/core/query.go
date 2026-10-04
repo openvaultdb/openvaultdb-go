@@ -259,12 +259,12 @@ func (d *Database) StreamDTQLSnapshot(ctx context.Context, query dal.StructuredQ
 		}
 		out := Record{Key: rec.Key()}
 		data, _ := rec.Data().(map[string]any)
-		if out.Key == nil || fmt.Sprintf("%v", out.Key.ID) == "" {
+		if out.Key == nil || out.Key.ID == nil || fmt.Sprintf("%v", out.Key.ID) == "" {
 			if id, ok := data["id"].(string); ok && id != "" {
 				out.Key = record.NewKeyWithID(collection, id)
 			}
 		}
-		if out.Key == nil {
+		if out.Key == nil || out.Key.ID == nil {
 			return fmt.Errorf("query result has no record key")
 		}
 		out.Data = d.coerceToSchema(collection, data)
@@ -316,7 +316,7 @@ func (d *Database) executeDalQueryOn(ctx context.Context, db dal.DB, query dal.S
 		// PK lands in the "id" column instead. Rebuild the key from it.
 		// Plumbing recordset PK metadata into dalgo2sql's reader is a
 		// roadmap upstream improvement.
-		if collection != "" && (out.Key == nil || fmt.Sprintf("%v", out.Key.ID) == "") {
+		if collection != "" && (out.Key == nil || out.Key.ID == nil || fmt.Sprintf("%v", out.Key.ID) == "") {
 			if id, ok := data["id"].(string); ok && id != "" {
 				out.Key = record.NewKeyWithID(collection, id)
 			}
@@ -324,7 +324,7 @@ func (d *Database) executeDalQueryOn(ctx context.Context, db dal.DB, query dal.S
 		if !keysOnly {
 			out.Data = d.coerceToSchema(collection, data)
 		}
-		if out.Key == nil {
+		if out.Key == nil || out.Key.ID == nil {
 			return nil, fmt.Errorf("query result has no record key")
 		}
 		encoded, err := json.Marshal(out.Data)
