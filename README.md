@@ -329,7 +329,9 @@ run when that env var is set (`gcloud emulators firestore start`).
 Structured queries (`/query` and `/dtql`) run on SQLite, inGitDB and Firestore
 mounts only. A PostgreSQL or MySQL mount is refused a structured query with
 HTTP 501 `query_unsupported` until its reviewed query compiler lands; key reads
-and writes keep working on every engine.
+and writes of declared collections keep working on every engine (on SQLite,
+PostgreSQL and MySQL a collection the manifest does not declare is a 404, and a
+field name that is not plain is a 400, before the adapter is called).
 
 ### GitHub-backed inGitDB manifest example
 
@@ -367,7 +369,7 @@ exist (the tree writer commits onto it). Conformance runs when
 The `postgres` and `mysql` engines connect to managed cloud databases — Amazon
 RDS & Aurora, Azure Database for PostgreSQL/MySQL, Google Cloud SQL — by
 pointing the DSN env var at the cloud endpoint with TLS. Key reads and writes
-work. Structured queries (`/query`, `/dtql`) are refused with HTTP 501
+of declared collections work. Structured queries (`/query`, `/dtql`) are refused with HTTP 501
 `query_unsupported` on these engines, and their database metadata advertises
 `query: false` and `dtql: false` and publishes no query endpoint or format,
 until the reviewed query compiler lands.

@@ -217,6 +217,10 @@ func (s *Server) inspectAccess(w http.ResponseWriter, r *http.Request, db *core.
 	}
 	ops := make([]access.ProtectedOperation, len(request.Operations))
 	for i, op := range request.Operations {
+		if err := guardOperation(db, op); err != nil {
+			s.writeMappedError(w, r, err)
+			return
+		}
 		var err error
 		ops[i], err = protectedOperation(op)
 		if err != nil {
@@ -287,6 +291,10 @@ func (s *Server) handleProtectedUpdate(w http.ResponseWriter, r *http.Request, d
 	}
 	if err != nil || op.Action != "update" || key.Parent() != nil || op.Resource.Table != key.Collection() || op.Resource.RowID != key.ID {
 		writeError(w, 400, "bad_request", "operation and request path must identify the same update")
+		return
+	}
+	if err = guardOperation(db, op); err != nil {
+		s.writeMappedError(w, r, err)
 		return
 	}
 	internal, err := protectedOperation(op)
@@ -389,6 +397,10 @@ func (s *Server) handleAccessEvidence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.authorize(w, r, db.ID(), auth.CapRecordsRead, op.Resource.Table) {
+		return
+	}
+	if err = guardOperation(db, op); err != nil {
+		s.writeMappedError(w, r, err)
 		return
 	}
 	internal, err := protectedOperation(op)

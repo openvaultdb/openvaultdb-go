@@ -15,14 +15,18 @@ small: just enough for DALgo-backed Sneat CRUD validation. Versioned under `/v1`
   Capabilities scope the key's (or query parent's) root collection.
 - **Record body**: the record's data as a JSON object.
 - **Errors**: non-2xx responses carry `{"error": {"code": "<machine-code>", "message": "..."}}`.
-  - `404 not_found` — record or database missing
+  - `404 not_found` — record or database missing; also a collection the database does not
+    declare, on an engine whose adapter builds SQL (see [Names the server accepts](#names-the-server-accepts))
   - `409 already_exists` — insert conflict
   - `422 schema_validation` — strict/partial mode validation failure
   - `400 invalid_key` — malformed or unsafe key, collection name or parent path
-  - `400 bad_request` — malformed body/query
+  - `400 bad_request` — malformed body/query; also a field name in a write body (or a query) that
+    is not a plain field name
   - `403 read_only` — server-wide read-only mode rejected a mutation
   - `500 internal` — unexpected server/engine error (details are logged server-side, not returned)
   - `501 not_supported` — operation not in MVP
+  - `501 query_unsupported` — a structured query (`/query`, `/dtql`) on a storage engine not yet
+    cleared for queries: a `postgres` or `mysql` mount. Key reads and writes keep working there
 
 ## Authentication (optional, `ovdb serve --auth`)
 
@@ -132,17 +136,45 @@ HEAD   /v1/databases/{db}/records/{key...}
 → 200 (exists) | 404
 
 PUT    /v1/databases/{db}/records/{key...}          body: {"data":{...}}     // set (upsert)
-→ 204
+→ 204 | 400 bad_request (field name) | 404 not_found (collection not declared, SQL engines)
 
 POST   /v1/databases/{db}/records/{key...}          body: {"data":{...}}     // insert
-→ 201 | 409 already_exists
+→ 201 | 409 already_exists | 400 bad_request (field name) | 404 not_found (collection not declared, SQL engines)
 
 PATCH  /v1/databases/{db}/records/{key...}          body: {"updates":[<update>, ...]}
-→ 204 | 404 not_found (record must exist)
+→ 204 | 404 not_found (record must exist; or collection not declared, SQL engines) | 400 bad_request (field name)
 
 DELETE /v1/databases/{db}/records/{key...}
-→ 204 (idempotent — 204 even if absent)
+→ 204 (idempotent — 204 even if absent) | 404 not_found (collection not declared, SQL engines)
 ```
+
+### Names the server accepts
+
+The server refuses these requests **before the storage adapter is called** (the adapter sees
+nothing of them). They apply to every route that reads a record by key or writes: the six
+`/records/{key...}` methods, `/read?key=`, `/batch`, the protected `PATCH` with
+`Content-Type: application/vnd.dtql.operation+json`, and the authorization endpoints that read
+by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
+
+- **Collections on engines whose adapter builds SQL** (`sqlite`, `postgres`, `mysql`; an engine
+  the server does not recognise is held to the same rule). Every collection of the key, each
+  segment of a nested path included, must be one the database declares in its `schemas`
+  (a SQLite manifest that keys a collection by its SQL-quoted identifier, `'"Order Details"'`,
+  also declares the public name `Order Details`). Anything else is `404 not_found`, for `GET`,
+  `HEAD`, `PUT`, `POST`, `PATCH` and `DELETE` alike (a `DELETE` of an undeclared collection is
+  not the idempotent `204` of a declared one) and for a whole `/batch`: one undeclared key
+  refuses every op. The key rule above (`invalid_key`) is a path-safety rule only and accepts
+  quotes, spaces and semicolons, which is why the declaration is the allow-list here.
+  A collection declared with a space or a hyphen in its name (`Order Details`, `order-items`)
+  keeps working. The document engines (`ingitdb`, `firestore`) keep the key rule alone.
+- **Field names, on every engine.** Every field name a write carries must pass the same rule as
+  the names in `/query` and `/dtql`: dot-separated segments of letters, digits, underscore and
+  hyphen (Unicode letters allowed), each optionally starting with `$` before a letter (`$id`),
+  at most 256 bytes, no `--`. That covers the top-level keys of `data` in `PUT`, `POST` and
+  batch `set`/`insert` ops, the `fieldName` and every `fieldPath` segment of an update
+  (`delete: true` included), and the columns and changes of a protected operation. Anything
+  else is `400 bad_request`; an update that names no field is too. When a request breaks both
+  rules, the collection wins (`404`).
 
 ### Update operation object
 
@@ -223,6 +255,12 @@ ordinary authentication and database policies.
 Result keys are full key paths from the database root: a query with `"parent":"lists/to-buy"`
 on `items` returns `lists/to-buy/items/x` (not `items/x`), usable as-is with `/records`.
 With a `parent`, the read capability is checked on the parent's root collection (`lists`).
+
+Structured queries run on `sqlite`, `ingitdb` and `firestore` mounts only. On a `postgres` or
+`mysql` mount `/query` and `/dtql` answer `501 query_unsupported` (the message names the engine),
+and the database's metadata advertises `query: false` and `dtql: false`, until the reviewed query
+compiler for those engines lands. Key reads and writes are unaffected, subject to
+[Names the server accepts](#names-the-server-accepts).
 
 Supported `op`: `==`, `<`, `<=`, `>`, `>=`, `in`, `array-contains`, `array-contains-any`.
 Queries translate 1:1 to `dal.StructuredQuery` and execute on the DALgo driver's own

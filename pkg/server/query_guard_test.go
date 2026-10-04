@@ -133,9 +133,11 @@ func TestStructuredQueryRefusedOnPostgresAndMySQLEndpoints(t *testing.T) {
 	}
 }
 
+// The collection is declared: since OV-0W a SQL engine answers 404 for a key
+// read of a collection its manifest does not declare (write_guard_test.go).
 func TestKeyReadsStillWorkOnPostgresAndMySQL(t *testing.T) {
 	for _, engine := range []string{"postgres", "mysql"} {
-		ts, fake := guardServer(t, engine)
+		ts, fake := writeGuardServer(t, engine, "customers")
 		status, body := send(t, ts, guardCall{method: "GET", path: base + "/records/customers/1"})
 		if status != http.StatusOK || fake.gets != 1 || fake.queries != 0 {
 			t.Errorf("%s: status %d gets %d queries %d body %v", engine, status, fake.gets, fake.queries, body)
