@@ -75,7 +75,7 @@ func (d *Database) Execute(ctx context.Context, q Query) ([]Record, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err = q.validateFields(); err != nil {
+	if err = q.validateFields(d.fieldRule()); err != nil {
 		return nil, err
 	}
 	collectionRef := dal.NewRootCollectionRef(q.Collection, "")
@@ -160,6 +160,9 @@ var ErrInvalidDTQL = errors.New("invalid or unsupported DTQL query")
 
 // ParseDTQL validates the server's bounded single-collection query profile.
 // The returned collection is suitable for checking the token's capabilities.
+// It knows no engine, so it checks field names with the widest rule (the one of
+// quotedNameEngines); the Database that runs the query checks them again with
+// the rule of its own engine, before any adapter is reached.
 func ParseDTQL(doc []byte) (dal.StructuredQuery, string, error) {
 	query, err := dtql.Deserialize(doc)
 	if err != nil {
@@ -170,6 +173,11 @@ func ParseDTQL(doc []byte) (dal.StructuredQuery, string, error) {
 }
 
 func validateDTQL(query dal.StructuredQuery) (string, error) {
+	return validateDTQLFor(query, quotedNames)
+}
+
+// validateDTQLFor is validateDTQL with the field-name rule of an engine.
+func validateDTQLFor(query dal.StructuredQuery, names fieldRule) (string, error) {
 	if query == nil || query.From() == nil || len(query.From().Joins()) != 0 {
 		return "", fmt.Errorf("%w: one root collection is required", ErrInvalidDTQL)
 	}
@@ -195,7 +203,7 @@ func validateDTQL(query dal.StructuredQuery) (string, error) {
 	if err := ValidateCollectionName(source.Name()); err != nil {
 		return "", err
 	}
-	if err := validateDTQLFields(query, 0); err != nil {
+	if err := validateDTQLFieldsWith(query, 0, names); err != nil {
 		return "", err
 	}
 	return source.Name(), nil
@@ -239,7 +247,7 @@ func (q snapshotDTQL) Limit() int { return 0 }
 // Local OVDB writes cannot interleave with the capture. The caller must bound
 // the emitted result and persist it before exposing any page token.
 func (d *Database) StreamDTQLSnapshot(ctx context.Context, query dal.StructuredQuery, emit func(Record) error) error {
-	collection, err := validateDTQL(query)
+	collection, err := validateDTQLFor(query, d.fieldRule())
 	if err != nil {
 		return err
 	}
@@ -288,7 +296,7 @@ func (d *Database) StreamDTQLSnapshot(ctx context.Context, query dal.StructuredQ
 
 // ExecuteDTQLQuery executes an already parsed query after validating its shape.
 func (d *Database) ExecuteDTQLQuery(ctx context.Context, query dal.StructuredQuery) ([]Record, error) {
-	collection, err := validateDTQL(query)
+	collection, err := validateDTQLFor(query, d.fieldRule())
 	if err != nil {
 		return nil, err
 	}

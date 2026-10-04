@@ -126,8 +126,15 @@ func TestGateRefusesThirdInMemoryQueryAfterWaitAndAdmitsAfterRelease(t *testing.
 		t.Fatalf("queue wait = %v, want 1s", clock.waits[0])
 	}
 	clock.fire(0)
-	if res := <-third; res.ok || res.release != nil {
+	res := <-third
+	if res.ok {
 		t.Fatalf("third query must be refused after the wait, got ok=%v", res.ok)
+	}
+	// A refusal returns a release function that is safe to call and frees no
+	// slot: ok is the contract, so `defer release()` before the check is safe.
+	res.release()
+	if held := len(g.slots[routeInMemory]); held != 2 {
+		t.Fatalf("the release function of a refused query freed a slot it never held: %d of 2 held", held)
 	}
 
 	r1()
@@ -190,9 +197,11 @@ func TestGateRoutesAreIndependent(t *testing.T) {
 
 func TestGateUnknownRouteIsRefused(t *testing.T) {
 	g := newQueryGate(DefaultQueryLimits(), newFakeClock())
-	if release, ok := g.acquire(context.Background(), queryRoute("mystery")); ok || release != nil {
+	release, ok := g.acquire(context.Background(), queryRoute("mystery"))
+	if ok {
 		t.Fatalf("unknown route must be refused, got ok=%v", ok)
 	}
+	release() // a refusal's release function is a safe no-op
 }
 
 func TestGateCancelledContextIsRefused(t *testing.T) {
@@ -219,6 +228,26 @@ func TestGateCancelledContextRefusedWhenFull(t *testing.T) {
 	if _, ok := g.acquire(ctx, routeInMemory); ok {
 		t.Fatal("full gate with a cancelled context must refuse")
 	}
+}
+
+// TestGateCancelledContextIsRefusedWhileASlotIsFree is the case the context
+// pre-check exists for: the request is already gone when it arrives and a slot
+// is free. Without the check the free slot would be taken. (A full gate with no
+// queue refuses by its own rule, so it does not prove the check.)
+func TestGateCancelledContextIsRefusedWhileASlotIsFree(t *testing.T) {
+	g := newQueryGate(QueryLimits{InMemory: 1, Database: 1, QueueWait: -1}, newFakeClock())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	release, ok := g.acquire(ctx, routeInMemory)
+	if ok {
+		t.Fatal("a cancelled context must be refused even when a slot is free")
+	}
+	release()
+	rel, ok := g.acquire(context.Background(), routeInMemory)
+	if !ok {
+		t.Fatal("a refused acquire consumed a slot")
+	}
+	rel()
 }
 
 func TestRealClockAfter(t *testing.T) {

@@ -524,11 +524,41 @@ func TestLeafTreatsBareEOFAsEndOfStream(t *testing.T) {
 	exec := &fakeExecutor{rows: map[string][]record.Record{"A": makeRows("A", 1, "x")}, readerError: io.EOF}
 	guard := NewGuard(allowAll, Limits{})
 	reader, _ := guard.Leaf(newSource("db", exec)).ExecuteQueryToRecordsReader(context.Background(), plainQuery("db", "A"))
-	if n, err := drain(t, reader); n != 1 || !errors.Is(err, io.EOF) {
-		t.Fatalf("n=%d err=%v", n, err)
+	if _, err := reader.Next(); err != nil {
+		t.Fatal(err)
+	}
+	// DALgo reads a bare io.EOF as the end of the stream on two of its read
+	// paths only (a streaming join and ReadAllToRecords); an ordered join and an
+	// aggregate scan test for dal.ErrNoMoreRecords. The leaf hands over the
+	// sentinel they all recognise.
+	if _, err := reader.Next(); err != dal.ErrNoMoreRecords {
+		t.Fatalf("a bare io.EOF must reach DALgo as dal.ErrNoMoreRecords, got %v", err)
 	}
 	if guard.Err() != nil {
 		t.Fatalf("a bare io.EOF is the end of the stream, not a failure: %v", guard.Err())
+	}
+	if n, err := drain(t, reader); n != 0 || err != nil {
+		t.Fatalf("drain after the end: n=%d err=%v", n, err)
+	}
+}
+
+func TestLeafPassesTheEndOfStreamSentinelsThrough(t *testing.T) {
+	for name, end := range map[string]error{
+		"no more records": dal.ErrNoMoreRecords,
+		"limit reached":   dal.ErrLimitReached,
+	} {
+		t.Run(name, func(t *testing.T) {
+			exec := &fakeExecutor{rows: map[string][]record.Record{"A": makeRows("A", 1, "x")}, readerError: end}
+			guard := NewGuard(allowAll, Limits{})
+			reader, _ := guard.Leaf(newSource("db", exec)).ExecuteQueryToRecordsReader(context.Background(), plainQuery("db", "A"))
+			_, _ = reader.Next()
+			if _, err := reader.Next(); err != end {
+				t.Fatalf("Next = %v, want %v unchanged", err, end)
+			}
+			if guard.Err() != nil {
+				t.Fatalf("an end of stream is not a failure: %v", guard.Err())
+			}
+		})
 	}
 }
 
@@ -764,3 +794,125 @@ type pointerRefQuery struct {
 }
 
 func (q *pointerRefQuery) From() dal.FromSource { return q.from }
+
+// errCloseFailed is the error of a source reader whose Close fails.
+var errCloseFailed = errors.New("close failed")
+
+// closeFailingExecutor wraps an executor so that the readers it opens fail to
+// close with err.
+type closeFailingExecutor struct {
+	dal.QueryExecutor
+	err error
+}
+
+func (e closeFailingExecutor) ExecuteQueryToRecordsReader(ctx context.Context, query dal.Query) (dal.RecordsReader, error) {
+	reader, err := e.QueryExecutor.ExecuteQueryToRecordsReader(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	return &closeFailingReader{RecordsReader: reader, err: e.err}, nil
+}
+
+type closeFailingReader struct {
+	dal.RecordsReader
+	err error
+}
+
+func (r *closeFailingReader) Close() error {
+	_ = r.RecordsReader.Close()
+	return r.err
+}
+
+func TestLeafRecordsACloseErrorAsTheFailure(t *testing.T) {
+	inner := &fakeExecutor{rows: map[string][]record.Record{"A": makeRows("A", 2, "x")}}
+	guard := NewGuard(allowAll, Limits{})
+	reader, err := guard.Leaf(newSource("db", closeFailingExecutor{QueryExecutor: inner, err: errCloseFailed})).ExecuteQueryToRecordsReader(context.Background(), plainQuery("db", "A"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := drain(t, reader); n != 2 || err != nil {
+		t.Fatalf("drain: n=%d err=%v", n, err)
+	}
+	closeErr := reader.Close()
+	if se := mustSourceError(t, closeErr); !errors.Is(closeErr, errCloseFailed) || se.Database != "db" || se.Collection != "A" {
+		t.Fatalf("Close = %v", closeErr)
+	}
+	if guard.Err() != closeErr {
+		t.Fatalf("the close error must be the recorded failure: %v", guard.Err())
+	}
+	if stats := guard.Stats(); len(stats) != 1 || stats[0].Rows != 2 {
+		t.Fatalf("stats = %+v", stats)
+	}
+}
+
+func TestLeafCloseErrorDoesNotShadowAnEarlierFailure(t *testing.T) {
+	inner := &fakeExecutor{rows: map[string][]record.Record{"A": makeRows("A", 1, "x")}, readerError: errBoom}
+	guard := NewGuard(allowAll, Limits{})
+	reader, _ := guard.Leaf(newSource("db", closeFailingExecutor{QueryExecutor: inner, err: errCloseFailed})).ExecuteQueryToRecordsReader(context.Background(), plainQuery("db", "A"))
+	if _, err := drain(t, reader); !errors.Is(err, errBoom) {
+		t.Fatalf("drain: %v", err)
+	}
+	closeErr := reader.Close()
+	if !errors.Is(closeErr, errBoom) || errors.Is(closeErr, errCloseFailed) {
+		t.Fatalf("Close = %v, want the first failure, not the close error", closeErr)
+	}
+}
+
+func TestLeafCloseWithoutAnErrorReturnsNil(t *testing.T) {
+	exec := &fakeExecutor{rows: map[string][]record.Record{"A": makeRows("A", 1, "x")}}
+	guard := NewGuard(allowAll, Limits{})
+	reader, _ := guard.Leaf(newSource("db", exec)).ExecuteQueryToRecordsReader(context.Background(), plainQuery("db", "A"))
+	if err := reader.Close(); err != nil || guard.Err() != nil {
+		t.Fatalf("Close = %v, guard = %v", err, guard.Err())
+	}
+}
+
+// TestLeafNeverHandsDalgoAnErrorThatReadsAsTheEndOfTheStream: DALgo's
+// streaming join and ReadAllToRecords take any error satisfying
+// errors.Is(err, io.EOF) for the end of the stream and return the rows read so
+// far with no error. A source failure whose chain holds io.EOF (net/http's
+// `Get "...": EOF` is one) must not reach them as such. The guard still keeps
+// the chain, so Classify is unchanged.
+func TestLeafNeverHandsDalgoAnErrorThatReadsAsTheEndOfTheStream(t *testing.T) {
+	wrapped := fmt.Errorf("lost: %w", io.EOF)
+
+	t.Run("on read", func(t *testing.T) {
+		exec := &fakeExecutor{rows: map[string][]record.Record{"A": makeRows("A", 1, "x")}, readerError: wrapped}
+		guard := NewGuard(allowAll, Limits{})
+		reader, _ := guard.Leaf(newSource("db", exec)).ExecuteQueryToRecordsReader(context.Background(), plainQuery("db", "A"))
+		n, err := drain(t, reader)
+		if n != 1 || err == nil || errors.Is(err, io.EOF) || !strings.Contains(err.Error(), "lost: EOF") {
+			t.Fatalf("n=%d err=%v (chain reads as the end: %v)", n, err, errors.Is(err, io.EOF))
+		}
+		if !errors.Is(guard.Err(), wrapped) || !errors.Is(guard.Classify(nil, RouteInMemory), wrapped) {
+			t.Fatalf("the guard must keep the chain: %v", guard.Err())
+		}
+		// A later Next repeats the failure, still not as an end of stream.
+		if _, err := reader.Next(); err == nil || errors.Is(err, io.EOF) {
+			t.Fatalf("Next after failure: %v", err)
+		}
+	})
+
+	t.Run("on close", func(t *testing.T) {
+		inner := &fakeExecutor{rows: map[string][]record.Record{"A": makeRows("A", 1, "x")}}
+		guard := NewGuard(allowAll, Limits{})
+		reader, _ := guard.Leaf(newSource("db", closeFailingExecutor{QueryExecutor: inner, err: wrapped})).ExecuteQueryToRecordsReader(context.Background(), plainQuery("db", "A"))
+		_, _ = drain(t, reader)
+		if err := reader.Close(); err == nil || errors.Is(err, io.EOF) {
+			t.Fatalf("Close = %v", err)
+		}
+		if !errors.Is(guard.Err(), wrapped) {
+			t.Fatalf("the guard must keep the chain: %v", guard.Err())
+		}
+	})
+
+	t.Run("a failure recorded earlier by another leaf", func(t *testing.T) {
+		guard := NewGuard(allowAll, Limits{})
+		_ = guard.fail(&SourceError{Database: "other", Collection: "B", Err: wrapped})
+		exec := &fakeExecutor{rows: map[string][]record.Record{"A": makeRows("A", 1, "x")}}
+		reader := &countingReader{RecordsReader: dal.NewRecordsReader(exec.rows["A"]), ctx: context.Background(), leaf: &leaf{guard: guard, src: newSource("db", exec)}, collection: "A", started: time.Now()}
+		if _, err := reader.Next(); err == nil || errors.Is(err, io.EOF) {
+			t.Fatalf("Next = %v", err)
+		}
+	})
+}
