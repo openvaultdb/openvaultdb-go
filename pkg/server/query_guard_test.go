@@ -143,6 +143,39 @@ func TestKeyReadsStillWorkOnPostgresAndMySQL(t *testing.T) {
 	}
 }
 
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	out, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// TestSchemaDatabaseAndScanRefusedOnRootSourceOnEveryEngine: a scanned,
+// schema-qualified or database-qualified root source is not part of the
+// bounded query profile and is a 400 before any adapter call.
+func TestSchemaDatabaseAndScanRefusedOnRootSourceOnEveryEngine(t *testing.T) {
+	for _, engine := range []string{"sqlite", "ingitdb", "firestore", "postgres", "mysql"} {
+		t.Run(engine, func(t *testing.T) {
+			ts, fake := guardServer(t, engine)
+			for _, from := range []string{
+				"{name: customers, scan: {limit: 1, orderBy: [{field: name}]}}",
+				"{name: customers, schema: s}",
+				"{name: customers, database: d}",
+			} {
+				status, body := send(t, ts, guardCall{method: "POST", path: base + "/dtql", body: "from: " + from + "\n"})
+				if status != http.StatusBadRequest {
+					t.Errorf("%s: status %d body %v", from, status, body)
+				}
+			}
+			if fake.queries != 0 {
+				t.Fatalf("adapter query path called %d times", fake.queries)
+			}
+		})
+	}
+}
+
 func TestUnsafeFieldNamesRefusedOnEveryEngine(t *testing.T) {
 	names := []string{`na"me`, "na me", "name;", "na--me", "na/*me", "name#", "na'me"}
 	for _, engine := range []string{"sqlite", "ingitdb", "postgres", "mysql"} {
@@ -159,6 +192,12 @@ func TestUnsafeFieldNamesRefusedOnEveryEngine(t *testing.T) {
 					{name: "dtql where", method: "POST", path: base + "/dtql", body: "from: {name: customers}\nwhere: {op: '==', left: {field: " + string(yamlName) + "}, right: {value: 1}}\n"},
 					{name: "dtql orderBy", method: "POST", path: base + "/dtql", body: "from: {name: customers}\norderBy: [{field: " + string(yamlName) + "}]\n"},
 					{name: "dtql column", method: "GET", path: base + "/dtql?q=" + url.QueryEscape("from: {name: customers}\ncolumns: [{field: "+string(yamlName)+"}]\n")},
+					{name: "dtql from scan orderBy", method: "POST", path: base + "/dtql", body: "from: {name: customers, scan: {limit: 1, orderBy: [{field: " + string(yamlName) + "}]}}\n"},
+					{name: "dtql GET from scan orderBy", method: "GET", path: base + "/dtql?q=" + url.QueryEscape("from: {name: customers, scan: {limit: 1, orderBy: [{field: "+string(yamlName)+"}]}}\n")},
+					{name: "dtql JSON from scan orderBy", method: "POST", path: base + "/dtql",
+						body:    `{"query":` + string(mustJSON(t, "from: {name: customers, scan: {limit: 1, orderBy: [{field: "+string(yamlName)+"}]}}\n")) + `}`,
+						headers: map[string]string{"Content-Type": "application/json"}},
+					{name: "dtql snapshot from scan orderBy", method: "POST", path: base + "/dtql", body: "from: {name: customers, scan: {limit: 1, orderBy: [{field: " + string(yamlName) + "}]}}\n", headers: map[string]string{"OVDB-Page-Size": "5"}},
 					{name: "dtql snapshot", method: "POST", path: base + "/dtql", body: "from: {name: customers}\norderBy: [{field: " + string(yamlName) + "}]\n", headers: map[string]string{"OVDB-Page-Size": "5"}},
 				}
 				for _, call := range calls {
@@ -185,6 +224,11 @@ func TestAdvertisedQueryCapabilityMatchesGuard(t *testing.T) {
 			caps, _ := body["capabilities"].(map[string]any)
 			if status != http.StatusOK || caps["query"] != want || caps["dtql"] != want || caps["read"] != true {
 				t.Errorf("database metadata: status %d capabilities %v, want query/dtql %v", status, caps, want)
+			}
+			_, hasEndpoints := body["endpoints"]
+			_, hasFormat := body["queryFormat"]
+			if hasEndpoints != want || hasFormat != want {
+				t.Errorf("database metadata: endpoints published %v, queryFormat published %v, want both %v", hasEndpoints, hasFormat, want)
 			}
 			status, body = send(t, ts, guardCall{method: "GET", path: "/.well-known/openvaultdb"})
 			dbs, _ := body["databases"].([]any)

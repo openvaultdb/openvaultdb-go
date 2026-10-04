@@ -177,6 +177,9 @@ func validateDTQL(query dal.StructuredQuery) (string, error) {
 	if !ok || source.Parent() != nil || source.Alias() != "" || source.Name() == "" {
 		return "", fmt.Errorf("%w: one unaliased root collection is required", ErrInvalidDTQL)
 	}
+	if source.Schema() != "" || source.Database() != "" || source.ScanLimit() != 0 || len(source.ScanOrders()) != 0 {
+		return "", fmt.Errorf("%w: schema, database and scan are not supported on the root collection", ErrInvalidDTQL)
+	}
 	if len(query.GroupBy()) != 0 || query.Having() != nil || query.StartFrom() != "" || query.StartAfter() != "" {
 		return "", fmt.Errorf("%w: aggregation and cursors are not supported", ErrInvalidDTQL)
 	}

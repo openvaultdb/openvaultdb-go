@@ -75,7 +75,12 @@ func TestStructuredQueryRefusedOnPostgresAndMySQL(t *testing.T) {
 			db, fake := openEngine(t, engine)
 			for name, err := range refusedEntryPoints(t, db) {
 				if name == "SelectAccessSample" {
-					continue // refused earlier by its own ordering rule; asserted below
+					// Refused earlier, by its own engine-specific ordering rule,
+					// so it carries no typed refusal; it must still fail.
+					if err == nil || !strings.Contains(err.Error(), "sample ordering unsupported") {
+						t.Errorf("%s: want its ordering refusal, got %v", name, err)
+					}
+					continue
 				}
 				var unsupported *QueryUnsupportedError
 				if !errors.Is(err, ErrQueryUnsupported) || !errors.As(err, &unsupported) || unsupported.Engine != engine {
@@ -140,12 +145,12 @@ func TestQueryUnsupportedErrorIsNotInvalidQuery(t *testing.T) {
 // unsafeFieldNames are names that must never reach an adapter on any engine.
 var unsafeFieldNames = []string{
 	`na"me`, `na'me`, "na me", "name;", "name; DROP TABLE x", "name--", "na--me",
-	"name/*", "na/**/me", "name#", "", ".", "a..b", ".name", "name.", "1name",
+	"name/*", "na/**/me", "name#", "", ".", "a..b", ".name", "name.",
 	"name\x00", "na\nme", "na\tme", `[name]`, "`name`", "name)", "(name",
 	"name=1", "name OR 1=1", strings.Repeat("a", maxFieldNameLen+1),
 	"$", "$$id", "a$$", "-name", "a.-b", "a--b", "a---b", `na\me`, "na\u200bme", "na\u2028me",
 	"a/b", "a*b", "a%b", "a,b", "a|b", "a:b", "a<b", "a+b", "a@b", "a!b", "a?b", "a~b", "a^b", "a&b", "a{b", "a}b", "a]b",
-	"$id.", "a$b", "a.$b$", "$.a", "\u00a0name", "name\u00a0",
+	"$id.", "$1", "a.$1", "$1a", "a$b", "a.$b$", "$.a", "\u00a0name", "name\u00a0",
 }
 
 // safeFieldNames include the key pseudo-field of the document engines ($id),
@@ -153,6 +158,7 @@ var unsafeFieldNames = []string{
 var safeFieldNames = []string{
 	"name", "_id", "Name2", "a_b", "address.city", "a.b.c", strings.Repeat("a", maxFieldNameLen),
 	"$id", "$id.x", "a.$id", "first-name", "a-b-c", "naïve", "名前", "address.zip-code",
+	"1name", "byYear.2024", "1st_line", "2024", "a.1.b",
 }
 
 func TestValidateFieldName(t *testing.T) {
@@ -282,28 +288,28 @@ type otherExpression struct{}
 func (otherExpression) String() string { return "other" }
 
 func TestValidateDTQLFieldsFailsClosedOnUnknownShapes(t *testing.T) {
-	if err := validateCondition(otherCondition{}, 0); !errors.Is(err, ErrInvalidDTQL) {
+	if err := validateCondition(otherCondition{}, 0, nil); !errors.Is(err, ErrInvalidDTQL) {
 		t.Errorf("unknown condition: %v", err)
 	}
-	if err := validateExpression(otherExpression{}, 0); !errors.Is(err, ErrInvalidDTQL) {
+	if err := validateExpression(otherExpression{}, 0, nil); !errors.Is(err, ErrInvalidDTQL) {
 		t.Errorf("unknown expression: %v", err)
 	}
-	if err := validateExpression(dal.NewComparison(nil, dal.Equal, nil), 0); !errors.Is(err, ErrInvalidDTQL) {
+	if err := validateExpression(dal.NewComparison(nil, dal.Equal, nil), 0, nil); !errors.Is(err, ErrInvalidDTQL) {
 		t.Errorf("comparison used as expression: %v", err)
 	}
-	if err := validateExpression(dal.Param{Name: "bad name"}, 0); !errors.Is(err, ErrInvalidDTQL) {
+	if err := validateExpression(dal.Param{Name: "bad name"}, 0, nil); !errors.Is(err, ErrInvalidDTQL) {
 		t.Errorf("bad param: %v", err)
 	}
-	if err := validateExpression(dal.NewParam("currentUser"), 0); err != nil {
+	if err := validateExpression(dal.NewParam("currentUser"), 0, nil); err != nil {
 		t.Errorf("good param: %v", err)
 	}
-	if err := validateCondition(dal.NewComparison(dal.Field("a"), dal.In, dal.Array{Value: []string{"x"}}), 0); err != nil {
+	if err := validateCondition(dal.NewComparison(dal.Field("a"), dal.In, dal.Array{Value: []string{"x"}}), 0, nil); err != nil {
 		t.Errorf("array: %v", err)
 	}
-	if err := validateCondition(nil, 0); err != nil {
+	if err := validateCondition(nil, 0, nil); err != nil {
 		t.Errorf("nil condition: %v", err)
 	}
-	if err := validateExpression(nil, 0); err != nil {
+	if err := validateExpression(nil, 0, nil); err != nil {
 		t.Errorf("nil expression: %v", err)
 	}
 }
@@ -338,10 +344,10 @@ func TestValidateDTQLFieldsAggregatesAliasesSourcesAndDepth(t *testing.T) {
 	if err := validateDTQLFields(root.SelectColumns(dal.AllColumnsExceptFrom("c d", "x")), 0); !errors.Is(err, ErrInvalidDTQL) {
 		t.Errorf("wildcard source: %v", err)
 	}
-	if err := validateExpression(dal.NewFieldRef("c", "x"), 0); err != nil {
+	if err := validateExpression(dal.NewFieldRef("c", "x"), 0, nil); err != nil {
 		t.Errorf("qualified field: %v", err)
 	}
-	if err := validateExpression(dal.NewFieldRef("c;", "x"), 0); !errors.Is(err, ErrInvalidDTQL) {
+	if err := validateExpression(dal.NewFieldRef("c;", "x"), 0, nil); !errors.Is(err, ErrInvalidDTQL) {
 		t.Errorf("qualified field source: %v", err)
 	}
 	// Deeply nested conditions are refused rather than walked without bound.
@@ -349,14 +355,14 @@ func TestValidateDTQLFieldsAggregatesAliasesSourcesAndDepth(t *testing.T) {
 	for i := 0; i <= maxQueryTreeDepth+1; i++ {
 		deep = dal.NewGroupCondition(dal.And, deep)
 	}
-	if err := validateCondition(deep, 0); !errors.Is(err, ErrInvalidDTQL) {
+	if err := validateCondition(deep, 0, nil); !errors.Is(err, ErrInvalidDTQL) {
 		t.Errorf("deep condition: %v", err)
 	}
 	var deepExpr dal.Expression = dal.Field("a")
 	for i := 0; i <= maxQueryTreeDepth+1; i++ {
 		deepExpr = dal.Binary(deepExpr, dal.Add, dal.String("x"))
 	}
-	if err := validateExpression(deepExpr, 0); !errors.Is(err, ErrInvalidDTQL) {
+	if err := validateExpression(deepExpr, 0, nil); !errors.Is(err, ErrInvalidDTQL) {
 		t.Errorf("deep expression: %v", err)
 	}
 	if err := validateDTQLFields(build(root), maxQueryTreeDepth+1); !errors.Is(err, ErrInvalidDTQL) {
@@ -425,5 +431,169 @@ func TestCanQueryFollowsTheGuardAllowList(t *testing.T) {
 	}
 	if (&Database{}).CanQuery() {
 		t.Error("database without manifest must not advertise query")
+	}
+}
+
+// selectQuery finishes a builder into a structured query.
+func selectQuery(b dal.IQueryBuilder) dal.StructuredQuery {
+	return b.SelectIntoRecord(func() record.Record {
+		return record.NewRecordWithIncompleteKey("customers", 0, map[string]any{})
+	})
+}
+
+// fromTree builds a from clause with the given joins.
+func fromTree(base dal.RecordsetSource, joins ...dal.JoinedSource) dal.FromSource {
+	f := dal.From(base)
+	for _, j := range joins {
+		f.Join(j)
+	}
+	return f
+}
+
+func rootRef(name string) dal.CollectionRef { return dal.NewRootCollectionRef(name, "") }
+
+func eqCondition(left, right dal.Expression) dal.Condition {
+	return dal.NewComparison(left, dal.Equal, right)
+}
+
+// withExists wraps inner in an EXISTS predicate of an outer query over
+// outerCollection, so inner is walked as a subquery.
+func withExists(outerCollection string, inner dal.StructuredQuery) dal.StructuredQuery {
+	return selectQuery(fromTree(rootRef(outerCollection)).NewQuery().Where(dal.NewExistsCondition(inner)))
+}
+
+// noFromQuery is a structured query whose From() is nil.
+type noFromQuery struct{ dal.StructuredQuery }
+
+func (noFromQuery) From() dal.FromSource { return nil }
+
+// TestValidateDTQLFieldsWalksFromSources is the regression test for the
+// unwalked from clause: every name a subquery's source carries (collection,
+// alias, schema, scan order, join source, join ON operands, derived query)
+// is validated, and an unknown source shape is refused.
+func TestValidateDTQLFieldsWalksFromSources(t *testing.T) {
+	const bad = "na'me; DROP TABLE x --"
+	badOrder := dal.AscendingField(bad)
+	valid := func() dal.StructuredQuery { return selectQuery(fromTree(rootRef("other")).NewQuery()) }
+	badJoinOn := func(left, right dal.Expression) dal.JoinedSource {
+		return dal.NewJoinedSource(rootRef("o2"), dal.JoinInner, eqCondition(left, right))
+	}
+	cyclic := fromTree(rootRef("other"))
+	cyclic.Join(dal.NewJoinedFrom(cyclic, dal.JoinInner, eqCondition(dal.Field("a"), dal.Field("b"))))
+
+	cases := map[string]dal.StructuredQuery{
+		"base scan order":        selectQuery(fromTree(rootRef("other").WithScan(1, badOrder)).NewQuery()),
+		"base alias":             selectQuery(fromTree(dal.NewRootCollectionRef("other", "a b")).NewQuery()),
+		"base name":              selectQuery(fromTree(rootRef("ot\x00her")).NewQuery()),
+		"base schema":            selectQuery(fromTree(dal.NewQualifiedRootCollectionRef("s", "other", "")).NewQuery()),
+		"base database":          selectQuery(fromTree(dal.NewDatabaseCollectionRef("d", "", "other", "")).NewQuery()),
+		"base parent":            selectQuery(fromTree(dal.NewCollectionRef("other", "", record.NewKeyWithID("p", "1"))).NewQuery()),
+		"join on left":           selectQuery(fromTree(rootRef("other"), badJoinOn(dal.Field(bad), dal.Field("b"))).NewQuery()),
+		"join on right":          selectQuery(fromTree(rootRef("other"), badJoinOn(dal.Field("a"), dal.NewFieldRef("", bad))).NewQuery()),
+		"join on qualifier":      selectQuery(fromTree(rootRef("other"), badJoinOn(dal.NewFieldRef("x y", "a"), dal.Field("b"))).NewQuery()),
+		"join on unknown":        selectQuery(fromTree(rootRef("other"), dal.NewJoinedSource(rootRef("o2"), dal.JoinInner, otherCondition{})).NewQuery()),
+		"join source scan order": selectQuery(fromTree(rootRef("other"), dal.NewJoinedSource(rootRef("o2").WithScan(1, badOrder), dal.JoinInner)).NewQuery()),
+		"join source alias":      selectQuery(fromTree(rootRef("other"), dal.NewJoinedSource(dal.NewRootCollectionRef("o2", "a;b"), dal.JoinInner)).NewQuery()),
+		"join source name":       selectQuery(fromTree(rootRef("other"), dal.NewJoinedSource(rootRef("o\x012"), dal.JoinInner)).NewQuery()),
+		"join source missing":    selectQuery(fromTree(rootRef("other"), dal.NewNestedJoinedSource(nil, dal.JoinInner)).NewQuery()),
+		"nested join on": selectQuery(fromTree(rootRef("other"), dal.NewJoinedFrom(
+			fromTree(rootRef("o2"), badJoinOn(dal.Field(bad), dal.Field("b"))), dal.JoinInner, eqCondition(dal.Field("a"), dal.Field("b")))).NewQuery()),
+		"nested join cycle": selectQuery(cyclic.NewQuery()),
+		"derived where": selectQuery(fromTree(dal.NewQuerySource(
+			selectQuery(fromTree(rootRef("o2")).NewQuery().WhereField(bad, dal.Equal, 1)), "d")).NewQuery()),
+		"derived from":  selectQuery(fromTree(dal.NewQuerySource(selectQuery(fromTree(rootRef("o2").WithScan(1, badOrder)).NewQuery()), "d")).NewQuery()),
+		"derived alias": selectQuery(fromTree(dal.NewQuerySource(valid(), "d e")).NewQuery()),
+		"derived nil":   selectQuery(fromTree(dal.NewQuerySource(nil, "d")).NewQuery()),
+		"joined derived": selectQuery(fromTree(rootRef("other"), dal.NewJoinedSource(dal.NewQuerySource(
+			selectQuery(fromTree(rootRef("o2")).NewQuery().WhereField(bad, dal.Equal, 1)), "d"), dal.JoinInner)).NewQuery()),
+		"unknown source": selectQuery(fromTree(dal.NewCollectionGroupRef("g", "")).NewQuery()),
+		"pointer source": selectQuery(fromTree(&dal.CollectionRef{}).NewQuery()),
+		"missing source": selectQuery(fromTree(nil).NewQuery()),
+		"missing from":   noFromQuery{valid()},
+		"missing query":  nil,
+		"nested missing": selectQuery(fromTree(dal.NewQuerySource(noFromQuery{valid()}, "d")).NewQuery()),
+		"scalar from":    selectQuery(fromTree(rootRef("customers")).NewQuery().Where(eqCondition(dal.Field("a"), dal.NewQueryExpression(selectQuery(fromTree(rootRef("o2").WithScan(1, badOrder)).NewQuery()), "s")))),
+	}
+	for label, inner := range cases {
+		if err := validateDTQLFields(withExists("customers", inner), 0); !errors.Is(err, ErrInvalidDTQL) {
+			t.Errorf("%s: %v", label, err)
+		}
+		if label != "nested join cycle" {
+			// The subquery is also refused when it is the query itself.
+			if err := validateDTQLFields(inner, 0); !errors.Is(err, ErrInvalidDTQL) {
+				t.Errorf("%s (top): %v", label, err)
+			}
+		}
+	}
+}
+
+func TestValidateDTQLFieldsAcceptsValidFromSources(t *testing.T) {
+	good := map[string]dal.StructuredQuery{
+		"scan order":     selectQuery(fromTree(rootRef("other").WithScan(5, dal.AscendingField("name"))).NewQuery()),
+		"alias":          selectQuery(fromTree(dal.NewRootCollectionRef("other", "o")).NewQuery()),
+		"join":           selectQuery(fromTree(rootRef("a"), dal.NewJoinedSource(dal.NewRootCollectionRef("b", "bb"), dal.JoinLeft, eqCondition(dal.NewFieldRef("a", "id"), dal.NewFieldRef("bb", "a_id")))).NewQuery()),
+		"nested join":    selectQuery(fromTree(rootRef("a"), dal.NewJoinedFrom(fromTree(rootRef("b"), dal.NewJoinedSource(rootRef("c"), dal.JoinInner, eqCondition(dal.NewFieldRef("b", "id"), dal.NewFieldRef("c", "b_id")))), dal.JoinInner, eqCondition(dal.NewFieldRef("a", "id"), dal.NewFieldRef("c", "a_id")))).NewQuery()),
+		"derived source": selectQuery(fromTree(dal.NewQuerySource(selectQuery(fromTree(rootRef("o2")).NewQuery().WhereField("x", dal.Equal, 1)), "d")).NewQuery()),
+	}
+	for label, inner := range good {
+		if err := validateDTQLFields(inner, 0); err != nil {
+			t.Errorf("%s: %v", label, err)
+		}
+		if err := validateDTQLFields(withExists("customers", inner), 0); err != nil {
+			t.Errorf("%s in EXISTS: %v", label, err)
+		}
+	}
+}
+
+// TestSourceQualifierMayBeAnInScopeCollectionName covers the second round
+// regression: a field qualified with the name of a collection that is not an
+// ASCII identifier ("Order Details", "order-items") worked before the guard.
+func TestSourceQualifierMayBeAnInScopeCollectionName(t *testing.T) {
+	const spaced, hyphen = "Order Details", "order-items"
+	qualified := func(source string) dal.StructuredQuery {
+		return selectQuery(fromTree(rootRef(spaced)).NewQuery().Where(eqCondition(dal.NewFieldRef(source, "Quantity"), dal.String("x"))))
+	}
+	if err := validateDTQLFields(qualified(spaced), 0); err != nil {
+		t.Errorf("own collection name: %v", err)
+	}
+	if err := validateDTQLFields(qualified("Other Details"), 0); !errors.Is(err, ErrInvalidDTQL) {
+		t.Errorf("name of no source in scope: %v", err)
+	}
+	if err := validateDTQLFields(qualified("a'b"), 0); !errors.Is(err, ErrInvalidDTQL) {
+		t.Errorf("unsafe qualifier: %v", err)
+	}
+	// A column wildcard qualified by the collection name.
+	if err := validateDTQLFields(fromTree(rootRef(spaced)).NewQuery().SelectColumns(dal.AllColumnsExceptFrom(spaced, "x")), 0); err != nil {
+		t.Errorf("wildcard qualified by own collection name: %v", err)
+	}
+	if err := validateDTQLFields(fromTree(rootRef(spaced)).NewQuery().SelectColumns(dal.AllColumnsExceptFrom("Other Details", "x")), 0); !errors.Is(err, ErrInvalidDTQL) {
+		t.Errorf("wildcard qualified by a name not in scope: %v", err)
+	}
+	// A join source and an outer collection are in scope inside a subquery.
+	joined := selectQuery(fromTree(rootRef("customers"), dal.NewJoinedSource(rootRef(hyphen), dal.JoinInner,
+		eqCondition(dal.NewFieldRef("customers", "id"), dal.NewFieldRef(hyphen, "customer_id")))).NewQuery())
+	if err := validateDTQLFields(joined, 0); err != nil {
+		t.Errorf("join source qualifier: %v", err)
+	}
+	inner := selectQuery(fromTree(rootRef("other")).NewQuery().Where(eqCondition(dal.NewFieldRef(spaced, "id"), dal.NewFieldRef("other", "id"))))
+	if err := validateDTQLFields(withExists(spaced, inner), 0); err != nil {
+		t.Errorf("outer collection qualifier inside a subquery: %v", err)
+	}
+	if err := validateDTQLFields(withExists("customers", inner), 0); !errors.Is(err, ErrInvalidDTQL) {
+		t.Errorf("qualifier of a collection that is not in scope: %v", err)
+	}
+}
+
+func TestParseDTQLRefusesQualifiedAndScannedTopLevelSource(t *testing.T) {
+	for label, doc := range map[string]string{
+		"scan":          "from: {name: customers, scan: {limit: 1, orderBy: [{field: \"na'me; DROP TABLE x --\"}]}}\n",
+		"safe scan":     "from: {name: customers, scan: {limit: 1, orderBy: [{field: name}]}}\n",
+		"schema":        "from: {name: customers, schema: s}\n",
+		"database":      "from: {name: customers, database: d}\n",
+		"database+schm": "from: {name: customers, database: d, schema: s}\n",
+	} {
+		if _, _, err := ParseDTQL([]byte(doc)); !errors.Is(err, ErrInvalidDTQL) {
+			t.Errorf("%s: %v", label, err)
+		}
 	}
 }

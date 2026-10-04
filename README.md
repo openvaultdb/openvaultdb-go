@@ -369,7 +369,8 @@ RDS & Aurora, Azure Database for PostgreSQL/MySQL, Google Cloud SQL — by
 pointing the DSN env var at the cloud endpoint with TLS. Key reads and writes
 work. Structured queries (`/query`, `/dtql`) are refused with HTTP 501
 `query_unsupported` on these engines, and their database metadata advertises
-`query: false` and `dtql: false`, until the reviewed query compiler lands.
+`query: false` and `dtql: false` and publishes no query endpoint or format,
+until the reviewed query compiler lands.
 
 ## MVP boundaries
 
