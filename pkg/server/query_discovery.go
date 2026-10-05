@@ -47,6 +47,7 @@ func (s *Server) queryProfile() map[string]any {
 			"timeoutMs":            limits.Timeout.Milliseconds(),
 			"maxSourceRows":        limits.MaxSourceRows,
 			"maxSourceBytes":       limits.MaxSourceBytes,
+			"maxRequestBytes":      maxRequestBodyBytes,
 			"maxResultRows":        joinexec.MaxResultRows,
 			"maxResultBytes":       joinexec.MaxResultBytes,
 			"maxSources":           bounds.MaxSources,

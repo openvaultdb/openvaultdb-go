@@ -195,7 +195,14 @@ gives them a reviewed dialect. The
 structured-query path of a MySQL mount has no dialect yet. The PostgreSQL
 adapter forces its typed dialect (every value bound, every name quoted), and a
 PostgreSQL mount states how it matches names (folded to lower case). ovdb does
-not depend on the adapter for either:
+not depend on the adapter for either. (`pkg/core` does import
+`github.com/dal-go/dalgo2postgres`, and through it `dalgo2sql` and pgx, for one
+thing: to recognise the adapter's `*ConnectionError` and read its fixed sentence.
+`pkg/mount` already imported the adapter, so the module's dependencies do not
+change; only the import of the engine-neutral package does. The sentence is read
+in one file, `pkg/core/unreachable.go`, and every other fact about a driver is
+still read through an interface.)
+
 
 - **Queries.** `/query` and `/dtql` are refused on `mysql` with `501
   query_unsupported` before any query reaches the driver, and on `postgres`
@@ -208,8 +215,15 @@ not depend on the adapter for either:
   by a SQLSTATE read by type, a field or a qualifier the tables do not hold and
   an over-long source alias are `400 invalid_dtql`; what DALgo refuses above the
   adapter keeps its type (a bound of its own join is `422
-  query_budget_exceeded`, a document it cannot run `400 invalid_dtql`); any
-  other failure is a `500` whose log line says which step failed. A join of the
+  query_budget_exceeded`, a document it cannot run `400 invalid_dtql`); a
+  connection that cannot be made or that failed is `503 database_unavailable` on
+  every route (one fixed message; the log line names the mount by its ID and holds
+  the adapter's fixed sentence); a collection, or a field of a write or of a query
+  handed to a mount, over the 63 bytes PostgreSQL keeps is a `400` before any statement (a
+  document the server evaluates itself reads the field list from the catalog first and answers
+  such a field as an unknown one, and never writes it into a statement); any other failure
+  is a `500` whose log line says which step failed. A read of one collection whose result is larger than the 8 MiB
+  response buffer is `422 query_budget_exceeded`, not a `500`. A join of the
   mount's own database is handed to the adapter without the database its sources
   name, so that the adapter can run it as one statement.
 - **Collections.** On `sqlite`, `postgres` and `mysql` (and any engine ovdb

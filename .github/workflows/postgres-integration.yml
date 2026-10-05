@@ -1,12 +1,16 @@
 name: PostgreSQL integration
 
 # Runs the tests of pkg/server that need a PostgreSQL server (the files
-# postgres_integration_test.go) against a postgres:17 service container. They skip
-# when OVDB_TEST_POSTGRES_DSN is not set, which is how they behave in the shared
-# Go CI workflow (it has no database), so this job is where they run, and it must
-# not be able to pass by skipping: `go test` prints "ok" for a package whose tests
-# all skipped, so the job runs verbose, fails on a SKIP of any of them, and
-# requires a PASS line for each one by name.
+# postgres_integration_test.go) against a postgres service container, on two server
+# versions: 17, the version the fleet runs, and 18, the newest (a row of these tests,
+# the order over a column whose not-null constraint is not validated, shows only on 18).
+# Each version is a job of its own and each must pass; OVDB_TEST_POSTGRES_MAJOR names the
+# version of the leg and TestPostgresIntegration_ServerIsTheVersionTheLegNames fails a
+# leg that met another server. The tests skip when OVDB_TEST_POSTGRES_DSN is not set,
+# which is how they behave in the shared Go CI workflow (it has no database), so this
+# job is where they run, and it must not be able to pass by skipping: `go test` prints
+# "ok" for a package whose tests all skipped, so the job runs verbose, fails on a SKIP of
+# any of them, and requires a PASS line for each one by name.
 #
 # It lives in a workflow of its own, like mount-unmount.yml, because a service
 # container cannot be passed into the reusable workflow ci.yml calls, and the
@@ -39,11 +43,15 @@ permissions:
 
 jobs:
   postgres:
-    name: Integration (PostgreSQL 17)
+    name: Integration (PostgreSQL ${{ matrix.postgres }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ['17', '18']
     services:
       postgres:
-        image: postgres:17
+        image: postgres:${{ matrix.postgres }}
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -57,6 +65,7 @@ jobs:
           --health-retries 5
     env:
       OVDB_TEST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/ovdb_test?sslmode=disable
+      OVDB_TEST_POSTGRES_MAJOR: ${{ matrix.postgres }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -80,7 +89,10 @@ jobs:
             ProbesAreRowsAnEmptyResultOrARefusal \
             MixedCaseFieldNames \
             AJoinOfOneDatabaseRunsInTheDatabase \
-            WithoutTheSwitchEveryQueryRouteRefusesAndNoStatementIsSent; do
+            WithoutTheSwitchEveryQueryRouteRefusesAndNoStatementIsSent \
+            ServerIsTheVersionTheLegNames \
+            OrderOverAColumnWithAnUnvalidatedNotNullConstraint \
+            NamesOver63BytesAreA400AndNoStatementIsSent; do
             if ! grep -qE "^--- PASS: TestPostgresIntegration_${name} " /tmp/gotest.log; then
               echo "::error::TestPostgresIntegration_${name} did not report PASS"
               exit 1

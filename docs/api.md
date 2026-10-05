@@ -25,12 +25,19 @@ small: just enough for DALgo-backed Sneat CRUD validation. Versioned under `/v1`
     nothing to change and an update that names the record's key column (see
     [Names the server accepts](#names-the-server-accepts))
   - `403 read_only` — server-wide read-only mode rejected a mutation
+  - `503 database_unavailable` — the database server of a `postgres` mount cannot be reached
+    (a connection that cannot be made, or that failed while the request ran): the same status,
+    code and message (`the database of this mount cannot be reached`) on every route that reads or
+    writes the mount, whatever the failure; see [A mount whose database cannot be reached](#structured-queries-on-a-postgresql-mount-preview)
   - `500 internal` — unexpected server/engine error (details are logged server-side, not returned)
   - `501 not_supported` — operation not in MVP
   - `501 query_unsupported` — a structured query (`/query`, `/dtql`) on a storage engine not yet
     cleared for queries: a `mysql` mount, and a `postgres` mount that opened while the preview
     switch was off (see [Structured queries on a PostgreSQL mount](#structured-queries-on-a-postgresql-mount-preview)).
     Key reads and writes keep working there
+  - `422 query_budget_exceeded` — a read of one collection whose result is larger than the 8 MiB
+    response buffer of the server (`error.budget`, `error.hint`; see [Query](#query)), and a
+    relational document that reached a bound (see [Statuses](#statuses))
   - `422 query_unsupported` — the adapter of the storage engine reports that it cannot run the
     query (a condition, an aggregation or a join it cannot compile). The message is fixed and
     repeats nothing of the adapter's text
@@ -219,6 +226,24 @@ by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
   collections refuses the name, so the mount fails when the database opens and no request is
   served for it. Quoting on those two engines follows the task that gives the two mounts a
   reviewed dialect (OV-01).
+- **Names over 63 bytes on a `postgres` mount.** PostgreSQL keeps 63 bytes of a name and cuts the
+  rest without saying so, so a name of 64 bytes or more would address the table or the column
+  named by its first 63. Every route refuses a collection that long **before any statement is
+  sent**, and the message gives the limit and not the name: a collection (of a key, of a query, of a
+  source of a document) is `400 invalid_key`, the same status and code as every collection name
+  outside the name rule, and it is checked before the question whether the database declares the
+  collection, so a name that long is never a `404`. A field of a write (the top-level keys of
+  `data`, the `fieldName` of an update and every segment of its `fieldPath`) is `400 bad_request`
+  before any statement. A field of a query is `400 invalid_dtql` before any statement wherever the
+  query or the document is handed to the mount: `/query`, `/dtql`, and a relational document that
+  runs in the database (a source alias over the same length is refused the same way). A document
+  that the server evaluates itself (a join across databases, a document with a subquery) hands
+  each mount a plain scan, which holds no field name: it reads the field list of each
+  PostgreSQL source from the catalog first, and a name that no column has is an unknown field
+  (`400 invalid_dtql`, a message that does not give the limit), or a null inside a scalar subquery
+  of one source (see "Fields that no source has"). The name is never written into a statement on
+  any route. A name of exactly 63 bytes is accepted. `HEAD` of a key answers `400`, with
+  no body. No other engine has this limit.
 - **Access policies and spellings.** The access-policy layer sees the collection under the name
   the adapter is given. On `sqlite`, for a key read or write, that is the public name whichever
   spelling the caller sent, so a policy path names the public name; a policy path written with
@@ -237,8 +262,8 @@ by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
 - **Field names, on every engine.** Every field name a write carries that can become a column
   must pass the same rule as the names in `/query` and `/dtql`: dot-separated segments of
   letters, digits, underscore and hyphen (Unicode letters allowed), each optionally starting with
-  `$` before a letter (`$id`), at most 256 bytes, no `--`. (The adapter of `postgres` and `mysql`
-  accepts less; see above.) That covers the top-level keys of
+  `$` before a letter (`$id`), at most 256 bytes (63 on a `postgres` mount, see above), no `--`.
+  (The adapter of `postgres` and `mysql` accepts less; see above.) That covers the top-level keys of
   `data` in `PUT`, `POST` and batch `set`/`insert` ops, the `fieldName` of an update
   (`delete: true` included), the first segment of an update's `fieldPath`, and the same in a
   protected operation's columns and changes. Anything else is `400 bad_request`; an update that
@@ -378,8 +403,16 @@ GET /v1/databases/{db}/query?q=<percent-encoded-JSON-query>
 ```
 
 The `q` value is the same JSON object accepted by `POST /query`, URL-encoded
-once. It is limited to 1 MiB. Query results remain subject to the server's 8
-MiB result buffer. For a public, unprotected mounted database, embedders can
+once. It is limited to 1 MiB, and so is the body of a `POST`, as it is for the DTQL
+endpoints: the body is read whole up to 1 MiB, and one byte more is `400 bad_request` (`failed to
+read body: ...`), the answer the DTQL endpoints give for a body over their cap. Query results remain
+subject to the server's 8 MiB result buffer: a result larger than it is `422 query_budget_exceeded`
+(`error.budget` names the bound, `response_bytes`, with its limit and the route `database`) and
+`error.hint` says to narrow the read with a filter or a smaller limit, and that a DTQL read can also
+select fewer columns and, on a mount without access policies, read the result in pages (the DTQL
+endpoint pages a complete result, see [DTQL](#dtql); `/query` has no column selection, and paging
+is refused on a mount with access policies). It is a request the client can change, so it is not
+logged as an error. A result of exactly the buffer is answered. For a public, unprotected mounted database, embedders can
 set `database.cache_ttl: 24h` in that database's manifest and run the server
 with `server.WithReadOnly(true)`. Successful GET `/read`, `/query`, and `/dtql`
 responses then send `Cache-Control: public, max-age=N, s-maxage=N`, where N is
@@ -431,7 +464,9 @@ of types it cannot equate, a wildcard it has no form for) is not refused: DALgo 
 whole, with no filter, in the transaction of the mount and joins the rows itself, under bounds of
 its own (10,000 rows and 16 MiB of the tables together), and the answer still reports
 `execution.route: "database"`. What DALgo refuses there is answered as it is on every engine: a
-bound is `422 query_budget_exceeded` and names it, and a document it cannot run (a field or an alias
+bound is `422 query_budget_exceeded` and names it (its `hint` follows the route: it does not tell
+the caller to filter, because no filter reaches a read of a whole table, and says to join columns
+of the same type, to name the columns or to join a smaller table), and a document it cannot run (a field or an alias
 that is wrong, an alias used twice) is `400 invalid_dtql`. A document the adapter cannot compile
 otherwise is `422 query_unsupported` with the message `the storage engine cannot run this query`.
 
@@ -453,19 +488,51 @@ never from its text. The message of that answer is fixed (`a value or a name of 
 fit the field it is used with`), it repeats nothing of the request or of the server, and nothing is
 logged. A SQLite mount answers some of these requests with an empty result.
 
-A failure of the database server of any other kind is `500 internal`, and the log line says only
+A failure of the database server of any other kind (not one of those above, and not a connection
+that cannot be reached, which is described next) is `500 internal`, and the log line says only
 which step failed: no text of the driver or of the server, which can repeat a value of the request
 or name the connection, reaches an answer or a log. That holds for a read transaction that cannot
 begin or commit and for the field list of a collection, as it does for a query.
+
+**A mount whose database cannot be reached.** When the adapter reports that the connection to
+the database server cannot be made, or that it failed while the request ran (a refused or reset connection, a timeout of the connection, a failed
+TLS handshake, a server that rejects the connection, a connection string that cannot be read), the
+answer is `503 database_unavailable` with the message `the database of this mount cannot be reached`.
+It is the same status, code and message for every such failure and on every route that reads or
+writes the mount: a key read (`/records`, `/read`, `HEAD` too, which has no body), a write or a
+batch, the metadata of the database, `/query`, `/dtql` and a relational document of `/v1/dtql`. The
+answer holds nothing of the connection: not the connection string, the host, the port, the user,
+the password, the database name, the kind of failure or a driver's text. The server logs one `ERROR`
+line, `database unreachable`, with the method, the path, the ID of the mount (`database`) and the
+adapter's own fixed sentence for the failure (`reason`, for example `dalgo2postgres: the server could
+not be reached`, or with the SQLSTATE code of a server that answered); nothing of the connection
+string is in it either. A request that was canceled, or that ran past its deadline, is not this
+failure: it keeps its own answer (`504 query_timeout` on a relational document). The routes that
+read one collection decide on the request itself: `/dtql` and a paged capture give the read a
+time of their own (10 seconds, 60 for a paged capture), and a connection attempt that does not
+answer and fails when that time ends is the `503` while the request is alive; `/query` runs under
+the request alone. A relational
+document runs under the time limit of the whole document, and a connection attempt that ends on
+it is the `504 query_timeout` the document answers when that limit ends it.
+
+After a `503` on a write (a key write, an update, a delete or a `/batch`), the client reads the record
+before it repeats the write: a connection that is lost while the server acknowledges a commit is
+reported the same way as one that could not be made, and an insert, or an update with a transform,
+is not safe to repeat.
 
 A field declared with capitals (`FirstName`) is held by PostgreSQL in lower case. A route that reads
 one collection finds it by the declared spelling and by the lower-case one, and answers a record
 under the declared name. A document that runs in the database as one statement, a join of one
 database included, finds it by either spelling too, and labels the column as the document wrote it.
-A join across databases, and a join that DALgo reads table by table (above), run in the engine of
-this server over the names the database holds, which are lower case: such a document writes
+A document with a subquery, a join across databases, and a join that DALgo reads table by table
+(above), run in the engine of this server over the names the database holds, which are lower case
+(the field list is the one the adapter reads from the catalog): such a document writes
 `firstname`, and the declared spelling is `400 invalid_dtql` there (a SQLite mount reads the
-declared spelling and refuses the lower-case one).
+declared spelling and refuses the lower-case one). That holds for a field named in the query of an
+`exists` as it does in a join: the field list of the source of that query is read before anything
+is, and a field it does not carry is refused, never answered with no rows. A scalar subquery of one
+source is not looked at (see "Fields that no source has"): the declared spelling in its `where` or
+its columns is read as a null, a `200`, on a PostgreSQL mount as on any other.
 
 A `postgres` mount takes part in a relational document only when `postgres` is in the join engines
 of the query limits (`joinEngines`), which the operator sets; the discovery document lists it, and
@@ -551,7 +618,8 @@ reads another collection in a subquery is relational and is described under
 [Query profile and relational documents](#query-profile-and-relational-documents); cursors and
 native queries are not supported. Limit defaults to 1000 (maximum 1000), offset
 is at most 10000, execution context deadline is 10 seconds, and result buffering is capped
-at 8 MiB. Rows are filtered before pagination; column restrictions also apply to
+at 8 MiB (a larger result is `422 query_budget_exceeded` with a hint to narrow or to page the read,
+as for `/query`, and is not logged as an error). Rows are filtered before pagination; column restrictions also apply to
 explicit projections, caller filters, and ordering. Denial returns HTTP 403 with
 `error.code: ACCESS_DENIED` and a generic message. The first slice does not expose
 policy diagnostics or implement the full DTQL blocker response contract.
@@ -697,6 +765,7 @@ server does, from the configuration it runs with:
       "maxInMemoryJoinRows": 10000,
       "maxLimit": 1000,
       "maxOffset": 10000,
+      "maxRequestBytes": 1048576,
       "maxResultBytes": 8388608,
       "maxResultRows": 1000,
       "maxSourceBytes": 67108864,
@@ -718,7 +787,8 @@ server does, from the configuration it runs with:
   false (see [Launch limits](#launch-limits)); `fieldNames` is `plain`.
 - `limits`: what one request may ask for, each value the one the server enforces. `timeoutMs`,
   `maxSourceRows` and `maxSourceBytes` are the server's configuration (`QueryLimits`);
-  `maxResultRows` and `maxResultBytes` bound the answer. `maxSources` is the most collection reads
+  `maxResultRows` and `maxResultBytes` bound the answer. `maxRequestBytes` is the most bytes of the
+  body of a `POST` to `/query` or to a DTQL endpoint (1 MiB; a body over it is `400 bad_request`). `maxSources` is the most collection reads
   one document makes, `maxSubqueryDepth` the most levels of subquery below the outermost query, and
   `maxLimit` and `maxOffset` the largest `limit` and `offset` of the outermost query. The
   remaining three bound the in-memory route: `maxInMemoryJoinRows` and `maxInMemoryJoinBytes` the most rows
@@ -1334,9 +1404,15 @@ inGitDB mount is the `500` above.)
 
 **Fields that no source has.** A field of the query itself that no source of a document that DALgo
 evaluates has is a `400 invalid_dtql` (`... is unavailable`, or `unknown field` in `orderBy`), as on
-the database route. A field that no source has, inside an `exists` test or a scalar subquery, is read
-as a null (an unknown name in the `orderBy` of such a query is refused like any other). In a
-document handed whole to an inGitDB mount only the `orderBy` is checked.
+the database route. A field that no source has, in the `where`, `groupBy`, `having` or `orderBy` of an
+`exists` test whose one source supplies a field list, is a `400 invalid_dtql` (`unknown field ... the
+source does not carry it`); a column the `exists` query selects is not looked at, as it does not
+change whether it finds a row. Inside a scalar
+subquery of one source (no join, grouping, ordering, offset or aggregate) a field that no source has
+is read as a null, in its `where` and in its columns alike: DALgo evaluates such a subquery row by
+row and checks no field of it; a subquery that groups, orders, skips rows or aggregates is
+checked by DALgo like any other query. In a document handed whole to an inGitDB mount only the
+`orderBy` is checked.
 
 **Ordering.** In a query that does not aggregate, a name in `orderBy` is a field of a source, or
 the alias of a column of the select list. The alias is the column only where it is the whole of the
@@ -1583,6 +1659,7 @@ columns:
 | `501` | `query_unsupported` | The storage engine is not cleared for structured queries (`mysql`, a `postgres` mount that opened with the preview switch off, an unknown engine), whatever the operator's list of join engines says. |
 | `503` | `query_capacity` | No slot of the concurrency gate freed within the server's queue wait; `Retry-After: 1`. |
 | `504` | `query_timeout` | The query ran longer than `timeoutMs`. |
+| `503` | `database_unavailable` | The database server of a `postgres` mount cannot be reached; see [A mount whose database cannot be reached](#structured-queries-on-a-postgresql-mount-preview). |
 | `500` | `internal` | A fault of the server, logged and not described. |
 
 <!-- doc-example method=POST path=/v1/dtql status=400 -->

@@ -55,6 +55,39 @@ func (d *Database) guardFields(query dal.StructuredQuery) error {
 // plain error. It is the limit of the one server engine that is cleared for queries.
 const maxServerNameBytes = 63
 
+// nameLimits holds, for each engine whose server cuts a name that is too long without
+// saying so, the most bytes it keeps. PostgreSQL keeps 63 of an identifier, so a name of
+// 64 bytes or more would address the table or the column named by its first 63: on such
+// an engine every route refuses a collection or a field that long before the driver is
+// reached (see Database.nameTooLong). Any engine not listed has no limit here.
+var nameLimits = map[string]int{"postgres": maxServerNameBytes}
+
+// nameLimit is the most bytes of a name the mount's server keeps, or 0 when the engine
+// has no limit.
+func (d *Database) nameLimit() int { return nameLimits[d.queryEngine()] }
+
+// nameTooLong reports whether name is longer than the server of the mount keeps in a
+// name.
+func (d *Database) nameTooLong(name string) bool {
+	limit := d.nameLimit()
+	return limit > 0 && len(name) > limit
+}
+
+// errCollectionNameTooLong is the refusal of a collection name over the limit of the
+// engine. It wraps ErrInvalidKey (HTTP 400 invalid_key, as every collection name outside
+// the name rule is) and gives the limit and not the name, which can be as long as the
+// request allows.
+func (d *Database) errCollectionNameTooLong() error {
+	return fmt.Errorf("%w: a collection name is longer than %d bytes, the most the database holds in a name", ErrInvalidKey, d.nameLimit())
+}
+
+// errFieldNameTooLong is the refusal of a field name over the limit of the engine, as
+// the kind of request says: ErrInvalidFieldName for a write (HTTP 400 bad_request) and
+// ErrInvalidDTQL for a query (HTTP 400 invalid_dtql). It gives the limit and not the name.
+func (d *Database) errFieldNameTooLong(kind error) error {
+	return fmt.Errorf("%w: a field name is longer than %d bytes, the most the database holds in a name", kind, d.nameLimit())
+}
+
 // errSourceAliasTooLong is the refusal of a source alias over maxServerNameBytes. It gives
 // the limit and not the alias, which can be as long as the request allows.
 var errSourceAliasTooLong = fmt.Errorf("%w: a source alias is longer than %d bytes, the most the database holds in a name", ErrInvalidDTQL, maxServerNameBytes)
@@ -232,6 +265,9 @@ func errNoSuchSource(qualifier string) error {
 func (w fieldWalk) field(field dal.FieldRef) error {
 	if field.IsID() && field.Name() == dal.DocumentID().Name() {
 		return nil
+	}
+	if w.db.nameTooLong(field.Name()) {
+		return w.db.errFieldNameTooLong(ErrInvalidDTQL)
 	}
 	source := w.single
 	if qualifier := field.Source(); qualifier != "" {

@@ -74,19 +74,23 @@ func isQueryNotRunnable(err error) bool {
 // the sentence prefix says (it names the step and the collection). A query the
 // adapter cannot run is ErrQueryNotRunnable, on every engine. An engine reached
 // through a connection string (serverEngines) gets a built error and nothing of the
-// adapter's: a cancellation and a deadline keep their identity, a refusal of the
+// adapter's: a connection that cannot be made or that failed, while the request's own
+// context is still alive, is an *UnreachableError (ErrDatabaseUnreachable); a
+// cancellation and a deadline keep their identity, a refusal of the
 // server because of what the query holds (isQueryThatDoesNotFit) is
 // ErrQueryDoesNotFit, a refusal that DALgo raised above the adapter, in its planner or in
 // the join it evaluates itself (dalgoRefusal), is kept as the typed error it is, rebuilt from
 // its parts, and any other failure is a fixed sentence, because the text of a
 // database server's error can repeat a value, a name or a hint of the request, and it
 // would reach a log. The other engines keep the adapter's error in the chain.
-func (d *Database) queryError(prefix string, err error) error {
+func (d *Database) queryError(ctx context.Context, prefix string, err error) error {
 	switch {
 	case isQueryNotRunnable(err):
 		return fmt.Errorf("%s: %w", prefix, ErrQueryNotRunnable)
 	case !serverEngines[d.queryEngine()]:
 		return fmt.Errorf("%s: %w", prefix, err)
+	case ctx.Err() == nil && d.unreachableOf(err) != nil:
+		return fmt.Errorf("%s: %w", prefix, d.unreachableOf(err))
 	case errors.Is(err, context.Canceled):
 		return fmt.Errorf("%s: %w", prefix, context.Canceled)
 	case errors.Is(err, context.DeadlineExceeded):
@@ -107,7 +111,8 @@ func (d *Database) queryError(prefix string, err error) error {
 // untouched.
 type builtReader struct {
 	dal.RecordsReader
-	db *Database
+	db  *Database
+	ctx context.Context
 }
 
 func (r builtReader) Next() (record.Record, error) {
@@ -115,12 +120,12 @@ func (r builtReader) Next() (record.Record, error) {
 	if err == nil || err == io.EOF || errors.Is(err, dal.ErrNoMoreRecords) {
 		return rec, err
 	}
-	return nil, r.db.queryError("failed reading query results", err)
+	return nil, r.db.queryError(r.ctx, "failed reading query results", err)
 }
 
 func (r builtReader) Close() error {
 	if err := r.RecordsReader.Close(); err != nil {
-		return r.db.queryError("failed to close the query results", err)
+		return r.db.queryError(r.ctx, "failed to close the query results", err)
 	}
 	return nil
 }

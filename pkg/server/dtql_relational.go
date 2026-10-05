@@ -125,7 +125,15 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	// of an engine, as it does on the other routes: a collection that is not there
 	// is a 404 whatever else is wrong with the request.
 	for _, target := range targets {
-		if db := databases[target.database]; !readableCollection(db, target.collection) {
+		db := databases[target.database]
+		// A name longer than the engine's server keeps is the caller's mistake in the
+		// name, a 400 as on the routes that take a key, and not a collection that is
+		// missing.
+		if err := db.GuardCollection(target.collection); errors.Is(err, core.ErrInvalidKey) {
+			writeError(w, http.StatusBadRequest, "invalid_key", err.Error())
+			return
+		}
+		if !readableCollection(db, target.collection) {
 			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("collection not found: %q in database %q", clipName(target.collection), clipName(target.database)))
 			return
 		}
@@ -453,6 +461,18 @@ type budgetDetail struct {
 	Path  string `json:"path,omitempty"`
 }
 
+// writeBudgetRefusal answers a request that reached a bound: 422 query_budget_exceeded, with
+// the bound named, its limit and never the figure the request reached, and a hint that says
+// what to change.
+func writeBudgetRefusal(w http.ResponseWriter, budget *joinexec.BudgetError, hint string) {
+	writeJSON(w, http.StatusUnprocessableEntity, relationalErrorBody{Error: relationalErrorDetail{
+		Code:    "query_budget_exceeded",
+		Message: fmt.Sprintf("the query exceeds the %s limit of a request", clipName(budget.Name)),
+		Budget:  &budgetDetail{Name: clipName(budget.Name), Limit: budget.Limit, Route: clipName(budget.Route), Path: clipName(budget.Path)},
+		Hint:    hint,
+	}})
+}
+
 // writeRelationalError answers an error of a relational request. Every refusal
 // the caller can act on has a 4xx or 503 of its own and a message that repeats no
 // more of the request than a bounded name; an error nothing here knows is the
@@ -473,12 +493,7 @@ func (s *Server) writeRelationalError(w http.ResponseWriter, r *http.Request, er
 		w.Header().Set("Retry-After", retryAfterSeconds)
 		writeError(w, http.StatusServiceUnavailable, "query_capacity", fmt.Sprintf("the server is running as many %s queries as it allows: retry shortly", clipName(capacity.Route)))
 	case errors.As(err, &budget):
-		writeJSON(w, http.StatusUnprocessableEntity, relationalErrorBody{Error: relationalErrorDetail{
-			Code:    "query_budget_exceeded",
-			Message: fmt.Sprintf("the query exceeds the %s limit of a request", clipName(budget.Name)),
-			Budget:  &budgetDetail{Name: clipName(budget.Name), Limit: budget.Limit, Route: clipName(budget.Route), Path: clipName(budget.Path)},
-			Hint:    budgetHint(budget.Name),
-		}})
+		writeBudgetRefusal(w, budget, budgetHintOn(budget.Name, budget.Route))
 	case errors.As(err, &denied):
 		writeError(w, http.StatusForbidden, "forbidden", fmt.Sprintf("token does not grant %s on collection %q of database %q",
 			auth.CapRecordsRead, clipName(denied.Collection), clipName(denied.Database)))
@@ -588,6 +603,32 @@ var budgetHints = map[string]string{
 
 // genericBudgetHint is the hint of a bound that budgetHints does not list.
 const genericBudgetHint = "The query is larger than one request may run. Add a filter, select fewer columns, or read less."
+
+// databaseRouteJoinBudgets are the bounds of a join that DALgo evaluates itself.
+// On the database route that happens only for a join the adapter could not write as one
+// statement, and DALgo then reads each table whole, with no filter, so the hints of these
+// bounds that tell the caller to filter a source cannot help there.
+var databaseRouteJoinBudgets = map[string]bool{
+	joinexec.BudgetJoinRows:                 true,
+	joinexec.BudgetJoinResultRows:           true,
+	joinexec.BudgetJoinFetchedRows:          true,
+	joinexec.BudgetJoinRetainedBytes:        true,
+	joinexec.BudgetJoinScan:                 true,
+	joinexec.BudgetJoinCandidateEvaluations: true,
+}
+
+// databaseRouteJoinHint is the hint of a bound of those on the database route.
+const databaseRouteJoinHint = "The database could not run this join as one statement, so the server read each table whole, with no filter, and joined the rows itself: a filter cannot narrow that read. Join columns of the same type, name the columns instead of a wildcard, or join a smaller table."
+
+// budgetHintOn is the hint of a bound on the route it was reached on: the hint of the
+// bound (budgetHint), except for a bound of the in-memory join on the database route,
+// where it would tell the caller to filter a read that no filter reaches.
+func budgetHintOn(name, route string) string {
+	if route == joinexec.RouteDatabase && databaseRouteJoinBudgets[name] {
+		return databaseRouteJoinHint
+	}
+	return budgetHint(name)
+}
 
 func budgetHint(name string) string {
 	if hint, ok := budgetHints[name]; ok {
