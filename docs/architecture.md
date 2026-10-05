@@ -34,9 +34,10 @@ reads, writes, updates and queries through to the driver natively:
   (joins, grouping, aggregates, subqueries, several mounted databases) through
   DALgo, in the database where one database can run it and in memory
   otherwise; see docs/api.md. Structured
-  queries run on SQLite, inGitDB and Firestore only: a PostgreSQL or MySQL
-  mount is refused them with `501 query_unsupported` until a reviewed query
-  compiler lands (see "Names and queries on the SQL engines" below);
+  queries run on SQLite, inGitDB and Firestore, and on PostgreSQL while the
+  preview switch is on; a MySQL mount, and a PostgreSQL mount without the
+  switch, are refused them with `501 query_unsupported` (see "Names and queries
+  on the SQL engines" below);
 - parent-scoped subcollection queries (e.g. Sneat's happenings under a space
   module) travel as a dal-escaped `parent` key path and become
   `dal.NewCollectionRef(name, "", parentKey)`.
@@ -71,7 +72,9 @@ github.com/dal-go/dalgo2openvaultdb   — DALgo driver speaking the HTTP API
 | mysql     | github.com/dal-go/dalgo2mysql      | strict (MVP; JSON doc-column mode → all three, roadmap) |
 
 Structured queries (`/query`, `/dtql`) are available on `sqlite`, `ingitdb` and
-`firestore` only. `postgres` and `mysql` mounts answer them with `501
+`firestore`, and on `postgres` while the preview switch
+(`OVDB_PREVIEW_POSTGRES_QUERIES=1`, read when the mount opens) is on. `mysql`
+mounts, and `postgres` mounts without the switch, answer them with `501
 query_unsupported`; their key reads and writes work, under the rules in "Names
 and queries on the SQL engines".
 
@@ -154,20 +157,29 @@ field and primary-key names into the statement text of key reads and writes, and
 checks every one first: on `sqlite` (the one engine whose dialect has reviewed
 quoting) a name is written quoted, so a name with a space, a quote or a hyphen is
 an ordinary identifier and a declared `Orders Status` reads its own table, never
-`Orders`; on `postgres` and `mysql`, which open it with no reviewed dialect, a
+`Orders`; on `postgres` and `mysql`, whose key reads and writes write a name unquoted, a
 collection, field or primary-key name must be a plain ASCII identifier (ASCII
 letters, digits and underscores, not starting with a digit) and any other is
 refused by the adapter without a statement being sent (a `500 internal`, or a
 `404` for `HEAD`). A `postgres` or `mysql` manifest that declares a collection or
 field name outside that rule does not open: provisioning the declared collections
-refuses the name, so the mount fails when the database opens. Quoting on those
-two engines is left to the task that gives them a reviewed dialect (OV-01). The
-structured-query path of a PostgreSQL or MySQL mount has no reviewed dialect yet
-either. ovdb does not depend on the adapter for either:
+refuses the name, so the mount fails when the database opens. Quoting the
+names of key reads and writes on those two engines is left to the task that
+gives them a reviewed dialect. The
+structured-query path of a MySQL mount has no dialect yet. The PostgreSQL
+adapter forces its typed dialect (every value bound, every name quoted), and a
+PostgreSQL mount states how it matches names (folded to lower case). ovdb does
+not depend on the adapter for either:
 
-- **Queries.** `/query` and `/dtql` are refused on `postgres` and `mysql` with
-  `501 query_unsupported` before any query reaches the driver. They are not
-  available there today.
+- **Queries.** `/query` and `/dtql` are refused on `mysql` with `501
+  query_unsupported` before any query reaches the driver, and on `postgres`
+  unless the preview switch was on when the mount opened (one function of
+  `pkg/core` decides, and the guard, the discovery document and the engines
+  that run a whole document in the database all ask it). The errors the adapter
+  of a database server returns on this path are built in `pkg/core` and repeat
+  none of its text: `dal.ErrNotSupported` and an unknown dialect are `422
+  query_unsupported` with a fixed message, any other failure a `500` whose log
+  line says which step failed.
 - **Collections.** On `sqlite`, `postgres` and `mysql` (and any engine ovdb
   does not recognise) a key read or write whose collection is not one the
   mount declared in the manifest's `schemas` when it opened is `404 not_found`

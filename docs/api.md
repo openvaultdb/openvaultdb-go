@@ -28,7 +28,12 @@ small: just enough for DALgo-backed Sneat CRUD validation. Versioned under `/v1`
   - `500 internal` — unexpected server/engine error (details are logged server-side, not returned)
   - `501 not_supported` — operation not in MVP
   - `501 query_unsupported` — a structured query (`/query`, `/dtql`) on a storage engine not yet
-    cleared for queries: a `postgres` or `mysql` mount. Key reads and writes keep working there
+    cleared for queries: a `mysql` mount, and a `postgres` mount that opened while the preview
+    switch was off (see [Structured queries on a PostgreSQL mount](#structured-queries-on-a-postgresql-mount-preview)).
+    Key reads and writes keep working there
+  - `422 query_unsupported` — the adapter of the storage engine reports that it cannot run the
+    query (a condition, an aggregation or a join it cannot compile). The message is fixed and
+    repeats nothing of the adapter's text
 
 ## Authentication (optional, `ovdb serve --auth`)
 
@@ -391,11 +396,38 @@ Result keys are full key paths from the database root: a query with `"parent":"l
 on `items` returns `lists/to-buy/items/x` (not `items/x`), usable as-is with `/records`.
 With a `parent`, the read capability is checked on the parent's root collection (`lists`).
 
-Structured queries run on `sqlite`, `ingitdb` and `firestore` mounts only. On a `postgres` or
-`mysql` mount `/query` and `/dtql` answer `501 query_unsupported` (the message names the engine),
-and the database's metadata advertises `query: false` and `dtql: false`, until the reviewed query
-compiler for those engines lands. Key reads and writes are unaffected, subject to
-[Names the server accepts](#names-the-server-accepts).
+Structured queries run on `sqlite`, `ingitdb` and `firestore` mounts, and on a `postgres` mount
+while the preview switch is on (below). On a `mysql` mount, and on a `postgres` mount that opened
+with the switch off, `/query` and `/dtql` answer `501 query_unsupported` (the message names the
+engine), and the database's metadata advertises `query: false` and `dtql: false`. Key reads and
+writes are unaffected, subject to [Names the server accepts](#names-the-server-accepts).
+
+#### Structured queries on a PostgreSQL mount (preview)
+
+A `postgres` mount answers `/query`, `/dtql` and the relational documents of `/v1/dtql` only when
+the environment of the server holds `OVDB_PREVIEW_POSTGRES_QUERIES=1` (exactly the value `1`). The
+mount reads it once, when it opens: a change of the environment later changes nothing for an open
+mount. Without it the mount answers as it did before the preview existed, with the `501` above. The
+switch is temporary and is removed after the security review of the whole path; a server that does
+not set it never runs a structured query on PostgreSQL.
+
+What the preview rests on. The PostgreSQL adapter compiles a query with its typed dialect: every
+value travels as a bound parameter and every name is quoted, so no text a caller writes becomes SQL.
+Names are held to the plain-name rule of the engine (letters, digits, underscore and hyphen), a
+collection the manifest does not declare is `404 not_found`, and the mount folds names to lower case,
+as the adapter's own DDL does. Access control is not offered on a `postgres` mount: a manifest that
+turns it on fails to mount. Records of a query carry the key they were written under.
+
+What a client sees. Where the adapter can run a document (filters, order, limit, grouping,
+aggregates and joins of one database) it runs on the server, and the answer reports
+`execution.route: "database"`; a document with a subquery, and a join across databases, runs in the
+engine of this server, and its source bounds apply. A document the adapter cannot compile is
+`422 query_unsupported` with the message `the storage engine cannot run this query`. A failure of
+the database server is `500 internal`, and the log line says only which step failed: no text of the
+driver or of the server, which can repeat a value of the request, reaches an answer or a log. A
+`postgres` mount takes part in a relational document only when `postgres` is in the join engines of
+the query limits (`joinEngines`), which the operator sets; the discovery document lists it, and
+advertises `query`, `dtql`, `joins` and `aggregation` for such a mount, only while the switch is on.
 
 Supported `op`: `==`, `<`, `<=`, `>`, `>=`, `in`, `array-contains`, `array-contains-any`.
 Queries translate 1:1 to `dal.StructuredQuery` and execute on the DALgo driver's own
@@ -1487,8 +1519,8 @@ columns:
 | `422` | `join_engine_unsupported` | The engine of a database is not in `joinEngines`. |
 | `422` | `snapshot_unsupported` | A paging header was sent. |
 | `422` | `query_budget_exceeded` | A bound of the request was reached. `error.budget` names it (`name`, `limit`, `route`, and `path` where it applies) and `error.hint` says what to change. |
-| `422` | `query_unsupported` | The storage engine cannot run a condition of the document. |
-| `501` | `query_unsupported` | The storage engine is not cleared for structured queries (`postgres`, `mysql`, an unknown engine), whatever `joinEngines` says. |
+| `422` | `query_unsupported` | The storage engine cannot run a condition of the document, or the adapter reports that it cannot run the document (a fixed message). |
+| `501` | `query_unsupported` | The storage engine is not cleared for structured queries (`mysql`, a `postgres` mount that opened with the preview switch off, an unknown engine), whatever `joinEngines` says. |
 | `503` | `query_capacity` | No slot of the concurrency gate freed within the server's queue wait; `Retry-After: 1`. |
 | `504` | `query_timeout` | The query ran longer than `timeoutMs`. |
 | `500` | `internal` | A fault of the server, logged and not described. |

@@ -206,9 +206,21 @@ top-level keys, an update's `fieldName` and the first segment of its
 its own: it is a path-safety rule and accepts quotes, spaces and semicolons.
 A write that names nothing to change (an update with no operation, a set of no
 field for a record that exists) is refused with 400 `bad_request` as well.
-Structured queries (`/query`, `/dtql`) are not available on this engine: they
-answer 501 `query_unsupported` until a reviewed query compiler lands, so the
-statements the adapter builds for them are never run.
+Structured queries (`/query`, `/dtql`) are available on this engine only in
+preview: the environment of the server must hold `OVDB_PREVIEW_POSTGRES_QUERIES=1`
+when the mount opens (read once; any other value, or none, leaves the mount
+answering 501 `query_unsupported` as before, and no statement is sent to the
+server for a query). With the switch on, the adapter compiles a query with its
+typed PostgreSQL dialect: every value is a bound parameter and every name is
+quoted, and ovdb still refuses, before the adapter, a field name outside the
+plain-name rule and a collection the manifest does not declare. The mount states
+that names are folded to lower case. What the adapter says on this path never
+reaches a response or a log: `dal.ErrNotSupported` and an unknown dialect are
+422 `query_unsupported` with a fixed message, and any other failure of the
+server is a 500 whose log line names the step and the collection and holds no
+text of the driver. Access control on a PostgreSQL mount stays refused when the
+manifest is mounted. The switch is removed after the security review of the
+whole path. MySQL has no dialect and stays refused.
 
 
 ## CORS (2026-07-09)

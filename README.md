@@ -327,9 +327,11 @@ run when that env var is set (`gcloud emulators firestore start`).
 ### Which engines can be queried today
 
 Structured queries (`/query` and `/dtql`) run on SQLite, inGitDB and Firestore
-mounts only. A PostgreSQL or MySQL mount is refused a structured query with
-HTTP 501 `query_unsupported` until its reviewed query compiler lands; key reads
-and writes of declared collections keep working on every engine (on SQLite,
+mounts, and on a PostgreSQL mount while the preview switch is on: the server's
+environment holds `OVDB_PREVIEW_POSTGRES_QUERIES=1` when the mount opens (see
+`docs/api.md`). A MySQL mount, and a PostgreSQL mount without the switch, are
+refused a structured query with HTTP 501 `query_unsupported`; key reads and
+writes of declared collections keep working on every engine (on SQLite,
 PostgreSQL and MySQL a collection the manifest does not declare is a 404, and a
 field name that is not plain is a 400, before the adapter is called).
 
