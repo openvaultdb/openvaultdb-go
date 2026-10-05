@@ -280,6 +280,16 @@ by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
   same body but for the name the caller sent, whatever the request orders by, and for a
   multi-operation inspection the undeclared operation is redacted as a hidden one is, and the
   facts given for the other operations of the request do not depend on which of the two it is.
+  A caller who may inspect protected rows is given layer detail for a record it cannot read only
+  when a policy admits the operation for the stored row to decide; for a declared table the
+  policy hides, or cannot decide anything about (a principal outside the policy's realm, a policy
+  source that is unavailable), it gets the answer an undeclared table gets. So does a declared
+  table that the protected session of the adapter cannot prepare (a SQLite table with a column
+  default, a foreign key, a trigger or a key that is not a text id, for instance): the protected
+  `PATCH` and `/access/evidence` answer `404 resource_unavailable` and an inspection the redacted
+  deny, and the server logs a warning that names the collection. An inspection that holds more
+  evidence than one protected session accepts is assessed one operation at a time and answered
+  as it would be if the session accepted it.
   While a policy layer cannot be used, a sample is refused alike whatever collection it names.
   A sample asks the policies about its query before it checks the collections the query names,
   so what the policies answer (a denial, or a result they cannot decide) is the same whichever

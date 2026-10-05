@@ -36,6 +36,11 @@ func openMySQL(m *manifest.Manifest) (dal.DB, []schema.Mode, error) {
 // error from it is not returned or wrapped (see mysqlOpenError).
 func openMySQLWith(m *manifest.Manifest, open mysqlOpener) (dal.DB, []schema.Mode, error) {
 	envVar := m.Storage.MySQL.DSNEnvVar()
+	if !manifest.ValidEnvVarName(envVar) {
+		// A manifest that was not validated (see manifest.Manifest.Validate): the
+		// message does not repeat the value.
+		return nil, nil, errors.New("storage.mysql.dsn_env is not the name of an environment variable")
+	}
 	dsn := os.Getenv(envVar)
 	if dsn == "" {
 		return nil, nil, fmt.Errorf("mysql DSN not set: expected connection string in $%s", envVar)
