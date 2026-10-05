@@ -182,8 +182,13 @@ not depend on the adapter for either:
   by a SQLSTATE read by type, a field or a qualifier the tables do not hold and
   an over-long source alias are `400 invalid_dtql`; what DALgo refuses above the
   adapter keeps its type (a bound of its own join is `422
-  query_budget_exceeded`, a document it cannot run `400 invalid_dtql`); any
-  other failure is a `500` whose log line says which step failed. A join of the
+  query_budget_exceeded`, a document it cannot run `400 invalid_dtql`); a
+  connection that cannot be made or that failed is `503 database_unavailable` on
+  every route (one fixed message; the log line names the mount by its ID and holds
+  the adapter's fixed sentence); a name over the 63 bytes PostgreSQL keeps is a
+  `400` before any statement; any other failure is a `500` whose log line says
+  which step failed. A read of one collection whose result is larger than the 8 MiB
+  response buffer is `422 query_budget_exceeded`, not a `500`. A join of the
   mount's own database is handed to the adapter without the database its sources
   name, so that the adapter can run it as one statement.
 - **Collections.** On `sqlite`, `postgres` and `mysql` (and any engine ovdb
