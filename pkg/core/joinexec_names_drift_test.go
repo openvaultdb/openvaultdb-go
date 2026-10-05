@@ -20,7 +20,7 @@ import (
 // The name check compared with the walk is the one the classifier runs on a
 // relational document, validateRelationalNames (ClassifyDTQL calls it). A
 // document the two answer differently is listed with the named difference that
-// says why; there are two, and every other document gets the same answer from
+// says why; there are four, and every other document gets the same answer from
 // both.
 
 // The differences between the walk and the classifier's name check. A row of the
@@ -36,6 +36,19 @@ const (
 	// query and the queries around it; the walk scopes it to the whole document.
 	// The name is a validated collection name or alias either way.
 	differenceQualifierScope = "qualifier scope: the classifier scopes a qualifier to its own query and the queries around it, the walk to the whole document"
+	// differenceOutputNames: the walk refuses a query whose columns carry one
+	// output name twice (an alias, else the field name), because a row is keyed by
+	// that name and the later column would replace the earlier one. The name check
+	// of the classifier does not compare the output names of a query's columns, so
+	// the document classifies and does not run.
+	differenceOutputNames = "output names: the walk refuses a query that selects one output name twice, the classifier's name check does not compare them"
+	// differenceParameters: the walk refuses a parameter, wherever it sits: a
+	// parameter is bound before a document runs (a JSON body binds its parameters,
+	// a YAML body binds none) and DALgo's join evaluates none, so one that reaches
+	// the executor was never bound. The classifier takes a parameter of a valid name
+	// as an operand, as the single-collection profile does, so the document
+	// classifies and does not run.
+	differenceParameters = "parameters: the walk refuses a parameter nothing bound, the classifier takes one of a valid name as an operand"
 )
 
 // driftRegistry is never asked: the authorise function below denies everything.
@@ -135,7 +148,9 @@ func (c *driftCollector) expression(expression dal.Expression) {
 // function that denies every source: a document the walk accepts reaches
 // authorisation and is denied there, and one it refuses never does. An
 // ErrInvalidDocument that says the profile does not match the query is not a
-// refusal by the walk, it is a defect of this helper, and fails the test.
+// refusal by the walk, it is a defect of this helper, and fails the test: it is
+// told apart by joinexec.ErrProfileMismatch, which Execute returns beside
+// ErrInvalidDocument.
 func driftWalkAccepts(t *testing.T, query dal.StructuredQuery) bool {
 	t.Helper()
 	deny := func(string, string) bool { return false }
@@ -144,10 +159,9 @@ func driftWalkAccepts(t *testing.T, query dal.StructuredQuery) bool {
 	switch {
 	case errors.As(err, &denied):
 		return true
+	case errors.Is(err, joinexec.ErrProfileMismatch):
+		t.Fatalf("the profile the test built does not describe the document: %v", err)
 	case errors.Is(err, joinexec.ErrInvalidDocument):
-		if strings.Contains(err.Error(), "the profile does not match the query") {
-			t.Fatalf("the profile the test built does not describe the document: %v", err)
-		}
 		return false
 	}
 	t.Fatalf("Execute = %v, want a denial (the walk accepted the document) or ErrInvalidDocument", err)
@@ -167,6 +181,16 @@ func driftWith(source dal.RecordsetSource, mutate func(dal.IQueryBuilder) dal.IQ
 
 func driftColumn(source, name string) dal.Column {
 	return dal.Column{Expression: dal.NewFieldRef(source, name)}
+}
+
+// driftOperator is a column that applies op to two fields.
+func driftOperator(op dal.ArithmeticOperator) dal.Column {
+	return dal.Column{Expression: dal.Binary(dal.NewFieldRef("", "x"), op, dal.NewFieldRef("", "y")), Alias: "r"}
+}
+
+// driftAggregate is a column that applies the aggregate called name to a field.
+func driftAggregate(name string) dal.Column {
+	return dal.Column{Expression: dal.NewAggregate(name, false, dal.NewFieldRef("", "x")), Alias: "r"}
 }
 
 func TestJoinexecWalkAndCoreAgreeOnNames(t *testing.T) {
@@ -270,8 +294,19 @@ func TestJoinexecWalkAndCoreAgreeOnNames(t *testing.T) {
 			differenceQualifierScope,
 		},
 
+		// Output names: the walk refuses a repeated one in any query of the document,
+		// and a name that repeats across queries or sits beside a wildcard is fine.
+		{"two fields of one name", driftWith(root("a", ""), nil, driftColumn("a", "id"), driftColumn("b", "id")), true, false, differenceOutputNames},
+		{"two aliases of one name", driftWith(root("a", ""), nil, dal.Column{Expression: dal.NewFieldRef("", "x"), Alias: "r"}, dal.Column{Expression: dal.NewFieldRef("", "y"), Alias: "r"}), true, false, differenceOutputNames},
+		{"an alias equal to the field name of another column", driftWith(root("a", ""), nil, driftColumn("", "id"), dal.Column{Expression: dal.NewFieldRef("", "x"), Alias: "id"}), true, false, differenceOutputNames},
+		{"two columns of one name in a derived source", driftWith(derived(driftWith(root("b", ""), nil, driftColumn("", "id"), driftColumn("c", "id")), "d"), nil, driftColumn("d", "id")), true, false, differenceOutputNames},
+		{"one field under two aliases", driftWith(root("a", ""), nil, dal.Column{Expression: dal.NewFieldRef("", "x"), Alias: "r"}, dal.Column{Expression: dal.NewFieldRef("", "x"), Alias: "s"}), true, true, ""},
+		{"the same name in a query and in a derived source", driftWith(derived(driftWith(root("b", ""), nil, driftColumn("", "id")), "d"), nil, driftColumn("d", "id")), true, true, ""},
+		{"a wildcard beside a field", driftWith(root("a", ""), nil, dal.Column{Wildcard: &dal.WildcardProjection{Source: "a"}}, driftColumn("a", "id")), true, true, ""},
+
 		// Parameters.
-		{"plain parameter", driftWith(root("a", ""), where(dal.NewComparison(dal.NewFieldRef("", "id"), dal.Equal, dal.Param{Name: "city"}))), true, true, ""},
+		{"plain parameter", driftWith(root("a", ""), where(dal.NewComparison(dal.NewFieldRef("", "id"), dal.Equal, dal.Param{Name: "city"}))), true, false, differenceParameters},
+		{"parameter in a subquery", driftWith(root("a", ""), where(dal.NewExistsCondition(driftWith(root("b", ""), where(dal.NewComparison(dal.NewFieldRef("", "id"), dal.Equal, dal.Param{Name: "city"}))))), driftColumn("", "id")), true, false, differenceParameters},
 		{"parameter with a space", driftWith(root("a", ""), where(dal.NewComparison(dal.NewFieldRef("", "id"), dal.Equal, dal.Param{Name: "bad name"}))), false, false, ""},
 
 		// Collection names.
@@ -288,6 +323,28 @@ func TestJoinexecWalkAndCoreAgreeOnNames(t *testing.T) {
 		{"joined collection with a parent component", dal.From(root("a", "a")).Join(dal.NewJoinedSource(root("../b", "b"), dal.JoinInner, eq(dal.NewFieldRef("a", "id")))).NewQuery().SelectIntoRecord(nil), false, false, ""},
 		{"collection of a subquery with a control character", driftWith(root("a", ""), where(dal.NewExistsCondition(driftWith(root("b\x01", ""), nil))), driftColumn("", "id")), false, false, ""},
 
+		// Arithmetic operators and aggregate names: both refuse what DALgo would
+		// read as text, in every position, and accept the same fixed lists.
+		{"operator +", driftWith(root("a", ""), nil, driftOperator(dal.Add)), true, true, ""},
+		{"operator -", driftWith(root("a", ""), nil, driftOperator(dal.Subtract)), true, true, ""},
+		{"operator *", driftWith(root("a", ""), nil, driftOperator(dal.Multiply)), true, true, ""},
+		{"operator /", driftWith(root("a", ""), nil, driftOperator(dal.Divide)), true, true, ""},
+		{"operator %", driftWith(root("a", ""), nil, driftOperator("%")), false, false, ""},
+		{"empty operator", driftWith(root("a", ""), nil, driftOperator("")), false, false, ""},
+		{"operator that is text", driftWith(root("a", ""), nil, driftOperator("; DROP TABLE a --")), false, false, ""},
+		{"operator in WHERE", driftWith(root("a", ""), where(dal.NewComparison(dal.Binary(dal.NewFieldRef("", "id"), "%", dal.NewConstant(2)), dal.Equal, dal.NewConstant(0)))), false, false, ""},
+		{"operator in a subquery", driftWith(root("a", ""), where(dal.NewExistsCondition(driftWith(root("b", ""), nil, driftOperator("%")))), driftColumn("", "id")), false, false, ""},
+		{"aggregate COUNT", driftWith(root("a", ""), nil, driftAggregate("COUNT")), true, true, ""},
+		{"aggregate in lower case", driftWith(root("a", ""), nil, driftAggregate("sum")), true, true, ""},
+		{"aggregate in mixed case", driftWith(root("a", ""), nil, driftAggregate("aVg")), true, true, ""},
+		{"aggregate that is not in the list", driftWith(root("a", ""), nil, driftAggregate("median")), false, false, ""},
+		{"empty aggregate name", driftWith(root("a", ""), nil, driftAggregate("")), false, false, ""},
+		{"aggregate that is text", driftWith(root("a", ""), nil, driftAggregate("sum(x); DROP TABLE a --")), false, false, ""},
+		{"aggregate in WHERE", driftWith(root("a", ""), where(dal.NewComparison(dal.NewAggregate("median", false, dal.NewFieldRef("", "id")), dal.Equal, dal.NewConstant(0)))), false, false, ""},
+		{"aggregate in HAVING", driftWith(root("a", ""), func(b dal.IQueryBuilder) dal.IQueryBuilder {
+			return b.Having(dal.NewComparison(dal.NewAggregate("median", false, dal.NewFieldRef("", "id")), dal.Equal, dal.NewConstant(0)))
+		}, driftColumn("", "id")), false, false, ""},
+
 		// Shapes the relational variant of the name check accepts and the
 		// single-collection variant does not.
 		{"null test", driftWith(root("a", ""), where(dal.NewIsNullCondition(dal.NewFieldRef("", "id")))), true, true, ""},
@@ -298,7 +355,7 @@ func TestJoinexecWalkAndCoreAgreeOnNames(t *testing.T) {
 				t.Fatalf("a document the two answer differently names the difference, and only that one: classifier=%v walk=%v difference=%q", tc.classifier, tc.walk, tc.difference)
 			}
 			if tc.difference != "" {
-				if tc.difference != differenceFieldNames && tc.difference != differenceQualifierScope {
+				if tc.difference != differenceFieldNames && tc.difference != differenceQualifierScope && tc.difference != differenceOutputNames && tc.difference != differenceParameters {
 					t.Fatalf("%q is not a named difference", tc.difference)
 				}
 				seen[tc.difference] = true
@@ -312,7 +369,7 @@ func TestJoinexecWalkAndCoreAgreeOnNames(t *testing.T) {
 		})
 	}
 	// A difference no row exercises would be listed and untested.
-	for _, difference := range []string{differenceFieldNames, differenceQualifierScope} {
+	for _, difference := range []string{differenceFieldNames, differenceQualifierScope, differenceOutputNames, differenceParameters} {
 		if !seen[difference] {
 			t.Errorf("no row of the table exercises the difference %q", difference)
 		}
@@ -341,7 +398,12 @@ func TestJoinexecWalkFieldRuleIsTheStrictRuleOfCore(t *testing.T) {
 
 // The walk counts conditions and expressions nested one inside the next the way
 // the profile walk does and refuses past the same bound, so it neither refuses a
-// document the classifier accepted nor lets through one it refused. Each shape is
+// document the profile walk accepted nor lets through one it refused. This
+// compares the walk with the profile walk of this package (relationalMaxNesting,
+// 64) only. The name check that ClassifyDTQL runs after it has a tighter bound of
+// its own (maxQueryTreeDepth, 16), so the classifier refuses a document nested
+// deeper than that, which the walk of pkg/joinexec would still accept; that is
+// the classifier's alone and is listed on Execute. Each shape is
 // built at every size from one to a few levels past the bound; both must answer
 // alike at every size, and the sizes must cover both answers.
 func TestJoinexecWalkAndCoreAgreeOnTheNestingBound(t *testing.T) {
@@ -399,5 +461,139 @@ func TestJoinexecWalkAndCoreAgreeOnTheNestingBound(t *testing.T) {
 				t.Fatalf("the sizes tried must cover both answers: accepted = %v, refused = %v", accepted, refused)
 			}
 		})
+	}
+}
+
+// classifiedProfile is the profile of query as ClassifyDTQL reports it, in the
+// type Execute takes. It fails the test when the classifier refuses the document
+// or does not call it relational.
+func classifiedProfile(t *testing.T, query dal.StructuredQuery) (Profile, joinexec.Profile) {
+	t.Helper()
+	profile, err := ClassifyDTQL(query)
+	if err != nil {
+		t.Fatalf("ClassifyDTQL: %v", err)
+	}
+	if profile.Kind != ProfileRelational {
+		t.Fatalf("profile kind = %q, want %q", profile.Kind, ProfileRelational)
+	}
+	converted := joinexec.Profile{HasSubquery: profile.HasSubquery}
+	for _, source := range profile.Sources {
+		converted.Sources = append(converted.Sources, joinexec.ProfileSource{Database: source.Database, Collection: source.Collection})
+	}
+	return profile, converted
+}
+
+// Execute is only as safe as the agreement between the profile the classifier
+// builds and the sources its own walk finds: a document whose profile the walk
+// refuses as a mismatch would answer ErrInvalidDocument for every request of
+// that shape, and one whose profile says less than the document reads would be
+// authorised for less than it reads. The tests of pkg/joinexec derive their
+// profile from the walk and the table above derives it from the document, so
+// none of them hands over the profile ClassifyDTQL makes. This one does, for
+// the shapes a relational document takes, under an authoriser that denies every
+// read: the walk accepts the document and finds the first source denied, which
+// means the profile described it.
+func TestExecuteAcceptsTheProfileOfTheClassifierForEveryRelationalShape(t *testing.T) {
+	root := func(name, alias string) dal.CollectionRef { return dal.NewRootCollectionRef(name, alias) }
+	where := func(c dal.Condition) func(dal.IQueryBuilder) dal.IQueryBuilder {
+		return func(b dal.IQueryBuilder) dal.IQueryBuilder { return b.Where(c) }
+	}
+	id := func(source string) dal.Expression { return dal.NewFieldRef(source, "id") }
+	eq := func(left, right dal.Expression) dal.Condition { return dal.NewComparison(left, dal.Equal, right) }
+	inner := func(name string) dal.StructuredQuery { return driftWith(root(name, ""), nil, driftColumn("", "id")) }
+	join := func(a, b dal.CollectionRef) dal.FromSource {
+		return dal.From(a).Join(dal.NewJoinedSource(b, dal.JoinInner, eq(id(a.Alias()), id(b.Alias()))))
+	}
+	for _, tc := range []struct {
+		name  string
+		query dal.StructuredQuery
+		// subquery is whether the profile must report a subquery.
+		subquery bool
+		// sources is how many collection reads the profile must list.
+		sources int
+	}{
+		{"alias on one source", driftWith(root("a", "x"), nil, driftColumn("x", "id")), false, 1},
+		{"database on one source", driftWith(dal.NewDatabaseCollectionRef("hr", "", "a", ""), nil, driftColumn("", "id")), false, 1},
+		{"aggregation over one source", driftWith(root("a", ""), func(b dal.IQueryBuilder) dal.IQueryBuilder { return b.GroupBy(dal.NewFieldRef("", "k")) }, driftColumn("", "k"), dal.Column{Expression: dal.NewAggregate("count", false, dal.Star()), Alias: "n"}), false, 1},
+		{"null test", driftWith(root("a", ""), where(dal.NewIsNullCondition(id(""))), driftColumn("", "id")), false, 1},
+		{"flat join", join(root("a", "a"), root("b", "b")).NewQuery().SelectIntoRecord(nil), false, 2},
+		{"left join across two databases", dal.From(dal.NewDatabaseCollectionRef("one", "", "a", "a")).Join(dal.NewJoinedSource(dal.NewDatabaseCollectionRef("two", "", "b", "b"), dal.JoinLeft, eq(id("a"), id("b")))).NewQuery().SelectIntoRecord(nil), false, 2},
+		{"nested join", dal.From(root("a", "a")).Join(dal.NewNestedJoinedSource(join(root("b", "b"), root("c", "c")), dal.JoinInner, eq(id("a"), id("b")))).NewQuery().SelectIntoRecord(nil), false, 3},
+		{"the same collection twice", join(root("a", "x"), root("a", "y")).NewQuery().SelectIntoRecord(nil), false, 2},
+		{"derived source", dal.From(dal.NewQuerySource(inner("b"), "d")).NewQuery().SelectIntoRecord(nil), true, 1},
+		{"derived source joined to a collection", dal.From(root("a", "a")).Join(dal.NewJoinedSource(dal.NewQuerySource(inner("b"), "d"), dal.JoinInner, eq(id("a"), id("d")))).NewQuery().SelectIntoRecord(nil), true, 2},
+		{"EXISTS in WHERE", driftWith(root("a", ""), where(dal.NewExistsCondition(inner("b"))), driftColumn("", "id")), true, 2},
+		{"NOT EXISTS in WHERE", driftWith(root("a", ""), where(dal.NewNotExistsCondition(inner("b"))), driftColumn("", "id")), true, 2},
+		{"scalar subquery in a column", driftWith(root("a", ""), nil, dal.Column{Expression: dal.NewQueryExpression(inner("b"), "total")}), true, 2},
+		{"query-valued comparison operand", driftWith(root("a", ""), where(eq(id(""), dal.NewQueryExpression(inner("b"), ""))), driftColumn("", "id")), true, 2},
+		{"subquery in HAVING", driftWith(root("a", ""), func(b dal.IQueryBuilder) dal.IQueryBuilder { return b.Having(dal.NewExistsCondition(inner("b"))) }, driftColumn("", "id")), true, 2},
+		{"subquery in ORDER BY", driftWith(root("a", ""), func(b dal.IQueryBuilder) dal.IQueryBuilder {
+			return b.OrderBy(dal.Ascending(dal.NewQueryExpression(inner("b"), "")))
+		}, driftColumn("", "id")), true, 2},
+		{"subquery in an ON condition", dal.From(root("a", "a")).Join(dal.NewJoinedSource(root("b", "b"), dal.JoinInner, dal.NewExistsCondition(inner("c")))).NewQuery().SelectIntoRecord(nil), true, 3},
+		{"subquery in a subquery", driftWith(root("a", ""), where(dal.NewExistsCondition(driftWith(root("b", ""), where(dal.NewExistsCondition(inner("c"))), driftColumn("", "id")))), driftColumn("", "id")), true, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			profile, converted := classifiedProfile(t, tc.query)
+			if profile.HasSubquery != tc.subquery || len(profile.Sources) != tc.sources {
+				t.Fatalf("the classifier reports subquery=%v and %d sources, the table says %v and %d", profile.HasSubquery, len(profile.Sources), tc.subquery, tc.sources)
+			}
+			deny := func(string, string) bool { return false }
+			_, err := joinexec.Execute(context.Background(), tc.query, converted, "db", driftRegistry{}, deny, joinexec.Limits{})
+			var denied *joinexec.SourceDeniedError
+			if !errors.As(err, &denied) {
+				t.Fatalf("Execute = %v, want the first source denied: the walk must accept the document and the profile of the classifier", err)
+			}
+		})
+	}
+}
+
+// The walk allows 16 levels of subquery and join nesting together (maxWalkDepth
+// in pkg/joinexec) and the classifier admits five query levels (the outermost
+// and relationalMaxSubqueryDepth below it) and relationalMaxSources collection
+// reads in all. The deepest document it accepts puts every one of those sources
+// in one chain of nested joins inside the innermost subquery, which is the
+// document built here from the two constants. The walk must accept it, so that
+// raising either constant past what the walk allows fails this test instead of
+// turning accepted documents into ErrInvalidDocument.
+func TestJoinexecWalkAcceptsTheDeepestDocumentTheClassifierAccepts(t *testing.T) {
+	id := func(source string) dal.Expression { return dal.NewFieldRef(source, "id") }
+	alias := func(i int) string { return "s" + string(rune('a'+i)) }
+	// The innermost query reads relationalMaxSources collections in one chain: each
+	// join's relation tree is the next collection and its own join.
+	chain := func(i int) dal.FromSource {
+		var build func(i int) dal.FromSource
+		build = func(i int) dal.FromSource {
+			from := dal.From(dal.NewRootCollectionRef("t", alias(i)))
+			if i+1 < relationalMaxSources {
+				from.Join(dal.NewNestedJoinedSource(build(i+1), dal.JoinInner, dal.NewComparison(id(alias(i)), dal.Equal, id(alias(i+1)))))
+			}
+			return from
+		}
+		return build(i)
+	}
+	query := dal.StructuredQuery(chain(0).NewQuery().SelectIntoRecord(nil))
+	for level := 0; level < relationalMaxSubqueryDepth; level++ {
+		query = dal.From(dal.NewQuerySource(query, "d"+string(rune('a'+level)))).NewQuery().SelectIntoRecord(nil)
+	}
+	profile, converted := classifiedProfile(t, query)
+	if len(profile.Sources) != relationalMaxSources || !profile.HasSubquery {
+		t.Fatalf("the document the test built has %d sources (want %d) and subquery=%v: it is not the deepest document the classifier accepts", len(profile.Sources), relationalMaxSources, profile.HasSubquery)
+	}
+	deny := func(string, string) bool { return false }
+	_, err := joinexec.Execute(context.Background(), query, converted, "db", driftRegistry{}, deny, joinexec.Limits{})
+	var denied *joinexec.SourceDeniedError
+	if !errors.As(err, &denied) {
+		t.Fatalf("Execute = %v: the walk refused the deepest document the classifier accepts", err)
+	}
+	// One more level of either kind is refused by the classifier, which is what
+	// makes this the deepest.
+	deeper := dal.From(dal.NewQuerySource(query, "dz")).NewQuery().SelectIntoRecord(nil)
+	if _, err := ClassifyDTQL(deeper); !errors.Is(err, ErrInvalidDTQL) {
+		t.Fatalf("one more level of subquery: err = %v, want the classifier to refuse it", err)
+	}
+	wider := dal.From(dal.NewRootCollectionRef("t", "extra")).Join(dal.NewNestedJoinedSource(chain(0), dal.JoinInner, dal.NewComparison(id("extra"), dal.Equal, id(alias(0))))).NewQuery().SelectIntoRecord(nil)
+	if _, err := ClassifyDTQL(wider); !errors.Is(err, ErrInvalidDTQL) {
+		t.Fatalf("one more source: err = %v, want the classifier to refuse it", err)
 	}
 }
