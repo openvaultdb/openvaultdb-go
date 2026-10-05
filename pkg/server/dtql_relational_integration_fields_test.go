@@ -224,8 +224,11 @@ func TestANestedPathOfAnObjectFieldIsReadOnAStrictMount(t *testing.T) {
 }
 
 // A name that a column of the select list carries is a field of a source everywhere
-// but in HAVING and ORDER BY of an aggregating query: in WHERE the name still has to be
-// told apart, whichever source it belongs to, and is refused when a mount cannot say.
+// but in HAVING and ORDER BY of an aggregating query (and in the ORDER BY of a query that
+// does not aggregate, where it is replaced by the field its column selects: see
+// TestOrderByTheAliasOfAFieldOfAMountWithNoFieldListIsSortedByThatField): in WHERE the name
+// still has to be told apart, whichever source it belongs to, and is refused when a mount
+// cannot say.
 func TestAnAliasOfTheSelectListDoesNotHideAnUnqualifiedFieldOutsideAnAggregate(t *testing.T) {
 	base := relIntScopeServer(t)
 	const join = "from: {database: shop, name: Orders, alias: o, joins: [{type: inner, from: {database: notes, name: Note, alias: n}, " +
@@ -234,8 +237,6 @@ func TestAnAliasOfTheSelectListDoesNotHideAnUnqualifiedFieldOutsideAnAggregate(t
 		"WHERE": join + "where:\n  and:\n    - {op: '==', left: {field: person_id}, right: {value: p1}}\n" +
 			"    - exists: {query: {from: {database: shop, name: Orders, alias: x}}}\n" +
 			"columns: [{field: mood, source: n, as: person_id}]\n",
-		"ORDER BY of a query that does not aggregate": join + "where: {exists: {query: {from: {database: shop, name: Orders, alias: x}}}}\n" +
-			"orderBy: [{field: person_id}]\ncolumns: [{field: mood, source: n, as: person_id}]\n",
 		"an operand of a column": join + "where: {exists: {query: {from: {database: shop, name: Orders, alias: x}}}}\n" +
 			"columns: [{field: mood, source: n, as: person_id}, {binary: {op: '+', left: {field: person_id}, right: {value: 1}}, as: other}]\n",
 	} {
@@ -374,39 +375,40 @@ func TestAnAliasWhoseExpressionNamesAnotherColumnIsRefusedInsteadOfBeingReadAsIt
 	})
 }
 
-// ORDER BY the alias of a column of a query that does not aggregate is a field of a source
-// to DALgo. One SQLite database runs the whole document and sorts by the column; a source
-// that supplies its fields and is read in memory refuses the name as unavailable (it was
-// answered unsorted, with no error, before the field lists were supplied). The two are
-// pinned here so that the sentence about the difference in the documentation stays as true
-// as the code. The document of one source that names its database, which the server hands
-// whole to the mount's executor, is not pinned: that executor ignores a field it does not
-// know, and is a defect of its own.
-func TestOrderByTheAliasOfAColumnOfAQueryThatDoesNotAggregateIsSortedByTheDatabaseAndRefusedInMemory(t *testing.T) {
+// ORDER BY the alias of a column of a query that does not aggregate is sorted by the field
+// the column selects, as one SQLite database sorts it when it runs the whole document: on
+// the database route, and in memory on a source that supplies its fields (it was refused as
+// an unavailable field on the per-database endpoint, and answered in the order the records
+// were read on /v1/dtql, before the name was replaced by the field).
+func TestOrderByTheAliasOfAColumnOfAQueryThatDoesNotAggregateIsSortedByTheFieldItSelects(t *testing.T) {
 	base := relIntFieldsServer(t)
 	doc := "from: {name: Customer, alias: c}\norderBy: [{field: name, desc: true}]\ncolumns: [{field: FirstName, source: c, as: name}]\n"
 	for _, tc := range []struct {
 		name, path, database string
-		sqlite               bool
+		route                string
 	}{
-		{"sqlite, per-database endpoint", "/v1/databases/litedb/dtql", "", true},
-		{"sqlite, /v1/dtql", "/v1/dtql", "litedb", true},
-		{"ingitdb, per-database endpoint", "/v1/databases/gitdb/dtql", "", false},
+		{"sqlite, per-database endpoint", "/v1/databases/litedb/dtql", "", "database"},
+		{"sqlite, /v1/dtql", "/v1/dtql", "litedb", "database"},
+		{"ingitdb, per-database endpoint", "/v1/databases/gitdb/dtql", "", "in-memory"},
+		{"ingitdb, /v1/dtql", "/v1/dtql", "gitdb", "in-memory"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := relHTTPPost(t, base, tc.path, "", string(relIntRewrite(t, []byte(doc), tc.database)))
-			if tc.sqlite {
-				relIntRowsAre(t, resp, []map[string]any{{"name": "Cy"}, {"name": "Bea"}, {"name": "Ada"}})
-				if got := resp.execution(t)["route"]; got != "database" {
-					t.Fatalf("route = %v, want the database route", got)
-				}
-				return
-			}
-			message := resp.errorField("message")
-			if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || !strings.Contains(message, "orderBy[0]") ||
-				!strings.Contains(message, `"name"`) || resp.body["records"] != nil {
-				t.Fatalf("status %d, want a 400 invalid_dtql that refuses the name at orderBy[0]: %s", resp.status, resp.raw)
+			relIntRowsAre(t, resp, []map[string]any{{"name": "Cy"}, {"name": "Bea"}, {"name": "Ada"}})
+			if got := resp.execution(t)["route"]; got != tc.route {
+				t.Fatalf("route = %v, want %s", got, tc.route)
 			}
 		})
 	}
+}
+
+// A mount that supplies no field list is sorted by the field the alias selects as well: the
+// document used to be refused for an unqualified field that no list could place.
+func TestOrderByTheAliasOfAFieldOfAMountWithNoFieldListIsSortedByThatField(t *testing.T) {
+	base := relIntScopeServer(t)
+	const join = "from: {database: shop, name: Orders, alias: o, joins: [{type: inner, from: {database: notes, name: Note, alias: n}, " +
+		"on: [{left: {field: person_id, source: o}, op: '==', right: {field: person_id, source: n}}]}]}\n"
+	resp := relHTTPPost(t, base, "/v1/dtql", "", join+"where: {exists: {query: {from: {database: shop, name: Orders, alias: x}}}}\n"+
+		"orderBy: [{field: person_id}]\ncolumns: [{field: mood, source: n, as: person_id}]\n")
+	relIntRowsAre(t, resp, []map[string]any{{"person_id": "busy"}, {"person_id": "calm"}})
 }

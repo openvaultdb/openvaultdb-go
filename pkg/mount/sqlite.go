@@ -8,17 +8,51 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/dalgo2sql"
 	"github.com/dal-go/dalgo2sqlite"
-	_ "modernc.org/sqlite" // registers the "sqlite" driver the second handle is opened with
+	sqlite "modernc.org/sqlite" // also registers the "sqlite" driver the second handle is opened with
+	sqlite3 "modernc.org/sqlite/lib"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 	"github.com/openvaultdb/openvaultdb-go/pkg/manifest"
 	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 )
+
+// busyTimeout is how long a handle of a SQLite mount waits for a lock that another
+// connection holds before it gives up with SQLITE_BUSY. SQLite allows one writer, and
+// readers keep a writer from committing, so a handle that does not wait fails a write that
+// meets a read at once; one that waits lets the write through when the read ends. It is a
+// variable so that a test can shorten it.
+//
+// The wait is the engine's, and the engine cannot end it early: the context of a request
+// is seen between the steps of a statement and not inside the wait, so a request whose
+// deadline is shorter than busyTimeout gets its answer when the wait ends, at the latest.
+// What it gets is its own deadline and not a lock error (see overDeadline).
+var busyTimeout = 5 * time.Second
+
+// overDeadline is err, reported as the end of the request when the request has ended
+// and err is the engine giving up on a lock: a wait that outlasts the deadline of the
+// request is the deadline's error (errors.Is context.DeadlineExceeded, or Canceled), with
+// the lock error kept in the chain. Any other error, and any error of a request that is
+// still running, is returned as it is.
+func overDeadline(ctx context.Context, err error) error {
+	var failure *sqlite.Error
+	if err == nil || ctx.Err() == nil || !errors.As(err, &failure) || failure.Code()&0xff != sqlite3.SQLITE_BUSY {
+		return err
+	}
+	return fmt.Errorf("%w: %w", ctx.Err(), err)
+}
+
+// busyTimeoutDSN is the name the driver opens the file at path with, carrying the
+// busy timeout by the driver's own option (_busy_timeout, a number of milliseconds, applied
+// to every connection of the handle).
+func busyTimeoutDSN(path string) string {
+	return fmt.Sprintf("%s?_busy_timeout=%d", path, busyTimeout.Milliseconds())
+}
 
 // openSQLite opens a file-backed SQLite database through the dal-go
 // dalgo2sqlite driver (pure-Go modernc build). Strict mode only in MVP — an
@@ -54,12 +88,15 @@ func openSQLite(path string, m *manifest.Manifest) (dal.DB, []schema.Mode, error
 			}
 		}
 	}
-	db, err := dalgo2sqlite.NewDatabaseWithOptions(path, dal.NewSchema(nil, nil),
+	// Both handles wait for a lock: the one the driver reads and writes with, and the one
+	// that reads the columns of a table.
+	dsn := busyTimeoutDSN(path)
+	db, err := newSQLiteDatabase(dsn, dal.NewSchema(nil, nil),
 		dalgo2sql.DbOptions{Recordsets: recordsets, StructuredQueryDialect: "sqlite"})
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open SQLite at %s: %w", path, err)
 	}
-	columns, err := openColumnsDB(path)
+	columns, err := openColumnsDB(dsn)
 	if err != nil {
 		_ = db.Close()
 		return nil, nil, fmt.Errorf("failed to open SQLite at %s: %w", path, err)
@@ -67,7 +104,12 @@ func openSQLite(path string, m *manifest.Manifest) (dal.DB, []schema.Mode, error
 	return &sqliteMount{Database: db, columns: columns}, []schema.Mode{schema.ModeStrict}, nil
 }
 
-// openColumnsDB opens the handle the mount reads the columns of its tables with.
+// newSQLiteDatabase opens the handle the driver reads and writes with, at the name the
+// mount gives it (see busyTimeoutDSN).
+var newSQLiteDatabase = dalgo2sqlite.NewDatabaseWithOptions
+
+// openColumnsDB opens the handle the mount reads the columns of its tables with, at the
+// name the mount gives it (see busyTimeoutDSN).
 // The driver the mount is built on keeps its own handle to itself and hides the
 // schema it reads from it, so the mount reads the columns of a table through a
 // second handle on the same file. The handle is opened without a query, so it
@@ -81,6 +123,12 @@ type sqliteMount struct {
 	// columns is the second handle on the file, which JoinFields reads the columns
 	// of a table with. Close closes it with the driver.
 	columns *sql.DB
+}
+
+// RunReadwriteTransaction is the driver's. A write that waits for a lock past the deadline
+// of its request ends with the deadline's error (see overDeadline).
+func (s *sqliteMount) RunReadwriteTransaction(ctx context.Context, f dal.RWTxWorker, options ...dal.TransactionOption) error {
+	return overDeadline(ctx, s.Database.RunReadwriteTransaction(ctx, f, options...))
 }
 
 func (s *sqliteMount) ConfigureProtectedAccess(participants ...access.MandatoryParticipant) (dal.DB, *access.EnforcementCoordinator, error) {
@@ -119,7 +167,7 @@ func (s *sqliteMount) JoinFields(ctx context.Context, source dal.RecordsetSource
 	}
 	fields, err := tableColumns(ctx, s.queryColumns, ref.Name())
 	if err != nil {
-		return nil, fmt.Errorf("cannot read the columns of table %q: %w", ref.Name(), err)
+		return nil, fmt.Errorf("cannot read the columns of table %q: %w", ref.Name(), overDeadline(ctx, err))
 	}
 	return fields, nil
 }

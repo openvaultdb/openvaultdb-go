@@ -480,40 +480,14 @@ func (s *Server) writeRelationalError(w http.ResponseWriter, r *http.Request, er
 	}
 }
 
-// joinPlanRefusals are the messages of the join_plan category that DALgo gives a
-// document it cannot run, the only ones of that category a caller can act on. Every
-// other join_plan error carries the text of a failed read (a scan, a close, a field
-// load) or of an encoding fault, or reports a bound that Execute maps to a budget
-// refusal first, so it is answered as a server fault: a logged 500 that repeats
-// nothing of the cause.
-var joinPlanRefusals = map[string]bool{
-	"wildcard expansion requires ordered schema metadata": true,
-	"generic JOIN does not support provider cursors":      true,
-	"IN or NOT IN requires an array":                      true,
-	"IS NULL requires an operand":                         true,
-}
-
-// joinPlanOperatorRefusal starts the message of a comparison operator DALgo's join
-// does not evaluate; the rest of it is the operator the document wrote.
-const joinPlanOperatorRefusal = "unsupported operator "
-
-// joinPlanTypeRefusal matches the whole message of DALgo's join when it meets an
-// expression or a condition of a type it does not evaluate (a parameter that no
-// binder replaced, for one): the text after the words is the name of a Go type,
-// never a word of the request. A message that goes on after the type, or that
-// carries the words as the cause of a failed read ("cannot scan c: unsupported
-// expression ..."), is not this refusal.
-var joinPlanTypeRefusal = regexp.MustCompile(`^unsupported (?:expression|condition) \S+$`)
-
 // isRefusedJoin reports whether err is a shape error of the document, which the
 // caller made and can change: every category of DALgo's join errors but join_plan,
-// and the join_plan refusals of the document (joinPlanRefusals, an operator the
-// join does not evaluate, a type of expression or condition it does not evaluate).
+// and the join_plan refusals of the document (joinexec.IsJoinPlanRefusal). Every other
+// join_plan error carries the text of a failed read (a scan, a close, a field load) or of
+// an encoding fault, or reports a bound that Execute maps to a budget refusal first, so it
+// is answered as a server fault: a logged 500 that repeats nothing of the cause.
 func isRefusedJoin(err *dal.JoinValidationError) bool {
-	if err.Category != "join_plan" {
-		return true
-	}
-	return joinPlanRefusals[err.Message] || strings.HasPrefix(err.Message, joinPlanOperatorRefusal) || joinPlanTypeRefusal.MatchString(err.Message)
+	return err.Category != "join_plan" || joinexec.IsJoinPlanRefusal(err.Message)
 }
 
 // leafError returns the innermost error of err's chain: the error the source

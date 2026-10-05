@@ -32,7 +32,7 @@ import (
 const docExampleOrigin = "http://localhost:8080"
 
 // docExampleCount is the number of runnable examples in docs/api.md.
-const docExampleCount = 13
+const docExampleCount = 17
 
 // docExampleSection is the heading of the section whose fenced blocks are examples.
 const docExampleSection = "### Query profile and relational documents"

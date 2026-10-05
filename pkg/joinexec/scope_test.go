@@ -207,26 +207,16 @@ func TestAnAliasOfTheSelectListIsAFieldOfASourceWhereDALgoReadsItSo(t *testing.T
 		"an operand of a column": {scJoin(func(b dal.IQueryBuilder) dal.StructuredQuery {
 			return b.SelectColumns(aliased, dal.Column{Expression: dal.Binary(out, dal.Add, one), Alias: "next"})
 		}), "columns[1].left"},
-		"ORDER BY of a query that does not aggregate": {scJoin(func(b dal.IQueryBuilder) dal.StructuredQuery {
-			return b.OrderBy(dal.Ascending(out)).SelectColumns(aliased)
-		}), "orderBy[0]"},
-		"the result name of a scalar subquery in ORDER BY of a query that does not aggregate": {scJoin(func(b dal.IQueryBuilder) dal.StructuredQuery {
-			inner := dal.From(exRef("", "C", "c")).NewQuery().SelectColumns(dal.Column{Expression: dal.NewFieldRef("c", "k")})
-			return b.OrderBy(dal.Ascending(dal.NewFieldRef("", "out"))).SelectColumns(dal.Column{Expression: dal.NewQueryExpression(inner, "out")})
-		}), "orderBy[0]"},
+		// ORDER BY of a query that does not aggregate is not a row of this table since OJ-16:
+		// the name of a column that selects a field is replaced by the field (see
+		// scope_refusals_test.go), and the name of a column that is an expression is refused
+		// whatever the sources supply.
 		"an argument of an aggregate in HAVING": {scJoin(func(b dal.IQueryBuilder) dal.StructuredQuery {
 			return b.GroupBy(qualified).Having(dal.NewComparison(dal.NewAggregate("SUM", false, out), dal.GreaterThen, one)).SelectColumns(aliased, counted)
 		}), "having.left.args[0]"},
 		"an argument of an aggregate in ORDER BY": {scJoin(func(b dal.IQueryBuilder) dal.StructuredQuery {
 			return b.GroupBy(qualified).OrderBy(dal.Ascending(dal.NewAggregate("SUM", false, out))).SelectColumns(aliased, counted)
 		}), "orderBy[0].args[0]"},
-		"ORDER BY of a nested query that does not aggregate, inside an outer one that does": {func() dal.StructuredQuery {
-			c, d := exRef("", "C", "c"), exRef("", "D", "d")
-			inner := dal.From(c).Join(dal.NewJoinedSource(d, dal.JoinInner, exKeyEquals(c, d))).NewQuery().
-				OrderBy(dal.Ascending(out)).SelectColumns(dal.Column{Expression: dal.NewFieldRef("c", "k"), Alias: "out"})
-			return dal.From(exRef("", "A", "a")).NewQuery().GroupBy(dal.NewFieldRef("a", "id")).Having(dal.NewExistsCondition(inner)).
-				SelectColumns(dal.Column{Expression: dal.NewFieldRef("a", "id"), Alias: "out"})
-		}(), "having.query.orderBy[0]"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			supplier := &scSupplier{lists: map[string][]string{"A": {"id", "x"}, "C": {"k"}}}

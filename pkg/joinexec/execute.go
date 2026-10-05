@@ -528,11 +528,17 @@ func (r *run) database(ctx context.Context, query dal.StructuredQuery, source So
 // sources in which one source has no list is refused, with a scope error, for an
 // unqualified field, because DALgo would bind it to the first source of the query.
 // So is a name that two lists carry, and so is a name that only a later source
-// carries in the GROUP BY, HAVING, ORDER BY or columns of a query that aggregates,
-// because DALgo's aggregation would read it from the first source. DALgo is then
-// given the document with the aliases of its select lists resolved in HAVING and
-// ORDER BY (resolveAliases), which its own check of the fields against the lists
-// does not know.
+// carries in the GROUP BY, HAVING, ORDER BY or columns of a query that aggregates, or in
+// an ON condition, because DALgo would read it from the first source. A column field that
+// an earlier column of a query that aggregates carries as its alias is refused (DALgo reads
+// the column), and so is the ORDER BY of a query that does not aggregate by the alias of
+// a column that is an expression, or by a name that no source whose list is supplied
+// carries (the executor of a mount that is handed the document whole ignores a field it
+// does not know). DALgo is then given the document with the aliases of its select lists
+// resolved in HAVING and ORDER BY (resolveAliases), which its own check of the fields
+// against the lists does not know, and, in a query that does not aggregate, the alias of a
+// field in ORDER BY replaced by the field, so that the answer is sorted the way a SQL
+// database that runs the whole document sorts it.
 func (r *run) inMemory(ctx context.Context, query dal.StructuredQuery, doc document, databases []string, qualified bool) ([]record.Record, error) {
 	var (
 		reader dal.RecordsReader

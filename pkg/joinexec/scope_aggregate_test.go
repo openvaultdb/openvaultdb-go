@@ -17,7 +17,8 @@ import (
 // name: a field that only another source carries is read as null there, or, when a row of
 // the first source holds a key of that name that its list does not, as that key. So in a
 // query of several sources that aggregates, an unqualified field outside WHERE and ON
-// is a field of the first source or is refused.
+// is a field of the first source or is refused. (An ON condition is held to the same rule
+// since OJ-16, and is tested with the refusals of scope_refusals_test.go.)
 
 var (
 	saID  = dal.NewFieldRef("a", "id")
@@ -119,11 +120,8 @@ func TestAnUnqualifiedFieldOfAnAggregateIsLeftAloneWhenTheFirstSourceCarriesItOr
 		"another source carries it, in WHERE, which DALgo binds to its carrier": {saOnlyB, saAggregating(func(b dal.IQueryBuilder) dal.StructuredQuery {
 			return b.Where(dal.NewComparison(scX, dal.Equal, saOne)).SelectColumns(saCount())
 		})},
-		"another source carries it, in ON, which DALgo binds to its carrier": {saOnlyB, func() dal.StructuredQuery {
-			a, b := exRef("", "A", "a"), exRef("", "B", "b")
-			return dal.From(a).Join(dal.NewJoinedSource(b, dal.JoinInner, dal.NewComparison(scX, dal.Equal, dal.NewFieldRef("a", "id")))).NewQuery().
-				GroupBy(saID).SelectColumns(saCount())
-		}()},
+		// A name only another source carries, in ON, is refused since OJ-16 on every plan, an
+		// aggregating query included: see TestAnUnqualifiedFieldInOnIsRefusedWhenOnlyAnotherSourceCarriesIt.
 		"another source carries it, in a query that does not aggregate": {saOnlyB, scJoin(func(b dal.IQueryBuilder) dal.StructuredQuery {
 			return b.OrderBy(dal.Ascending(scX)).SelectColumns(dal.Column{Expression: scX})
 		})},
