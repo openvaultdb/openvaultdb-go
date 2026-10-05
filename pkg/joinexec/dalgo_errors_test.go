@@ -285,6 +285,7 @@ var pinnedMessages = map[string][]string{
 		`fmt.Sprintf("%s at %s: %s", e.Category, e.Path, e.Message)`,
 	},
 	"aggregation_execute.go": {
+		`defaultMaxAggregationGroups = 100_000`,
 		`"dalgo aggregation: group limit %d exceeded"`,
 		`"dalgo aggregation: aggregate-state limit %d exceeded"`,
 		`"dalgo aggregation: retained aggregation byte limit %d exceeded"`,
@@ -462,7 +463,6 @@ func TestMapDalgoErrorFlattenedDerivedSourceBounds(t *testing.T) {
 		"bound text without a scan prefix": "something d: query_limit at from: fetched_rows",
 		"scan of another error":            "cannot scan d: query_limit at from: something_new",
 		"bound text not at the end":        "cannot scan d: query_limit at from: fetched_rows and more",
-		"other category inside":            "cannot scan d: join_shape at from: joined row bound exceeded",
 	} {
 		t.Run(name, func(t *testing.T) {
 			in := &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: message}
@@ -588,5 +588,108 @@ func TestDalgoSourceCloseErrorSurvivesClassify(t *testing.T) {
 	got := guard.Classify(err, RouteInMemory)
 	if se := mustSourceError(t, got); !errors.Is(got, errCloseFailed) || se.Database != "one" || se.Collection != "A" {
 		t.Fatalf("Classify = %T %v, want the source's own close error", got, got)
+	}
+}
+
+// DALgo evaluates a derived source in the base position of a query by running its inner
+// query, and flattens what that raises with %v into the message of a join_plan error. A
+// refusal of the document inside it (a field that is not there, an ambiguous field)
+// arrives as that text, not as the typed error it was, and without this a caller is
+// answered a server fault for a document it can change. The category, the path (under
+// the derived source: the path of the join_plan error, ".query", and the inner path) and
+// the message are read back from the text and the typed error is returned.
+func TestMapDalgoErrorFlattenedRefusalsInsideADerivedSourceAreRecovered(t *testing.T) {
+	type refusal struct {
+		join     bool
+		category string
+		path     string
+		message  string
+	}
+	for name, tc := range map[string]struct {
+		message string
+		want    refusal
+	}{
+		"a field no source has": {`cannot scan recent: shape at columns[0]: field "Nope" is unavailable`,
+			refusal{false, "shape", "from.query.columns[0]", `field "Nope" is unavailable`}},
+		"a field of a source that is not in its list": {`cannot scan recent: join_field at columns[0].field: field "Nope" is unavailable in "i"`,
+			refusal{true, "join_field", "from.query.columns[0].field", `field "Nope" is unavailable in "i"`}},
+		"an ambiguous field": {"cannot scan joined: scope at columns[0]: ambiguous unqualified field CustomerId",
+			refusal{false, "scope", "from.query.columns[0]", "ambiguous unqualified field CustomerId"}},
+		"a scalar subquery of many rows": {"cannot scan d: cardinality at columns[1]: scalar subquery returned more than one row",
+			refusal{false, "cardinality", "from.query.columns[1]", "scalar subquery returned more than one row"}},
+		"an unknown alias": {`cannot scan d: join_scope at where.left.source: unknown alias "z"`,
+			refusal{true, "join_scope", "from.query.where.left.source", `unknown alias "z"`}},
+		"a shape of the query": {"cannot scan d: query_shape at where: a condition is required",
+			refusal{false, "query_shape", "from.query.where", "a condition is required"}},
+		"a shape of the join": {"cannot scan d: join_shape at from.joins[0].on: on must contain at least one predicate",
+			refusal{true, "join_shape", "from.query.from.joins[0].on", "on must contain at least one predicate"}},
+		"a key type": {"cannot scan d: join_key_type at from: keys differ",
+			refusal{true, "join_key_type", "from.query.from", "keys differ"}},
+		"an error without a path": {"cannot scan d: scope: no source",
+			refusal{false, "scope", "from.query", "no source"}},
+		"a message of several lines": {"cannot scan d: shape at columns[0]: first\nsecond",
+			refusal{false, "shape", "from.query.columns[0]", "first\nsecond"}},
+		"a read of the reader": {"scan d: shape at orderBy[0]: field \"x\" is unavailable",
+			refusal{false, "shape", "from.query.orderBy[0]", `field "x" is unavailable`}},
+		"a derived source inside a derived source": {`cannot scan e: join_plan at from: cannot scan d: shape at orderBy[0]: field "x" is unavailable`,
+			refusal{false, "shape", "from.query.from.query.orderBy[0]", `field "x" is unavailable`}},
+		"three levels, the middle without a path": {"cannot scan e: join_plan: cannot scan d: join_plan at from.joins[0]: cannot scan c: scope at columns[0]: ambiguous unqualified field k",
+			refusal{false, "scope", "from.query.query.from.joins[0].query.columns[0]", "ambiguous unqualified field k"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			in := &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: tc.message}
+			for _, wrap := range []bool{false, true} {
+				var err error = in
+				if wrap {
+					err = fmt.Errorf("while reading: %w", in)
+				}
+				got := MapDalgoError(err, RouteInMemory)
+				var category, path, message string
+				var join *dal.JoinValidationError
+				var query *dal.QueryValidationError
+				switch {
+				case tc.want.join && errors.As(got, &join):
+					category, path, message = join.Category, join.Path, join.Message
+				case !tc.want.join && errors.As(got, &query):
+					category, path, message = query.Category, query.Path, query.Message
+				default:
+					t.Fatalf("wrapped %v: got %T %v, want a refusal of join kind %v", wrap, got, got, tc.want.join)
+				}
+				if category != tc.want.category || path != tc.want.path || message != tc.want.message {
+					t.Fatalf("wrapped %v: got %s at %s: %s", wrap, category, path, message)
+				}
+			}
+		})
+	}
+}
+
+func TestMapDalgoErrorLeavesTextThatIsNotAFlattenedRefusalAlone(t *testing.T) {
+	for name, message := range map[string]string{
+		"no scan prefix":                         "something d: shape at columns[0]: field is unavailable",
+		"a category that is not a refusal":       "cannot scan d: weird at columns[0]: field is unavailable",
+		"a bound that is not one DALgo reports":  "cannot scan d: query_limit at from: something_new",
+		"the failure of a read":                  "cannot scan d: disk I/O error",
+		"a failed read inside a derived source":  "cannot scan e: join_plan at from: close scan d: boom",
+		"text that is not a category at all":     "cannot scan d: Shape at columns[0]: field is unavailable",
+		"a category with nothing after it":       "cannot scan d: shape at columns[0]",
+		"a category glued to the word before it": "cannot scan d: reshape at columns[0]: field is unavailable",
+		"a unknown refusal behind a derived one": "cannot scan e: join_plan at from: cannot scan d: weird at columns[0]: boom",
+	} {
+		t.Run(name, func(t *testing.T) {
+			in := &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: message}
+			if got := MapDalgoError(in, RouteInMemory); got != error(in) {
+				t.Fatalf("got %v, want the original error", got)
+			}
+		})
+	}
+	// Only a join_plan error is read this way.
+	for _, in := range []error{
+		&dal.JoinValidationError{Category: "join_field", Path: "from", Message: "cannot scan d: shape at columns[0]: field is unavailable"},
+		&dal.QueryValidationError{Category: "shape", Path: "from", Message: "cannot scan d: shape at columns[0]: field is unavailable"},
+		errors.New("join_plan at from: cannot scan d: shape at columns[0]: field is unavailable"),
+	} {
+		if got := MapDalgoError(in, RouteInMemory); got != in {
+			t.Fatalf("got %v, want the original error %v", got, in)
+		}
 	}
 }

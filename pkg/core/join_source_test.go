@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/dal-go/dalgo/access"
@@ -270,11 +271,11 @@ func TestJoinSourceJoinFields(t *testing.T) {
 	ctx := context.Background()
 	source := dal.NewRootCollectionRef("items", "")
 
-	t.Run("driver without join fields serves none", func(t *testing.T) {
+	t.Run("driver without join fields serves the fields the manifest declares", func(t *testing.T) {
 		db, calls := joinSrcOpen(t, "sqlite", nil, joinSrcPlainDB)
 		fields, err := db.Executor().(dal.JoinFieldsProvider).JoinFields(ctx, source)
-		if fields != nil || err != nil {
-			t.Fatalf("got %v, %v; want nil, nil", fields, err)
+		if want := []string{"id", "name"}; err != nil || !reflect.DeepEqual(fields, want) {
+			t.Fatalf("got %v, %v; want %v", fields, err, want)
 		}
 		if calls.fields != 0 {
 			t.Fatalf("fields calls = %d", calls.fields)

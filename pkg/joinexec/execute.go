@@ -522,16 +522,34 @@ func (r *run) database(ctx context.Context, query dal.StructuredQuery, source So
 // runs through DALgo's recursive executor over a router that picks the leaf of
 // each source's database. A join with a null test stays with the federated
 // executor: it reads plain collections and evaluates the test above them.
+//
+// Before either reads a row, the unqualified fields of the document are checked
+// against the field lists the sources supply (checkScopes): a query of several
+// sources in which one source has no list is refused, with a scope error, for an
+// unqualified field, because DALgo would bind it to the first source of the query.
+// So is a name that two lists carry, and so is a name that only a later source
+// carries in the GROUP BY, HAVING, ORDER BY or columns of a query that aggregates,
+// because DALgo's aggregation would read it from the first source. DALgo is then
+// given the document with the aliases of its select lists resolved in HAVING and
+// ORDER BY (resolveAliases), which its own check of the fields against the lists
+// does not know.
 func (r *run) inMemory(ctx context.Context, query dal.StructuredQuery, doc document, databases []string, qualified bool) ([]record.Record, error) {
 	var (
 		reader dal.RecordsReader
 		err    error
 	)
+	router := newRouter(r, databases)
+	// Before anything is read: a field that DALgo cannot bind to a source is refused,
+	// not bound to the first one (see checkScopes).
+	if err := checkScopes(ctx, query, router.JoinFields); err != nil {
+		return nil, r.guard.Classify(err, RouteInMemory)
+	}
+	query = resolveAliases(query)
 	handedWhole := doc.hasNull && len(doc.sources) == 1
 	if qualified && !doc.hasSubquery && !handedWhole {
 		reader, err = dal.ExecuteFederatedQueryWithOptions(ctx, query, r.resolve, dal.FederatedQueryOptions{})
 	} else {
-		reader, err = dal.ExecuteRecursiveQuery(ctx, newRouter(r, databases), query)
+		reader, err = dal.ExecuteRecursiveQuery(ctx, router, query)
 	}
 	return r.collect(ctx, reader, err, RouteInMemory)
 }

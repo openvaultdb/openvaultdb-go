@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -20,17 +21,21 @@ import (
 // The journey of the server-side joins feature (spec/features/server-side-joins in
 // openvaultdb/openvaultdb), steps 1 to 7, walked over HTTP in one test with no manual
 // step: real SQLite files, a real local inGitDB directory, the mounts of
-// examples/layered-acl, the real executor. Each step names the acceptance criteria of
-// the feature it proves and asserts how the answer was reached, not only what it
-// holds: the database computes a join of 20,000 rows that the in-memory engine
-// refuses, a budget refusal carries the limit and no row, a policy-protected
-// database is not read by a relational document at all.
+// examples/layered-acl, the real executor. This test is the criterion
+// journey-over-http of the feature. Each step logs the criteria it belongs to and
+// asserts how the answer was reached, not only what it holds: the database computes a
+// join of 20,000 rows that the in-memory engine refuses, a budget refusal carries the
+// limit and no row, a policy-protected database is not read by a relational document
+// at all.
 //
-// Where this server answers differently from the criterion as the feature words it,
-// the step says so in its own comment.
+// A step does not prove every criterion it belongs to as the feature words it. Where
+// this server answers differently, or the proof is another test or a sentence of the
+// documentation, the step says so in its own comment and logs the criterion with where
+// it is proved (relIntJourneyElsewhere): a criterion that is logged as not proved here
+// is not a claim of this test.
 
-// relIntJourneyCriteria are the acceptance criteria each step proves, in the words of
-// the feature's journey table.
+// relIntJourneyCriteria are the acceptance criteria each step belongs to, in the words
+// of the feature's journey table.
 var relIntJourneyCriteria = map[int][]string{
 	1: {"discovery-advertises-query", "capabilities-per-database"},
 	2: {"single-database-join-pushdown", "relational-profile-accepted", "response-shape", "result-row-cap", "result-byte-limit", "consistency-documented", "single-source-with-database-unchanged", "parameters-and-names-cannot-change-query"},
@@ -39,6 +44,56 @@ var relIntJourneyCriteria = map[int][]string{
 	5: {"budget-exceeded-is-422-never-partial", "timeout-is-504", "budget-errors-report-limit-only", "paging-headers-refused"},
 	6: {"grant-checked-for-every-source", "policy-applied-per-leaf", "count-equals-readable-rows", "no-row-count-for-protected-source", "nested-join-authorised", "profile-refusals", "budget-errors-report-limit-only", "per-database-endpoint-refuses-foreign-source", "subquery-source-authorised", "collection-scoped-grant-checked", "hidden-field-not-reachable"},
 	7: {"identical-gets-cacheable", "capacity-gate-503", "database-route-capacity-gate"},
+}
+
+// relIntJourneyElsewhere lists, for each step, the criteria of relIntJourneyCriteria
+// that the step does not prove as the feature words them, each with where it is proved
+// or how this server answers instead. A criterion of a step that is not listed here is
+// proved by the step.
+var relIntJourneyElsewhere = map[int]map[string]string{
+	1: {
+		"discovery-advertises-query": "the discovery change of the feature, which is not part of this server yet: its document has no joins or aggregation flag, and this step asserts the flags it has (dtql, query)",
+		"capabilities-per-database":  "the discovery change of the feature, as above",
+	},
+	2: {
+		"consistency-documented":                "a sentence of docs/api.md, which no test reads",
+		"single-source-with-database-unchanged": "not as worded: a one-source document that names another database is a 400 here, as it was before the feature, where the criterion words an answer with the database ignored; a root that names the database of the endpoint is read as one that names none, and that is proved here",
+	},
+	3: {
+		"cross-database-endpoint-single-source": "not as worded: the schema, scan, cursor and money of a one-source document are a 400 invalid_dtql here, where the criterion words a 422; the paging headers are a 422, as worded",
+		"mount-lease-drains-on-unmount":         "TestUnmountingAMountWhileAQueryReadsItWaitsForTheQuery in pkg/server",
+		"consistency-documented":                "a sentence of docs/api.md, which no test reads",
+	},
+	4: {
+		"route-label-follows-routing":              "not as worded for a policy-protected database: no relational document runs on one, so its answer is a 422 authorization_unsupported and no label; the labels of unprotected mounts are proved here",
+		"engine-outside-join-set-refused":          "TestRelationalHandlerRefusesEnginesTheGuardOrTheListLeavesOut in pkg/server, with fake drivers: it needs a PostgreSQL or a Firestore mount",
+		"lone-source-outside-join-set-by-endpoint": "TestRelationalHandlerRefusesEnginesTheGuardOrTheListLeavesOut in pkg/server, as above",
+	},
+	6: {
+		"policy-applied-per-leaf":           "not as worded: a relational document is not run on a database with access policies, so no document over one returns a row; the refusal is proved here and, for every shape, by TestARelationalDocumentIsNotRunOnADatabaseWithAccessPolicies in pkg/server",
+		"count-equals-readable-rows":        "as policy-applied-per-leaf",
+		"no-row-count-for-protected-source": "as policy-applied-per-leaf",
+		"nested-join-authorised":            "as policy-applied-per-leaf",
+		"hidden-field-not-reachable":        "as policy-applied-per-leaf",
+		"profile-refusals":                  "not as worded: each refusal is a 400 invalid_dtql here, where the criterion words a 422, and a join tree five levels deep is answered; the refusal of a parent source and of a collection-group source is not a row of step 6, because no DTQL document can name either (a source has a database, a schema, a name and an alias, and no parent record or group), so no request carries one: the classifier's refusal of both is held by TestClassifyDTQLRefusesShapesDTQLCannotProduce in pkg/core",
+		"budget-errors-report-limit-only":   "step 5 of this test",
+	},
+}
+
+// relIntJourneyLog logs what step n belongs to: its criteria, and the ones of them it
+// does not prove here with where each is proved.
+func relIntJourneyLog(t *testing.T, n int) {
+	t.Helper()
+	t.Logf("criteria of this step: %s", strings.Join(relIntJourneyCriteria[n], ", "))
+	elsewhere := relIntJourneyElsewhere[n]
+	ids := make([]string, 0, len(elsewhere))
+	for id := range elsewhere {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		t.Logf("not proved by this step, %s: %s", id, elsewhere[id])
+	}
 }
 
 // relIntJourneyCountries is the countries database of the journey: the four countries
@@ -172,7 +227,7 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 	owner := func(path, doc string) relHTTPResponse { return post(path, ownerToken, doc) }
 	step := func(n int, title string, body func(t *testing.T)) {
 		t.Run(fmt.Sprintf("step %d, %s", n, title), func(t *testing.T) {
-			t.Logf("proves %s", strings.Join(relIntJourneyCriteria[n], ", "))
+			relIntJourneyLog(t, n)
 			body(t)
 		})
 	}
@@ -423,8 +478,9 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 		refused := relHTTPPost(t, small, "/v1/dtql", "", invoicesAcross)
 		detail, _ := refused.body["error"].(map[string]any)
 		budget, _ := detail["budget"].(map[string]any)
+		hint, _ := detail["hint"].(string)
 		if refused.status != http.StatusUnprocessableEntity || refused.errorField("code") != "query_budget_exceeded" || budget["name"] != "source_rows" || budget["limit"] != float64(100) ||
-			detail["hint"] == "" || refused.body["records"] != nil || refused.body["execution"] != nil {
+			hint == "" || refused.body["records"] != nil || refused.body["execution"] != nil {
 			t.Fatalf("status %d: %s", refused.status, refused.raw)
 		}
 		for _, observed := range []string{"101", "20000", "20,000"} {
@@ -522,7 +578,11 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 		// profile-refusals, on the per-database endpoint: each refused document is a 400
 		// invalid_dtql that names its reason and reads nothing; the documents the profile
 		// accepts are answered. A DTQL document has no key for a cursor, so the refusal of
-		// a cursor is the parser's, which names the key it does not know.
+		// a cursor is the parser's, which names the key it does not know. The criterion
+		// also lists a parent source and a collection-group source, which are not rows
+		// here: a DTQL source has a database, a schema, a name and an alias and no parent
+		// record or group, so no request can carry either, and the classifier's refusal of
+		// both is held by TestClassifyDTQLRefusesShapesDTQLCannotProduce in pkg/core.
 		nest := func(levels int) string {
 			doc := "from: {name: Customer}\n"
 			for i := 0; i < levels; i++ {
