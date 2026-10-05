@@ -431,7 +431,11 @@ does not change later pages. This contract does not promise a transaction
 across different mounted databases or protect against a source's own external
 writes during its one reader traversal. A capture is capped at 1,000,000 rows,
 512 MiB on disk and 60 seconds. At most two captures/snapshots are active per
-server (1 GiB maximum disk usage). A snapshot expires five minutes after
+server (1 GiB maximum disk usage). The row, byte and slot limits are the defaults of
+`server.DefaultSnapshotLimits()`; an embedder sets them with `server.WithSnapshotLimits`, whose
+three fields must all be positive (the option panics when the server is built otherwise). On a
+memory-backed file system, where the spool counts against the instance memory, set slots times
+bytes well below the memory. A snapshot expires five minutes after
 capture, on explicit close, on database unmount, or on server shutdown; stale files from a crash
 are swept on startup. Call `Server.CloseSnapshots` after stopping HTTP serving
 and draining requests. `410 snapshot_expired` means the client must restart
