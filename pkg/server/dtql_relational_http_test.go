@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/dal-go/dalgo/access"
+	"github.com/dal-go/dalgo/dal"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
@@ -764,10 +766,26 @@ columns:
 	if execution["route"] != "in-memory" {
 		t.Fatalf("a join on a protected mount must run in memory, got %v", execution)
 	}
-	for _, source := range execution["sources"].([]any) {
-		if _, hasRows := source.(map[string]any)["rows"]; hasRows {
-			t.Fatalf("a protected source reports a row count: %v", source)
+	// Each protected collection was read on its own through the policy (a read
+	// that took time and has no row count), and nothing was read as a whole.
+	sources := execution["sources"].([]any)
+	if len(sources) != 2 {
+		t.Fatalf("sources = %v, want one read per collection", sources)
+	}
+	for _, source := range sources {
+		entry := source.(map[string]any)
+		if _, hasRows := entry["rows"]; hasRows {
+			t.Fatalf("a protected source reports a row count: %v", entry)
 		}
+		if _, hasTime := entry["elapsedMs"]; !hasTime {
+			t.Fatalf("a protected source was not read through a leaf: %v", entry)
+		}
+	}
+	// The mount itself refuses a joined read transaction, which is the one way a
+	// whole joined query could be handed to its driver: it never runs the function.
+	ran := false
+	if err := crm.ReadTx(context.Background(), func(dal.QueryExecutor) error { ran = true; return nil }); !errors.Is(err, core.ErrProtectedReadTx) || ran {
+		t.Fatalf("ReadTx on a protected mount = %v (ran %v), want core.ErrProtectedReadTx and no run", err, ran)
 	}
 	// The same join as an aggregate counts only the rows the caller may read.
 	count := relHTTPPost(t, host.URL, "/v1/databases/crm/dtql", ownerToken, `from:
@@ -792,5 +810,161 @@ columns:
 	scan := relHTTPPost(t, host.URL, "/v1/databases/crm/dtql", ownerToken, "from: {name: customers, scan: {limit: 1, orderBy: [{field: id}]}}\ncolumns: [{field: id}]\n")
 	if scan.status/100 != 4 {
 		t.Fatalf("scan: status %d: %s", scan.status, scan.raw)
+	}
+}
+
+// relHTTPBig is a database with one collection of 1001 rows, one more than a
+// response holds.
+func relHTTPBig(t *testing.T) *core.Database {
+	return relHTTPMount(t, "big", "",
+		map[string][]string{"N": {"id", "k"}},
+		`CREATE TABLE "N" ("id" TEXT PRIMARY KEY, "k" TEXT)`,
+		`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 1001) INSERT INTO "N" SELECT printf('%04d', n), 'k' FROM seq`,
+	)
+}
+
+// The refusals of the classifier for a document that the single-collection
+// validator accepts are client errors that give the classifier's reason, on both
+// endpoints.
+func TestClassifierRefusalsOfADocumentTheSingleCollectionValidatorAcceptsAreClientErrors(t *testing.T) {
+	service := server.New("test", map[string]*core.Database{"chinook": relHTTPChinook(t, "")})
+	defer service.CloseSnapshots()
+	host := httptest.NewServer(service.Handler())
+	defer host.Close()
+	nested := func(levels int, name string) string {
+		doc := "from: {name: " + name + "}\n"
+		for i := 0; i < levels; i++ {
+			doc = "from: {name: " + name + "}\nwhere:\n  exists:\n    query:\n" + indentRelHTTP(doc, 6)
+		}
+		return doc
+	}
+	for _, tc := range []struct {
+		name, doc, reason string
+	}{
+		{"money", "from: {name: Customer}\nmoney: {minorUnitScale: 2, divisionScale: 2, rounding: halfEven}\n", "money"},
+		{"subqueries nested five deep", nested(5, "Customer"), "subqueries nest at most"},
+		{"a scan bound on a nested source", "from: {name: Customer}\nwhere:\n  exists:\n    query:\n      from: {name: Invoice, scan: {limit: 3, orderBy: [{field: id}]}}\n", "scan"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The premise: the validator of the single-collection path accepts the
+			// document, so before the classifier it ran (money) or failed closed at
+			// the adapter (the subquery shapes).
+			if _, _, err := core.ParseDTQL([]byte(tc.doc)); err != nil {
+				t.Fatalf("ParseDTQL refuses the document, so it is not the case under test: %v", err)
+			}
+			doc := tc.doc
+			for _, path := range []string{"/v1/databases/chinook/dtql", "/v1/dtql"} {
+				if path == "/v1/dtql" {
+					doc = strings.ReplaceAll(tc.doc, "from: {name: ", "from: {database: chinook, name: ")
+				}
+				resp := relHTTPPost(t, host.URL, path, "", doc)
+				if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || !strings.Contains(resp.errorField("message"), tc.reason) {
+					t.Fatalf("%s: status %d, want a 400 invalid_dtql naming %q: %s", path, resp.status, tc.reason, resp.raw)
+				}
+			}
+		})
+	}
+}
+
+func indentRelHTTP(text string, spaces int) string {
+	pad := strings.Repeat(" ", spaces)
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	for i, line := range lines {
+		lines[i] = pad + line
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+// What the executor reports reaches the caller with the status the handler maps
+// it to: DALgo's own shape errors on the in-memory route, a null test, the
+// strict field-name rule, a column the database does not know.
+func TestRelationalDTQLStatusesOverHTTP(t *testing.T) {
+	service := server.New("test", map[string]*core.Database{"chinook": relHTTPChinook(t, ""), "countries": relHTTPCountries(t, "")})
+	defer service.CloseSnapshots()
+	host := httptest.NewServer(service.Handler())
+	defer host.Close()
+
+	t.Run("an alias DALgo does not know is a 400 on the in-memory route", func(t *testing.T) {
+		doc := strings.Replace(relHTTPCustomerRegions, "{field: name, source: k, as: country}", "{field: name, source: nowhere, as: country}", 1)
+		resp := relHTTPPost(t, host.URL, "/v1/dtql", "", doc)
+		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" {
+			t.Fatalf("status %d: %s", resp.status, resp.raw)
+		}
+	})
+	t.Run("a null test runs and returns the rows that match", func(t *testing.T) {
+		resp := relHTTPPost(t, host.URL, "/v1/dtql", "", "from: {database: chinook, name: Customer}\nwhere: {isNotNull: {field: country}}\norderBy: [{field: id}]\ncolumns: [{field: id}]\n")
+		if resp.status != http.StatusOK || len(resp.rows(t)) != 3 {
+			t.Fatalf("status %d: %s", resp.status, resp.raw)
+		}
+		none := relHTTPPost(t, host.URL, "/v1/dtql", "", "from: {database: chinook, name: Customer}\nwhere: {isNull: {field: country}}\ncolumns: [{field: id}]\n")
+		if none.status != http.StatusOK || len(none.rows(t)) != 0 {
+			t.Fatalf("status %d: %s", none.status, none.raw)
+		}
+	})
+	t.Run("a field name that only the wider quoted-name rule accepts is refused", func(t *testing.T) {
+		// The walk of the executor holds the strict rule, whatever the engine: a
+		// column named with a space is a plain query on the single-collection path and
+		// a 400 on a relational document.
+		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", "from: {database: chinook, name: Customer}\ncolumns: [{field: 'first name'}]\n")
+		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || !strings.Contains(resp.errorField("message"), "field name") {
+			t.Fatalf("status %d: %s", resp.status, resp.raw)
+		}
+	})
+	t.Run("a column the database does not know is a 400 that names it", func(t *testing.T) {
+		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", "from: {database: chinook, name: Customer}\ncolumns: [{field: nosuchcolumn}]\n")
+		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || !strings.Contains(resp.errorField("message"), "nosuchcolumn") {
+			t.Fatalf("status %d: %s", resp.status, resp.raw)
+		}
+	})
+}
+
+// A query that runs out of its budget is a 422 that names the bound and the
+// limit and returns no rows.
+func TestRelationalDTQLBudgetErrorsOverHTTP(t *testing.T) {
+	chinook, countries, big := relHTTPChinook(t, ""), relHTTPCountries(t, ""), relHTTPBig(t)
+	service := server.New("test", map[string]*core.Database{"chinook": chinook, "countries": countries, "big": big},
+		server.WithQueryLimits(server.QueryLimits{MaxSourceRows: 2}))
+	defer service.CloseSnapshots()
+	host := httptest.NewServer(service.Handler())
+	defer host.Close()
+	check := func(resp relHTTPResponse, name string, limit float64, route string) {
+		t.Helper()
+		detail, _ := resp.body["error"].(map[string]any)
+		budget, _ := detail["budget"].(map[string]any)
+		if resp.status != http.StatusUnprocessableEntity || resp.errorField("code") != "query_budget_exceeded" || budget["name"] != name || budget["limit"] != limit || budget["route"] != route {
+			t.Fatalf("status %d, want a 422 for %s: %s", resp.status, name, resp.raw)
+		}
+		if detail["hint"] == "" || resp.body["records"] != nil || resp.body["execution"] != nil {
+			t.Fatalf("a budget refusal has a hint and no rows: %s", resp.raw)
+		}
+	}
+	// Three customers read from a source limited to two rows.
+	check(relHTTPPost(t, host.URL, "/v1/dtql", "", relHTTPCustomerRegions), "source_rows", 2, "in-memory")
+	// A result of 1001 rows is refused whole, not cut to 1000.
+	check(relHTTPPost(t, host.URL, "/v1/databases/big/dtql", "", "from: {database: big, name: N}\norderBy: [{field: id}]\n"), "response_rows", 1000, "database")
+}
+
+// The request timeout is a 504 on both routes, and the server answers the next
+// request.
+func TestRelationalDTQLTimeoutIsA504OverHTTP(t *testing.T) {
+	chinook, countries := relHTTPChinook(t, ""), relHTTPCountries(t, "")
+	service := server.New("test", map[string]*core.Database{"chinook": chinook, "countries": countries},
+		server.WithQueryLimits(server.QueryLimits{Timeout: 1})) // one nanosecond: over before the first read
+	defer service.CloseSnapshots()
+	host := httptest.NewServer(service.Handler())
+	defer host.Close()
+	for name, tc := range map[string]struct{ path, doc string }{
+		"database route":  {"/v1/databases/chinook/dtql", relHTTPInvoiceJoin},
+		"in-memory route": {"/v1/dtql", relHTTPCustomerRegions},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp := relHTTPPost(t, host.URL, tc.path, "", tc.doc)
+			if resp.status != http.StatusGatewayTimeout || resp.errorField("code") != "query_timeout" {
+				t.Fatalf("status %d: %s", resp.status, resp.raw)
+			}
+		})
+	}
+	if resp := relHTTPDo(t, host.URL, http.MethodGet, "/v1/status", "", "", nil); resp.status != http.StatusOK {
+		t.Fatalf("the server does not answer after a timeout: %d", resp.status)
 	}
 }

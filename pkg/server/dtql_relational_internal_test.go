@@ -368,6 +368,22 @@ func TestRelationalHandlerAuthorisesBeforeItCallsTheExecutor(t *testing.T) {
 		})
 	}
 
+	t.Run("a refusal repeats no more than a bounded name", func(t *testing.T) {
+		long := strings.Repeat("c", 5000)
+		for name, tc := range map[string]struct{ path, doc, token string }{
+			"403 on /v1/dtql":                 {"/v1/dtql", "from: {database: beta, name: " + long + "}\n", "alpha-only"},
+			"400 for a source without a base": {"/v1/dtql", "from: {name: " + long + "}\n", "both"},
+			"400 for a foreign database":      {"/v1/databases/alpha/dtql", "from: {database: " + strings.Repeat("d", 60) + ", name: orders}\n", "both"},
+		} {
+			resp := relFakeDo(t, host, http.MethodPost, tc.path, tc.token, tc.doc, nil)
+			if resp.status/100 != 4 || len(resp.raw) > 600 {
+				t.Errorf("%s: status %d, %d bytes: %.200s", name, resp.status, len(resp.raw), resp.raw)
+			}
+		}
+		if fake.count() != 0 {
+			t.Fatal("the executor was called")
+		}
+	})
 	t.Run("a cleared request reaches the executor with the authoriser of the principal", func(t *testing.T) {
 		resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "both", relFakeAcross, nil)
 		if resp.status != 200 {
@@ -470,6 +486,37 @@ func TestRelationalHandlerLeasesEveryDatabaseUntilTheRequestEnds(t *testing.T) {
 	close(release)
 	if resp := <-done; resp.status != 200 {
 		t.Fatalf("status %d: %s", resp.status, resp.raw)
+	}
+}
+
+// Each database a document reads is leased once, in the order the document first
+// names it, and the endpoint's own database is not leased again.
+func TestLeaseRelationalDatabasesHoldsOneLeasePerDatabase(t *testing.T) {
+	service := New("test", map[string]*core.Database{"alpha": relFakeMount("alpha", "sqlite", ""), "beta": relFakeMount("beta", "sqlite", ""), "gamma": relFakeMount("gamma", "sqlite", "")})
+	t.Cleanup(service.CloseSnapshots)
+	targets := []relationalTarget{{"gamma", "a"}, {"alpha", "b"}, {"gamma", "c"}, {"beta", "d"}, {"alpha", "e"}}
+	lease := func(endpoint *core.Database, targets []relationalTarget) (leased int, order []string, status int) {
+		held := &leases{}
+		r := httptest.NewRequest("POST", "/v1/dtql", nil)
+		r = r.WithContext(context.WithValue(r.Context(), leasesKey{}, held))
+		w := httptest.NewRecorder()
+		_, order, ok := service.leaseRelationalDatabases(w, r, endpoint, targets)
+		if !ok {
+			return len(held.done), nil, w.Code
+		}
+		return len(held.done), order, http.StatusOK
+	}
+	if leased, order, _ := lease(nil, targets); leased != 3 || strings.Join(order, ",") != "gamma,alpha,beta" {
+		t.Fatalf("leased %d databases, order %v", leased, order)
+	}
+	// The per-database endpoint leased its database when it routed the request.
+	if leased, order, _ := lease(service.getDB("alpha"), []relationalTarget{{"alpha", "a"}, {"alpha", "b"}}); leased != 0 || strings.Join(order, ",") != "alpha" {
+		t.Fatalf("leased %d databases, order %v", leased, order)
+	}
+	// A database that is not mounted is a 404 and the leases already taken are released
+	// with the request.
+	if _, _, status := lease(nil, []relationalTarget{{"alpha", "a"}, {"zeta", "b"}}); status != http.StatusNotFound {
+		t.Fatalf("status %d", status)
 	}
 }
 

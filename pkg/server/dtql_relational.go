@@ -418,12 +418,12 @@ func budgetHint(name string) string {
 // clipName shortens a name from the request to maxEchoLen bytes for an error.
 func clipName(name string) string { return clipText(name, maxEchoLen) }
 
-// clipText shortens text to max bytes, on a character boundary, marking the cut.
-func clipText(text string, max int) string {
-	if len(text) <= max {
+// clipText shortens text to limit bytes, on a character boundary, marking the cut.
+func clipText(text string, limit int) string {
+	if len(text) <= limit {
 		return text
 	}
-	cut := max
+	cut := limit
 	for cut > 0 && !utf8.RuneStart(text[cut]) {
 		cut--
 	}
