@@ -46,6 +46,19 @@ type Record struct {
 	Data map[string]any
 }
 
+// ResultBufferBytes is the most bytes of JSON (of the rows and of their keys) that the
+// server buffers for the result of one structured read of one collection. It is the same
+// number as joinexec.MaxResultBytes, the bound of a relational answer; a test of the
+// server holds the two together.
+const ResultBufferBytes = 8 << 20
+
+// ErrResultTooLarge identifies a structured read whose result is larger than the buffer
+// of the server (ResultBufferBytes). It is a request the caller can change, not a fault
+// of the server: the HTTP server answers it `422 query_budget_exceeded`, with a hint that
+// says to narrow or to page the read, and does not log it as an error. It states no
+// figure: the result is not read to its end.
+var ErrResultTooLarge = errors.New("the result is larger than the response buffer of the server")
+
 // ErrInvalidQuery identifies a structurally invalid wire query (mapped to
 // HTTP 400).
 var ErrInvalidQuery = errors.New("invalid query")
@@ -371,8 +384,8 @@ func (d *Database) executeDalQueryOn(ctx context.Context, db dal.DB, query dal.S
 			return nil, err
 		}
 		bytesRead += len(encoded) + len(out.Key.String())
-		if bytesRead > 8<<20 {
-			return nil, fmt.Errorf("query result exceeds 8 MiB buffer limit")
+		if bytesRead > ResultBufferBytes {
+			return nil, ErrResultTooLarge
 		}
 		records = append(records, out)
 	}

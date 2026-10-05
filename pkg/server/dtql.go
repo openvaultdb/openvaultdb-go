@@ -102,7 +102,7 @@ func (s *Server) readDTQLDocument(w http.ResponseWriter, r *http.Request) ([]byt
 		}
 		return doc, true
 	}
-	doc, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	doc, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "failed to read body: "+err.Error())
 		return nil, false

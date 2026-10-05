@@ -457,6 +457,18 @@ type budgetDetail struct {
 	Path  string `json:"path,omitempty"`
 }
 
+// writeBudgetRefusal answers a request that reached a bound: 422 query_budget_exceeded, with
+// the bound named, its limit and never the figure the request reached, and a hint that says
+// what to change.
+func writeBudgetRefusal(w http.ResponseWriter, budget *joinexec.BudgetError, hint string) {
+	writeJSON(w, http.StatusUnprocessableEntity, relationalErrorBody{Error: relationalErrorDetail{
+		Code:    "query_budget_exceeded",
+		Message: fmt.Sprintf("the query exceeds the %s limit of a request", clipName(budget.Name)),
+		Budget:  &budgetDetail{Name: clipName(budget.Name), Limit: budget.Limit, Route: clipName(budget.Route), Path: clipName(budget.Path)},
+		Hint:    hint,
+	}})
+}
+
 // writeRelationalError answers an error of a relational request. Every refusal
 // the caller can act on has a 4xx or 503 of its own and a message that repeats no
 // more of the request than a bounded name; an error nothing here knows is the
@@ -477,12 +489,7 @@ func (s *Server) writeRelationalError(w http.ResponseWriter, r *http.Request, er
 		w.Header().Set("Retry-After", retryAfterSeconds)
 		writeError(w, http.StatusServiceUnavailable, "query_capacity", fmt.Sprintf("the server is running as many %s queries as it allows: retry shortly", clipName(capacity.Route)))
 	case errors.As(err, &budget):
-		writeJSON(w, http.StatusUnprocessableEntity, relationalErrorBody{Error: relationalErrorDetail{
-			Code:    "query_budget_exceeded",
-			Message: fmt.Sprintf("the query exceeds the %s limit of a request", clipName(budget.Name)),
-			Budget:  &budgetDetail{Name: clipName(budget.Name), Limit: budget.Limit, Route: clipName(budget.Route), Path: clipName(budget.Path)},
-			Hint:    budgetHintOn(budget.Name, budget.Route),
-		}})
+		writeBudgetRefusal(w, budget, budgetHintOn(budget.Name, budget.Route))
 	case errors.As(err, &denied):
 		writeError(w, http.StatusForbidden, "forbidden", fmt.Sprintf("token does not grant %s on collection %q of database %q",
 			auth.CapRecordsRead, clipName(denied.Collection), clipName(denied.Database)))

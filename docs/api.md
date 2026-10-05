@@ -35,6 +35,9 @@ small: just enough for DALgo-backed Sneat CRUD validation. Versioned under `/v1`
     cleared for queries: a `mysql` mount, and a `postgres` mount that opened while the preview
     switch was off (see [Structured queries on a PostgreSQL mount](#structured-queries-on-a-postgresql-mount-preview)).
     Key reads and writes keep working there
+  - `422 query_budget_exceeded` — a read of one collection whose result is larger than the 8 MiB
+    response buffer of the server (`error.budget`, `error.hint`; see [Query](#query)), and a
+    relational document that reached a bound (see [Statuses](#statuses))
   - `422 query_unsupported` — the adapter of the storage engine reports that it cannot run the
     query (a condition, an aggregation or a join it cannot compile). The message is fixed and
     repeats nothing of the adapter's text
@@ -393,8 +396,15 @@ GET /v1/databases/{db}/query?q=<percent-encoded-JSON-query>
 ```
 
 The `q` value is the same JSON object accepted by `POST /query`, URL-encoded
-once. It is limited to 1 MiB. Query results remain subject to the server's 8
-MiB result buffer. For a public, unprotected mounted database, embedders can
+once. It is limited to 1 MiB, and so is the body of a `POST`, as it is for the DTQL
+endpoints: the body is read whole up to 1 MiB, and one byte more is `400 bad_request` (`failed to
+read body: ...`), the answer the DTQL endpoints give for a body over their cap. Query results remain
+subject to the server's 8 MiB result buffer: a result larger than it is `422 query_budget_exceeded`
+(`error.budget` names the bound, `response_bytes`, with its limit and the route `database`) and
+`error.hint` says to narrow the read with a filter or a smaller limit, to select fewer columns, or
+to read it in pages (the DTQL endpoint pages a complete result, see [DTQL](#dtql)). It is a request
+the client can change, so it is not logged as an error. A result of exactly the buffer is answered.
+(Before, such a read was `500 internal`, with an `ERROR` line in the log for each.) For a public, unprotected mounted database, embedders can
 set `database.cache_ttl: 24h` in that database's manifest and run the server
 with `server.WithReadOnly(true)`. Successful GET `/read`, `/query`, and `/dtql`
 responses then send `Cache-Control: public, max-age=N, s-maxage=N`, where N is
@@ -585,7 +595,8 @@ reads another collection in a subquery is relational and is described under
 [Query profile and relational documents](#query-profile-and-relational-documents); cursors and
 native queries are not supported. Limit defaults to 1000 (maximum 1000), offset
 is at most 10000, execution context deadline is 10 seconds, and result buffering is capped
-at 8 MiB. Rows are filtered before pagination; column restrictions also apply to
+at 8 MiB (a larger result is `422 query_budget_exceeded` with a hint to narrow or to page the read,
+as for `/query`, and is not logged as an error). Rows are filtered before pagination; column restrictions also apply to
 explicit projections, caller filters, and ordering. Denial returns HTTP 403 with
 `error.code: ACCESS_DENIED` and a generic message. The first slice does not expose
 policy diagnostics or implement the full DTQL blocker response contract.
@@ -731,6 +742,7 @@ server does, from the configuration it runs with:
       "maxInMemoryJoinRows": 10000,
       "maxLimit": 1000,
       "maxOffset": 10000,
+      "maxRequestBytes": 1048576,
       "maxResultBytes": 8388608,
       "maxResultRows": 1000,
       "maxSourceBytes": 67108864,
@@ -752,7 +764,8 @@ server does, from the configuration it runs with:
   false (see [Launch limits](#launch-limits)); `fieldNames` is `plain`.
 - `limits`: what one request may ask for, each value the one the server enforces. `timeoutMs`,
   `maxSourceRows` and `maxSourceBytes` are the server's configuration (`QueryLimits`);
-  `maxResultRows` and `maxResultBytes` bound the answer. `maxSources` is the most collection reads
+  `maxResultRows` and `maxResultBytes` bound the answer. `maxRequestBytes` is the most bytes of the
+  body of a `POST` to `/query` or to a DTQL endpoint (1 MiB; a body over it is `400 bad_request`). `maxSources` is the most collection reads
   one document makes, `maxSubqueryDepth` the most levels of subquery below the outermost query, and
   `maxLimit` and `maxOffset` the largest `limit` and `offset` of the outermost query. The
   remaining three bound the in-memory route: `maxInMemoryJoinRows` and `maxInMemoryJoinBytes` the most rows

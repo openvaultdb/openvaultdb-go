@@ -213,3 +213,13 @@ func TestAFailureOfTheDriverThatIsNotAConnectionIsStillA500(t *testing.T) {
 		t.Fatalf("log = %s", logs)
 	}
 }
+
+// The human page of a collection whose foreign keys cannot be read for another reason is
+// the 500 it always was, with a text that says nothing of the failure.
+func TestTheHumanPageOfAMountWhoseDriverFailsForAnotherReasonIsStillA500(t *testing.T) {
+	host, _ := unreachableServer(t, fmt.Errorf("some other failure: %s", unreachableHost))
+	resp := relFakeDo(t, host, http.MethodGet, "/ovdb/dbs/pg/collections/customers", "", "", nil)
+	if resp.status != http.StatusInternalServerError || strings.Contains(resp.raw, unreachableHost) {
+		t.Fatalf("status %d: %s", resp.status, resp.raw)
+	}
+}

@@ -8,9 +8,14 @@ import (
 	"github.com/dal-go/dalgo/access"
 	az "github.com/dal-go/dalgo/dtql/authorization"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
+	"github.com/openvaultdb/openvaultdb-go/pkg/joinexec"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 )
+
+// resultBufferHint is the hint of a read of one collection whose result is larger than the
+// buffer of the server (core.ErrResultTooLarge).
+const resultBufferHint = "The result is larger than one response holds (8 MiB). Narrow the read with a filter or a smaller limit, select fewer columns, or read it in pages: the DTQL endpoint pages a complete result with the OVDB-Page-Size header."
 
 // codeDatabaseUnavailable and messageDatabaseUnavailable are the error code and the
 // message of a request that a mount's database server could not answer because it
@@ -48,6 +53,12 @@ func writeMappedError(w http.ResponseWriter, err error) (internal bool) {
 		// whatever the failure, and one fixed message. Nothing of the connection (the
 		// host, the port, the user, the password, a driver's text) is in it.
 		writeError(w, http.StatusServiceUnavailable, codeDatabaseUnavailable, messageDatabaseUnavailable)
+	case errors.Is(err, core.ErrResultTooLarge):
+		// The result of a read of one collection is larger than the buffer of the server.
+		// It is the caller's request, so it is the answer a relational result over its
+		// bound gets (422 query_budget_exceeded, naming the bound), with a hint that says to
+		// narrow or to page the read, and it is not logged as an error.
+		writeBudgetRefusal(w, &joinexec.BudgetError{Name: joinexec.BudgetResponseBytes, Limit: core.ResultBufferBytes, Route: joinexec.RouteDatabase}, resultBufferHint)
 	case errors.Is(err, access.ErrAccessDenied):
 		// Do not reflect evaluator text: it may contain private predicate values,
 		// policy paths, or protected row facts.

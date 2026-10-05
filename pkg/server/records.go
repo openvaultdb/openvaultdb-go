@@ -1,9 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -14,7 +16,13 @@ import (
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 )
 
-const maxQueryRequestBytes = 1 << 20
+// maxRequestBodyBytes is the most bytes of a body the query endpoints read: the DTQL
+// endpoints cap a POST body at it, and so does POST /query. maxQueryRequestBytes is the
+// same bound for the q parameter of a GET.
+const (
+	maxRequestBodyBytes  = 1 << 20
+	maxQueryRequestBytes = maxRequestBodyBytes
+)
 
 // handleRead is the URL-query form of a record read. key is a complete,
 // escaped record key path (for example, "contacts/c1").
@@ -256,14 +264,18 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var q core.Query
-	if err := decodeQuery(r, &q); err != nil {
+	if err := decodeQuery(w, r, &q); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
 	s.executeQuery(w, r, db, q)
 }
 
-func decodeQuery(r *http.Request, q *core.Query) error {
+// decodeQuery reads the wire query of a request: the q parameter of a GET, or the body
+// of a POST. A body is read whole, up to maxRequestBodyBytes, as the DTQL endpoints read
+// theirs: a body over the bound is the error they answer with (400 bad_request, "failed
+// to read body"), whatever follows the query in it.
+func decodeQuery(w http.ResponseWriter, r *http.Request, q *core.Query) error {
 	var data []byte
 	if r.Method == http.MethodGet {
 		raw, ok := r.URL.Query()["q"]
@@ -275,7 +287,11 @@ func decodeQuery(r *http.Request, q *core.Query) error {
 		}
 		data = []byte(raw[0])
 	} else {
-		if err := json.NewDecoder(r.Body).Decode(q); err != nil {
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes))
+		if err != nil {
+			return fmt.Errorf("failed to read body: %w", err)
+		}
+		if err := json.NewDecoder(bytes.NewReader(body)).Decode(q); err != nil {
 			return fmt.Errorf("invalid JSON body: %w", err)
 		}
 		return nil
