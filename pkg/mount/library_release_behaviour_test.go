@@ -20,7 +20,7 @@ import (
 )
 
 // These tests hold the behaviour that came with the releases of the libraries
-// taken in the same change (dalgo v0.89.6, dalgo2sql v0.26.4, dalgo2postgres
+// taken in the same change (dalgo v0.89.6, dalgo2sql v0.26.5, dalgo2postgres
 // v0.4.1): what a mount answers where a library now refuses what it used to carry
 // out, or answers differently.
 
