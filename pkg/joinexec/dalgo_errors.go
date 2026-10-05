@@ -29,6 +29,19 @@ const (
 	dalgoJoinRows       = 10000
 	dalgoJoinBytes      = 16 << 20
 	dalgoJoinCandidates = dalgoJoinRows * 10
+	// dalgoAggregationGroups is the most groups DALgo keeps for one aggregation
+	// (defaultMaxAggregationGroups); a message that carries it states it, and the
+	// pin test checks it against the DALgo in go.mod.
+	dalgoAggregationGroups = 100_000
+)
+
+// The bounds of the in-memory route, which the server states to a client in its
+// discovery document and in the answer to a request that reaches one: the most
+// rows and bytes a join holds, and the most groups an aggregation keeps.
+const (
+	MaxInMemoryJoinRows  = dalgoJoinRows
+	MaxInMemoryJoinBytes = dalgoJoinBytes
+	MaxInMemoryGroups    = dalgoAggregationGroups
 )
 
 type dalgoBound struct {

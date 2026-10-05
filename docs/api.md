@@ -120,7 +120,7 @@ GET /v1/databases
 → 200 {"databases":[{"id":"sneat-dev","engine":"ingitdb","schemaMode":"schemaless"}, ...]}
 
 GET /v1/databases/{db}
-→ 200 {"id":"...","engine":"...","schemaMode":"...","collections":["..."],"joins":true,"aggregation":true}   // declared collections, by canonical name
+→ 200 {"id":"...","engine":"...","schemaMode":"...","collections":["..."],"capabilities":{"read":true,"query":true,"dtql":true,"write":true,"joins":true,"aggregation":true}}   // declared collections, by canonical name
 
 GET /v1/databases/{db}/inferred-schema
 → 200 inferred schema catalogue JSON (see pkg/inferred); 404 for strict databases
@@ -529,55 +529,55 @@ server does, from the configuration it runs with:
   "authEnabled": false,
   "databases": [
     {
-      "aggregation": true,
       "apiUrl": "http://localhost:8080/v1/databases/chinook",
       "capabilities": {
+        "aggregation": true,
         "dtql": true,
+        "joins": true,
         "query": true,
         "read": true,
         "write": true
       },
       "id": "chinook",
-      "joins": true,
       "url": "http://localhost:8080/ovdb/dbs/chinook"
     },
     {
-      "aggregation": true,
       "apiUrl": "http://localhost:8080/v1/databases/countries",
       "capabilities": {
+        "aggregation": true,
         "dtql": true,
+        "joins": true,
         "query": true,
         "read": true,
         "write": true
       },
       "id": "countries",
-      "joins": true,
       "url": "http://localhost:8080/ovdb/dbs/countries"
     },
     {
-      "aggregation": false,
       "apiUrl": "http://localhost:8080/v1/databases/crm",
       "capabilities": {
+        "aggregation": false,
         "dtql": true,
+        "joins": false,
         "query": true,
         "read": true,
         "write": true
       },
       "id": "crm",
-      "joins": false,
       "url": "http://localhost:8080/ovdb/dbs/crm"
     },
     {
-      "aggregation": false,
       "apiUrl": "http://localhost:8080/v1/databases/events",
       "capabilities": {
+        "aggregation": false,
         "dtql": true,
+        "joins": false,
         "query": true,
         "read": true,
         "write": true
       },
       "id": "events",
-      "joins": false,
       "url": "http://localhost:8080/ovdb/dbs/events"
     }
   ],
@@ -612,13 +612,17 @@ server does, from the configuration it runs with:
       "ingitdb"
     ],
     "limits": {
-      "concurrentDatabase": 4,
-      "concurrentInMemory": 2,
+      "maxGroups": 100000,
+      "maxInMemoryJoinBytes": 16777216,
+      "maxInMemoryJoinRows": 10000,
+      "maxLimit": 1000,
+      "maxOffset": 10000,
       "maxResultBytes": 8388608,
       "maxResultRows": 1000,
       "maxSourceBytes": 67108864,
       "maxSourceRows": 100000,
-      "queueWaitMs": 1000,
+      "maxSources": 8,
+      "maxSubqueryDepth": 4,
       "timeoutMs": 10000
     }
   },
@@ -628,35 +632,38 @@ server does, from the configuration it runs with:
 
 - `endpoint` and `format`: the endpoint that reads several databases and the document format.
 - `features`: `joins` lists the join types (`inner` and `left`); `aggregates` the aggregate
-  functions every route answers (`count`, `sum`, `avg`, `min`, `max`; see `first` and `last` under
-  [Launch limits](#launch-limits)); `crossDatabase` is true (one document may read several
-  mounted databases); `externalSources`, `windowFunctions` and `protectedDatabases` are false (see
-  [Launch limits](#launch-limits)); `fieldNames` is `plain`.
-- `limits`: the bounds of one request. `timeoutMs`, `maxSourceRows` and `maxSourceBytes` are the
-  server's configuration (`QueryLimits`); `queueWaitMs` is how long a query waits for a free slot
-  before it is refused with `503`, and `concurrentInMemory` and `concurrentDatabase` are the slots
-  of the two routes; `maxResultRows` and `maxResultBytes` bound the answer. The bounds of the
-  in-memory route are under [Launch limits](#launch-limits).
-- `joinEngines`: the storage engines whose databases may take part in a relational document,
-  after the server has dropped the engine of a GitHub-backed inGitDB mount, which no list enables.
-  The list is the operator's list, not a promise: an engine in it that is not cleared for
-  structured queries (`postgres`, `mysql`, an unknown engine) is still refused with `501`, and its
-  databases advertise `joins: false`.
+  functions of the profile (`count`, `sum`, `avg`, `min`, `max`; `first` and `last` are not in the
+  profile, see [Launch limits](#launch-limits)); `crossDatabase` is true (one document may read
+  several mounted databases); `externalSources`, `windowFunctions` and `protectedDatabases` are
+  false (see [Launch limits](#launch-limits)); `fieldNames` is `plain`.
+- `limits`: what one request may ask for, each value the one the server enforces. `timeoutMs`,
+  `maxSourceRows` and `maxSourceBytes` are the server's configuration (`QueryLimits`);
+  `maxResultRows` and `maxResultBytes` bound the answer. `maxSources` is the most collection reads
+  one document makes, `maxSubqueryDepth` the most levels of subquery below the outermost query, and
+  `maxLimit` and `maxOffset` the largest `limit` and `offset` of the outermost query. The
+  remaining three bound the in-memory route: `maxInMemoryJoinRows` and `maxInMemoryJoinBytes` the most rows
+  and bytes a join holds, and `maxGroups` the most groups an aggregation keeps. The block states
+  none of the server's capacity (the slots of the concurrency gate and the queue wait).
+- `joinEngines`: the storage engines whose databases may take part in a relational document. An
+  engine is listed when the operator's list names it, the server clears it for structured queries
+  and it is not the GitHub-backed inGitDB engine, which no list enables. A database on a listed
+  engine advertises `joins: true` unless it has access policies.
 
 Each database in the list (listed when auth is off) and the metadata of a database
 (`GET /v1/databases/{db}`, the way to read it when auth is on) carry two booleans, `joins` and
-`aggregation`. They are true when a relational document that names the database is not refused
-for the database itself: its engine is in `joinEngines` and is cleared for structured queries, it
-is not a GitHub-backed inGitDB mount, and it has no access policies. The value comes from the
-check the relational handler applies to the request, so a client that reads `joins: true` is not
-refused by the database it names.
+`aggregation`, in the `capabilities` map beside `read`, `query`, `dtql` and `write`. They are true
+when a relational document that names the database is not refused for the database itself: its
+engine is in `joinEngines`, and it has no access policies. The value comes from the check the
+relational handler applies to the request, so a client that reads `joins: true` is not refused by
+the database it names.
 
 <!-- doc-example method=GET path=/v1/databases/chinook status=200 -->
 ```json
 {
-  "aggregation": true,
   "capabilities": {
+    "aggregation": true,
     "dtql": true,
+    "joins": true,
     "query": true,
     "read": true,
     "write": true
@@ -670,14 +677,15 @@ refused by the database it names.
   },
   "engine": "sqlite",
   "id": "chinook",
-  "joins": true,
   "queryFormat": "dtql-yaml+json",
   "schemaMode": "strict"
 }
 ```
 
-The metadata of a database with access policies is `422 authorization_unsupported`, so the flags
-of such a database are read from the discovery list, where they are false.
+The metadata of a database with access policies is `422 authorization_unsupported`. With auth off
+the discovery list says `joins: false` for such a database. With auth on there is no list, and the
+`422` of the metadata route is itself the statement that the database takes no relational
+document: a relational document that names it is refused with the same code.
 
 #### Requests and answers
 
@@ -1196,23 +1204,24 @@ columns:
   declared boolean of a SQLite mount is `0` or `1` in a relational row and `true` or `false` in a
   single-collection record.
 - The profile has inner and left joins only, at most 8 sources and a subquery nesting of at most 4;
-  `limit` is at most 1000 and `offset` at most 10000 on the outermost query. Other shapes are
+  `limit` is at most 1000 and `offset` at most 10000 on the outermost query (`maxSources`,
+  `maxSubqueryDepth`, `maxLimit` and `maxOffset` of `limits`). Other shapes are
   `400 invalid_dtql` with the reason of the classifier.
 - The server joins only the databases mounted on it: `externalSources` is false. Window functions
   are not supported. A condition that the storage engine cannot run is `422 query_unsupported`.
 - Only the engines in `joinEngines` take part. A GitHub-backed inGitDB mount never does.
-- `first` and `last` pass the classifier but are not in `aggregates`: they are answered only where
-  the server evaluates the document itself (a join, or several databases), and a document over one
-  SQLite database that uses either is not answered (today a `500 internal`).
+- The profile has five aggregate functions (`count`, `sum`, `avg`, `min`, `max`), in any letter
+  case. `first` and `last` are not in the profile: a document that uses either, in any position, is
+  `400 invalid_dtql` before anything is read, and the message names the function.
 - On the in-memory route a join holds at most 10,000 rows and 16 MiB, and a grouping at most
-  100,000 groups. Beyond that the answer is `422 query_budget_exceeded`, and `error.budget` names
+  100,000 groups (`maxInMemoryJoinRows`, `maxInMemoryJoinBytes` and `maxGroups` of `limits`). Beyond that the answer is `422 query_budget_exceeded`, and `error.budget` names
   the bound.
 
 #### Statuses
 
 | Status | `error.code` | Meaning |
 | --- | --- | --- |
-| `400` | `invalid_key` | A collection name of a source outside the name rule (an empty name, a control character, a relative path component such as `..`). |
+| `400` | `invalid_key` | A collection name of a source outside the name rule (a control character, a relative path component such as `..`). |
 | `400` | `invalid_dtql` | Not a DTQL document, or outside the profile; a source without a database on `/v1/dtql`; a source of another database on the per-database endpoint; a field name outside the strict rule; a column the database does not have; a shape DALgo cannot join. The message holds the reason, clipped. |
 | `400` / `414` | `bad_request` | A malformed body or GET form; a GET URI over 8 KiB is `414`. |
 | `403` | `forbidden` | With auth on, the token does not grant `records:read` on a collection of a database the document names. |
@@ -1223,7 +1232,7 @@ columns:
 | `422` | `query_budget_exceeded` | A bound of the request was reached. `error.budget` names it (`name`, `limit`, `route`, and `path` where it applies) and `error.hint` says what to change. |
 | `422` | `query_unsupported` | The storage engine cannot run a condition of the document. |
 | `501` | `query_unsupported` | The storage engine is not cleared for structured queries (`postgres`, `mysql`, an unknown engine), whatever `joinEngines` says. |
-| `503` | `query_capacity` | No slot of the concurrency gate freed within `queueWaitMs`; `Retry-After: 1`. |
+| `503` | `query_capacity` | No slot of the concurrency gate freed within the server's queue wait; `Retry-After: 1`. |
 | `504` | `query_timeout` | The query ran longer than `timeoutMs`. |
 | `500` | `internal` | A fault of the server, logged and not described. |
 

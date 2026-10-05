@@ -35,6 +35,30 @@ const (
 	relationalMaxNesting = 64
 )
 
+// ProfileBounds are the numeric bounds of the relational profile, as the
+// classifier enforces them: discovery advertises these values and nothing else.
+type ProfileBounds struct {
+	// MaxSources is the most collection reads one document makes, subqueries
+	// included.
+	MaxSources int
+	// MaxSubqueryDepth is how many levels of subquery may sit below the outermost
+	// query.
+	MaxSubqueryDepth int
+	// MaxLimit and MaxOffset cap the outermost query only.
+	MaxLimit, MaxOffset int
+}
+
+// RelationalBounds returns the bounds the classifier applies to a relational
+// document.
+func RelationalBounds() ProfileBounds {
+	return ProfileBounds{
+		MaxSources:       relationalMaxSources,
+		MaxSubqueryDepth: relationalMaxSubqueryDepth,
+		MaxLimit:         relationalMaxLimit,
+		MaxOffset:        relationalMaxOffset,
+	}
+}
+
 // ProfileSource is one collection read a query makes. A query that reads the
 // same collection twice lists it twice, because each reference is a read.
 type ProfileSource struct {
@@ -442,6 +466,9 @@ func (w *profileWalk) expressionNode(expression dal.Expression, depth int) error
 		return nil
 	case dal.AggregateFunc:
 		w.push("aggregate")
+		if !IsAggregateFunction(value.FuncName()) {
+			return w.refuse("aggregate-function", unsupportedAggregateText(value.FuncName()))
+		}
 		for i, arg := range value.FuncArgs() {
 			w.pushIndex("args", i)
 			if err := w.expression(arg, depth); err != nil {

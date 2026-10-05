@@ -713,7 +713,7 @@ func TestParseDTQLRefusesNullTestsThatNoAdapterImplements(t *testing.T) {
 
 // TestNameWalkerChecksTheStringsThatAreNotFieldNames covers three
 // caller-supplied strings /dtql carries besides names: the operator of an
-// arithmetic expression, the name of an aggregate function, and the result name
+// arithmetic expression, the name of an aggregate function (one of the five of the profile), and the result name
 // of a scalar subquery. None is exploitable today (the SQLite compiler
 // allow-lists operators and function names, no adapter compiles a subquery),
 // but the legacy text emitter would write all three into SQL.
@@ -748,8 +748,15 @@ func TestNameWalkerChecksTheStringsThatAreNotFieldNames(t *testing.T) {
 			t.Errorf("operator %q: %v", operator, err)
 		}
 	}
-	for _, name := range []string{"COUNT", "SUM", "AVG", "MIN", "MAX", "FIRST", "LAST", "sum", "Avg", "last"} {
+	for _, name := range []string{"COUNT", "SUM", "AVG", "MIN", "MAX", "sum", "Avg", "max"} {
 		if err := validateDTQLFields(where(dal.NewAggregate(name, false, dal.Field("a"))), 0); err != nil {
+			t.Errorf("aggregate %q: %v", name, err)
+		}
+	}
+	// first and last are not in the profile: the name walk refuses them as the
+	// classifier does.
+	for _, name := range []string{"FIRST", "LAST", "first", "Last"} {
+		if err := validateDTQLFields(where(dal.NewAggregate(name, false, dal.Field("a"))), 0); !errors.Is(err, ErrInvalidDTQL) || !strings.Contains(err.Error(), strings.ToLower(name)+" is not in the relational profile") {
 			t.Errorf("aggregate %q: %v", name, err)
 		}
 	}
@@ -972,5 +979,22 @@ func TestWildcardExcludeNamesAFieldWithNoStarOrQuestionMark(t *testing.T) {
 	// A column that is not a wildcard may be named with these characters on an engine that quotes.
 	if err := validateRelationalNames(root().SelectColumns(dal.Column{Expression: dal.Field("a*b")})); err != nil {
 		t.Errorf("a column named a*b: %v", err)
+	}
+}
+
+// EngineCanQuery is the allow-list CanQuery asks: the same answer for the engine of
+// a database, and for an engine name no database holds.
+func TestEngineCanQueryIsTheAllowListOfTheGuard(t *testing.T) {
+	for engine, want := range map[string]bool{
+		"sqlite": true, "ingitdb": true, "firestore": true,
+		"postgres": false, "mysql": false, "oracle": false, "": false, EngineInGitDBGitHub: false,
+	} {
+		if got := EngineCanQuery(engine); got != want {
+			t.Errorf("EngineCanQuery(%q) = %v, want %v", engine, got, want)
+		}
+		db := &Database{Manifest: &manifest.Manifest{Storage: manifest.Storage{Engine: engine}}}
+		if db.CanQuery() != want {
+			t.Errorf("CanQuery on %q = %v, want %v", engine, db.CanQuery(), want)
+		}
 	}
 }

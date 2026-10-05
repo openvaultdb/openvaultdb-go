@@ -262,13 +262,17 @@ func (s *Server) leaseRelationalDatabases(w http.ResponseWriter, r *http.Request
 	return databases, order, true
 }
 
-// joinEngines is the operator's list of engines that may take part in a join,
-// without the engine of a GitHub-backed inGitDB mount: its reads go over the
-// network, so no list enables it.
+// joinEngines is the list of engines whose databases may take part in a relational
+// document, and the list discovery advertises: the operator's list, without an
+// engine the structured-query guard does not clear (core.EngineCanQuery, which
+// every database is held to before the list is looked at, so a database on such an
+// engine is refused with 501 whatever the list says) and without the engine of a
+// GitHub-backed inGitDB mount, whose reads go over the network, so no list
+// enables it.
 func (s *Server) joinEngines() []string {
 	engines := make([]string, 0, len(s.queryLimits.JoinEngines))
 	for _, engine := range s.queryLimits.JoinEngines {
-		if engine != core.EngineInGitDBGitHub {
+		if engine != core.EngineInGitDBGitHub && core.EngineCanQuery(engine) {
 			engines = append(engines, engine)
 		}
 	}

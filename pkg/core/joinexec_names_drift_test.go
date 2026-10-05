@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -337,6 +338,8 @@ func TestJoinexecWalkAndCoreAgreeOnNames(t *testing.T) {
 		{"aggregate COUNT", driftWith(root("a", ""), nil, driftAggregate("COUNT")), true, true, ""},
 		{"aggregate in lower case", driftWith(root("a", ""), nil, driftAggregate("sum")), true, true, ""},
 		{"aggregate in mixed case", driftWith(root("a", ""), nil, driftAggregate("aVg")), true, true, ""},
+		{"aggregate first", driftWith(root("a", ""), nil, driftAggregate("first")), false, false, ""},
+		{"aggregate LAST", driftWith(root("a", ""), nil, driftAggregate("LAST")), false, false, ""},
 		{"aggregate that is not in the list", driftWith(root("a", ""), nil, driftAggregate("median")), false, false, ""},
 		{"empty aggregate name", driftWith(root("a", ""), nil, driftAggregate("")), false, false, ""},
 		{"aggregate that is text", driftWith(root("a", ""), nil, driftAggregate("sum(x); DROP TABLE a --")), false, false, ""},
@@ -545,6 +548,34 @@ func TestExecuteAcceptsTheProfileOfTheClassifierForEveryRelationalShape(t *testi
 				t.Fatalf("Execute = %v, want the first source denied: the walk must accept the document and the profile of the classifier", err)
 			}
 		})
+	}
+}
+
+// The aggregate functions are one list: the five of AggregateFunctions, which
+// discovery advertises. The classifier's name check and the walk of pkg/joinexec
+// each hold their own copy of it (the walk cannot import this package), so the
+// two are run here over every advertised name in three letter cases, over first
+// and last, which DALgo knows and the profile leaves out, and over a name that is
+// neither. Each accepts a name exactly when AggregateFunctions lists it.
+func TestJoinexecWalkAndCoreAgreeOnTheAggregateFunctions(t *testing.T) {
+	listed := AggregateFunctions()
+	if len(listed) != 5 {
+		t.Fatalf("AggregateFunctions = %v, want the five of the profile", listed)
+	}
+	candidates := append(append([]string{}, listed...), "first", "last", "median")
+	for _, name := range candidates {
+		for label, spelling := range map[string]string{"lower": strings.ToLower(name), "upper": strings.ToUpper(name), "mixed": strings.ToUpper(name[:1]) + strings.ToLower(name[1:])} {
+			t.Run(name+" "+label, func(t *testing.T) {
+				query := driftWith(dal.NewRootCollectionRef("a", ""), nil, driftAggregate(spelling))
+				want := slices.Contains(listed, name)
+				if got := validateRelationalNames(query) == nil; got != want {
+					t.Errorf("the name check of the classifier accepts = %v, AggregateFunctions lists it = %v", got, want)
+				}
+				if got := driftWalkAccepts(t, query); got != want {
+					t.Errorf("the walk of pkg/joinexec accepts = %v, AggregateFunctions lists it = %v", got, want)
+				}
+			})
+		}
 	}
 }
 

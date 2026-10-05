@@ -409,7 +409,7 @@ func TestInspectChecksNamesInsideSubqueries(t *testing.T) {
 }
 
 // The classifier of pkg/core refuses an arithmetic operator other than + - * /
-// and an aggregate function outside its seven names, in any position, because
+// and an aggregate function outside its five names, in any position, because
 // DALgo reads any text as an operator or a name and checks it only where it runs
 // an aggregation. The walk refuses both itself, without repeating the text.
 func TestInspectRefusesAnArithmeticOperatorOutsideTheFourAndAnUnknownAggregate(t *testing.T) {
@@ -447,14 +447,20 @@ func TestInspectRefusesAnArithmeticOperatorOutsideTheFourAndAnUnknownAggregate(t
 			}
 		})
 	}
-	// The four operators and the seven names are accepted, whatever the case of a name.
+	// The four operators and the five names are accepted, whatever the case of a name.
 	for _, op := range []dal.ArithmeticOperator{dal.Add, dal.Subtract, dal.Multiply, dal.Divide} {
 		if _, err := inspect(exWithColumn(dal.Binary(field, op, field))); err != nil {
 			t.Fatalf("operator %q: %v", op, err)
 		}
 	}
-	for _, name := range []string{"COUNT", "SUM", "AVG", "MIN", "MAX", "FIRST", "LAST", "count", "Sum", "aVg", "min", "max", "first", "last"} {
+	for _, name := range []string{"COUNT", "SUM", "AVG", "MIN", "MAX", "count", "Sum", "aVg", "min", "max"} {
 		if _, err := inspect(exWithColumn(dal.NewAggregate(name, false, field))); err != nil {
+			t.Fatalf("aggregate %q: %v", name, err)
+		}
+	}
+	// first and last are not in the profile: the walk refuses them as the classifier does.
+	for _, name := range []string{"FIRST", "LAST", "first", "Last"} {
+		if _, err := inspect(exWithColumn(dal.NewAggregate(name, false, field))); !errors.Is(err, ErrInvalidDocument) || !strings.Contains(err.Error(), "aggregate function") {
 			t.Fatalf("aggregate %q: %v", name, err)
 		}
 	}

@@ -256,17 +256,7 @@ func TestEveryAdvertisedAggregateIsAnsweredOnSQLite(t *testing.T) {
 		t.Fatalf("no advertised aggregates: %v: %s", err, resp.raw)
 	}
 	for _, function := range discovery.Query.Features.Aggregates {
-		aggregate := "{aggregate: {function: " + function + ", args: [{field: total, source: i}]}, as: x}"
-		join := func(database, other string) string {
-			return "from:\n  " + database + "name: Invoice\n  alias: i\n  joins:\n    - type: left\n      from: {" + other + "name: Customer, alias: c}\n      on:\n        - {left: {field: customer_id, source: i}, op: '==', right: {field: id, source: c}}\ncolumns: [" + aggregate + "]\n"
-		}
-		documents := map[string]struct{ path, body string }{
-			"one source":       {"/v1/databases/chinook/dtql", "from: {name: Invoice, alias: i}\ncolumns: [" + aggregate + "]\n"},
-			"a join":           {"/v1/databases/chinook/dtql", join("", "")},
-			"a join over HTTP": {"/v1/dtql", join("database: chinook\n  ", "database: chinook, ")},
-			"in memory":        {"/v1/dtql", "from:\n  database: chinook\n  name: Invoice\n  alias: i\n  joins:\n    - type: left\n      from: {database: countries, name: Country, alias: k}\n      on:\n        - {left: {field: customer_id, source: i}, op: '==', right: {field: code, source: k}}\ncolumns: [" + aggregate + "]\n"},
-		}
-		for name, document := range documents {
+		for name, document := range docAggregateShapes(function) {
 			t.Run(function+" "+name, func(t *testing.T) {
 				resp := relHTTPDo(t, host.URL, http.MethodPost, document.path, "", document.body, nil)
 				if resp.status != http.StatusOK {
@@ -274,5 +264,22 @@ func TestEveryAdvertisedAggregateIsAnsweredOnSQLite(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// docAggregateShapes are the four shapes of a document that applies the aggregate
+// function to the total of an invoice, over the chinook and countries files: one
+// source, a join inside one database on each endpoint, and a join across two
+// databases.
+func docAggregateShapes(function string) map[string]struct{ path, body string } {
+	aggregate := "{aggregate: {function: " + function + ", args: [{field: total, source: i}]}, as: x}"
+	join := func(database, other string) string {
+		return "from:\n  " + database + "name: Invoice\n  alias: i\n  joins:\n    - type: left\n      from: {" + other + "name: Customer, alias: c}\n      on:\n        - {left: {field: customer_id, source: i}, op: '==', right: {field: id, source: c}}\ncolumns: [" + aggregate + "]\n"
+	}
+	return map[string]struct{ path, body string }{
+		"one source":       {"/v1/databases/chinook/dtql", "from: {name: Invoice, alias: i}\ncolumns: [" + aggregate + "]\n"},
+		"a join":           {"/v1/databases/chinook/dtql", join("", "")},
+		"a join over HTTP": {"/v1/dtql", join("database: chinook\n  ", "database: chinook, ")},
+		"in memory":        {"/v1/dtql", "from:\n  database: chinook\n  name: Invoice\n  alias: i\n  joins:\n    - type: left\n      from: {database: countries, name: Country, alias: k}\n      on:\n        - {left: {field: customer_id, source: i}, op: '==', right: {field: code, source: k}}\ncolumns: [" + aggregate + "]\n"},
 	}
 }
