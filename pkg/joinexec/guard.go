@@ -136,7 +136,8 @@ func (g *Guard) Err() error {
 // DALgo reports a leaf's error as text inside its own error (and reads an error
 // that wraps io.EOF as the end of a stream), so the recorded failure wins when
 // there is one, even for a nil err: a request that recorded a failure never
-// ends well. Otherwise DALgo's own bounds map to BudgetError (see
+// ends well. (Since dalgo v0.89.6 the diagnostic also carries the leaf's error
+// as its cause; the answer is still the recorded error, never DALgo's wrapper.) Otherwise DALgo's own bounds map to BudgetError (see
 // MapDalgoError) and any other error is returned unchanged. Call it once, after
 // the reader was drained and closed.
 func (g *Guard) Classify(err error, route string) error {

@@ -499,6 +499,16 @@ func (d *Database) Apply(ctx context.Context, ops []Op, message string) (int, er
 			case "set":
 				rec := record.NewRecordWithData(dk, op.Data)
 				rec.SetError(nil)
+				if d.setsNoColumn(op.Data) {
+					// The adapter of a SQL engine refuses a set that has no column to
+					// write. validateOps refused such a set for a record that exists, so
+					// the record is not there (the write lock is held): the write is the
+					// insert of a record that holds only its id.
+					if err = tx.Insert(ctx, rec); err != nil {
+						return fmt.Errorf("failed to set %s: %w", clipKey(op.Key), err)
+					}
+					continue
+				}
 				if err = tx.Set(ctx, rec); err != nil {
 					return fmt.Errorf("failed to set %s: %w", clipKey(op.Key), err)
 				}

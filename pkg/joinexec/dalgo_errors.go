@@ -16,11 +16,18 @@ import (
 // (aggregation). MapDalgoError turns those into BudgetError so a caller can
 // answer 422 with the name of the limit.
 //
-// The mapping is pinned to the text shared by dalgo v0.88.0 and v0.89.1 (the
-// two files were compared; only IS NULL handling differs). The tests drive the
-// real engine to the bounds that are cheap to reach and check every message
-// literal against the dalgo version in go.mod, so a dalgo bump that rewords a
-// bound fails here instead of turning a 422 into a 500.
+// The mapping is pinned to the text shared by dalgo v0.89.4 and v0.89.6 (the
+// files of dal/ were compared). What moved in v0.89.6 is not a bound: no limit
+// and no message literal below changed. A failed scan, a failed close of a scan
+// and a failed load of the fields of a source are still reported as a
+// join_plan diagnostic with the same message, and the diagnostic now carries the
+// error that failed (JoinValidationError.Unwrap), so errors.Is and errors.As
+// reach the source's own error. The mapping does not rest on that chain: a leaf
+// error is answered from the error the guard recorded (Guard.Classify), and the
+// text of a bound raised inside a derived source is still read as text. The tests
+// drive the real engine to the bounds that are cheap to reach and check every
+// message literal against the dalgo version in go.mod, so a dalgo bump that
+// rewords a bound fails here instead of turning a 422 into a 500.
 
 // DALgo's join limits (maxJoinRows, maxJoinBytes and ten candidate
 // evaluations per row), mirrored here because DALgo does not export them.
@@ -85,9 +92,10 @@ var aggregationBounds = []struct {
 }
 
 // DALgo evaluates a derived source (a subquery in FROM) by running the inner
-// query and flattening the error it gets with %v into a join_plan error whose
-// Message is "cannot scan <alias>: " (or "scan <alias>: " from a reader) plus
-// the inner error's text. A bound raised inside the derived source therefore
+// query and reporting the error it gets as a join_plan error whose Message is
+// "cannot scan <alias>: " (or "scan <alias>: " from a reader) plus the inner
+// error's text (formatted with %v; since dalgo v0.89.6 the error also carries the
+// inner error as its cause). A bound raised inside the derived source therefore
 // arrives as text. These two patterns recognise the inner text at the end of
 // such a Message, built from the same tables as the exact lookups so the two
 // cannot drift apart. The path of the inner error is captured.
@@ -168,9 +176,9 @@ func IsJoinPlanRefusal(message string) bool {
 // route the engine ran on (RouteInMemory or RouteDatabase). An error that is
 // already a *BudgetError or *SourceDeniedError is returned as is.
 //
-// DALgo reports a leaf's error as text inside its own error, which drops the
-// type; use Guard.Classify to recover a leaf's BudgetError, SourceDeniedError
-// or SourceError as well.
+// DALgo reports a leaf's error as text inside its own error (and, since dalgo
+// v0.89.6, as the cause of a join_plan diagnostic); use Guard.Classify to recover
+// a leaf's BudgetError, SourceDeniedError or SourceError as well.
 func MapDalgoError(err error, route string) error {
 	if err == nil {
 		return nil
