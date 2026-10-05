@@ -182,7 +182,11 @@ The Postgres DSN carries credentials and is read from the environment variable
 named by `storage.postgres.dsn_env` (default `OVDB_POSTGRES_DSN`) — never from
 the manifest. The manifest check accepts only a variable name there (ASCII letters,
 digits and underscores), so a connection string written in its place is refused
-without being repeated. Use `sslmode=require` (or stronger) for non-local servers; the
+without being repeated. A manifest that the YAML decoder cannot read is reported by
+the line and the kind of each mistake, by the fixed message of the YAML scanner or
+parser, or by one fixed sentence (a manifest with no document in it is reported as empty),
+and never by the text of the document. A manifest that the decoder cannot decode is
+reported in the same way, and does not stop the process. Use `sslmode=require` (or stronger) for non-local servers; the
 DSN, and thus the password, is visible to anything that can read the ovdb
 process environment. ovdb opens exactly one connection pool per mounted
 Postgres database. Record *values* travel as statement parameters. The

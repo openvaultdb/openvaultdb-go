@@ -326,13 +326,20 @@ func TestHiddenTableGetsNoLayerDetailForAPrincipalWhoMayInspectProtectedRows(t *
 // protected session before anything is assessed is answered as a table the caller
 // may not see. A session that cannot be used at all (here the request was
 // canceled before the session began) is still 503 authorization_unavailable, on
-// the inspection and on the protected PATCH.
+// the inspection, on the protected PATCH and on the evidence route, and no warning
+// is logged for it.
 func TestProtectedRouteThatFailsForAnotherReasonIsUnavailable(t *testing.T) {
-	handler := refusedTableHandler(t)
+	var logs refusedLog
+	handler := refusedTableHandler(t, server.WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
 	patchPath, patchBody := refusedPatch("customers")
+	evidencePath, evidenceBody := refusedEvidence("customers")
+	_, refusedEvidenceBody := refusedEvidence("with_default")
 	for _, route := range []struct{ name, method, path, body, content string }{
 		{"inspection", "POST", refusedEvaluate, refusedInspect(refusedGet("customers")), "application/json"},
+		{"inspection of a table the session refuses", "POST", refusedEvaluate, refusedInspect(refusedGet("with_default")), "application/json"},
 		{"PATCH", "PATCH", patchPath, patchBody, "application/vnd.dtql.operation+json"},
+		{"evidence", "POST", evidencePath, evidenceBody, "application/json"},
+		{"evidence of a table the session refuses", "POST", evidencePath, refusedEvidenceBody, "application/json"},
 	} {
 		t.Run(route.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
@@ -344,6 +351,9 @@ func TestProtectedRouteThatFailsForAnotherReasonIsUnavailable(t *testing.T) {
 			handler.ServeHTTP(rec, req)
 			if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), `"code":"authorization_unavailable"`) {
 				t.Errorf("want 503 authorization_unavailable, got %d %s", rec.Code, rec.Body.String())
+			}
+			if records := logs.records(t); len(records) != 0 {
+				t.Errorf("logged %v", records)
 			}
 		})
 	}
@@ -382,16 +392,20 @@ func (l *refusedLog) records(t *testing.T) []map[string]any {
 }
 
 // TestTableTheProtectedSessionRefusesIsLoggedOncePerRequest: the answer for a
-// declared table that the protected session cannot prepare says nothing of why, so
-// the server logs one warning for the request, with the method, the route path
-// and the names of the collections, for the inspection and for the protected
-// PATCH. A table the database does not declare, and one the session prepares, are
-// not logged.
+// declared table that the protected session refuses an operation on says nothing of
+// why, so the server logs one warning for the request, with the method, the route
+// path and the names of the collections, for the inspection, for the protected
+// PATCH and for the evidence route. A table the database does not declare, and one
+// the session prepares, are not logged.
 func TestTableTheProtectedSessionRefusesIsLoggedOncePerRequest(t *testing.T) {
 	var logs refusedLog
 	ts := refusedTableServer(t, server.WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
 	patchPath, patchBody := refusedPatch("with_default")
 	ghostPatchPath, ghostPatchBody := refusedPatch("ghost")
+	evidencePath, evidenceBody := refusedEvidence("with_default")
+	_, ghostEvidenceBody := refusedEvidence("ghost")
+	_, preparedEvidenceBody := refusedEvidence("customers")
+	_, hiddenEvidenceBody := refusedEvidence("orders")
 	for _, c := range []struct {
 		name, method, path, body, content string
 		want                              []string
@@ -400,6 +414,10 @@ func TestTableTheProtectedSessionRefusesIsLoggedOncePerRequest(t *testing.T) {
 		{"inspection of the same table twice", "POST", refusedEvaluate, refusedInspect(refusedGet("with_default"), refusedUpdate("with_default")), "application/json", []string{"with_default"}},
 		{"inspection of two tables", "POST", refusedEvaluate, refusedInspect(refusedGet("with_trigger"), refusedGet("customers"), refusedGet("with_default")), "application/json", []string{"with_default", "with_trigger"}},
 		{"PATCH", "PATCH", patchPath, patchBody, "application/vnd.dtql.operation+json", []string{"with_default"}},
+		{"evidence", "POST", evidencePath, evidenceBody, "application/json", []string{"with_default"}},
+		{"evidence of an undeclared table", "POST", evidencePath, ghostEvidenceBody, "application/json", nil},
+		{"evidence of a table the session prepares", "POST", evidencePath, preparedEvidenceBody, "application/json", nil},
+		{"evidence of a table the policy hides", "POST", evidencePath, hiddenEvidenceBody, "application/json", nil},
 		{"inspection of a table the session prepares", "POST", refusedEvaluate, refusedInspect(refusedGet("customers"), refusedGet("orders")), "application/json", nil},
 		{"inspection of an undeclared table", "POST", refusedEvaluate, refusedInspect(refusedGet("ghost")), "application/json", nil},
 		{"PATCH of an undeclared table", "PATCH", ghostPatchPath, ghostPatchBody, "application/vnd.dtql.operation+json", nil},
@@ -424,6 +442,9 @@ func TestTableTheProtectedSessionRefusesIsLoggedOncePerRequest(t *testing.T) {
 			}
 			if record["level"] != "WARN" || record["method"] != c.method || record["path"] != c.path || strings.Join(collections, ",") != strings.Join(c.want, ",") {
 				t.Errorf("logged %v, want the collections %v for %s %s", record, c.want, c.method, c.path)
+			}
+			if record["msg"] != "protected session refused an operation" {
+				t.Errorf("logged the message %v", record["msg"])
 			}
 			if message, _ := record["msg"].(string); strings.Contains(answer.body, message) {
 				t.Errorf("the response repeats the log message: %s", answer.body)

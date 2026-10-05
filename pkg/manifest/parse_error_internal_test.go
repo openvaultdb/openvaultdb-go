@@ -10,8 +10,8 @@ import (
 )
 
 // TestParseErrorDescribesEachMistakeByItsLineAndKind: the errors of the YAML
-// decoder are reported by line and kind, whatever text they quote, and any other
-// error is wrapped as it is.
+// decoder are reported by line and kind, whatever text they quote, and a scanner or
+// parser error is wrapped as it is.
 func TestParseErrorDescribesEachMistakeByItsLineAndKind(t *testing.T) {
 	typed := func(texts ...string) error { return &yaml.TypeError{Errors: texts} }
 	long := make([]string, 0, maxParseProblems+3)
@@ -40,8 +40,78 @@ func TestParseErrorDescribesEachMistakeByItsLineAndKind(t *testing.T) {
 			}
 		})
 	}
-	other := errors.New("yaml: line 3: did not find expected key")
-	if got := parseError(other); !errors.Is(got, other) || got.Error() != "failed to parse manifest YAML: "+other.Error() {
-		t.Errorf("an error that is not a type error: %v", got)
+	scanner := errors.New("yaml: line 3: did not find expected key")
+	if got := parseError(scanner); !errors.Is(got, scanner) || got.Error() != "failed to parse manifest YAML: "+scanner.Error() {
+		t.Errorf("a scanner or parser error: %v", got)
+	}
+}
+
+// TestParseErrorOfAnyOtherDecoderErrorIsOneFixedSentence: an error of the decoder
+// that is neither a type error nor a scanner or parser error (the text of which
+// is fixed and starts with the line) can hold the text of the document, so it is
+// replaced by one sentence that wraps nothing.
+func TestParseErrorOfAnyOtherDecoderErrorIsOneFixedSentence(t *testing.T) {
+	const want = "failed to parse manifest YAML: the document could not be decoded"
+	for _, c := range []struct{ name, text string }{
+		{"a value that cannot be decoded as its tag", "yaml: cannot decode !!str `secret` as a !!int"},
+		{"an unknown anchor", "yaml: unknown anchor 'secret' referenced"},
+		{"an anchor that holds itself", "yaml: anchor 'secret' value contains itself"},
+		{"a map key that cannot be hashed", "yaml: invalid map key: []interface {}{\"secret\"}"},
+		{"a text that only looks like a scanner error", "line 3: secret"},
+		{"a text that has the prefix of a scanner error without a line number", "yaml: line x: secret"},
+		{"a text that has the prefix of a scanner error in the middle", "secret yaml: line 3: secret"},
+		{"an empty text", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cause := errors.New(c.text)
+			got := parseError(cause)
+			if got.Error() != want {
+				t.Errorf("got  %q\nwant %q", got.Error(), want)
+			}
+			if errors.Is(got, cause) || errors.Unwrap(got) != nil {
+				t.Errorf("the error wraps the decoder's: %v", errors.Unwrap(got))
+			}
+			if strings.Contains(fmt.Sprintf("%+v", got), "secret") {
+				t.Errorf("the error repeats the text the decoder quoted: %+v", got)
+			}
+		})
+	}
+}
+
+// TestDecodeYAMLTurnsAPanicIntoAnError: a decode that panics is an error, and a
+// decode that does not panic gives its own result.
+func TestDecodeYAMLTurnsAPanicIntoAnError(t *testing.T) {
+	if err := decodeYAML(func() error { panic("hash of unhashable type") }); !errors.Is(err, errDecoderPanic) {
+		t.Errorf("got %v", err)
+	}
+	own := errors.New("own")
+	if err := decodeYAML(func() error { return own }); err != own {
+		t.Errorf("got %v", err)
+	}
+	if err := decodeYAML(func() error { return nil }); err != nil {
+		t.Errorf("got %v", err)
+	}
+}
+
+// TestParseReportsAFailureOfTheSecondDecode: the second decode of a manifest, into
+// nodes, gives an error or a panic for no document today. When it does, Parse
+// reports one fixed sentence that wraps nothing.
+func TestParseReportsAFailureOfTheSecondDecode(t *testing.T) {
+	const doc = "database: {id: sqlmount, schema_mode: strict}\nstorage:\n  engine: sqlite\n  path: x\n"
+	defer func(saved func([]byte, any) error) { unmarshalYAML = saved }(unmarshalYAML)
+	for _, c := range []struct {
+		name string
+		run  func([]byte, any) error
+	}{
+		{"an error that quotes the document", func([]byte, any) error { return errors.New("yaml: cannot decode !!str `secret` as a !!int") }},
+		{"a panic", func([]byte, any) error { panic("secret") }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			unmarshalYAML = c.run
+			_, err := Parse([]byte(doc))
+			if err == nil || err.Error() != "failed to parse manifest YAML: the document could not be decoded" || errors.Unwrap(err) != nil {
+				t.Errorf("got %v", err)
+			}
+		})
 	}
 }
