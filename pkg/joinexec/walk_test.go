@@ -374,6 +374,58 @@ func TestInspectChecksNamesInsideSubqueries(t *testing.T) {
 	}
 }
 
+// The classifier of pkg/core refuses an arithmetic operator other than + - * /
+// and an aggregate function outside its seven names, in any position, because
+// DALgo reads any text as an operator or a name and checks it only where it runs
+// an aggregation. The walk refuses both itself, without repeating the text.
+func TestInspectRefusesAnArithmeticOperatorOutsideTheFourAndAnUnknownAggregate(t *testing.T) {
+	field := dal.NewFieldRef("", "id")
+	const hostile = "evil'op; DROP TABLE a"
+	for _, tc := range []struct {
+		name  string
+		query dal.StructuredQuery
+		want  string
+	}{
+		{"operator in a column", exWithColumn(dal.Binary(field, dal.ArithmeticOperator(hostile), dal.Constant{Value: 1})), "arithmetic operator"},
+		{"operator in a condition", exWithWhere(dal.NewComparison(dal.Binary(field, dal.ArithmeticOperator("%"), field), dal.Equal, dal.Constant{Value: 1})), "arithmetic operator"},
+		{"empty operator", exWithColumn(dal.Binary(field, dal.ArithmeticOperator(""), field)), "arithmetic operator"},
+		{"operator nested in an operand", exWithColumn(dal.Binary(dal.Binary(field, dal.ArithmeticOperator("||"), field), dal.Add, field)), "arithmetic operator"},
+		{"operator in an aggregate argument", exWithColumn(dal.NewAggregate("sum", false, dal.Binary(field, dal.ArithmeticOperator("^"), field))), "arithmetic operator"},
+		{"operator in a subquery", exWithWhere(dal.NewExistsCondition(exWithColumn(dal.Binary(field, dal.ArithmeticOperator("%"), field)))), "arithmetic operator"},
+		{"aggregate in a column", exWithColumn(dal.NewAggregate(hostile, false, field)), "aggregate function"},
+		{"aggregate in a condition", exWithWhere(dal.NewComparison(dal.NewAggregate("median", false, field), dal.Equal, dal.Constant{Value: 1})), "aggregate function"},
+		{"empty aggregate name", exWithColumn(dal.NewAggregate("", false, field)), "aggregate function"},
+		{"aggregate in HAVING", exShapeQuery{StructuredQuery: exBase(), having: dal.NewComparison(dal.NewAggregate("stddev", false, field), dal.Equal, dal.Constant{Value: 1})}, "aggregate function"},
+		{"aggregate in a subquery", exWithWhere(dal.NewExistsCondition(exWithColumn(dal.NewAggregate("median", false, field)))), "aggregate function"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc, err := inspect(tc.query)
+			if !errors.Is(err, ErrInvalidDocument) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want ErrInvalidDocument containing %q", err, tc.want)
+			}
+			for _, text := range []string{"evil", "DROP", "median", "stddev", "%", "||", "^"} {
+				if strings.Contains(err.Error(), text) {
+					t.Fatalf("the refusal echoes %q: %v", text, err)
+				}
+			}
+			if !reflect.DeepEqual(doc, document{}) {
+				t.Fatalf("a refused document returned a walk: %+v", doc)
+			}
+		})
+	}
+	// The four operators and the seven names are accepted, whatever the case of a name.
+	for _, op := range []dal.ArithmeticOperator{dal.Add, dal.Subtract, dal.Multiply, dal.Divide} {
+		if _, err := inspect(exWithColumn(dal.Binary(field, op, field))); err != nil {
+			t.Fatalf("operator %q: %v", op, err)
+		}
+	}
+	for _, name := range []string{"COUNT", "SUM", "AVG", "MIN", "MAX", "FIRST", "LAST", "count", "Sum", "aVg", "min", "max", "first", "last"} {
+		if _, err := inspect(exWithColumn(dal.NewAggregate(name, false, field))); err != nil {
+			t.Fatalf("aggregate %q: %v", name, err)
+		}
+	}
+}
+
 func TestCheckProfileComparesTheProfileToTheWalk(t *testing.T) {
 	q := exJoin(exRef("one", "A", "a"), exRef("two", "B", "b"), true)
 	doc, err := inspect(q)
@@ -397,8 +449,8 @@ func TestCheckProfileComparesTheProfileToTheWalk(t *testing.T) {
 		"no sources":            {},
 		"a subquery claimed":    {Sources: good.Sources, HasSubquery: true},
 	} {
-		if err := checkProfile(doc, profile); !errors.Is(err, ErrInvalidDocument) {
-			t.Fatalf("%s: err = %v, want ErrInvalidDocument", name, err)
+		if err := checkProfile(doc, profile); !errors.Is(err, ErrInvalidDocument) || !errors.Is(err, ErrProfileMismatch) {
+			t.Fatalf("%s: err = %v, want ErrInvalidDocument and ErrProfileMismatch", name, err)
 		}
 	}
 	// A profile that denies a subquery the document has is refused too.
@@ -407,8 +459,8 @@ func TestCheckProfileComparesTheProfileToTheWalk(t *testing.T) {
 		t.Fatalf("inspect: %v", err)
 	}
 	profile := Profile{Sources: []ProfileSource{{"", "a"}, {"", "b"}}}
-	if err := checkProfile(withSubquery, profile); !errors.Is(err, ErrInvalidDocument) {
-		t.Fatalf("a hidden subquery: err = %v", err)
+	if err := checkProfile(withSubquery, profile); !errors.Is(err, ErrInvalidDocument) || !errors.Is(err, ErrProfileMismatch) {
+		t.Fatalf("a hidden subquery: err = %v, want ErrInvalidDocument and ErrProfileMismatch", err)
 	}
 	profile.HasSubquery = true
 	if err := checkProfile(withSubquery, profile); err != nil {

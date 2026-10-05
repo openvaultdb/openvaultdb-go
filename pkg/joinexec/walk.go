@@ -22,9 +22,15 @@ import (
 // A node of a type it does not know is refused: whatever such a node holds is
 // out of sight of the authorisation, so the document does not run.
 
-// maxWalkDepth bounds how deep subqueries and join trees nest. The profile
-// admits four levels of subquery; the walk allows more, so it never refuses
-// what the profile accepted, and it stops a query graph that refers to itself.
+// maxWalkDepth bounds how deep subqueries and join trees nest, counted together:
+// a subquery is one level and so is each level of a join tree. The classifier
+// admits four levels of subquery and eight sources (relationalMaxSubqueryDepth
+// and relationalMaxSources in pkg/core), so the deepest document it accepts
+// nests 4 + 7 = 11 levels; the walk allows 16, so it never refuses what the
+// classifier accepted, and it stops a query graph that refers to itself. The
+// drift test in pkg/core builds the deepest document the classifier accepts from
+// those two constants and requires the walk to accept it, so a raised limit of
+// the classifier that this bound would refuse fails there.
 const maxWalkDepth = 16
 
 // maxWalkNesting bounds how many conditions and expressions sit one inside the
@@ -35,6 +41,14 @@ const maxWalkDepth = 16
 // recursion of the walk, and the length of the paths it builds, in proportion
 // whatever the depth of the document.
 const maxWalkNesting = 64
+
+// arithmeticOperators and aggregateFunctions are the operators and aggregate
+// names the classifier of pkg/core accepts in any position (validateRelationalNames
+// and its aggregateFunctions); the drift test in pkg/core compares them.
+var (
+	arithmeticOperators = map[dal.ArithmeticOperator]bool{dal.Add: true, dal.Subtract: true, dal.Multiply: true, dal.Divide: true}
+	aggregateFunctions  = map[string]bool{"COUNT": true, "SUM": true, "AVG": true, "MIN": true, "MAX": true, "FIRST": true, "LAST": true}
+)
 
 // maxNameLen is the longest field name, qualifier or alias.
 const maxNameLen = 256
@@ -53,13 +67,17 @@ const maxEchoLen = 64
 // change to one rule without the other is caught. A name is a plain name when it
 // matches, so a character nobody thought of is refused.
 //
-// Two differences are known and pinned by that test. The classifier applies a
-// wider quoted-name rule to the field names of a relational document (a column
-// named "zip code" is a name there); the walk applies the strict rule on every
-// route, so Execute refuses a document with a field name that only the wider rule
-// accepts. And a field qualifier may name a source of any query of the document,
-// where the classifier scopes it to its own query and the queries around it; the
-// name is a validated collection name or alias either way.
+// Two differences between the walk's name rules and the classifier's are known
+// and pinned by that test. The classifier applies a wider quoted-name rule to the
+// field names of a relational document (a column named "zip code" is a name
+// there); the walk applies the strict rule on every route, so Execute refuses a
+// document with a field name that only the wider rule accepts. And a field
+// qualifier may name a source of any query of the document, where the classifier
+// scopes it to its own query and the queries around it; the name is a validated
+// collection name or alias either way. The walk also refuses an arithmetic
+// operator outside + - * / and an aggregate name outside the classifier's seven,
+// as the classifier does, so those are not differences. What only the classifier
+// checks is listed on Execute.
 var (
 	fieldNameRe  = regexp.MustCompile(`^(\$[\p{L}_]|[\p{L}\p{Nd}_])[\p{L}\p{M}\p{Nd}_-]*(\.(\$[\p{L}_]|[\p{L}\p{Nd}_])[\p{L}\p{M}\p{Nd}_-]*)*$`)
 	identifierRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -126,7 +144,7 @@ func inspect(query dal.StructuredQuery) (document, error) {
 // classifier that misses a source is caught here rather than trusted.
 func checkProfile(doc document, profile Profile) error {
 	if profile.HasSubquery != doc.hasSubquery {
-		return fmt.Errorf("%w: the profile does not match the query: subqueries", ErrInvalidDocument)
+		return fmt.Errorf("%w: %w: subqueries", ErrInvalidDocument, ErrProfileMismatch)
 	}
 	counts := map[ProfileSource]int{}
 	for _, s := range doc.sources {
@@ -137,7 +155,7 @@ func checkProfile(doc document, profile Profile) error {
 	}
 	for _, n := range counts {
 		if n != 0 {
-			return fmt.Errorf("%w: the profile does not match the query: sources", ErrInvalidDocument)
+			return fmt.Errorf("%w: %w: sources", ErrInvalidDocument, ErrProfileMismatch)
 		}
 	}
 	return nil
@@ -366,11 +384,20 @@ func (w *walker) expressionNode(expression dal.Expression, path string, depth in
 	case dal.StarExpression:
 		return nil
 	case dal.BinaryExpression:
+		// DALgo reads any text as an arithmetic operator and checks it only where
+		// it runs an aggregation. The text is not echoed.
+		if !arithmeticOperators[value.Operator] {
+			return refuse(path, "an arithmetic operator must be one of + - * /")
+		}
 		if err := w.expression(value.Left, path+".left", depth); err != nil {
 			return err
 		}
 		return w.expression(value.Right, path+".right", depth)
 	case dal.AggregateFunc:
+		// The same: DALgo validates an aggregate's name only where it aggregates.
+		if !aggregateFunctions[strings.ToUpper(value.FuncName())] {
+			return refuse(path, "an aggregate function must be one of COUNT, SUM, AVG, MIN, MAX, FIRST, LAST")
+		}
 		for i, arg := range value.FuncArgs() {
 			if err := w.expression(arg, fmt.Sprintf("%s.args[%d]", path, i), depth); err != nil {
 				return err

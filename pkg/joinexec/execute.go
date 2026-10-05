@@ -89,11 +89,20 @@ type ExecutionSource struct {
 	ElapsedMs *int64 `json:"elapsedMs,omitempty"`
 }
 
+// Admit takes a slot for a request that is about to read, on the route Execute
+// chose for it (RouteDatabase or RouteInMemory). It returns the function that
+// gives the slot back and true, or false when there is no slot, in which case the
+// release function is not used. Execute calls the release function when the
+// request ends, whatever way it ends; a nil release function is treated as one
+// that does nothing.
+type Admit func(ctx context.Context, route string) (release func(), ok bool)
+
 // config is what the options set.
 type config struct {
 	joinEngines   map[string]bool
 	nativeEngines map[string]bool
 	now           func() time.Time
+	admit         Admit
 }
 
 // Option configures Execute.
@@ -144,6 +153,18 @@ func WithNativeEngines(engines ...string) Option {
 	}
 }
 
+// WithAdmission makes Execute ask admit for a slot once it knows the route and
+// before it reads anything, and hold the slot until it returns. A request that
+// fails earlier (a document that is not valid, a source the caller may not read,
+// an unknown database, an engine that is refused) holds no slot and asks for
+// none. When admit has no slot Execute returns a *CapacityError and has read
+// nothing. The wait for a slot is part of the elapsed time Execute reports, and
+// not of the request timeout, which starts when the read does. A nil admit
+// admits every request.
+func WithAdmission(admit Admit) Option {
+	return func(c *config) { c.admit = admit }
+}
+
 // withClock replaces the clock Execute measures its own elapsed time with.
 func withClock(now func() time.Time) Option {
 	return func(c *config) { c.now = now }
@@ -174,7 +195,8 @@ func withClock(now func() time.Time) Option {
 //     every source, and then one outside the join set (EngineNotJoinableError).
 //  6. Refuse a scan clause on a source with access policies
 //     (ErrScanOnProtectedSource).
-//  7. Choose the route and run.
+//  7. Choose the route, take a slot for it when WithAdmission is set
+//     (CapacityError), and run.
 //
 // The database route is chosen when every source is in one database, that
 // database's engine is native, it has no access policies, the document has no
@@ -195,15 +217,19 @@ func withClock(now func() time.Time) Option {
 //
 // The walk checks every name of a document (fields, aliases, qualifiers,
 // parameters, the result names of scalar subqueries and collections) by the
-// strict rules of pkg/core, and refuses a document whose conditions and
-// expressions nest more than 64 levels. A field name must pass the strict rule
+// strict rules of pkg/core, the arithmetic operators and aggregate names by the
+// classifier's lists, and refuses a document whose conditions and expressions
+// nest more than 64 levels. A field name must pass the strict rule
 // (core.ValidateFieldName) whatever the route and the engine. The classifier of
 // pkg/core applies a wider quoted-name rule to the field names of a relational
 // document, so a name such as "zip code" classifies and Execute then refuses it
-// with ErrInvalidDocument. The classifier alone checks the database id format,
-// the limit and offset bounds, money, cursors, the join types and the number of
-// sources; Execute does not repeat them, so a caller must hand it a document,
-// and a profile, that passed the classifier.
+// with ErrInvalidDocument. What only the classifier checks, and Execute does not
+// repeat, is the format of a database id, the limit and offset bounds, money,
+// cursors, the join types, the number of sources, how many levels of subquery
+// nest (four), the refusal of every scan clause (Execute accepts one on a source
+// without access policies and reads such a document in memory), and the sixteen
+// levels at which its name check stops. A caller must therefore hand Execute a
+// document, and a profile, that passed the classifier.
 //
 // opts, limits and the ordering of results are as documented on Option,
 // Limits, MaxResultRows and MaxResultBytes.
@@ -241,6 +267,15 @@ func Execute(ctx context.Context, query dal.StructuredQuery, profile Profile, de
 	}
 
 	route := cfg.route(doc, databases, sources)
+	if cfg.admit != nil {
+		release, ok := cfg.admit(ctx, route)
+		if !ok {
+			return Result{}, &CapacityError{Route: route}
+		}
+		if release != nil {
+			defer release()
+		}
+	}
 	guard := NewGuard(authorize, limits)
 	ctx, cancel := guard.Context(ctx)
 	defer cancel()
@@ -465,8 +500,10 @@ func (c *resultCap) Next() (record.Record, error) {
 	case err == io.EOF || errors.Is(err, dal.ErrNoMoreRecords):
 		return nil, err
 	case errors.Is(err, io.EOF):
-		// Guard.Collect ends a read at any error that wraps io.EOF. This one is a
-		// failure: hand it on without the chain.
+		// Guard.Collect fails a read that ends with an error wrapping io.EOF, as
+		// opposed to io.EOF itself or dal.ErrNoMoreRecords, too. This one is a
+		// failure: hand it on as ErrReadTruncated without the chain, so that
+		// nothing further up takes it for the end of the stream.
 		return nil, fmt.Errorf("%w: %v", ErrReadTruncated, err)
 	default:
 		return nil, err

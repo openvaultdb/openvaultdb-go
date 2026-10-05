@@ -18,6 +18,7 @@ import (
 	"github.com/dal-go/dalgo/access"
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
+	"github.com/openvaultdb/openvaultdb-go/pkg/joinexec"
 )
 
 // Server serves one or more mounted databases.
@@ -51,6 +52,9 @@ type Server struct {
 	snapshotKey         [32]byte
 	queryLimits         QueryLimits // relational query limits; always normalized after New
 	queryGate           *queryGate
+	// joinExecute runs a relational document. It is joinexec.Execute; tests of
+	// the handler replace it to drive every status the handler maps.
+	joinExecute joinExecuteFunc
 }
 
 // Option configures the Server.
@@ -113,7 +117,7 @@ func New(version string, dbs map[string]*core.Database, opts ...Option) *Server 
 	if dbs == nil {
 		dbs = map[string]*core.Database{}
 	}
-	s := &Server{version: version, dbs: dbs, inflight: map[*core.Database]*sync.WaitGroup{}, accessInstance: "local", logger: slog.Default()}
+	s := &Server{version: version, dbs: dbs, inflight: map[*core.Database]*sync.WaitGroup{}, accessInstance: "local", logger: slog.Default(), joinExecute: joinexec.Execute}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -273,6 +277,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/databases/{db}/query", s.handleQuery)
 	mux.HandleFunc("POST /v1/databases/{db}/dtql", s.handleDTQL)
 	mux.HandleFunc("GET /v1/databases/{db}/dtql", s.handleDTQL)
+	mux.HandleFunc("POST /v1/dtql", s.handleCrossDatabaseDTQL)
+	mux.HandleFunc("GET /v1/dtql", s.handleCrossDatabaseDTQL)
 	mux.HandleFunc("POST /v1/databases/{db}/access/evaluate", s.handleAccessEvaluate)
 	mux.HandleFunc("POST /v1/databases/{db}/access/evidence", s.handleAccessEvidence)
 	mux.HandleFunc("GET /v1/databases/{db}/access/layers", s.handleAccessLayers)
@@ -338,8 +344,13 @@ func (s *Server) Handler() http.Handler {
 }
 
 func isReadCacheEndpoint(r *http.Request) bool {
-	return (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
-		strings.HasPrefix(r.URL.Path, "/v1/databases/") &&
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	if r.URL.Path == crossDatabaseDTQLPath {
+		return true
+	}
+	return strings.HasPrefix(r.URL.Path, "/v1/databases/") &&
 		(strings.HasSuffix(r.URL.Path, "/read") || strings.HasSuffix(r.URL.Path, "/query") || strings.HasSuffix(r.URL.Path, "/dtql"))
 }
 
