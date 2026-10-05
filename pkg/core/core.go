@@ -315,9 +315,10 @@ func (d *Database) Exists(ctx context.Context, key *record.Key) (bool, error) {
 // (CanonicalCollection), each when the driver reports it: a table of the file that
 // the manifest does not declare, and a table named with the quote characters of
 // the quoted spelling of a declared key, are not listed. A declared name is
-// reported under exactly that name, except on PostgreSQL, which stores and
-// reports it lower-cased. Every name listed is one the routes that take a
-// collection accept.
+// matched with the reported one exactly, except on PostgreSQL and SQLite, where
+// ASCII letters are compared without regard to case (see foldsIdentifiers); the
+// declared spelling is the one listed. Every name listed is one the routes that
+// take a collection accept.
 func (d *Database) Collections(ctx context.Context) ([]string, error) {
 	reader, ok := dal.As[dbschema.SchemaReader](d.db)
 	if !ok {
@@ -653,7 +654,8 @@ func (d *Database) validateOps(ctx context.Context, ops []Op) error {
 // subcollections (supported by dalgo2ingitdb). An empty fields map declares
 // a single optional "id" string column: inGitDB requires at least one column,
 // and drivers pass undeclared fields through while OpenVaultDB validates
-// modes above the driver.
+// modes above the driver. An error from the adapter of a server engine is not
+// wrapped (see provisionError).
 func (d *Database) ensureCollection(ctx context.Context, collection string, fields map[string]schema.Field) error {
 	modifier, ok := dal.As[ddl.SchemaModifier](d.db)
 	if !ok {
@@ -685,6 +687,9 @@ func (d *Database) ensureCollection(ctx context.Context, collection string, fiel
 		})
 	}
 	if err := modifier.CreateCollection(ctx, def, ddl.IfNotExists()); err != nil {
+		if serverEngines[d.Manifest.Storage.Engine] {
+			return provisionError(collection, err)
+		}
 		return fmt.Errorf("failed to ensure collection %q: %w", clipName(collection), err)
 	}
 	return nil
