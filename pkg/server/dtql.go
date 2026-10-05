@@ -43,6 +43,9 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	doc = withoutOwnDatabase(withoutDefaultSchema(doc, db.Engine()), db.ID())
+	if s.boundedImmutable(db) {
+		doc = withoutOwnDatabase(doc, r.PathValue("db"))
+	}
 	query, profile, err := classifyDTQLDocument(doc)
 	if err != nil {
 		s.writeMappedError(w, r, clippedError{err})
@@ -57,6 +60,10 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 	// listing of core.QueryCollections is that collection and nothing else.
 	collection := profile.Sources[0].Collection
 	if !s.authorize(w, r, db.ID(), auth.CapRecordsRead, collection) {
+		return
+	}
+	query, ok = s.prepareImmutableQuery(w, r, db, query, collection)
+	if !ok {
 		return
 	}
 	if r.Header.Get("OVDB-Page-Size") != "" || r.Header.Get("OVDB-Page-Token") != "" || r.Header.Get("OVDB-Page-Close") != "" {

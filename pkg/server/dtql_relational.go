@@ -113,6 +113,10 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 		writeError(w, http.StatusUnprocessableEntity, "authorization_unsupported", err.Error())
 		return
 	}
+	if err := s.refuseEach(stageReadProfile, databases, order); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "read_profile_unsupported", err.Error())
+		return
+	}
 	// A collection that a database on an engine that builds SQL does not declare is
 	// not read, whatever the grant says, and neither is one the document spells
 	// another way than its canonical name. The executor reads one source at a time,
@@ -369,7 +373,7 @@ func stageJoinable(s *Server, id string, db *core.Database) error {
 // databases a document names, because the collection check and the paging headers
 // come between the first and the others; discovery runs them together for one
 // database (relationalRefusal).
-var relationalStages = []relationalStage{stageAccessPolicies, stageQueryable, stageJoinable}
+var relationalStages = []relationalStage{stageAccessPolicies, stageReadProfile, stageQueryable, stageJoinable}
 
 // engineStages are the stages that look at the engine.
 var engineStages = relationalStages[1:]

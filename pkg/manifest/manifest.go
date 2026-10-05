@@ -55,12 +55,34 @@ func (d Database) ReadCacheTTL() time.Duration {
 
 // Storage selects and configures the storage engine.
 type Storage struct {
+	SQLite    *SQLiteOptions    `yaml:"sqlite,omitempty" json:"sqlite,omitempty"`
 	Engine    string            `yaml:"engine" json:"engine"`                 // "sqlite" | "ingitdb" | "firestore" | "postgres" | "mysql"
 	Path      string            `yaml:"path,omitempty" json:"path,omitempty"` // unused by firestore/postgres/mysql
 	InGitDB   *InGitDBOptions   `yaml:"ingitdb,omitempty" json:"ingitdb,omitempty"`
 	Firestore *FirestoreOptions `yaml:"firestore,omitempty" json:"firestore,omitempty"`
 	Postgres  *PostgresOptions  `yaml:"postgres,omitempty" json:"postgres,omitempty"`
 	MySQL     *MySQLOptions     `yaml:"mysql,omitempty" json:"mysql,omitempty"`
+}
+
+// SQLiteOptions optionally selects verified TEXT transport keys and lock wait.
+// A nil RecordKeys map retains the legacy id key. A present map must cover
+// exactly the mounted canonical collections. BusyTimeout is presence-aware:
+// omitted retains the legacy wait, while "0s" explicitly disables lock retries.
+type SQLiteOptions struct {
+	RecordKeys  map[string]string `yaml:"record_keys,omitempty" json:"recordKeys,omitempty"`
+	BusyTimeout *string           `yaml:"busy_timeout,omitempty" json:"busyTimeout,omitempty"`
+}
+
+// LockWait returns the configured wait, or the supplied legacy default.
+func (o *SQLiteOptions) LockWait(legacy time.Duration) (time.Duration, error) {
+	if o == nil || o.BusyTimeout == nil {
+		return legacy, nil
+	}
+	wait, err := time.ParseDuration(*o.BusyTimeout)
+	if err != nil || wait < 0 || wait > 5*time.Second || wait%time.Millisecond != 0 {
+		return 0, fmt.Errorf("storage.sqlite.busy_timeout must be a whole-millisecond duration from 0s through 5s")
+	}
+	return wait, nil
 }
 
 // FirestoreOptions configures the Firestore engine. Credentials come from
@@ -259,6 +281,26 @@ func Parse(b []byte) (*Manifest, error) {
 	if err := decodeYAML(func() error { return unmarshalYAML(b, &document) }); err != nil {
 		return nil, parseError(err)
 	}
+	if storage, present := document["storage"]; present {
+		for i := 0; storage.Kind == yaml.MappingNode && i+1 < len(storage.Content); i += 2 {
+			if storage.Content[i].Value != "sqlite" {
+				continue
+			}
+			options := storage.Content[i+1]
+			if options.Kind != yaml.MappingNode {
+				return nil, fmt.Errorf("storage.sqlite must be an options mapping")
+			}
+			for j := 0; j+1 < len(options.Content); j += 2 {
+				key, value := options.Content[j].Value, options.Content[j+1]
+				if key == "busy_timeout" && (value.Kind != yaml.ScalarNode || value.Tag != "!!str") {
+					return nil, fmt.Errorf("storage.sqlite.busy_timeout must be a duration string when supplied")
+				}
+				if key == "record_keys" && value.Kind != yaml.MappingNode {
+					return nil, fmt.Errorf("storage.sqlite.record_keys must be a mapping when supplied")
+				}
+			}
+		}
+	}
 	if acl, present := document["acl"]; present {
 		explicitMode := false
 		for i := 0; acl.Kind == yaml.MappingNode && i+1 < len(acl.Content); i += 2 {
@@ -391,6 +433,17 @@ func (m *Manifest) Validate() error {
 		}
 	} else if m.Storage.Firestore != nil {
 		return fmt.Errorf("storage.firestore options are only valid with engine 'firestore', got %q", m.Storage.Engine)
+	}
+	if o := m.Storage.SQLite; o != nil {
+		if m.Storage.Engine != "sqlite" {
+			return fmt.Errorf("storage.sqlite options require the sqlite engine")
+		}
+		if _, err := o.LockWait(5 * time.Second); err != nil {
+			return err
+		}
+		if o.RecordKeys != nil && len(o.RecordKeys) == 0 {
+			return fmt.Errorf("storage.sqlite.record_keys must be nonempty when supplied")
+		}
 	}
 	if m.Storage.Postgres != nil && m.Storage.Engine != "postgres" {
 		return fmt.Errorf("storage.postgres options are only valid with engine 'postgres', got %q", m.Storage.Engine)

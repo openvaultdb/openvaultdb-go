@@ -1,15 +1,20 @@
 package server
 
 import (
+	"fmt"
+	"golang.org/x/net/http/httpguts"
 	"net/http"
+	"slices"
 	"strings"
 )
 
 // CORSConfig holds the allowed-origin set for the CORS middleware.
 // A nil *CORSConfig means CORS is disabled — no headers are added.
 type CORSConfig struct {
-	allowAll bool     // true when the configured origin is "*"
-	exact    []string // exact origins, e.g. "https://sneat.app"
+	allowHeaders  []string
+	exposeHeaders []string
+	allowAll      bool     // true when the configured origin is "*"
+	exact         []string // exact origins, e.g. "https://sneat.app"
 }
 
 // ParseCORSOrigins builds a CORSConfig from a list of origin strings.
@@ -95,7 +100,7 @@ func corsMiddleware(cfg *CORSConfig, next http.Handler) http.Handler {
 			if allowed != "" {
 				w.Header().Set("Access-Control-Allow-Origin", allowed)
 				w.Header().Set("Access-Control-Allow-Methods", corsAllowMethods)
-				w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders)
+				w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders+headerSuffix(cfg.allowHeaders))
 				w.Header().Set("Access-Control-Max-Age", corsMaxAge)
 			}
 			// Respond 204 regardless: allowed origins get CORS headers,
@@ -108,7 +113,42 @@ func corsMiddleware(cfg *CORSConfig, next http.Handler) http.Handler {
 		// Non-preflight: inject ACAO when origin is allowed, then pass through.
 		if allowed != "" {
 			w.Header().Set("Access-Control-Allow-Origin", allowed)
+			if len(cfg.exposeHeaders) > 0 {
+				w.Header().Set("Access-Control-Expose-Headers", strings.Join(cfg.exposeHeaders, ","))
+			}
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// WithHeaders returns an independent CORS configuration with additive request
+// and exposed response header names. Origins and legacy default headers persist.
+func (c *CORSConfig) WithHeaders(allowed, exposed []string) (*CORSConfig, error) {
+	if c == nil {
+		return nil, fmt.Errorf("CORS origins are required before adding headers")
+	}
+	out := *c
+	out.exact = slices.Clone(c.exact)
+	out.allowHeaders = slices.Clone(c.allowHeaders)
+	out.exposeHeaders = slices.Clone(c.exposeHeaders)
+	for _, group := range []struct {
+		names  []string
+		target *[]string
+	}{{allowed, &out.allowHeaders}, {exposed, &out.exposeHeaders}} {
+		for _, name := range group.names {
+			if !httpguts.ValidHeaderFieldName(name) {
+				return nil, fmt.Errorf("invalid CORS header name")
+			}
+			if !slices.ContainsFunc(*group.target, func(existing string) bool { return strings.EqualFold(existing, name) }) {
+				*group.target = append(*group.target, name)
+			}
+		}
+	}
+	return &out, nil
+}
+func headerSuffix(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	return "," + strings.Join(names, ",")
 }
