@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/dal-go/dalgo/access"
@@ -276,6 +277,12 @@ func Execute(ctx context.Context, query dal.StructuredQuery, profile Profile, de
 
 	req := &request{cfg: cfg, query: query, doc: doc, databases: databases, qualified: qualified, sources: sources, authorize: authorize, limits: limits}
 	route := cfg.route(doc, databases, sources)
+	// Money arithmetic must always stay in DALgo's exact federated evaluator.
+	// Native SQL drivers intentionally refuse this option rather than risk
+	// SQLite's approximate numeric coercions.
+	if configured, ok := query.(interface{ Money() *dal.MoneyConfig }); ok && configured.Money() != nil {
+		route = RouteInMemory
+	}
 	records, guard, err := req.attempt(ctx, route)
 	if err != nil && route == RouteDatabase && req.retryInMemory(err) {
 		// The database could not compile the document: it was refused before any row
@@ -418,7 +425,7 @@ func (q *request) attempt(ctx context.Context, route string) ([]record.Record, *
 	guard := NewGuard(q.authorize, q.limits)
 	ctx, cancel := guard.Context(ctx)
 	defer cancel()
-	r := &run{guard: guard, sources: q.sources}
+	r := &run{guard: guard, sources: q.sources, money: hasMoney(q.query)}
 	var (
 		records []record.Record
 		err     error
@@ -462,6 +469,7 @@ func (q *request) retryInMemory(err error) bool {
 type run struct {
 	guard   *Guard
 	sources map[string]Source
+	money   bool
 }
 
 // leaf returns the guarded leaf of a database the preflight resolved and
@@ -565,8 +573,13 @@ func (r *run) inMemory(ctx context.Context, query dal.StructuredQuery, doc docum
 	// and evaluated above it: one with a null test (a SQL adapter cannot compile it), and one
 	// that orders by an expression that is not a field (an executor skips it, and answers in
 	// the order it reads the records).
-	evaluated := len(doc.sources) == 1 && (doc.hasNull || ordersByExpression(query))
-	federated := qualified && !doc.hasSubquery && !evaluated
+	var federatedOptions dal.FederatedQueryOptions
+	if configured, ok := query.(interface{ Money() *dal.MoneyConfig }); ok {
+		federatedOptions.Money = configured.Money()
+	}
+	moneyMode := federatedOptions.Money != nil
+	evaluated := !moneyMode && len(doc.sources) == 1 && (doc.hasNull || ordersByExpression(query))
+	federated := (qualified || moneyMode) && !doc.hasSubquery && !evaluated
 	var opts []scopeOption
 	if federated && len(doc.sources) == 1 && !doc.anyScan() && !dal.HasAggregation(query) {
 		// DALgo's federated executor hands this document to the mount whole.
@@ -576,12 +589,76 @@ func (r *run) inMemory(ctx context.Context, query dal.StructuredQuery, doc docum
 		return nil, r.guard.Classify(err, RouteInMemory)
 	}
 	query = resolveAliases(query)
+	if moneyMode && len(databases) == 1 {
+		query = withDefaultDatabase(query, databases[0])
+	}
 	if federated {
-		reader, err = dal.ExecuteFederatedQueryWithOptions(ctx, query, r.resolve, dal.FederatedQueryOptions{})
+		reader, err = dal.ExecuteFederatedQueryWithOptions(ctx, query, r.resolve, federatedOptions)
 	} else {
 		reader, err = dal.ExecuteRecursiveQuery(ctx, router, query)
 	}
 	return r.collect(ctx, reader, err, RouteInMemory)
+}
+
+// withDefaultDatabase binds unqualified source references to the single
+// database selected and authorized by preflight. DALgo's federated executor
+// requires a database on every source, while per-database DTQL intentionally
+// permits unqualified collection names.
+func withDefaultDatabase(query dal.StructuredQuery, database string) dal.StructuredQuery {
+	return databaseBoundQuery{StructuredQuery: query, from: bindFromDatabase(query.From(), database)}
+}
+
+type databaseBoundQuery struct {
+	dal.StructuredQuery
+	from dal.FromSource
+}
+
+func (q databaseBoundQuery) From() dal.FromSource { return q.from }
+
+func bindFromDatabase(from dal.FromSource, database string) dal.FromSource {
+	if from == nil {
+		return nil
+	}
+	base := from.Base()
+	if ref, ok := base.(dal.CollectionRef); ok && ref.Database() == "" {
+		qualified := dal.NewDatabaseCollectionRef(database, ref.Schema(), ref.Name(), ref.Alias())
+		if ref.ScanLimit() > 0 || len(ref.ScanOrders()) > 0 {
+			qualified = qualified.WithScan(ref.ScanLimit(), ref.ScanOrders()...)
+		}
+		base = qualified
+	}
+	joins := from.Joins()
+	if len(joins) == 0 && base == from.Base() {
+		return from
+	}
+	rebuilt := dal.From(base)
+	for _, join := range joins {
+		child := join.From()
+		var source dal.RecordsetSource
+		if child != nil {
+			child = bindFromDatabase(child, database)
+			source = dal.NewNestedJoinedSource(child, join.JoinType(), join.On()...)
+		} else {
+			source = dal.NewJoinedSource(join.RecordsetSource, join.JoinType(), join.On()...)
+		}
+		if child == nil {
+			joinSource := source.(dal.JoinedSource)
+			if ref, ok := join.RecordsetSource.(dal.CollectionRef); ok && ref.Database() == "" {
+				qualified := dal.NewDatabaseCollectionRef(database, ref.Schema(), ref.Name(), ref.Alias())
+				if ref.ScanLimit() > 0 || len(ref.ScanOrders()) > 0 {
+					qualified = qualified.WithScan(ref.ScanLimit(), ref.ScanOrders()...)
+				}
+				joinSource = dal.NewJoinedSource(qualified, join.JoinType(), join.On()...)
+			}
+			source = joinSource
+		}
+		joinSource := source.(dal.JoinedSource)
+		if algorithms := join.Algorithms(); algorithms != nil {
+			joinSource = joinSource.WithAlgorithms(algorithms...)
+		}
+		rebuilt = rebuilt.Join(joinSource)
+	}
+	return rebuilt
 }
 
 // ordersByExpression reports whether an ordering of query is not a plain field: arithmetic,
@@ -600,12 +677,69 @@ func ordersByExpression(query dal.StructuredQuery) bool {
 // reader reported. err is what the call that returned reader returned.
 func (r *run) collect(ctx context.Context, reader dal.RecordsReader, err error, route string) ([]record.Record, error) {
 	if err != nil {
-		return nil, r.guard.Classify(err, route)
+		return nil, r.classify(err, route)
 	}
 	if reader == nil {
 		return nil, r.guard.Classify(ErrNoReader, route)
 	}
-	return r.guard.Collect(ctx, &resultCap{RecordsReader: reader, route: route}, route)
+	var bounded dal.RecordsReader = &resultCap{RecordsReader: reader, route: route}
+	if r.money {
+		bounded = &moneyErrorReader{RecordsReader: bounded, guard: r.guard}
+	}
+	return r.guard.Collect(ctx, bounded, route)
+}
+
+func hasMoney(query dal.StructuredQuery) bool {
+	configured, ok := query.(interface{ Money() *dal.MoneyConfig })
+	return ok && configured.Money() != nil
+}
+
+func (r *run) classify(err error, route string) error {
+	if r.money && r.guard.Err() == nil && isMoneyEvaluationError(err) {
+		return fmt.Errorf("%w: exact money evaluation: %v", ErrInvalidDocument, err)
+	}
+	return r.guard.Classify(err, route)
+}
+
+// moneyErrorReader maps only DALgo's recognizable exact-money domain errors.
+// A recorded source, policy, or budget failure always takes precedence.
+type moneyErrorReader struct {
+	dal.RecordsReader
+	guard *Guard
+}
+
+func (r *moneyErrorReader) Next() (record.Record, error) {
+	rec, err := r.RecordsReader.Next()
+	if err != nil && r.guard.Err() == nil && isMoneyEvaluationError(err) {
+		return nil, fmt.Errorf("%w: exact money evaluation: %v", ErrInvalidDocument, err)
+	}
+	return rec, err
+}
+
+func isMoneyEvaluationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	for _, prefix := range []string{
+		"money division by zero",
+		"money division result:",
+		"money arithmetic ",
+		"money input ",
+		"money operand ",
+		"money result ",
+		"money left operand:",
+		"money right operand:",
+		"money AVG result:",
+		"invalid money ",
+		"invalid money comparison operands ",
+		"unsupported money ",
+	} {
+		if strings.HasPrefix(message, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // resultCap ends a read with a BudgetError when it would deliver more than

@@ -773,6 +773,9 @@ func dbschemaType(t schema.FieldType) dbschema.Type {
 		return dbschema.String
 	case schema.TypeNumber:
 		return dbschema.Float
+	case schema.TypeDecimal:
+		// The generic record schema has no decimal scalar; expose exact text.
+		return dbschema.String
 	case schema.TypeInteger:
 		return dbschema.Int
 	case schema.TypeBoolean:

@@ -125,7 +125,7 @@ GET /v1/databases
 → 200 {"databases":[{"id":"sneat-dev","engine":"ingitdb","schemaMode":"schemaless"}, ...]}
 
 GET /v1/databases/{db}
-→ 200 {"id":"...","engine":"...","schemaMode":"...","collections":["..."],"capabilities":{"read":true,"query":true,"dtql":true,"write":true,"joins":true,"aggregation":true}}   // declared collections, by canonical name
+→ 200 {"id":"...","engine":"...","schemaMode":"...","collections":["..."],"schemas":{"collections":{"...":{"fields":{"...":{"type":"decimal","decimal":{"precision":19,"scale":4,"storage":"text"}}}}}},"capabilities":{"read":true,"query":true,"dtql":true,"write":true,"joins":true,"aggregation":true}}   // declared collections and optional declared field metadata
 
 GET /v1/databases/{db}/inferred-schema
 → 200 inferred schema catalogue JSON (see pkg/inferred); 404 for strict databases
@@ -760,7 +760,25 @@ the database it names.
   "engine": "sqlite",
   "id": "chinook",
   "queryFormat": "dtql-yaml+json",
-  "schemaMode": "strict"
+  "schemaMode": "strict",
+  "schemas": {
+    "collections": {
+      "Customer": {
+        "fields": {
+          "country": {"type": "string"},
+          "id": {"type": "string"},
+          "name": {"type": "string"}
+        }
+      },
+      "Invoice": {
+        "fields": {
+          "customer_id": {"type": "string"},
+          "id": {"type": "string"},
+          "total": {"type": "string"}
+        }
+      }
+    }
+  }
 }
 ```
 

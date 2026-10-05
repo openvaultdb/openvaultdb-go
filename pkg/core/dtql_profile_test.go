@@ -328,7 +328,6 @@ from:
       on: [{left: {field: id, source: a}, op: '==', right: {field: id, source: b}}]
 `, "schema", "from.joins[0].from"},
 		{"scan on the root", "from: {name: a, scan: {limit: 5, orderBy: [{field: id}]}}\n", "scan", "from"},
-		{"money", "from: {name: a, alias: a}\nmoney: {minorUnitScale: 2, divisionScale: 4, rounding: halfEven}\n", "money", "$"},
 		{"money in a subquery", `
 from: {name: a, alias: a}
 where:
@@ -404,9 +403,12 @@ func (unknownCondition) String() string { return "unknown" }
 // unknownSource is a source type the validator has never heard of.
 type unknownSource struct{ dal.RecordsetSource }
 
-type moneyQuery struct{ dal.StructuredQuery }
+type moneyQuery struct {
+	dal.StructuredQuery
+	config *dal.MoneyConfig
+}
 
-func (moneyQuery) Money() *dal.MoneyConfig { return &dal.MoneyConfig{} }
+func (q moneyQuery) Money() *dal.MoneyConfig { return q.config }
 
 type nilMoneyQuery struct{ dal.StructuredQuery }
 
@@ -458,6 +460,11 @@ func TestClassifyDTQLRefusesShapesDTQLCannotProduce(t *testing.T) {
 		from.Join(dal.NewJoinedSource(src, jt, dal.NewComparison(field, dal.Equal, field)))
 		return buildQuery(from).SelectIntoRecordset()
 	}
+	moneyAggregateOn := func(from dal.FromSource) dal.StructuredQuery {
+		baseQuery := buildQuery(from).SelectIntoRecordset()
+		aggregate := dal.NewAggregate("sum", false, field)
+		return moneyQuery{StructuredQuery: dal.WithColumns(baseQuery, []dal.Column{{Expression: aggregate}}), config: &dal.MoneyConfig{MinorUnitScale: 2, DivisionScale: 4, Rounding: "halfEven"}}
+	}
 	nestedQuery := func() dal.StructuredQuery { return buildQuery(dal.From(rootRef("b"))).SelectIntoRecordset() }
 
 	for _, tc := range []struct {
@@ -481,7 +488,36 @@ func TestClassifyDTQLRefusesShapesDTQLCannotProduce(t *testing.T) {
 		{"joined collection group", joined(dal.NewCollectionGroupRef("g", ""), dal.JoinInner), "collection-group", "from.joins[0].from"},
 		{"cursor start from", cursorQuery{StructuredQuery: base(), from: "x"}, "cursor", "$"},
 		{"cursor start after", cursorQuery{StructuredQuery: base(), after: "x"}, "cursor", "$"},
-		{"money config", moneyQuery{base()}, "money", "$"},
+		{"invalid money config", moneyQuery{StructuredQuery: base(), config: &dal.MoneyConfig{Rounding: "half-up"}}, "money", "$"},
+		{"money with scalar subquery", moneyQuery{StructuredQuery: withColumn(dal.NewQueryExpression(nestedQuery(), "nested")), config: &dal.MoneyConfig{MinorUnitScale: 2, DivisionScale: 4, Rounding: "halfEven"}}, "money-subquery", "$"},
+		{"money without aggregation", moneyQuery{StructuredQuery: base(), config: &dal.MoneyConfig{MinorUnitScale: 2, DivisionScale: 4, Rounding: "halfEven"}}, "money-aggregate", "$"},
+		{"money with multiple joins", func() dal.StructuredQuery {
+			from := dal.From(rootRef("a"))
+			from.Join(dal.NewJoinedSource(rootRef("b"), dal.JoinInner, dal.NewComparison(field, dal.Equal, field)))
+			from.Join(dal.NewJoinedSource(rootRef("c"), dal.JoinInner, dal.NewComparison(field, dal.Equal, field)))
+			return moneyAggregateOn(from)
+		}(), "money-join-shape", "$"},
+		{"money with a nested join", func() dal.StructuredQuery {
+			child := dal.From(rootRef("b"))
+			child.Join(dal.NewJoinedSource(rootRef("c"), dal.JoinInner, dal.NewComparison(field, dal.Equal, field)))
+			from := dal.From(rootRef("a"))
+			from.Join(dal.NewJoinedFrom(child, dal.JoinInner, dal.NewComparison(field, dal.Equal, field)))
+			return moneyAggregateOn(from)
+		}(), "money-join-shape", "$"},
+		{"money with non-equality join", func() dal.StructuredQuery {
+			from := dal.From(rootRef("a"))
+			left := dal.NewFieldRef("a", "id")
+			right := dal.NewFieldRef("b", "id")
+			from.Join(dal.NewJoinedSource(rootRef("b"), dal.JoinInner, dal.NewComparison(left, dal.GreaterThen, right)))
+			return moneyAggregateOn(from)
+		}(), "money-join-shape", "$"},
+		{"money with nested-loop join preference", func() dal.StructuredQuery {
+			from := dal.From(rootRef("a"))
+			left := dal.NewFieldRef("a", "id")
+			right := dal.NewFieldRef("b", "id")
+			from.Join(dal.NewJoinedSource(rootRef("b"), dal.JoinInner, dal.NewComparison(left, dal.Equal, right)).WithAlgorithms(dal.JoinAlgorithmNestedLoop, dal.JoinAlgorithmHash))
+			return moneyAggregateOn(from)
+		}(), "money-join-shape", "$"},
 		{"unknown column expression", withColumn(unknownExpression{}), "expression-shape", "columns[0]"},
 		{"nil column expression", withColumn(nil), "expression-shape", "columns[0]"},
 		{"pointer constant", withColumn(&dal.Constant{Value: 1}), "expression-shape", "columns[0]"},
@@ -571,6 +607,27 @@ func TestClassifyDTQLNilMoneyIsAccepted(t *testing.T) {
 	profile, err := ClassifyDTQL(query)
 	if err != nil || profile.Kind != ProfileSingleCollection {
 		t.Fatalf("profile = %+v err = %v", profile, err)
+	}
+}
+
+func TestClassifyDTQLMoneyAggregateUsesRelationalProfile(t *testing.T) {
+	query := mustDeserialize(t, `from: {name: Amounts, alias: a}
+money: {minorUnitScale: 6, divisionScale: 6, rounding: halfEven}
+columns: [{aggregate: {function: sum, args: [{field: amount, source: a}]}, as: total}]
+`)
+	profile, err := ClassifyDTQL(query)
+	if err != nil || profile.Kind != ProfileRelational || !profile.HasAggregation {
+		t.Fatalf("profile = %+v, err = %v", profile, err)
+	}
+	field := dal.NewFieldRef("a", "amount")
+	flat := dal.From(rootRef("a"))
+	flat.Join(dal.NewJoinedSource(rootRef("b"), dal.JoinInner, dal.NewComparison(field, dal.Equal, dal.NewFieldRef("b", "id"))))
+	flatBase := buildQuery(flat).SelectIntoRecordset()
+	flatAggregate := dal.WithColumns(flatBase, []dal.Column{{Expression: dal.NewAggregate("sum", false, field)}})
+	flatMoney := moneyQuery{StructuredQuery: flatAggregate, config: &dal.MoneyConfig{MinorUnitScale: 2, DivisionScale: 4, Rounding: "halfEven"}}
+	flatProfile, err := ClassifyDTQL(flatMoney)
+	if err != nil || flatProfile.Kind != ProfileRelational || !flatProfile.HasAggregation || len(flatProfile.Sources) != 2 {
+		t.Fatalf("flat-join money profile = %+v, err = %v", flatProfile, err)
 	}
 }
 
@@ -668,7 +725,7 @@ func TestClassifyDTQLCapsApplyToTheOutermostQueryOnly(t *testing.T) {
 		{"negative limit in a derived source", derived(boundsQuery{StructuredQuery: base(), limit: -1}), "limit", "from.query"},
 		{"negative offset in a derived source", derived(boundsQuery{StructuredQuery: base(), offset: -1}), "offset", "from.query"},
 		{"cursor in a derived source", derived(cursorQuery{StructuredQuery: base(), after: "x"}), "cursor", "from.query"},
-		{"money in a derived source", derived(moneyQuery{base()}), "money", "from.query"},
+		{"money in a derived source", derived(moneyQuery{StructuredQuery: base(), config: &dal.MoneyConfig{MinorUnitScale: 2, DivisionScale: 4, Rounding: "halfEven"}}), "money", "from.query"},
 		{"limit above the cap on the outermost query", boundsQuery{StructuredQuery: base(), limit: relationalMaxLimit + 1}, "limit", "$"},
 		{"offset above the cap on the outermost query", boundsQuery{StructuredQuery: base(), offset: relationalMaxOffset + 1}, "offset", "$"},
 		{"negative limit on the outermost query", boundsQuery{StructuredQuery: base(), limit: -1}, "limit", "$"},
@@ -709,11 +766,11 @@ func TestClassifyDTQLCollectionNameRefusalKeepsBothSentinels(t *testing.T) {
 // TestClassifyDTQLRefusesWhatParseDTQLAccepts documents the shapes the
 // single-collection profile accepts and the classifier refuses: the relational
 // rules are checked for every document, single-collection ones included. A
-// document with no subquery is refused for money only; a subquery in its WHERE,
-// which ParseDTQL accepts, adds nesting deeper than the subquery cap, more
-// sources than the source cap, scan bounds on a nested source and money in a
-// nested query. (A schema-qualified root, a scan root and a database on the root
-// are refused by ParseDTQL too.)
+// document with no subquery is classified as relational when it enables money;
+// a subquery in its WHERE, which ParseDTQL accepts, adds nesting deeper than
+// the subquery cap, more sources than the source cap, scan bounds on a nested
+// source and money in a nested query. (A schema-qualified root, a scan root and
+// a database on the root are refused by ParseDTQL too.)
 func TestClassifyDTQLRefusesWhatParseDTQLAccepts(t *testing.T) {
 	const moneyConfig = "money: {minorUnitScale: 2, divisionScale: 4, rounding: halfEven}"
 	// nestedExists is a root whose WHERE holds a chain of EXISTS subqueries,
@@ -740,7 +797,6 @@ func TestClassifyDTQLRefusesWhatParseDTQLAccepts(t *testing.T) {
 		rule string
 		path string
 	}{
-		{"money", "from: {name: a}\n" + moneyConfig + "\n", "money", "$"},
 		{"money in a subquery", "from: {name: a}\nwhere:\n  exists:\n    query:\n      from: {name: b}\n      " + moneyConfig + "\n", "money", "where.exists.query"},
 		{"subqueries nested past the cap", nestedExists(relationalMaxSubqueryDepth + 1), "subquery-depth", strings.TrimSuffix(strings.Repeat("where.exists.query.", relationalMaxSubqueryDepth+1), ".")},
 		{"more sources than the cap", existsSources(relationalMaxSources), "source-count", fmt.Sprintf("where.and[%d].exists.query.from", relationalMaxSources-1)},
