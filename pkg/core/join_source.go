@@ -119,9 +119,21 @@ func (d *Database) ReadTx(ctx context.Context, fn func(dal.QueryExecutor) error)
 		return fnErr
 	}
 	if err != nil {
-		return d.queryError("failed to run the read transaction", err)
+		return d.queryError(ctx, "failed to run the read transaction", err)
 	}
 	return nil
+}
+
+// CheckRead runs, without starting a transaction or sending a statement, the checks every
+// read through ReadTx or Executor runs before the driver is reached (guardStructured): the
+// query is a structured one, its names are plain for the engine, it is a read the access
+// policies allow, it reads collections the database declares, and the engine is cleared
+// for queries. A caller that is about to open a read transaction asks first, so a query
+// that is refused costs the database no BEGIN either: a name that PostgreSQL would cut is
+// then refused before any statement of the mount, and the answer is the one the read
+// would have given from inside the transaction.
+func (d *Database) CheckRead(query dal.Query) error {
+	return guardedQueryExecutor{db: d}.guardStructured(query)
 }
 
 // guardedQueryExecutor offers only the query surface of an executor (and its
@@ -188,10 +200,10 @@ func (g guardedQueryExecutor) ExecuteQueryToRecordsReader(ctx context.Context, q
 	}
 	reader, err := g.executor.ExecuteQueryToRecordsReader(ctx, g.handed(query))
 	if err != nil {
-		return nil, g.db.queryError("failed to query", err)
+		return nil, g.db.queryError(ctx, "failed to query", err)
 	}
 	if serverEngines[g.db.queryEngine()] {
-		return builtReader{RecordsReader: reader, db: g.db}, nil
+		return builtReader{RecordsReader: reader, db: g.db, ctx: ctx}, nil
 	}
 	return reader, nil
 }
@@ -202,7 +214,7 @@ func (g guardedQueryExecutor) ExecuteQueryToRecordsetReader(ctx context.Context,
 	}
 	reader, err := g.executor.ExecuteQueryToRecordsetReader(ctx, g.handed(query), options...)
 	if err != nil {
-		return nil, g.db.queryError("failed to query", err)
+		return nil, g.db.queryError(ctx, "failed to query", err)
 	}
 	return reader, nil
 }
@@ -242,7 +254,7 @@ func (g guardedQueryExecutor) JoinFields(ctx context.Context, source dal.Records
 	if provider, ok := g.executor.(dal.JoinFieldsProvider); ok {
 		fields, err := provider.JoinFields(ctx, source)
 		if err != nil {
-			err = g.db.queryError("failed to load the fields of the collection", err)
+			err = g.db.queryError(ctx, "failed to load the fields of the collection", err)
 		}
 		return fields, err
 	}

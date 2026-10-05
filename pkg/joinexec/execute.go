@@ -221,6 +221,12 @@ func withClock(now func() time.Time) Option {
 // method set of whatever type a registry returns. The check comes before the
 // join-set check and no join-set setting lifts it.
 //
+// A Source may also answer CheckRead(dal.Query) error (core.Database has it): the
+// checks a read through the source runs before its driver is reached, asked without a
+// transaction. The database route asks it before ReadTx, so a document the source
+// refuses begins no transaction; a Source without the method is refused only inside
+// its transaction, by whatever guards its executor.
+//
 // The walk checks every name of a document (fields, aliases, qualifiers,
 // parameters, the result names of scalar subqueries and collections) by the
 // strict rules of pkg/core, the arithmetic operators and aggregate names by the
@@ -501,6 +507,14 @@ func (r *run) database(ctx context.Context, query dal.StructuredQuery, source So
 		failure error
 		ran     bool
 	)
+	// A source that can say, before a transaction, that it refuses the document is asked
+	// first, so a refused document sends no BEGIN: the refusal is the one the guarded
+	// executor inside the transaction would give, and is classified as that one is.
+	if checker, ok := source.(interface{ CheckRead(dal.Query) error }); ok {
+		if err := checker.CheckRead(query); err != nil {
+			return nil, r.guard.Classify(err, RouteDatabase)
+		}
+	}
 	txErr := source.ReadTx(ctx, func(executor dal.QueryExecutor) error {
 		ran = true
 		reader, err := executor.ExecuteQueryToRecordsReader(ctx, query)

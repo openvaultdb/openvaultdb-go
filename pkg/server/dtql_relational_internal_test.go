@@ -365,6 +365,34 @@ func TestRelationalBudgetHintsCoverEveryBound(t *testing.T) {
 	}
 }
 
+// The hint follows the route: a bound of the in-memory join reached on the database route
+// (DALgo reads each table whole there, with no filter) does not tell the caller to filter,
+// and every other pair of bound and route keeps the hint of the bound.
+func TestRelationalBudgetHintFollowsTheRoute(t *testing.T) {
+	joinBounds := []string{
+		joinexec.BudgetJoinRows, joinexec.BudgetJoinResultRows, joinexec.BudgetJoinFetchedRows,
+		joinexec.BudgetJoinRetainedBytes, joinexec.BudgetJoinScan, joinexec.BudgetJoinCandidateEvaluations,
+	}
+	for _, name := range joinBounds {
+		if got := budgetHintOn(name, joinexec.RouteDatabase); got != databaseRouteJoinHint {
+			t.Errorf("%s on the database route: hint %q, want the hint of that route", name, got)
+		}
+		if got := budgetHintOn(name, joinexec.RouteInMemory); got != budgetHint(name) {
+			t.Errorf("%s on the in-memory route: hint %q, want the hint of the bound", name, got)
+		}
+	}
+	if strings.Contains(databaseRouteJoinHint, "Add a filter") {
+		t.Errorf("the hint of the database route tells the caller to add a filter: %q", databaseRouteJoinHint)
+	}
+	for _, name := range []string{joinexec.BudgetSourceRows, joinexec.BudgetAggregationGroups, joinexec.BudgetResponseRows, "something_new"} {
+		for _, route := range []string{joinexec.RouteDatabase, joinexec.RouteInMemory} {
+			if got := budgetHintOn(name, route); got != budgetHint(name) {
+				t.Errorf("%s on the %s route: hint %q, want the hint of the bound", name, route, got)
+			}
+		}
+	}
+}
+
 // The handler authorises every database and collection of the document before it
 // calls the executor, so a request it refuses reaches nothing; the executor gets
 // the same authoriser to check again.

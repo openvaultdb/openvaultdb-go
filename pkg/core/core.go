@@ -267,7 +267,7 @@ func (d *Database) Get(ctx context.Context, key *record.Key) (map[string]any, er
 		if record.IsNotFound(err) {
 			return nil, fmt.Errorf("%w: %s", ErrNotFound, clipKey(key))
 		}
-		return nil, err
+		return nil, d.reached(ctx, err)
 	}
 	if !rec.Exists() {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, clipKey(key))
@@ -320,7 +320,8 @@ func (d *Database) Exists(ctx context.Context, key *record.Key) (bool, error) {
 	if err := d.GuardKey(key); err != nil {
 		return false, err
 	}
-	return d.db.Exists(ctx, d.adapterKey(key))
+	exists, err := d.db.Exists(ctx, d.adapterKey(key))
+	return exists, d.reached(ctx, err)
 }
 
 // Collections lists the collections of the database, sorted. A document engine
@@ -340,7 +341,7 @@ func (d *Database) Collections(ctx context.Context) ([]string, error) {
 	}
 	refs, err := reader.ListCollections(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list collections: %w", err)
+		return nil, fmt.Errorf("failed to list collections: %w", d.reached(ctx, err))
 	}
 	var names []string
 	if d.isDocumentEngine() {
@@ -407,7 +408,7 @@ func (d *Database) CollectionForeignKeys(ctx context.Context, collection string)
 		if errors.As(err, &unsupported) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("describe collection %q: %w", clipName(collection), err)
+		return nil, fmt.Errorf("describe collection %q: %w", clipName(collection), d.reached(ctx, err))
 	}
 	if def == nil {
 		return nil, nil
@@ -476,6 +477,11 @@ type UpdateOp struct {
 // inside one dal.RunReadwriteTransaction — for inGitDB that is at most one
 // git commit per batch, with message as the commit message.
 func (d *Database) Apply(ctx context.Context, ops []Op, message string) (int, error) {
+	applied, err := d.apply(ctx, ops, message)
+	return applied, d.reached(ctx, err)
+}
+
+func (d *Database) apply(ctx context.Context, ops []Op, message string) (int, error) {
 	// Refuse the whole batch before the first adapter call: the validation
 	// below reads every key from the driver.
 	if err := d.guardWrite(ops); err != nil {
