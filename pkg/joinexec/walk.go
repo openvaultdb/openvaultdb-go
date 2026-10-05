@@ -45,10 +45,11 @@ const maxWalkNesting = 64
 
 // arithmeticOperators and aggregateFunctions are the operators and aggregate
 // names the classifier of pkg/core accepts in any position (validateRelationalNames
-// and its aggregateFunctions); the drift test in pkg/core compares them.
+// and core.AggregateFunctions, the five functions of the profile); the drift test
+// in pkg/core compares them.
 var (
 	arithmeticOperators = map[dal.ArithmeticOperator]bool{dal.Add: true, dal.Subtract: true, dal.Multiply: true, dal.Divide: true}
-	aggregateFunctions  = map[string]bool{"COUNT": true, "SUM": true, "AVG": true, "MIN": true, "MAX": true, "FIRST": true, "LAST": true}
+	aggregateFunctions  = map[string]bool{"COUNT": true, "SUM": true, "AVG": true, "MIN": true, "MAX": true}
 )
 
 // maxNameLen is the longest field name, qualifier or alias.
@@ -80,7 +81,7 @@ const maxEchoLen = 64
 // compare. And the walk refuses a parameter wherever it sits, because nothing
 // binds a parameter once a document reaches Execute, where the classifier takes
 // a parameter of a valid name as an operand. The walk also refuses an arithmetic
-// operator outside + - * / and an aggregate name outside the classifier's seven,
+// operator outside + - * / and an aggregate name outside the classifier's five,
 // as the classifier does, so those are not differences. What only the classifier
 // checks is listed on Execute.
 var (
@@ -439,7 +440,7 @@ func (w *walker) expressionNode(expression dal.Expression, path string, depth in
 	case dal.AggregateFunc:
 		// The same: DALgo validates an aggregate's name only where it aggregates.
 		if !aggregateFunctions[strings.ToUpper(value.FuncName())] {
-			return refuse(path, "an aggregate function must be one of COUNT, SUM, AVG, MIN, MAX, FIRST, LAST")
+			return refuse(path, "an aggregate function must be one of COUNT, SUM, AVG, MIN, MAX")
 		}
 		for i, arg := range value.FuncArgs() {
 			if err := w.expression(arg, fmt.Sprintf("%s.args[%d]", path, i), depth); err != nil {

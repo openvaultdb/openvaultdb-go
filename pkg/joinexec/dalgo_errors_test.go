@@ -285,6 +285,7 @@ var pinnedMessages = map[string][]string{
 		`fmt.Sprintf("%s at %s: %s", e.Category, e.Path, e.Message)`,
 	},
 	"aggregation_execute.go": {
+		`defaultMaxAggregationGroups = 100_000`,
 		`"dalgo aggregation: group limit %d exceeded"`,
 		`"dalgo aggregation: aggregate-state limit %d exceeded"`,
 		`"dalgo aggregation: retained aggregation byte limit %d exceeded"`,
