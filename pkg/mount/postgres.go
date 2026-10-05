@@ -34,6 +34,13 @@ func openPostgres(m *manifest.Manifest) (dal.DB, []schema.Mode, error) {
 // openPostgresWith is openPostgres with the function that opens the connection.
 // An error from it is not returned or wrapped (see postgresOpenError).
 func openPostgresWith(m *manifest.Manifest, open postgresOpener) (dal.DB, []schema.Mode, error) {
+	// A name the database cannot keep whole is refused before the environment is read
+	// and before any connection is made, so that nothing is created for the entries
+	// before it (the collections are provisioned one by one when the database opens).
+	// manifest.Validate refuses it already; this is for a manifest that was not validated.
+	if err := m.CheckPostgresNames(); err != nil {
+		return nil, nil, err
+	}
 	envVar := m.Storage.Postgres.DSNEnvVar()
 	if !manifest.ValidEnvVarName(envVar) {
 		// A manifest that was not validated (see manifest.Manifest.Validate): the

@@ -162,7 +162,10 @@ partial/schemaless is on the roadmap and would make Postgres the first SQL
 engine with all three modes). PostgreSQL folds identifiers to lower case, so
 collection and field names are stored lower-cased; ovdb restores declared
 field-name case on read (see `coerceToSchema`) so strict validation and
-clients see faithful names.
+clients see faithful names. The adapter writes only a plain name (ASCII letters, digits and
+underscores, not starting with a digit, at most 63 bytes) into a statement that creates a table
+or a column, so a manifest that declares any other collection or field name is refused when it is
+loaded, before a connection is made and before any table is created.
 
 ### MySQL
 
