@@ -20,7 +20,8 @@ import (
 // that reach it, so no server is involved.
 
 // namesDriver is a PostgreSQL driver that counts the key reads and writes that reach it
-// (the structured reads are counted by previewPGDriver) and fails each with errNamesReached.
+// (the structured reads and the read transactions are counted by previewPGDriver) and fails
+// each with errNamesReached.
 type namesDriver struct {
 	*previewPGDriver
 	keyCalls atomic.Int32
@@ -43,7 +44,7 @@ func (d *namesDriver) RunReadwriteTransaction(context.Context, dal.RWTxWorker, .
 	return errNamesReached
 }
 
-func (d *namesDriver) statements() int32 { return d.keyCalls.Load() + d.reads.Load() }
+func (d *namesDriver) statements() int32 { return d.keyCalls.Load() + d.reads.Load() + d.begins.Load() }
 
 func TestAPostgresNameOver63BytesIsA400BeforeAnyStatementOnEveryRoute(t *testing.T) {
 	long := strings.Repeat("n", 64)

@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -70,5 +71,52 @@ func TestThePostBodyOfAQueryThatIsNotJSONIsStillA400(t *testing.T) {
 		if resp.status != http.StatusBadRequest || resp.errorField("code") != "bad_request" || !strings.HasPrefix(resp.errorField("message"), "invalid JSON body: ") {
 			t.Errorf("%s: status %d: %s", name, resp.status, resp.raw)
 		}
+	}
+}
+
+// The bound counts the bytes read, whatever the framing: a body sent chunked, with no length
+// announced, is read up to 1 MiB and refused one byte over, with the same answer.
+func TestThePostBodyOfAQuerySentChunkedIsBoundedAtOneMiB(t *testing.T) {
+	service := server.New("test", map[string]*core.Database{"chinook": relHTTPChinook(t, "")})
+	t.Cleanup(service.CloseSnapshots)
+	var lengths []int64
+	host := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lengths = append(lengths, r.ContentLength)
+		service.Handler().ServeHTTP(w, r)
+	}))
+	t.Cleanup(host.Close)
+	post := func(size int) (int, string) {
+		t.Helper()
+		// The reader hides its length, so the client sends the body chunked.
+		req, err := http.NewRequest(http.MethodPost, host.URL+"/v1/databases/chinook/query", struct{ io.Reader }{strings.NewReader(queryBodyOfSize(size))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.ContentLength = -1
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp.StatusCode, string(body)
+	}
+	if status, body := post(queryBodyBound); status != http.StatusOK {
+		t.Fatalf("a chunked body of exactly 1 MiB: status %d: %.200s", status, body)
+	}
+	status, body := post(queryBodyBound + 1)
+	if status != http.StatusBadRequest || !strings.Contains(body, `"bad_request"`) || !strings.Contains(body, "failed to read body: ") {
+		t.Fatalf("a chunked body one byte over 1 MiB: status %d: %.200s", status, body)
+	}
+	for i, length := range lengths {
+		if length != -1 {
+			t.Errorf("request %d announced a length of %d: the body was not chunked", i, length)
+		}
+	}
+	if len(lengths) != 2 {
+		t.Errorf("the server saw %d requests, want 2", len(lengths))
 	}
 }

@@ -145,7 +145,7 @@ func (d *Database) Execute(ctx context.Context, q Query) ([]Record, error) {
 	if err = d.guardSources(query); err != nil {
 		return nil, err
 	}
-	records, err := d.executeDalQuery(ctx, query, q.Collection, q.KeysOnly)
+	records, err := d.executeDalQuery(ctx, ctx, query, q.Collection, q.KeysOnly)
 	if err != nil {
 		return nil, err
 	}
@@ -252,6 +252,14 @@ func (q boundedDTQL) Limit() int {
 	return q.StructuredQuery.Limit()
 }
 
+// The time budgets of a structured read of one collection through ExecuteDTQLQuery and of
+// the complete capture of StreamDTQLSnapshot. They are variables only so that a test can
+// make a budget end at once; nothing else changes them.
+var (
+	dtqlBudget     = 10 * time.Second
+	snapshotBudget = 60 * time.Second
+)
+
 // snapshotDTQL removes the ordinary 1000-row default for a disk-backed
 // result capture. Its caller enforces a byte and row bound while streaming.
 type snapshotDTQL struct{ boundedDTQL }
@@ -278,13 +286,17 @@ func (d *Database) StreamDTQLSnapshot(ctx context.Context, query dal.StructuredQ
 	if err := d.guardQuery(); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	// A failure is decided on the request's own context (request), not on the budget the
+	// capture runs under: a connection that does not answer ends on the budget, and is
+	// still the failure of the database, not of the request.
+	request := ctx
+	ctx, cancel := context.WithTimeout(ctx, snapshotBudget)
 	defer cancel()
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	reader, err := d.db.ExecuteQueryToRecordsReader(ctx, snapshotDTQL{boundedDTQL{query}})
 	if err != nil {
-		return d.queryError(ctx, fmt.Sprintf("failed to query collection %q", clipName(collection)), err)
+		return d.queryError(request, fmt.Sprintf("failed to query collection %q", clipName(collection)), err)
 	}
 	defer func() { _ = reader.Close() }()
 	for {
@@ -296,7 +308,7 @@ func (d *Database) StreamDTQLSnapshot(ctx context.Context, query dal.StructuredQ
 			return nil
 		}
 		if nextErr != nil {
-			return d.queryError(ctx, fmt.Sprintf("failed reading query results for %q", clipName(collection)), nextErr)
+			return d.queryError(request, fmt.Sprintf("failed reading query results for %q", clipName(collection)), nextErr)
 		}
 		out := Record{Key: rec.Key()}
 		data, _ := rec.Data().(map[string]any)
@@ -327,16 +339,23 @@ func (d *Database) ExecuteDTQLQuery(ctx context.Context, query dal.StructuredQue
 	if err = d.guardSources(query); err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	request := ctx
+	ctx, cancel := context.WithTimeout(ctx, dtqlBudget)
 	defer cancel()
-	return d.executeDalQuery(ctx, boundedDTQL{query}, collection, false)
+	return d.executeDalQuery(ctx, request, boundedDTQL{query}, collection, false)
 }
 
-func (d *Database) executeDalQuery(ctx context.Context, query dal.StructuredQuery, collection string, keysOnly bool) ([]Record, error) {
-	return d.executeDalQueryOn(ctx, d.db, query, collection, keysOnly)
+// executeDalQuery reads under ctx, which may be a budget the server gave the read, and
+// decides a failure on request, the context of the request itself (see executeDalQueryOn).
+func (d *Database) executeDalQuery(ctx, request context.Context, query dal.StructuredQuery, collection string, keysOnly bool) ([]Record, error) {
+	return d.executeDalQueryOn(ctx, request, d.db, query, collection, keysOnly)
 }
 
-func (d *Database) executeDalQueryOn(ctx context.Context, db dal.DB, query dal.StructuredQuery, collection string, keysOnly bool) ([]Record, error) {
+// executeDalQueryOn reads under ctx and answers a failure of the adapter as queryError does
+// for request. The two are one context unless the server gave the read a budget of its own:
+// a connection that does not answer ends on that budget, and is the failure of the database
+// whenever the request itself is still alive.
+func (d *Database) executeDalQueryOn(ctx, request context.Context, db dal.DB, query dal.StructuredQuery, collection string, keysOnly bool) ([]Record, error) {
 	// Single choke point for every structured read: no engine that is not
 	// cleared for queries (see queryEngines) is ever handed one.
 	if err := d.guardQuery(); err != nil {
@@ -344,7 +363,7 @@ func (d *Database) executeDalQueryOn(ctx context.Context, db dal.DB, query dal.S
 	}
 	reader, err := db.ExecuteQueryToRecordsReader(ctx, query)
 	if err != nil {
-		return nil, d.queryError(ctx, fmt.Sprintf("failed to query collection %q", clipName(collection)), err)
+		return nil, d.queryError(request, fmt.Sprintf("failed to query collection %q", clipName(collection)), err)
 	}
 	defer func() { _ = reader.Close() }()
 	var records []Record
@@ -360,7 +379,7 @@ func (d *Database) executeDalQueryOn(ctx context.Context, db dal.DB, query dal.S
 			return records, nil
 		}
 		if nextErr != nil {
-			return nil, d.queryError(ctx, fmt.Sprintf("failed reading query results for %q", clipName(collection)), nextErr)
+			return nil, d.queryError(request, fmt.Sprintf("failed reading query results for %q", clipName(collection)), nextErr)
 		}
 		out := Record{Key: rec.Key()}
 		data, _ := rec.Data().(map[string]any)

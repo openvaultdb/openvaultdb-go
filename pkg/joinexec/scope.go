@@ -162,6 +162,13 @@ type scopeLevel struct {
 	// ordered is true when a ref is a field of an ORDER BY, which is looked at even for a
 	// query of one source.
 	ordered bool
+	// exists is true for the query of an EXISTS condition, which DALgo evaluates row by row
+	// when it reads one source, with no check of its fields against the lists.
+	exists bool
+	// named are the fields of such a query, in every clause, that carry a name a list of the
+	// one source of the query alone says is known or not: the fields that name their source
+	// and the unqualified ones.
+	named []scopeRef
 }
 
 // checkScopes refuses the first unqualified field of a query, in document order, that
@@ -203,7 +210,53 @@ func (l *scopeLevel) check(ctx context.Context, fields fieldSupplier) error {
 	if err := l.checkUnqualified(lists); err != nil {
 		return err
 	}
-	return l.checkQualified(lists)
+	if err := l.checkQualified(lists); err != nil {
+		return err
+	}
+	return l.checkExistsFields(lists)
+}
+
+// checkExistsFields refuses the first field, in any clause, of the query of an EXISTS that
+// reads one source, when the list of that source does not carry it. DALgo checks every field
+// of a query against the lists of its sources (and of a query of an EXISTS that reads
+// several), but it evaluates the query of an EXISTS over one source row by row and reads a
+// name the row lacks as a null: the condition matched nothing, and the document was
+// answered 200 with no rows, for a name that no row of the source has (a field spelled as
+// the manifest declares it where the database holds it in lower case). The columns it selects
+// are not looked at, since what they select does not change whether a row is found, and a
+// document that names an unknown column there is read as it always was (a null). The fields
+// of an ORDER BY are looked at by the checks above and are not asked again. A source that supplies
+// no list cannot say a name is unknown, and the key pseudo-field is no field of a list.
+func (l *scopeLevel) checkExistsFields(lists *levelLists) error {
+	if !l.exists || len(l.sources) != 1 || len(l.named) == 0 {
+		return nil
+	}
+	list, supplied, err := lists.of(0)
+	if err != nil || !supplied {
+		return err
+	}
+	alias := sourceAlias(l.sources[0])
+	for _, ref := range l.named {
+		// A field that names the source of a query around is read from that query's row.
+		if ref.qualifier != "" && ref.qualifier != alias {
+			continue
+		}
+		if ref.name == keyField || slices.Contains(list, ref.name) {
+			continue
+		}
+		return unknownFieldRefusal(ref, "")
+	}
+	return nil
+}
+
+// unknownFieldRefusal is the refusal of a field that the source it is read from does not
+// carry; clause is " in ORDER BY" for a field of an ORDER BY, where the message says so.
+func unknownFieldRefusal(ref scopeRef, clause string) *dal.QueryValidationError {
+	message := fmt.Sprintf("unknown field %q%s: no source of the query carries it", clip(ref.name), clause)
+	if ref.qualifier != "" {
+		message = fmt.Sprintf("unknown field %q%s: the source %s does not carry it", clip(ref.name), clause, clip(ref.qualifier))
+	}
+	return &dal.QueryValidationError{Category: "shape", Path: ref.path, Message: message}
 }
 
 func (l *scopeLevel) checkUnqualified(lists *levelLists) error {
@@ -283,11 +336,7 @@ func (l *scopeLevel) checkQualified(lists *levelLists) error {
 			return err
 		}
 		if supplied && !slices.Contains(list, ref.name) {
-			return &dal.QueryValidationError{
-				Category: "shape",
-				Path:     ref.path,
-				Message:  fmt.Sprintf("unknown field %q in ORDER BY: the source %s does not carry it", clip(ref.name), clip(ref.qualifier)),
-			}
+			return unknownFieldRefusal(ref, " in ORDER BY")
 		}
 	}
 	return nil
@@ -401,7 +450,12 @@ type scopeOption func(*scopeWalk)
 func keyOrderedByTheMount(w *scopeWalk) { w.keyOrdering = true }
 
 func (w *scopeWalk) query(query dal.StructuredQuery, path string) {
-	level := &scopeLevel{}
+	w.queryOf(query, path, false)
+}
+
+// queryOf walks a query; exists is true for the query of an EXISTS condition.
+func (w *scopeWalk) queryOf(query dal.StructuredQuery, path string, exists bool) {
+	level := &scopeLevel{exists: exists}
 	w.levels = append(w.levels, level)
 	// Only the root query is ever handed to a mount whole; every query inside it is evaluated
 	// by DALgo.
@@ -439,12 +493,16 @@ func (w *scopeWalk) query(query dal.StructuredQuery, path string) {
 		flow.kind = readAggregated
 		flow.earlier = map[string]bool{}
 	}
+	// What a column selects does not change whether the query of an EXISTS finds a row, so a
+	// name there is not looked at for it (checkExistsFields).
+	flow.inColumns = true
 	for i, column := range columns {
 		flow.expression(column.Expression, fmt.Sprintf("%scolumns[%d]", path, i))
 		if aggregated {
 			flow.earlier[outputName(column)] = !flow.isOwnName(column)
 		}
 	}
+	flow.inColumns = false
 }
 
 // isOwnName reports whether the column is a field that is named as itself, by its alias or
@@ -517,6 +575,8 @@ type scopeFlow struct {
 	// keyOrdering is true for the query that a mount is handed whole, which sorts by the key
 	// pseudo-field (keyField).
 	keyOrdering bool
+	// inColumns is true while the columns of the select list are walked.
+	inColumns bool
 }
 
 // refuse adds a refusal that needs no field list to the level.
@@ -563,7 +623,7 @@ func (f *scopeFlow) condition(condition dal.Condition, path string) {
 	case dal.IsNullCondition:
 		f.expression(value.Operand(), path+".operand")
 	case dal.ExistsCondition:
-		f.walk.query(value.Query(), path+".query.")
+		f.walk.queryOf(value.Query(), path+".query.", true)
 	}
 }
 
@@ -576,8 +636,13 @@ func (f *scopeFlow) expression(expression dal.Expression, path string) {
 		}
 		if value.Source() == "" {
 			f.field(value.Name(), path)
-		} else if f.kind == readOrdered {
-			f.level.qualified = append(f.level.qualified, scopeRef{name: value.Name(), path: path, kind: readOrdered, qualifier: value.Source()})
+		} else {
+			ref := scopeRef{name: value.Name(), path: path, kind: f.kind, qualifier: value.Source()}
+			if f.kind == readOrdered {
+				f.level.qualified = append(f.level.qualified, ref)
+			} else if f.level.exists && !f.inColumns {
+				f.level.named = append(f.level.named, ref)
+			}
 		}
 	case dal.BinaryExpression:
 		inside := f.inExpression
@@ -645,5 +710,7 @@ func (f *scopeFlow) field(name, path string) {
 	f.level.refs = append(f.level.refs, ref)
 	if f.kind == readOrdered {
 		f.level.ordered = true
+	} else if f.level.exists && !f.inColumns {
+		f.level.named = append(f.level.named, ref)
 	}
 }

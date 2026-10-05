@@ -15,7 +15,7 @@ import (
 
 // resultBufferHint is the hint of a read of one collection whose result is larger than the
 // buffer of the server (core.ErrResultTooLarge).
-const resultBufferHint = "The result is larger than one response holds (8 MiB). Narrow the read with a filter or a smaller limit, select fewer columns, or read it in pages: the DTQL endpoint pages a complete result with the OVDB-Page-Size header."
+const resultBufferHint = "The result is larger than one response holds (8 MiB). Narrow the read with a filter or a smaller limit. A DTQL read can also select fewer columns and, on a mount without access policies, read the result in pages: send the OVDB-Page-Size header to the DTQL endpoint."
 
 // codeDatabaseUnavailable and messageDatabaseUnavailable are the error code and the
 // message of a request that a mount's database server could not answer because it

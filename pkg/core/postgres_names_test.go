@@ -244,3 +244,30 @@ func TestAnUndeclaredPostgresCollectionOver63BytesIsRefusedForItsLength(t *testi
 		t.Errorf("an undeclared short collection: %v, want ErrNotFound", err)
 	}
 }
+
+// CheckRead gives, without the driver, the refusal the guarded executor gives inside a
+// transaction: a field of 64 bytes is refused for its length, a declared name is not, and
+// a query that is not a structured one is refused.
+func TestCheckReadRefusesWhatTheGuardedExecutorRefusesAndReachesNoDriver(t *testing.T) {
+	long := pgName(maxServerNameBytes + 1)
+	db, fake := openNamed(t, "postgres", "orders", "total")
+	document := func(field string) dal.Query {
+		parsed, err := DeserializeDTQL([]byte("from: {name: customers, alias: c}\nwhere: {op: '==', left: {field: " + field + ", source: c}, right: {value: x}}\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return parsed
+	}
+	if err := db.CheckRead(document(long)); !errors.Is(err, ErrInvalidDTQL) || !strings.Contains(err.Error(), "63 bytes") || strings.Contains(err.Error(), long) {
+		t.Errorf("a field of 64 bytes: %v, want ErrInvalidDTQL that gives the limit and not the name", err)
+	}
+	if err := db.CheckRead(document("name")); err != nil {
+		t.Errorf("a declared field: %v, want it accepted", err)
+	}
+	if err := db.CheckRead(dal.NewTextQuery("select 1", nil)); err == nil {
+		t.Error("a text query was accepted")
+	}
+	if fake.calls.Load() != 0 {
+		t.Errorf("%d calls reached the driver", fake.calls.Load())
+	}
+}

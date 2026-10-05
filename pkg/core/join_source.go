@@ -124,6 +124,18 @@ func (d *Database) ReadTx(ctx context.Context, fn func(dal.QueryExecutor) error)
 	return nil
 }
 
+// CheckRead runs, without starting a transaction or sending a statement, the checks every
+// read through ReadTx or Executor runs before the driver is reached (guardStructured): the
+// query is a structured one, its names are plain for the engine, it is a read the access
+// policies allow, it reads collections the database declares, and the engine is cleared
+// for queries. A caller that is about to open a read transaction asks first, so a query
+// that is refused costs the database no BEGIN either: a name that PostgreSQL would cut is
+// then refused before any statement of the mount, and the answer is the one the read
+// would have given from inside the transaction.
+func (d *Database) CheckRead(query dal.Query) error {
+	return guardedQueryExecutor{db: d}.guardStructured(query)
+}
+
 // guardedQueryExecutor offers only the query surface of an executor (and its
 // optional join fields) and checks every call against the database it reads.
 type guardedQueryExecutor struct {

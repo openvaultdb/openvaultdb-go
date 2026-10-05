@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/dalgo/dbschema"
@@ -248,5 +249,69 @@ func TestAConnectionFailureOfAQueryWhoseRequestEndedKeepsTheContext(t *testing.T
 	}
 	if !strings.Contains(err.Error(), "the database server could not run the query") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+// budgetDB is a driver whose connection attempt does not answer: a structured read waits
+// until its context ends (the budget the server gave it, or the request) and then fails
+// with failure, as the adapter fails an attempt that its context cut short.
+type budgetDB struct {
+	scriptedQueryDB
+	failure error
+}
+
+func (f *budgetDB) ExecuteQueryToRecordsReader(ctx context.Context, _ dal.Query) (dal.RecordsReader, error) {
+	<-ctx.Done()
+	return nil, f.failure
+}
+
+// makeTheBudgetsEnd gives the time budgets of the single-collection reads no time.
+func makeTheBudgetsEnd(t *testing.T) {
+	t.Helper()
+	dtql, snapshot := dtqlBudget, snapshotBudget
+	dtqlBudget, snapshotBudget = time.Nanosecond, time.Nanosecond
+	t.Cleanup(func() { dtqlBudget, snapshotBudget = dtql, snapshot })
+}
+
+// A connection that fails because the time budget of the read ended, while the request is
+// alive, is the unreachable database on the routes of one collection, the same answer as a
+// key read gets for the same outage; the budget is the server's, not the request's. When
+// the request itself ends, or the failure is no connection failure, the read keeps the
+// answer it had.
+func TestAConnectionThatFailsUnderTheBudgetOfTheServerIsUnreachable(t *testing.T) {
+	setPreview(t, true, "1")
+	makeTheBudgetsEnd(t)
+	parsed, _, err := ParseDTQL([]byte(guardDTQL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := map[string]func(ctx context.Context, db *Database) error{
+		"ExecuteDTQLQuery": func(ctx context.Context, db *Database) error {
+			_, err := db.ExecuteDTQLQuery(ctx, parsed)
+			return err
+		},
+		"StreamDTQLSnapshot": func(ctx context.Context, db *Database) error {
+			return db.StreamDTQLSnapshot(ctx, parsed, func(Record) error { return nil })
+		},
+	}
+	for route, run := range routes {
+		t.Run(route+"/the connection fails under the budget", func(t *testing.T) {
+			db := openScripted(t, "postgres", &budgetDB{failure: connectionFailure(dalgo2postgres.FailureTimeout, "")})
+			requireUnreachable(t, run(context.Background(), db), "the connection timed out or was canceled")
+		})
+		t.Run(route+"/the request ended", func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			db := openScripted(t, "postgres", &budgetDB{failure: connectionFailure(dalgo2postgres.FailureTimeout, "")})
+			if err := run(ctx, db); errors.Is(err, ErrDatabaseUnreachable) {
+				t.Fatalf("error = %v: an ended request is not an unreachable database", err)
+			}
+		})
+		t.Run(route+"/the failure is not a connection", func(t *testing.T) {
+			db := openScripted(t, "postgres", &budgetDB{failure: context.DeadlineExceeded})
+			if err := run(context.Background(), db); errors.Is(err, ErrDatabaseUnreachable) || !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("error = %v, want the deadline of the budget as it was", err)
+			}
+		})
 	}
 }

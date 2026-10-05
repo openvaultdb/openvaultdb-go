@@ -110,7 +110,7 @@ func (d *Database) SelectAccessSample(ctx context.Context, query dal.StructuredQ
 			return nil, order, err
 		}
 	}
-	records, err := d.executeDalQueryOn(ctx, readDB, bounded, collection, false)
+	records, err := d.executeDalQueryOn(ctx, ctx, readDB, bounded, collection, false)
 	return records, order, err
 }
 

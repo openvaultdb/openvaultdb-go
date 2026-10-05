@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/dalgo/dbschema"
@@ -221,5 +223,51 @@ func TestTheHumanPageOfAMountWhoseDriverFailsForAnotherReasonIsStillA500(t *test
 	resp := relFakeDo(t, host, http.MethodGet, "/ovdb/dbs/pg/collections/customers", "", "", nil)
 	if resp.status != http.StatusInternalServerError || strings.Contains(resp.raw, unreachableHost) {
 		t.Fatalf("status %d: %s", resp.status, resp.raw)
+	}
+}
+
+// The paged capture of a DTQL read, which no route above covers (it takes the header of a
+// page size), is the same 503 with the same log line. The decision that a connection that
+// fails under the server's time budget is this answer too is made in core, where the budget
+// is a seam (core.TestAConnectionThatFailsUnderTheBudgetOfTheServerIsUnreachable); this
+// holds that the capture maps it.
+func TestAPagedCaptureOfAMountThatCannotBeReachedIsAFixed503(t *testing.T) {
+	for _, kind := range unreachableKinds {
+		t.Run(kind.name, func(t *testing.T) {
+			host, logs := unreachableServer(t, unreachableFailure(kind.kind, kind.sqlState))
+			resp := relFakeDo(t, host, http.MethodPost, "/v1/databases/pg/dtql", "", "from: {name: customers}\n", map[string]string{"OVDB-Page-Size": "10"})
+			if resp.status != http.StatusServiceUnavailable || resp.code() != "database_unavailable" {
+				t.Fatalf("status %d: %s", resp.status, resp.raw)
+			}
+			requireNoConnection(t, "the answer", resp.raw)
+			requireNoConnection(t, "the log", logs.String())
+			if lines := logLines(t, logs); len(lines) != 1 || lines[0]["database"] != "pg" || lines[0]["msg"] != "database unreachable" {
+				t.Fatalf("log = %s", logs)
+			}
+		})
+	}
+}
+
+// A relational document that its own time budget ends while a connection is being made is
+// the timeout it is documented to be (504 query_timeout), not the 503 of an unreachable
+// database: the budget of the document is the server's limit on the whole document, and the
+// adapter reports the attempt it cut short as a connection failure that is also the
+// deadline. This pins the choice made for the documents of /v1/dtql; the routes of one
+// collection decide on the request, and answer 503 (see core).
+func TestARelationalDocumentWhoseBudgetEndsOnAConnectionAttemptIsStillA504(t *testing.T) {
+	failure := errors.Join(unreachableFailure(dalgo2postgres.FailureTimeout, ""), context.DeadlineExceeded)
+	for _, route := range []struct{ name, body string }{
+		{"alone", "from: {database: pg, name: customers}\n"},
+		{"in the database", previewPGSameDatabaseJoin},
+	} {
+		t.Run(route.name, func(t *testing.T) {
+			host, logs := previewPGServerLimits(t, &unreachableDriver{previewPGDriver: &previewPGDriver{openErr: failure, fieldsErr: failure}, failure: failure}, time.Nanosecond)
+			resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", route.body, nil)
+			if resp.status != http.StatusGatewayTimeout || resp.code() != "query_timeout" {
+				t.Fatalf("status %d: %s", resp.status, resp.raw)
+			}
+			requireNoConnection(t, "the answer", resp.raw)
+			requireNoConnection(t, "the log", logs.String())
+		})
 	}
 }

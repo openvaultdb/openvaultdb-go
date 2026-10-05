@@ -401,10 +401,11 @@ endpoints: the body is read whole up to 1 MiB, and one byte more is `400 bad_req
 read body: ...`), the answer the DTQL endpoints give for a body over their cap. Query results remain
 subject to the server's 8 MiB result buffer: a result larger than it is `422 query_budget_exceeded`
 (`error.budget` names the bound, `response_bytes`, with its limit and the route `database`) and
-`error.hint` says to narrow the read with a filter or a smaller limit, to select fewer columns, or
-to read it in pages (the DTQL endpoint pages a complete result, see [DTQL](#dtql)). It is a request
-the client can change, so it is not logged as an error. A result of exactly the buffer is answered.
-(Before, such a read was `500 internal`, with an `ERROR` line in the log for each.) For a public, unprotected mounted database, embedders can
+`error.hint` says to narrow the read with a filter or a smaller limit, and that a DTQL read can also
+select fewer columns and, on a mount without access policies, read the result in pages (the DTQL
+endpoint pages a complete result, see [DTQL](#dtql); `/query` has no column selection, and paging
+is refused on a mount with access policies). It is a request the client can change, so it is not
+logged as an error. A result of exactly the buffer is answered. For a public, unprotected mounted database, embedders can
 set `database.cache_ttl: 24h` in that database's manifest and run the server
 with `server.WithReadOnly(true)`. Successful GET `/read`, `/query`, and `/dtql`
 responses then send `Cache-Control: public, max-age=N, s-maxage=N`, where N is
@@ -499,7 +500,17 @@ line, `database unreachable`, with the method, the path, the ID of the mount (`d
 adapter's own fixed sentence for the failure (`reason`, for example `dalgo2postgres: the server could
 not be reached`, or with the SQLSTATE code of a server that answered); nothing of the connection
 string is in it either. A request that was canceled, or that ran past its deadline, is not this
-failure: it keeps its own answer (`504 query_timeout` on a relational document).
+failure: it keeps its own answer (`504 query_timeout` on a relational document). The routes that
+read one collection (`/query`, `/dtql`, a paged capture) decide on the request itself: a
+connection attempt that does not answer and fails when the time the server gives the read ends
+(10 seconds, 60 for a paged capture) is the `503` while the request is alive. A relational
+document runs under the time limit of the whole document, and a connection attempt that ends on
+it is the `504 query_timeout` the document answers when that limit ends it.
+
+After a `503` on a write (a key write, an update, a delete or a `/batch`), the client reads the record
+before it repeats the write: a connection that is lost while the server acknowledges a commit is
+reported the same way as one that could not be made, and an insert, or an update with a transform,
+is not safe to repeat.
 
 A field declared with capitals (`FirstName`) is held by PostgreSQL in lower case. A route that reads
 one collection finds it by the declared spelling and by the lower-case one, and answers a record
@@ -509,7 +520,9 @@ A document with a subquery, a join across databases, and a join that DALgo reads
 (above), run in the engine of this server over the names the database holds, which are lower case
 (the field list is the one the adapter reads from the catalog): such a document writes
 `firstname`, and the declared spelling is `400 invalid_dtql` there (a SQLite mount reads the
-declared spelling and refuses the lower-case one).
+declared spelling and refuses the lower-case one). That holds for a field named in the query of an
+`exists` as it does in a join: the field list of the source of that query is read before anything
+is, and a field it does not carry is refused, never answered with no rows.
 
 A `postgres` mount takes part in a relational document only when `postgres` is in the join engines
 of the query limits (`joinEngines`), which the operator sets; the discovery document lists it, and

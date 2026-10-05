@@ -195,7 +195,14 @@ gives them a reviewed dialect. The
 structured-query path of a MySQL mount has no dialect yet. The PostgreSQL
 adapter forces its typed dialect (every value bound, every name quoted), and a
 PostgreSQL mount states how it matches names (folded to lower case). ovdb does
-not depend on the adapter for either:
+not depend on the adapter for either. (`pkg/core` does import
+`github.com/dal-go/dalgo2postgres`, and through it `dalgo2sql` and pgx, for one
+thing: to recognise the adapter's `*ConnectionError` and read its fixed sentence.
+`pkg/mount` already imported the adapter, so the module's dependencies do not
+change; only the import of the engine-neutral package does. The sentence is read
+in one file, `pkg/core/unreachable.go`, and every other fact about a driver is
+still read through an interface.)
+
 
 - **Queries.** `/query` and `/dtql` are refused on `mysql` with `501
   query_unsupported` before any query reaches the driver, and on `postgres`

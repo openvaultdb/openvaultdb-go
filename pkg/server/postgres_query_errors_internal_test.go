@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/dalgo/recordset"
@@ -29,6 +30,9 @@ type previewPGDriver struct {
 	dal.DB
 	openErr error
 	reads   atomic.Int32
+	// begins counts the read transactions that were begun: on a real server each one
+	// sends BEGIN, so it is a statement of the mount.
+	begins atomic.Int32
 	// beginErr fails a read transaction before it runs, commitErr fails it after its
 	// function returned without an error, and fieldsErr fails the field list of a
 	// collection (the catalog lookup of the adapter).
@@ -56,6 +60,7 @@ func (f *previewPGDriver) ExecuteQueryToRecordsetReader(context.Context, dal.Que
 }
 
 func (f *previewPGDriver) RunReadonlyTransaction(ctx context.Context, worker dal.ROTxWorker, _ ...dal.TransactionOption) error {
+	f.begins.Add(1)
 	if f.beginErr != nil {
 		return f.beginErr
 	}
@@ -114,6 +119,13 @@ func previewPGServerOf(t *testing.T, driver *previewPGDriver) (*httptest.Server,
 // went through dal.NewDB, as an adapter's does, plans a join before its adapter sees it.
 func previewPGServerWith(t *testing.T, driver dal.DB) (*httptest.Server, *bytes.Buffer) {
 	t.Helper()
+	return previewPGServerLimits(t, driver, 0)
+}
+
+// previewPGServerLimits is previewPGServerWith with the longest a relational document may
+// run (zero keeps the default).
+func previewPGServerLimits(t *testing.T, driver dal.DB, timeout time.Duration) (*httptest.Server, *bytes.Buffer) {
+	t.Helper()
 	previewPGSwitch(t, "1", true)
 	m := &manifest.Manifest{
 		Database: manifest.Database{ID: "pg", SchemaMode: schema.ModeStrict},
@@ -136,7 +148,7 @@ func previewPGServerWith(t *testing.T, driver dal.DB) (*httptest.Server, *bytes.
 	logs := &bytes.Buffer{}
 	service := New("test", map[string]*core.Database{"pg": pg, "alpha": alpha},
 		WithLogger(slog.New(slog.NewJSONHandler(logs, nil))),
-		WithQueryLimits(QueryLimits{JoinEngines: []string{"sqlite", "postgres"}}))
+		WithQueryLimits(QueryLimits{JoinEngines: []string{"sqlite", "postgres"}, Timeout: timeout}))
 	t.Cleanup(service.CloseSnapshots)
 	host := httptest.NewServer(service.Handler())
 	t.Cleanup(host.Close)
