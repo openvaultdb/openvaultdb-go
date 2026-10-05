@@ -2,8 +2,10 @@ package core
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/dal-go/dalgo/dal"
@@ -20,7 +22,8 @@ import (
 // absent when absent is set.
 type writeRecordingDB struct {
 	writeGuardDB
-	calls []string
+	calls     []string
+	insertErr error // what Insert answers, when set
 }
 
 func (f *writeRecordingDB) RunReadwriteTransaction(ctx context.Context, worker dal.RWTxWorker, _ ...dal.TransactionOption) error {
@@ -40,7 +43,7 @@ func (t *writeRecordingTx) Set(_ context.Context, rec record.Record) error {
 
 func (t *writeRecordingTx) Insert(_ context.Context, rec record.Record, _ ...dal.InsertOption) error {
 	t.db.calls = append(t.db.calls, "insert "+rec.Key().String())
-	return nil
+	return t.db.insertErr
 }
 
 func (t *writeRecordingTx) Delete(_ context.Context, key *record.Key) error {
@@ -117,5 +120,18 @@ func TestSetOfNoColumnAfterADeleteOfTheRecordIsCarriedOutAsAnInsert(t *testing.T
 	}
 	if want := []string{"delete customers/c1", "insert customers/c1"}; !reflect.DeepEqual(fake.calls, want) {
 		t.Fatalf("adapter calls = %q, want %q", fake.calls, want)
+	}
+}
+
+// TestAFailedInsertOfASetOfNoColumnIsReportedAsAFailedSet: the write the adapter
+// refuses is reported as the set the caller sent, with the adapter's error in the
+// chain, like a failed set.
+func TestAFailedInsertOfASetOfNoColumnIsReportedAsAFailedSet(t *testing.T) {
+	cause := errors.New("the adapter says no")
+	db, fake := openWriteRecording(t, "sqlite", true)
+	fake.insertErr = cause
+	_, err := db.Apply(context.Background(), []Op{{Op: "set", Key: record.NewKeyWithID("customers", "c1"), Data: map[string]any{}}}, "")
+	if !errors.Is(err, cause) || !strings.HasPrefix(err.Error(), "failed to set customers/c1: ") {
+		t.Fatalf("error = %v", err)
 	}
 }

@@ -149,6 +149,9 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	if engines := s.joinEngines(); len(engines) > 0 {
 		opts = append(opts, joinexec.WithJoinEngines(engines...))
 	}
+	if engines := s.nativeEngines(); len(engines) > 0 {
+		opts = append(opts, joinexec.WithNativeEngines(engines...))
+	}
 	result, err := s.joinExecute(r.Context(), query, joinProfile(profile), defaultDatabase, leasedRegistry(databases), allowed, limits, opts...)
 	if err != nil {
 		s.writeRelationalError(w, r, err)
@@ -264,19 +267,49 @@ func (s *Server) leaseRelationalDatabases(w http.ResponseWriter, r *http.Request
 
 // joinEngines is the list of engines whose databases may take part in a relational
 // document, and the list discovery advertises: the operator's list, without an
-// engine the structured-query guard does not clear (core.EngineCanQuery, which
-// every database is held to before the list is looked at, so a database on such an
+// engine the structured-query guard does not clear (engineCleared, which every
+// database is held to before the list is looked at, so a database on such an
 // engine is refused with 501 whatever the list says) and without the engine of a
 // GitHub-backed inGitDB mount, whose reads go over the network, so no list
 // enables it.
 func (s *Server) joinEngines() []string {
 	engines := make([]string, 0, len(s.queryLimits.JoinEngines))
 	for _, engine := range s.queryLimits.JoinEngines {
-		if engine != core.EngineInGitDBGitHub && core.EngineCanQuery(engine) {
+		if engine != core.EngineInGitDBGitHub && s.engineCleared(engine) {
 			engines = append(engines, engine)
 		}
 	}
 	return engines
+}
+
+// engineCleared reports whether a structured query may reach engine on this server:
+// the engines the allow-list of core clears (core.EngineCanQuery), and the engine of
+// a mounted database that is cleared by the preview switch it read when it opened
+// (PostgreSQL; see core.PreviewPostgresQueriesEnv). It asks the mounted databases
+// because the switch belongs to the mount: core decides, and this only asks.
+func (s *Server) engineCleared(engine string) bool {
+	if core.EngineCanQuery(engine) {
+		return true
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, db := range s.dbs {
+		if db.Engine() == engine && db.CanQuery() {
+			return true
+		}
+	}
+	return false
+}
+
+// nativeEngines is the list of engines that run a whole relational document in the
+// database (the database route), when it is not joinexec's own default of SQLite
+// alone: SQLite and PostgreSQL, while a mounted PostgreSQL database is cleared for
+// queries. It is nil otherwise, and then no option is passed to the executor.
+func (s *Server) nativeEngines() []string {
+	if !s.engineCleared("postgres") {
+		return nil
+	}
+	return []string{"sqlite", "postgres"}
 }
 
 // relationalStage is one test of the rule that decides whether a database takes

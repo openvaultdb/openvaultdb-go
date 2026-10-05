@@ -1,0 +1,207 @@
+package server
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+
+	"github.com/dal-go/dalgo/dal"
+	"github.com/dal-go/dalgo/recordset"
+	"github.com/dal-go/record"
+
+	"github.com/openvaultdb/openvaultdb-go/pkg/core"
+	"github.com/openvaultdb/openvaultdb-go/pkg/manifest"
+	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
+)
+
+// previewPGDriver is the driver of a mount that fails every structured read with
+// openErr, or, when it is nil, answers an empty result. It counts the reads that
+// reach it, serves them in a read transaction too, and supplies no field list.
+type previewPGDriver struct {
+	dal.DB
+	openErr error
+	reads   atomic.Int32
+}
+
+// previewPGEmpty is a result with no row.
+type previewPGEmpty struct{}
+
+func (previewPGEmpty) Next() (record.Record, error) { return nil, io.EOF }
+func (previewPGEmpty) Cursor() (string, error)      { return "", nil }
+func (previewPGEmpty) Close() error                 { return nil }
+
+func (f *previewPGDriver) ExecuteQueryToRecordsReader(context.Context, dal.Query) (dal.RecordsReader, error) {
+	f.reads.Add(1)
+	if f.openErr != nil {
+		return nil, f.openErr
+	}
+	return previewPGEmpty{}, nil
+}
+
+func (f *previewPGDriver) ExecuteQueryToRecordsetReader(context.Context, dal.Query, ...recordset.Option) (dal.RecordsetReader, error) {
+	f.reads.Add(1)
+	return nil, f.openErr
+}
+
+func (f *previewPGDriver) RunReadonlyTransaction(ctx context.Context, worker dal.ROTxWorker, _ ...dal.TransactionOption) error {
+	return worker(ctx, &previewPGTx{driver: f})
+}
+
+// previewPGTx is the read transaction of previewPGDriver.
+type previewPGTx struct {
+	dal.ReadTransaction
+	driver *previewPGDriver
+}
+
+func (t *previewPGTx) ExecuteQueryToRecordsReader(ctx context.Context, query dal.Query) (dal.RecordsReader, error) {
+	return t.driver.ExecuteQueryToRecordsReader(ctx, query)
+}
+
+func (t *previewPGTx) ExecuteQueryToRecordsetReader(ctx context.Context, query dal.Query, options ...recordset.Option) (dal.RecordsetReader, error) {
+	return t.driver.ExecuteQueryToRecordsetReader(ctx, query, options...)
+}
+
+func (f *previewPGDriver) JoinFields(context.Context, dal.RecordsetSource) ([]string, error) {
+	return nil, nil
+}
+
+const previewPGMarker = "MARKER-text-of-the-database-server-7c2a"
+
+// previewPGServer serves a PostgreSQL mount (the preview switch on, so it is
+// queried) whose driver fails every read with openErr, beside a SQLite mount, and
+// returns the host and what the server logs.
+func previewPGServer(t *testing.T, openErr error) (*httptest.Server, *bytes.Buffer, *previewPGDriver) {
+	t.Helper()
+	previewPGSwitch(t, "1", true)
+	driver := &previewPGDriver{openErr: openErr}
+	m := &manifest.Manifest{
+		Database: manifest.Database{ID: "pg", SchemaMode: schema.ModeStrict},
+		Storage:  manifest.Storage{Engine: "postgres"},
+		Schemas:  &schema.Schemas{Collections: map[string]schema.Collection{"orders": {}, "customers": {}}},
+	}
+	pg, err := core.Open(m, driver, []schema.Mode{schema.ModeStrict}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	am := &manifest.Manifest{
+		Database: manifest.Database{ID: "alpha", SchemaMode: schema.ModeStrict},
+		Storage:  manifest.Storage{Engine: "sqlite"},
+		Schemas:  &schema.Schemas{Collections: map[string]schema.Collection{"orders": {}, "customers": {}}},
+	}
+	alpha, err := core.Open(am, &previewPGDriver{}, []schema.Mode{schema.ModeStrict}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := &bytes.Buffer{}
+	service := New("test", map[string]*core.Database{"pg": pg, "alpha": alpha},
+		WithLogger(slog.New(slog.NewJSONHandler(logs, nil))),
+		WithQueryLimits(QueryLimits{JoinEngines: []string{"sqlite", "postgres"}}))
+	t.Cleanup(service.CloseSnapshots)
+	host := httptest.NewServer(service.Handler())
+	t.Cleanup(host.Close)
+	return host, logs, driver
+}
+
+// previewPGRoutes are the routes a structured query takes to the PostgreSQL mount
+// of previewPGServer: the wire query, the DTQL of the database, and a relational
+// document of the cross-database endpoint, alone and joined to another mount.
+var previewPGRoutes = []struct{ name, path, body string }{
+	{"wire query", "/v1/databases/pg/query", `{"collection":"customers"}`},
+	{"DTQL of the database", "/v1/databases/pg/dtql", "from: {name: customers}\n"},
+	{"relational document, alone", "/v1/dtql", "from: {database: pg, name: customers}\n"},
+	{"relational document, joined", "/v1/dtql", `from:
+  database: pg
+  name: orders
+  alias: o
+  joins:
+    - type: inner
+      from: {database: alpha, name: customers, alias: c}
+      on:
+        - {left: {field: customer_id, source: o}, op: '==', right: {field: id, source: c}}
+`},
+}
+
+// TestAQueryThePostgresAdapterCannotRunIsA422WithAFixedMessage: dal.ErrNotSupported
+// and the adapter's refusal of a dialect it does not know are answered 422
+// query_unsupported with one fixed message, on every route, and nothing of the
+// adapter's text is in the answer or in the log.
+func TestAQueryThePostgresAdapterCannotRunIsA422WithAFixedMessage(t *testing.T) {
+	for name, cause := range map[string]error{
+		"not supported":            fmt.Errorf("%w: "+previewPGMarker, dal.ErrNotSupported),
+		"not supported, wrapped":   fmt.Errorf("failed to get SQL reader: %w", fmt.Errorf("%w: "+previewPGMarker, dal.ErrNotSupported)),
+		"unknown dialect":          errors.New(`unsupported structured query dialect "` + previewPGMarker + `"`),
+		"unknown dialect, wrapped": fmt.Errorf("failed to get SQL reader: %w", errors.New(`unsupported structured query dialect "`+previewPGMarker+`"`)),
+	} {
+		for _, route := range previewPGRoutes {
+			t.Run(name+"/"+route.name, func(t *testing.T) {
+				host, logs, driver := previewPGServer(t, cause)
+				resp := relFakeDo(t, host, http.MethodPost, route.path, "", route.body, nil)
+				if resp.status != http.StatusUnprocessableEntity || resp.code() != "query_unsupported" {
+					t.Fatalf("status %d: %s", resp.status, resp.raw)
+				}
+				if message, _ := resp.errorDetail()["message"].(string); message != "the storage engine cannot run this query" {
+					t.Errorf("message = %q, want the fixed message", message)
+				}
+				if strings.Contains(resp.raw, previewPGMarker) || strings.Contains(logs.String(), previewPGMarker) {
+					t.Errorf("text of the adapter is in the answer %s or in the log %s", resp.raw, logs)
+				}
+				if logs.Len() != 0 {
+					t.Errorf("a refusal the caller can act on was logged: %s", logs)
+				}
+				if driver.reads.Load() == 0 {
+					t.Errorf("the driver was not reached: the route refused before it ran")
+				}
+			})
+		}
+	}
+}
+
+// TestAFailureOfAPostgresServerRepeatsNoDriverTextInTheAnswerOrTheLog: any other
+// failure of the mount's driver is a 500 internal that says nothing of it, and the
+// line the server logs is built: it names the step and the collection and holds no
+// text of the driver's error, which can carry a value of the request.
+func TestAFailureOfAPostgresServerRepeatsNoDriverTextInTheAnswerOrTheLog(t *testing.T) {
+	cause := errors.New(`ERROR: invalid input syntax for type bigint: "` + previewPGMarker + `" (SQLSTATE 22P02)`)
+	for _, route := range previewPGRoutes {
+		t.Run(route.name, func(t *testing.T) {
+			host, logs, _ := previewPGServer(t, cause)
+			resp := relFakeDo(t, host, http.MethodPost, route.path, "", route.body, nil)
+			if resp.status != http.StatusInternalServerError || resp.code() != "internal" {
+				t.Fatalf("status %d: %s", resp.status, resp.raw)
+			}
+			if strings.Contains(resp.raw, previewPGMarker) || strings.Contains(logs.String(), previewPGMarker) {
+				t.Errorf("text of the driver is in the answer %s or in the log %s", resp.raw, logs)
+			}
+			if !strings.Contains(logs.String(), "the database server could not run the query") {
+				t.Errorf("the log does not say what failed: %s", logs)
+			}
+		})
+	}
+}
+
+// TestADeadlineOfAPostgresQueryIsStillATimeout: the built error of a server engine
+// keeps the identity of a deadline, so the relational route answers 504 as it does
+// for every engine, and the driver's text is not in the answer or in the log.
+func TestADeadlineOfAPostgresQueryIsStillATimeout(t *testing.T) {
+	cause := fmt.Errorf("driver: %w: "+previewPGMarker, context.DeadlineExceeded)
+	for _, route := range previewPGRoutes[2:] {
+		t.Run(route.name, func(t *testing.T) {
+			host, logs, _ := previewPGServer(t, cause)
+			resp := relFakeDo(t, host, http.MethodPost, route.path, "", route.body, nil)
+			if resp.status != http.StatusGatewayTimeout || resp.code() != "query_timeout" {
+				t.Fatalf("status %d: %s", resp.status, resp.raw)
+			}
+			if strings.Contains(resp.raw, previewPGMarker) || strings.Contains(logs.String(), previewPGMarker) {
+				t.Errorf("text of the driver is in the answer %s or in the log %s", resp.raw, logs)
+			}
+		})
+	}
+}

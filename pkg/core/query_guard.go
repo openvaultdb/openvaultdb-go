@@ -35,10 +35,13 @@ func (e *QueryUnsupportedError) Is(target error) bool { return target == ErrQuer
 // queryEngines lists the storage engines whose driver compiles a structured
 // query with bound arguments. It is an allow-list so that an engine added
 // later, or a mount with an unrecognised engine, is refused until someone
-// clears it here. PostgreSQL and MySQL are deliberately absent: they open
-// dalgo2sql with no structured-query dialect, so a query would reach its
-// legacy text emitter, which writes values and field names into SQL text.
-// Re-add them only together with the reviewed compiler (plan task OV-01).
+// clears it here. MySQL is deliberately absent: its mount opens dalgo2sql with
+// no structured-query dialect, so a query would reach the legacy text emitter,
+// which writes values and field names into SQL text. PostgreSQL is absent too,
+// and is cleared by the preview switch alone (see engineCleared): the
+// PostgreSQL adapter forces the typed dialect, which binds every value and
+// quotes every name, and the switch stays until the security review of the whole
+// path is done.
 var queryEngines = map[string]bool{
 	"sqlite":    true,
 	"ingitdb":   true,
@@ -65,12 +68,14 @@ func (d *Database) queryEngine() string {
 // CanQuery reports whether structured queries (/query, /dtql) are allowed on
 // this mount. It is the same allow-list guardQuery enforces, so database
 // metadata can advertise exactly what the guard will accept.
-func (d *Database) CanQuery() bool { return EngineCanQuery(d.queryEngine()) }
+func (d *Database) CanQuery() bool { return engineCleared(d.queryEngine(), d.previewPostgres) }
 
 // EngineCanQuery reports whether the storage engine, as a manifest writes it, is
-// cleared for structured queries. It is the allow-list CanQuery and guardQuery
-// ask, for a caller that holds an engine name and no database.
-func EngineCanQuery(engine string) bool { return queryEngines[engine] }
+// cleared for structured queries whatever the environment says: the allow-list
+// CanQuery asks, for a caller that holds an engine name and no database. It is
+// false for PostgreSQL, which the preview switch clears for the mounts that read it
+// (see Database.CanQuery).
+func EngineCanQuery(engine string) bool { return engineCleared(engine, false) }
 
 const maxFieldNameLen = 256
 

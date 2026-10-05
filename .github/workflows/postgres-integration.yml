@@ -1,0 +1,86 @@
+name: PostgreSQL integration
+
+# Runs the tests of pkg/server that need a PostgreSQL server (the files
+# postgres_integration_test.go) against a postgres:17 service container. They skip
+# when OVDB_TEST_POSTGRES_DSN is not set, which is how they behave in the shared
+# Go CI workflow (it has no database), so this job is where they run, and it must
+# not be able to pass by skipping: `go test` prints "ok" for a package whose tests
+# all skipped, so the job runs verbose, fails on a SKIP of any of them, and
+# requires a PASS line for each one by name.
+#
+# It lives in a workflow of its own, like mount-unmount.yml, because a service
+# container cannot be passed into the reusable workflow ci.yml calls, and the
+# release job of that workflow is left alone. Path-filtered pushes on any branch,
+# so a pushed work branch is checked before its pull request.
+on:
+  push:
+    paths:
+      - 'pkg/core/**'
+      - 'pkg/mount/**'
+      - 'pkg/server/**'
+      - 'pkg/joinexec/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/postgres-integration.yml'
+  pull_request:
+    branches:
+      - '**'
+
+# A run is superseded only on a pull request. On main (and on any other push)
+# the group is unique per ref and commit, so no run is ever cancelled. The literal
+# `true` below only ever applies to pull_request groups, which are keyed by pull
+# request number.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || format('{0}-{1}', github.ref, github.sha) }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  postgres:
+    name: Integration (PostgreSQL 17)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ovdb_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      OVDB_TEST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/ovdb_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: go test (with a live PostgreSQL)
+        run: |
+          set -o pipefail
+          go test -v -count=1 -run '^TestPostgresIntegration_' ./pkg/server/ 2>&1 | tee /tmp/gotest.log
+          if grep -qE '^\s*--- SKIP: TestPostgresIntegration_' /tmp/gotest.log; then
+            echo "::error::a PostgreSQL integration test SKIPPED - the DSN did not reach the tests"
+            exit 1
+          fi
+          # A PASS line is required for each test by name, so a test that is renamed,
+          # deleted or never reached fails the job instead of leaving it green on the
+          # others. Add a new test of the family to this list.
+          for name in \
+            WritesAndSingleCollectionQueries \
+            RelationalDocumentsAnswerAsSQLiteDoes \
+            CrossDatabaseJoin \
+            ProbesAreRowsAnEmptyResultOrARefusal \
+            WithoutTheSwitchEveryQueryRouteRefusesAndNoStatementIsSent; do
+            if ! grep -qE "^--- PASS: TestPostgresIntegration_${name} " /tmp/gotest.log; then
+              echo "::error::TestPostgresIntegration_${name} did not report PASS"
+              exit 1
+            fi
+          done

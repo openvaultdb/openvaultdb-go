@@ -169,14 +169,25 @@ func (g guardedQueryExecutor) ExecuteQueryToRecordsReader(ctx context.Context, q
 	if err := g.guardStructured(query); err != nil {
 		return nil, err
 	}
-	return g.executor.ExecuteQueryToRecordsReader(ctx, query)
+	reader, err := g.executor.ExecuteQueryToRecordsReader(ctx, query)
+	if err != nil {
+		return nil, g.db.queryError("failed to query", err)
+	}
+	if serverEngines[g.db.queryEngine()] {
+		return builtReader{RecordsReader: reader, db: g.db}, nil
+	}
+	return reader, nil
 }
 
 func (g guardedQueryExecutor) ExecuteQueryToRecordsetReader(ctx context.Context, query dal.Query, options ...recordset.Option) (dal.RecordsetReader, error) {
 	if err := g.guardStructured(query); err != nil {
 		return nil, err
 	}
-	return g.executor.ExecuteQueryToRecordsetReader(ctx, query, options...)
+	reader, err := g.executor.ExecuteQueryToRecordsetReader(ctx, query, options...)
+	if err != nil {
+		return nil, g.db.queryError("failed to query", err)
+	}
+	return reader, nil
 }
 
 // JoinFields supplies the fields of a declared collection to the join engine, in
