@@ -1,9 +1,14 @@
 package server_test
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 )
 
 // The rule of the in-memory route: the server sorts a relational document, binds it or
@@ -88,15 +93,18 @@ func TestAQualifierThatNamesNoSourceOfTheQueryIsRefusedOnBothEndpoints(t *testin
 	})
 }
 
-// A numeric key with a missing value, in a document that an inGitDB mount is handed whole, is
-// placed by the mount's own comparator: a record without the field comes after every number
-// ascending, and first descending. SQLite and DALgo, which sort every other document, put it
-// first ascending, so the two endpoints answer the same document in a different order and, with
-// a limit, with different rows. The comparator is in dalgo2ingitdb, not in this repository
-// (docs/api.md says so, "What the mount is handed whole"); this test pins the answer until the
-// library orders a missing value before every value, and then it is to be changed with the
-// sentence of the documentation.
-func TestAMissingNumberIsPlacedByTheMountsOwnComparatorWhenTheDocumentIsHandedWholeToIt(t *testing.T) {
+// A missing value of any type, in a document that an inGitDB mount is handed whole, is placed by
+// the mount's own comparator, which compares what it has as text when it sorts. A record without a
+// numeric field comes after every number ascending, and first descending. A record without a text
+// field is compared as the text <nil>: ascending it comes after every value that starts with a
+// digit or a punctuation mark that sorts before "<" (ISO dates, postal codes) and before every value
+// that starts with a letter, and descending the other way round. SQLite and DALgo, which sort every
+// other document, put a missing value first ascending, so the two endpoints answer the same document
+// in a different order and, with a limit, with different rows. The comparator is in dalgo2ingitdb,
+// not in this repository (docs/api.md says so, "What the mount is handed whole"); this test pins
+// the answer until the library orders a missing value before every value, and then it is to be
+// changed with the sentence of the documentation.
+func TestAMissingValueIsPlacedByTheMountsOwnComparatorWhenTheDocumentIsHandedWholeToIt(t *testing.T) {
 	base := relIntFieldsServer(t)
 	byTotal := func(desc string) string {
 		return "from: {name: Invoice, alias: i}\norderBy: [{field: t" + desc + "}]\n" +
@@ -107,16 +115,58 @@ func TestAMissingNumberIsPlacedByTheMountsOwnComparatorWhenTheDocumentIsHandedWh
 		doc              string
 		database, handed []map[string]any
 	}{
-		"ascending": {byTotal(""),
+		"a number, ascending": {byTotal(""),
 			[]map[string]any{row(11, nil), row(13, float64(50)), row(10, float64(100)), row(12, float64(200))},
 			[]map[string]any{row(13, float64(50)), row(10, float64(100)), row(12, float64(200)), row(11, nil)}},
-		"descending": {byTotal(", desc: true"),
+		"a number, descending": {byTotal(", desc: true"),
 			[]map[string]any{row(12, float64(200)), row(10, float64(100)), row(13, float64(50)), row(11, nil)},
 			[]map[string]any{row(11, nil), row(12, float64(200)), row(10, float64(100)), row(13, float64(50))}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			relIntRowsAre(t, relHTTPPost(t, base, "/v1/databases/gitdb/dtql", "", tc.doc), tc.database)
 			relIntRowsAre(t, relHTTPPost(t, base, "/v1/dtql", "", string(relIntRewrite(t, []byte(tc.doc), "gitdb"))), tc.handed)
+		})
+	}
+
+	// A text field: an optional day, written as an ISO date or as a word, or not at all.
+	n := func(v string) json.Number { return json.Number(v) }
+	events := relIntSet{
+		tables: map[string][]string{"Event": {"EventId", "Day"}},
+		rows: map[string][]map[string]any{"Event": {
+			{"EventId": n("1"), "Day": "2026-03-01"},
+			{"EventId": n("2"), "Day": nil},
+			{"EventId": n("3"), "Day": "2026-01-15"},
+			{"EventId": n("4"), "Day": "Later"},
+		}},
+	}
+	mounts := map[string]*core.Database{}
+	for _, engine := range relIntEngines {
+		mounts[engine.id] = engine.mount(t, engine.id, "", events)
+	}
+	eventsBase := relIntServe(t, mounts)
+	byDay := func(desc string) string {
+		return "from: {name: Event, alias: e}\norderBy: [{field: Day" + desc + "}]\ncolumns: [{field: EventId, source: e}]\n"
+	}
+	ids := func(ids ...float64) []map[string]any {
+		out := make([]map[string]any, len(ids))
+		for i, id := range ids {
+			out[i] = map[string]any{"EventId": id}
+		}
+		return out
+	}
+	for name, tc := range map[string]struct {
+		doc              string
+		database, handed []map[string]any
+	}{
+		"a text, ascending":  {byDay(""), ids(2, 3, 1, 4), ids(3, 1, 2, 4)},
+		"a text, descending": {byDay(", desc: true"), ids(4, 1, 3, 2), ids(4, 2, 1, 3)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			relIntRowsAre(t, relHTTPPost(t, eventsBase, "/v1/databases/gitdb/dtql", "", tc.doc), tc.database)
+			relIntRowsAre(t, relHTTPPost(t, eventsBase, "/v1/dtql", "", string(relIntRewrite(t, []byte(tc.doc), "gitdb"))), tc.handed)
+			// SQLite, whichever way the document is read, puts the missing value first ascending.
+			relIntRowsAre(t, relHTTPPost(t, eventsBase, "/v1/databases/litedb/dtql", "", tc.doc), tc.database)
+			relIntRowsAre(t, relHTTPPost(t, eventsBase, "/v1/dtql", "", string(relIntRewrite(t, []byte(tc.doc), "litedb"))), tc.database)
 		})
 	}
 }
@@ -223,6 +273,108 @@ func TestAnOrderingExpressionOverADatabaseWithAccessPoliciesIsRefusedBeforeItIsR
 					}
 				})
 			}
+		}
+	}
+}
+
+// relIntRankedServer serves a partial inGitDB database whose notes hold a numeric field the
+// manifest does not declare, so the mount cannot give the engine a list of the fields of Note.
+// The notes are written in the order n1, n2, n3 and ranked 3, 1, 2.
+func relIntRankedServer(t *testing.T) string {
+	t.Helper()
+	notes := relIntOpen(t, t.TempDir(), "database: {id: ranked, schema_mode: partial}\nstorage: {engine: ingitdb, path: data}\n"+
+		"schemas:\n  collections:\n    Note:\n      fields:\n        person_id: {type: string}\n")
+	for _, note := range []struct {
+		id   string
+		rank float64
+	}{{"n1", 3}, {"n2", 1}, {"n3", 2}} {
+		key, err := core.ParseKey("Note", note.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := notes.Apply(context.Background(), []core.Op{{Op: "insert", Key: key, Data: map[string]any{"person_id": "p1", "rank": note.rank}}}, "seed"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return relIntServe(t, map[string]*core.Database{"ranked": notes})
+}
+
+// A column named as the field it selects (as: rank over the field rank) is that field under its
+// own name, so a name of that kind inside the arithmetic of an ORDER BY is the field, whichever
+// way it is read, and nothing is ambiguous. Over a source with no field list it was refused as
+// if it could be the alias of another column; it is answered, ordered by the numeric field.
+func TestAColumnNamedAsTheFieldItSelectsIsNotAnAliasAnOrderByExpressionCouldMean(t *testing.T) {
+	base := relIntRankedServer(t)
+	const from = "from: {database: ranked, name: Note, alias: n}\n"
+	for name, tc := range map[string]struct {
+		order string
+		want  []map[string]any
+	}{
+		"ascending":  {"{binary: {op: '+', left: {field: rank}, right: {value: 0}}}", []map[string]any{{"rank": float64(1)}, {"rank": float64(2)}, {"rank": float64(3)}}},
+		"descending": {"{binary: {op: '*', left: {field: rank}, right: {value: -1}}}", []map[string]any{{"rank": float64(3)}, {"rank": float64(2)}, {"rank": float64(1)}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp := relHTTPPost(t, base, "/v1/dtql", "", from+"orderBy: ["+tc.order+"]\ncolumns: [{field: rank, source: n, as: rank}]\n")
+			relIntRowsAre(t, resp, tc.want)
+		})
+	}
+	t.Run("a column that selects another field under the name is still refused", func(t *testing.T) {
+		resp := relHTTPPost(t, base, "/v1/dtql", "", from+"orderBy: [{binary: {op: '+', left: {field: rank}, right: {value: 0}}}]\ncolumns: [{field: person_id, source: n, as: rank}]\n")
+		relIntRefusalsRefused(t, resp, "scope at orderBy[0].left: ", "rank", "inside arithmetic", "no field list", "qualify the field with its source")
+	})
+}
+
+// An alias that stands for the key $id is replaced by the key before DALgo sees the document,
+// and DALgo reads the key as a null, so the ordering did nothing, with a status 200. Where the
+// document is not handed whole to a mount it is refused, as the key itself is: on the
+// per-database endpoint, which DALgo evaluates, and beside arithmetic on /v1/dtql. Handed whole,
+// the mount sorts by the key as it did.
+func TestAnAliasOfTheKeyIsRefusedWhereDALgoEvaluatesTheDocument(t *testing.T) {
+	base := relIntScopeServer(t)
+	const says = "order by a field"
+	t.Run("the per-database endpoint", func(t *testing.T) {
+		resp := relHTTPPost(t, base, "/v1/databases/notes/dtql", "", "from: {name: Note, alias: n}\norderBy: [{field: k}]\ncolumns: [{field: $id, source: n, as: k}, {field: mood, source: n}]\n")
+		relIntRefusalsRefused(t, resp, "scope at orderBy[0]: ", "$id", says)
+	})
+	t.Run("beside arithmetic on /v1/dtql", func(t *testing.T) {
+		resp := relHTTPPost(t, base, "/v1/dtql", "", "from: {database: notes, name: Note, alias: n}\n"+
+			"orderBy: [{field: k, desc: true}, {binary: {op: '+', left: {field: mood, source: n}, right: {value: 0}}}]\n"+
+			"columns: [{field: $id, source: n, as: k}, {field: mood, source: n}]\n")
+		relIntRefusalsRefused(t, resp, "scope at orderBy[0]: ", "$id", says)
+	})
+	t.Run("handed whole to the mount, which sorts by the key", func(t *testing.T) {
+		resp := relHTTPPost(t, base, "/v1/dtql", "", "from: {database: notes, name: Note, alias: n}\norderBy: [{field: k, desc: true}]\n"+
+			"columns: [{field: $id, source: n, as: k}, {field: mood, source: n}]\n")
+		if resp.status != http.StatusOK {
+			t.Fatalf("status %d, want 200: %s", resp.status, resp.raw)
+		}
+		if moods := relHTTPNames(resp.rows(t), "mood"); !reflect.DeepEqual(moods, []any{"busy", "calm"}) {
+			t.Fatalf("moods = %v, want the key descending: busy, calm", moods)
+		}
+	})
+}
+
+// A source that names no source of the query is a 400 query_scope where DALgo evaluates the
+// document. A document of one source that a SQLite database runs whole (the database route) is
+// refused by the adapter instead, 422 authorization_unsupported, on both endpoints; docs/api.md
+// says so in the bullet of the qualifier. This pins that sentence.
+func TestAQualifierNoSourceHasInADocumentASQLiteDatabaseRunsWholeIsRefusedByItsAdapter(t *testing.T) {
+	base := relIntFieldsServer(t)
+	for name, clause := range map[string]string{
+		"in orderBy": "orderBy: [{field: FirstName, source: zzz}]\n",
+		"in where":   "where: {op: '==', left: {field: FirstName, source: zzz}, right: {value: Ada}}\n",
+	} {
+		doc := "from: {name: Customer, alias: c}\n" + clause + "columns: [{field: FirstName, source: c}]\n"
+		for _, endpoint := range []struct{ name, path, database string }{
+			{"per-database endpoint", "/v1/databases/litedb/dtql", ""},
+			{"/v1/dtql", "/v1/dtql", "litedb"},
+		} {
+			t.Run(name+", "+endpoint.name, func(t *testing.T) {
+				resp := relHTTPPost(t, base, endpoint.path, "", string(relIntRewrite(t, []byte(doc), endpoint.database)))
+				if resp.status != http.StatusUnprocessableEntity || resp.errorField("code") != "authorization_unsupported" || resp.body["records"] != nil {
+					t.Fatalf("status %d, want the 422 authorization_unsupported of the adapter: %s", resp.status, resp.raw)
+				}
+			})
 		}
 	}
 }

@@ -130,6 +130,10 @@ const (
 // with. No list of fields carries it, and the mount that is handed the document sorts by it.
 const keyField = "$id"
 
+// keyOrderingRefusal is the refusal of an ORDER BY of the key (or of an alias of it) in a
+// document that a mount does not run whole; its one verb is the key pseudo-field.
+const keyOrderingRefusal = "cannot order by the key %s in this document, which a mount does not run whole (the key is sorted by a mount only): order by a field"
+
 // scopeRef is a field of a clause, with where it stands.
 type scopeRef struct {
 	name string
@@ -567,7 +571,7 @@ func (f *scopeFlow) expression(expression dal.Expression, path string) {
 	switch value := expression.(type) {
 	case dal.FieldRef:
 		if f.kind == readOrdered && value.Name() == keyField && !f.keyOrdering {
-			f.refuse("scope", path, "cannot order by the key %s in this document, which a mount does not run whole (the key is sorted by a mount only): order by a field", keyField)
+			f.refuse("scope", path, keyOrderingRefusal, keyField)
 			return
 		}
 		if value.Source() == "" {
@@ -595,6 +599,17 @@ func (f *scopeFlow) expression(expression dal.Expression, path string) {
 	}
 }
 
+// refuseKeyAlias refuses an ORDER BY name that is the alias of a column that selects the key
+// pseudo-field, where the document is not handed whole to a mount: resolveAliases replaces the
+// alias by the key before DALgo sees the document, and DALgo reads the key as a null, so the
+// ordering would do nothing, with a status 200 (the key itself is refused the same way, see
+// expression).
+func (f *scopeFlow) refuseKeyAlias(selected dal.Expression, path string) {
+	if field, ok := selected.(dal.FieldRef); ok && field.Name() == keyField && !f.keyOrdering {
+		f.refuse("scope", path, keyOrderingRefusal, keyField)
+	}
+}
+
 // field adds an unqualified field of the clause in hand to the level, or refuses it when
 // the name is read as something else than a field of a source.
 func (f *scopeFlow) field(name, path string) {
@@ -602,9 +617,10 @@ func (f *scopeFlow) field(name, path string) {
 		return
 	}
 	if !f.inExpression {
-		if _, alias := f.names.fields[name]; alias {
+		if selected, alias := f.names.fields[name]; alias {
 			// resolveAliases replaces it by the field its column selects, which is looked at
-			// in the column.
+			// in the column; and an alias of the key is refused where DALgo reads the key.
+			f.refuseKeyAlias(selected, path)
 			return
 		}
 		if f.names.computed[name] {
@@ -618,7 +634,12 @@ func (f *scopeFlow) field(name, path string) {
 	}
 	ref := scopeRef{name: name, path: path, kind: f.kind, inExpression: f.inExpression}
 	if f.inExpression {
-		_, field := f.names.fields[name]
+		selected, field := f.names.fields[name]
+		// A column that selects the field of the same name is that field under its own
+		// name: the two readings of the name are one, and nothing is ambiguous.
+		if selected, ok := selected.(dal.FieldRef); field && ok && selected.Name() == name {
+			field = false
+		}
 		ref.alsoAlias = field || f.names.computed[name]
 	}
 	f.level.refs = append(f.level.refs, ref)

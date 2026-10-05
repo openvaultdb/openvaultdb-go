@@ -1225,11 +1225,16 @@ other document is evaluated by DALgo above a plain read of each source, and the 
 as they are written.
 
 What the mount's executor decides is the order of the records it sorts. It places a record that
-lacks a numeric ordering field after every number when the order is ascending (and first when it is
-descending), where SQLite and DALgo, which sort every other document, place it first when the order
-is ascending. So the same document can come back in another order, and with a `limit` with other
-rows, from a document that is handed whole and from one that is not (the per-database endpoint, for
-one). That comparator belongs to the document engine, and this server does not change it.
+lacks the ordering field by its own comparator, for a value of any type. For a numeric field the
+record comes after every number when the order is ascending (and first when it is descending). For
+a text field the record is compared as the text `<nil>`: ascending, it comes after every value that
+starts with a digit or with a punctuation mark that sorts before `<` (ISO dates and postal codes,
+for instance) and before every value that starts with a letter; descending, the other way round.
+SQLite and DALgo, which sort every other document, place a record that lacks the field first when
+the order is ascending (and last when it is descending), whatever the type. So the same document
+can come back in another order, and with a `limit` with other rows, from a document that is handed
+whole and from one that is not (the per-database endpoint, for one). That comparator belongs to the
+document engine, and this server does not change it.
 
 **A field without its `source`.** A document that reads several sources and names a field without
 its source is accepted only when every source of that query has a known field list and exactly
@@ -1300,8 +1305,8 @@ the source's own field wins over a column that is called so.
 
 - The alias of a column that selects a field of a source is that field. The answer is sorted by
   it, on every route and on both endpoints, the way a SQLite database sorts it when it runs the
-  whole document (except for the place of a record that lacks a numeric field in a document that is
-  handed whole to an inGitDB mount, above).
+  whole document (except for the place of a record that lacks the field, of any type, in a document
+  that is handed whole to an inGitDB mount, above).
 - The alias of a column that is an expression (arithmetic, a function) is refused when the document
   is not run whole by a SQL database: order by the fields of the expression.
 - A name that is neither an alias nor a field of any source that supplies a field list is a
@@ -1315,18 +1320,22 @@ the source's own field wins over a column that is called so.
   Where the one source supplies no field list nothing can say whether the name is the field or the
   alias (SQLite reads the alias when its table has no such column), and the name is a
   `400 invalid_dtql` that says to qualify the field with its source. A name that no column carries
-  is left to the mount, as above.
+  is left to the mount, as above, and so is the name of a column that selects the field of the same
+  name (`{field: x, as: x}`), which is that field read either way.
 - A `source` that names no source of the query, in `orderBy` and in every other clause, is a
   `400 invalid_dtql` (`query_scope at orderBy[0].source: unknown alias "zzz"`) on both endpoints, for
   a document that is handed whole to a mount too. The source of a query around a subquery is one the
   subquery may name. The qualifier of a source that has an alias is the alias, and the name of its
-  collection only when it has none.
+  collection only when it has none. (A document of one source that a SQLite database runs whole, the
+  database route, is refused by its adapter instead: `422 authorization_unsupported`, on both
+  endpoints.)
 - The key pseudo-field `$id` of the document engines is sorted by only in a document of one source
   that is handed whole to its mount. Wherever DALgo evaluates the document (the per-database
   endpoint, a join, a subquery or derived source, a null test, a scan clause, and an ordering
   expression beside it) DALgo does not know the key: over a source with a field list it would refuse
-  it, and over one with none it would read it as a null and sort by nothing. An `orderBy` of `$id` in
-  such a document is a `400 invalid_dtql` that says to order by a field.
+  it, and over one with none it would read it as a null and sort by nothing. An `orderBy` of `$id`,
+  or of the alias of a column that selects `$id`, in such a document is a `400 invalid_dtql` that
+  says to order by a field.
 - An ordering expression that is not a plain field (arithmetic) is applied on every route: a
   document of one source that would be handed whole to a mount is evaluated by DALgo instead, so
   that it is sorted. (The SQLite adapter compiles no such ordering of a document of one source,
