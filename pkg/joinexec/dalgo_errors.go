@@ -105,6 +105,28 @@ func flattenedBoundPattern(category string, bounds map[string]dalgoBound) *regex
 	return regexp.MustCompile(`(?s)^(?:cannot )?scan .+: ` + category + `(?: at (\S+))?: (` + strings.Join(messages, "|") + `)$`)
 }
 
+// The same flattening hides a refusal of the document raised inside a derived source in
+// the base position of a query (a field that is not there, one that two sources carry):
+// the typed error DALgo raised arrives as the text "cannot scan <alias>: <category> at
+// <path>: <message>", or without " at <path>" when the error has no path. The text is
+// read back by the format of the two errors it comes from (dal.JoinValidationError and
+// dal.QueryValidationError, whose Error methods the tests pin) and by the categories
+// of DALgo that are refusals of a document, so that a caller who made the mistake is
+// answered it. A derived source inside a derived source nests the same text once more,
+// as a join_plan error, and is read the same way; a join_plan error whose cause is not
+// a refusal (a failed read, a close) and a category that is not a refusal (a bound, which
+// flattenedBound reads, or one this code does not know) are left as they are.
+var flattenedRefusalPattern = regexp.MustCompile(`(?s)^(?:cannot )?scan \S+: (join_plan|` + strings.Join(refusalCategories, "|") + `)(?: at (\S+))?: (.*)$`)
+
+// refusalCategories are the categories of DALgo's errors that report a document it
+// cannot run, whatever the data: every category of dal.JoinValidationError and
+// dal.QueryValidationError but join_plan (whose messages are a mix of refusals,
+// bounds and failed reads) and query_limit (bounds).
+var refusalCategories = []string{
+	"scope", "shape", "cardinality", "query_shape",
+	"join_shape", "join_scope", "join_key_type", "join_field", "join_cycle", "join_algorithm", "join_type", "join_operator",
+}
+
 // MapDalgoError returns a *BudgetError when err is, or wraps, one of DALgo's
 // own bound errors, and err unchanged otherwise (including nil). route is the
 // route the engine ran on (RouteInMemory or RouteDatabase). An error that is
@@ -136,6 +158,9 @@ func MapDalgoError(err error, route string) error {
 		if mapped := flattenedBound(join.Message, route); mapped != nil {
 			return mapped
 		}
+		if refusal := flattenedRefusal(join); refusal != nil {
+			return refusal
+		}
 	}
 	text := err.Error()
 	for _, bound := range aggregationBounds {
@@ -159,4 +184,36 @@ func flattenedBound(message, route string) *BudgetError {
 		return &BudgetError{Name: bound.name, Limit: bound.limit, Route: route, Path: m[1]}
 	}
 	return nil
+}
+
+// flattenedRefusal reads the refusal of a document out of the Message of a join_plan
+// error that DALgo built from a derived source's error, or returns nil. The path of
+// the result is the path of err, then ".query" and the path inside, once for each
+// derived source the text goes through, the way the paths of a document name a
+// derived source's query.
+func flattenedRefusal(err *dal.JoinValidationError) error {
+	path, message := err.Path, err.Message
+	for {
+		m := flattenedRefusalPattern.FindStringSubmatch(message)
+		if m == nil {
+			return nil
+		}
+		path = path + ".query"
+		if m[2] != "" {
+			path += "." + m[2]
+		}
+		if m[1] != "join_plan" {
+			return refusal(m[1], path, m[3])
+		}
+		message = m[3]
+	}
+}
+
+// refusal is the typed error a category names: the join categories are a
+// dal.JoinValidationError and the others a dal.QueryValidationError, as in DALgo.
+func refusal(category, path, message string) error {
+	if strings.HasPrefix(category, "join_") {
+		return &dal.JoinValidationError{Category: category, Path: path, Message: message}
+	}
+	return &dal.QueryValidationError{Category: category, Path: path, Message: message}
 }
