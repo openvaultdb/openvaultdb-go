@@ -934,6 +934,32 @@ func TestPostgresIntegration_MixedCaseFieldNames(t *testing.T) {
 			t.Fatalf("status %d, want 400 invalid_dtql: %s", resp.status, resp.raw)
 		}
 	})
+	// A scalar subquery of one source is evaluated by DALgo row by row, and DALgo checks no
+	// field of it: the declared spelling, in its WHERE or in its column, is read as a null
+	// and the document is answered (200), where the same spelling in the query of an EXISTS
+	// is a 400. The folded spelling answers the value.
+	scalar := func(where, selected string) string {
+		return "from: {database: pg, name: people, alias: p}\norderBy:\n  - {field: id, source: p}\n" +
+			"columns:\n  - {field: id, source: p}\n  - query:\n      as: s\n      from: {database: pg, name: people, alias: x}\n" +
+			"      where: {op: '==', left: {field: " + where + ", source: x}, right: {value: Ada}}\n" +
+			"      columns: [{field: " + selected + ", source: x}]\n"
+	}
+	for _, c := range []struct {
+		name, where, selected string
+		want                  any
+	}{
+		{"the folded spelling", "firstname", "city", "Dublin"},
+		{"the declared spelling in its WHERE", "FirstName", "city", nil},
+		{"the declared spelling in its column", "firstname", "FirstName", nil},
+	} {
+		t.Run("a scalar subquery of one source, "+c.name, func(t *testing.T) {
+			resp := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", scalar(c.where, c.selected), nil)
+			relIntRowsAre(t, resp, []map[string]any{{"id": "c1", "s": c.want}, {"id": "c2", "s": c.want}})
+			if route := pgITRoute(resp); route != "in-memory" {
+				t.Errorf("route = %q, want in-memory: a document with a subquery runs in the engine of the server", route)
+			}
+		})
+	}
 	pgITCanary(t, admin)
 }
 
@@ -1121,8 +1147,8 @@ func TestPostgresIntegration_OrderOverAColumnWithAnUnvalidatedNotNullConstraint(
 // statement, so the observation sees statements.
 func TestPostgresIntegration_NamesOver63BytesAreA400AndNoStatementIsSent(t *testing.T) {
 	admin := pgITAdmin(t)
-	pg := pgITMount(t, "pg", "ovdb-it-names", true)
-	base := pgITServe(t, map[string]*core.Database{"pg": pg})
+	pg, lite := pgITMount(t, "pg", "ovdb-it-names", true), pgITLite(t, "lite")
+	base := pgITServe(t, map[string]*core.Database{"pg": pg, "lite": lite})
 	long := strings.Repeat("n", 64)
 	routes := []struct{ name, method, path, body, code string }{
 		{"key read, a collection", http.MethodGet, "/v1/databases/pg/records/" + long + "/k1", "", "invalid_key"},
@@ -1155,6 +1181,22 @@ func TestPostgresIntegration_NamesOver63BytesAreA400AndNoStatementIsSent(t *test
 	}
 	if n := pgITStatementsSince(t, admin, "ovdb-it-names", at); n != 0 {
 		t.Errorf("%d sessions of the mount started a statement while every route refused a long name", n)
+	}
+
+	// A document the server evaluates itself (a join across databases, a document with a
+	// subquery) hands the mount a plain scan, which holds no field name: the length is not
+	// looked at, the field list is read from the catalog, and a name that no column has is an
+	// unknown field (400 invalid_dtql). It is not written into a statement, but the list is
+	// one, so these are not part of the observation above.
+	for _, c := range []struct{ name, doc string }{
+		{"a join across databases", strings.Replace(pgITDoc(pgITJoin, "pg"), "database: pg, name: customers", "database: lite, name: customers", 1) +
+			"where: {op: '==', left: {field: " + long + ", source: o}, right: {value: x}}\n"},
+		{"a document with a subquery", "from: {database: pg, name: customers, alias: c}\n" +
+			"where: {exists: {query: {from: {database: pg, name: orders, alias: o}, where: {op: '==', left: {field: " + long + ", source: o}, right: {value: x}}}}}\n"},
+	} {
+		if resp := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", c.doc, nil); resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" {
+			t.Errorf("%s, a field of 64 bytes: status %d, want 400 invalid_dtql: %s", c.name, resp.status, resp.raw)
+		}
 	}
 
 	// The control: a request the mount answers is seen as a statement.

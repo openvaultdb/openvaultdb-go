@@ -218,9 +218,11 @@ still read through an interface.)
   query_budget_exceeded`, a document it cannot run `400 invalid_dtql`); a
   connection that cannot be made or that failed is `503 database_unavailable` on
   every route (one fixed message; the log line names the mount by its ID and holds
-  the adapter's fixed sentence); a name over the 63 bytes PostgreSQL keeps is a
-  `400` before any statement; any other failure is a `500` whose log line says
-  which step failed. A read of one collection whose result is larger than the 8 MiB
+  the adapter's fixed sentence); a collection, or a field of a write or of a query
+  handed to a mount, over the 63 bytes PostgreSQL keeps is a `400` before any statement (a
+  document the server evaluates itself reads the field list from the catalog first and answers
+  such a field as an unknown one, and never writes it into a statement); any other failure
+  is a `500` whose log line says which step failed. A read of one collection whose result is larger than the 8 MiB
   response buffer is `422 query_budget_exceeded`, not a `500`. A join of the
   mount's own database is handed to the adapter without the database its sources
   name, so that the adapter can run it as one statement.

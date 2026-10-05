@@ -170,3 +170,43 @@ func TestADocumentWhoseExistsQueryNamesAFieldTheListLacksIsRefusedNotAnsweredEmp
 		}
 	})
 }
+
+// What the refusal above does not reach: the scalar subquery of one source with no
+// grouping, ordering, offset or aggregate is evaluated by DALgo on the same row-by-row path
+// as the query of an EXISTS, which checks no field, so a field the list of its source lacks
+// (the declared spelling, where the list holds the lower-case one) is read as a null there:
+// in its WHERE the subquery finds no row, and in its columns the value is a null, and the
+// document is answered. This pins the answer, so that the documentation of it stays as true
+// as the code; refusing it is a decision of its own.
+func TestAFieldTheListLacksInAScalarSubqueryOfOneSourceIsStillReadAsANull(t *testing.T) {
+	scalar := func(where, selected string) dal.StructuredQuery {
+		inner := dal.From(exRef("", "A", "x")).NewQuery().
+			Where(dal.NewComparison(dal.NewFieldRef("x", where), dal.Equal, dal.NewConstant("a1"))).
+			SelectColumns(dal.Column{Expression: dal.NewFieldRef("x", selected)})
+		return dal.From(exRef("", "A", "p")).NewQuery().
+			OrderBy(dal.Ascending(dal.NewFieldRef("p", "id"))).
+			SelectColumns(dal.Column{Expression: dal.NewFieldRef("p", "id")}, dal.Column{Expression: dal.NewQueryExpression(inner, "s")})
+	}
+	for name, tc := range map[string]struct {
+		where, selected string
+		want            any
+	}{
+		"the spellings the list holds":          {"name", "name", "a1"},
+		"the spelling the list lacks, in WHERE": {"Name", "name", nil},
+		"the spelling the list lacks, selected": {"name", "Name", nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mount := alMount()
+			res, err := exRun(t, scalar(tc.where, tc.selected), "one", newExRegistry(mount), exAllow, Limits{})
+			if err != nil || len(res.Records) != 3 {
+				t.Fatalf("rows = %d, err = %v, want the three rows answered", len(res.Records), err)
+			}
+			// Every row of the outer query carries the one value of the subquery.
+			for _, rec := range res.Records {
+				if got := rec.Data().(map[string]any)["s"]; got != tc.want {
+					t.Fatalf("s = %v, want %v (row %v)", got, tc.want, rec.Data())
+				}
+			}
+		})
+	}
+}

@@ -228,14 +228,21 @@ by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
   reviewed dialect (OV-01).
 - **Names over 63 bytes on a `postgres` mount.** PostgreSQL keeps 63 bytes of a name and cuts the
   rest without saying so, so a name of 64 bytes or more would address the table or the column
-  named by its first 63. Every route refuses such a name **before any statement is sent**, and the
-  message gives the limit and not the name: a collection (of a key, of a query, of a source of a
-  document) is `400 invalid_key`, the same status and code as every collection name outside the
-  name rule, and it is checked before the question whether the database declares the collection, so
-  a name that long is never a `404`; a field of a write (the top-level keys of `data`, the
-  `fieldName` of an update and every segment of its `fieldPath`) is `400 bad_request`; a field of
-  a query (`/query`, `/dtql`, a relational document) is `400 invalid_dtql`, as a source alias over
-  the same length is. A name of exactly 63 bytes is accepted. `HEAD` of a key answers `400`, with
+  named by its first 63. Every route refuses a collection that long **before any statement is
+  sent**, and the message gives the limit and not the name: a collection (of a key, of a query, of a
+  source of a document) is `400 invalid_key`, the same status and code as every collection name
+  outside the name rule, and it is checked before the question whether the database declares the
+  collection, so a name that long is never a `404`. A field of a write (the top-level keys of
+  `data`, the `fieldName` of an update and every segment of its `fieldPath`) is `400 bad_request`
+  before any statement. A field of a query is `400 invalid_dtql` before any statement wherever the
+  query or the document is handed to the mount: `/query`, `/dtql`, and a relational document that
+  runs in the database (a source alias over the same length is refused the same way). A document
+  that the server evaluates itself (a join across databases, a document with a subquery) hands
+  each mount a plain scan, which holds no field name: it reads the field list of each
+  PostgreSQL source from the catalog first, and a name that no column has is an unknown field
+  (`400 invalid_dtql`, a message that does not give the limit), or a null inside a scalar subquery
+  of one source (see "Fields that no source has"). The name is never written into a statement on
+  any route. A name of exactly 63 bytes is accepted. `HEAD` of a key answers `400`, with
   no body. No other engine has this limit.
 - **Access policies and spellings.** The access-policy layer sees the collection under the name
   the adapter is given. On `sqlite`, for a key read or write, that is the public name whichever
@@ -501,9 +508,10 @@ adapter's own fixed sentence for the failure (`reason`, for example `dalgo2postg
 not be reached`, or with the SQLSTATE code of a server that answered); nothing of the connection
 string is in it either. A request that was canceled, or that ran past its deadline, is not this
 failure: it keeps its own answer (`504 query_timeout` on a relational document). The routes that
-read one collection (`/query`, `/dtql`, a paged capture) decide on the request itself: a
-connection attempt that does not answer and fails when the time the server gives the read ends
-(10 seconds, 60 for a paged capture) is the `503` while the request is alive. A relational
+read one collection decide on the request itself: `/dtql` and a paged capture give the read a
+time of their own (10 seconds, 60 for a paged capture), and a connection attempt that does not
+answer and fails when that time ends is the `503` while the request is alive; `/query` runs under
+the request alone. A relational
 document runs under the time limit of the whole document, and a connection attempt that ends on
 it is the `504 query_timeout` the document answers when that limit ends it.
 
@@ -522,7 +530,9 @@ A document with a subquery, a join across databases, and a join that DALgo reads
 `firstname`, and the declared spelling is `400 invalid_dtql` there (a SQLite mount reads the
 declared spelling and refuses the lower-case one). That holds for a field named in the query of an
 `exists` as it does in a join: the field list of the source of that query is read before anything
-is, and a field it does not carry is refused, never answered with no rows.
+is, and a field it does not carry is refused, never answered with no rows. A scalar subquery of one
+source is not looked at (see "Fields that no source has"): the declared spelling in its `where` or
+its columns is read as a null, a `200`, on a PostgreSQL mount as on any other.
 
 A `postgres` mount takes part in a relational document only when `postgres` is in the join engines
 of the query limits (`joinEngines`), which the operator sets; the discovery document lists it, and
@@ -1394,9 +1404,15 @@ inGitDB mount is the `500` above.)
 
 **Fields that no source has.** A field of the query itself that no source of a document that DALgo
 evaluates has is a `400 invalid_dtql` (`... is unavailable`, or `unknown field` in `orderBy`), as on
-the database route. A field that no source has, inside an `exists` test or a scalar subquery, is read
-as a null (an unknown name in the `orderBy` of such a query is refused like any other). In a
-document handed whole to an inGitDB mount only the `orderBy` is checked.
+the database route. A field that no source has, in the `where`, `groupBy`, `having` or `orderBy` of an
+`exists` test whose one source supplies a field list, is a `400 invalid_dtql` (`unknown field ... the
+source does not carry it`); a column the `exists` query selects is not looked at, as it does not
+change whether it finds a row. Inside a scalar
+subquery of one source (no join, grouping, ordering, offset or aggregate) a field that no source has
+is read as a null, in its `where` and in its columns alike: DALgo evaluates such a subquery row by
+row and checks no field of it; a subquery that groups, orders, skips rows or aggregates is
+checked by DALgo like any other query. In a document handed whole to an inGitDB mount only the
+`orderBy` is checked.
 
 **Ordering.** In a query that does not aggregate, a name in `orderBy` is a field of a source, or
 the alias of a column of the select list. The alias is the column only where it is the whole of the

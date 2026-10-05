@@ -219,10 +219,15 @@ query carries as its alias is read as the alias only in HAVING and ORDER BY,
 outside an aggregate, as the compiler reads it), a source qualifier that no source
 of the query has, and a source alias longer than the 63 bytes of a name in
 PostgreSQL (400 `invalid_dtql`, nothing logged). Every route refuses, before any
-statement is sent, a collection, a field or a key path longer than those 63 bytes
-(PostgreSQL would cut it and address the table or column named by its first 63): a
-collection is 400 `invalid_key`, a field of a write 400 `bad_request` and a field of a
-query 400 `invalid_dtql`. The mount states
+statement is sent, a collection, a field of a write or a key path longer than those 63 bytes
+(PostgreSQL would cut it and address the table or column named by its first 63), and so is a
+field of a query wherever the query or the document is handed to the mount: a collection is
+400 `invalid_key`, a field of a write 400 `bad_request` and a field of a query 400
+`invalid_dtql`. A document the server evaluates itself (a join across databases, a document
+with a subquery) hands each mount a plain scan, so a field of 64 bytes there is not looked at
+for its length: the field list of each source is read from the catalog (one statement a
+source), and the name, which no column has, is an unknown field, or a null inside a scalar
+subquery of one source. It is never written into a statement. The mount states
 that names are folded to lower case. What the adapter says on this path never
 reaches a response or a log: `dal.ErrNotSupported` and an unknown dialect are
 422 `query_unsupported` with a fixed message; a value or a name the server

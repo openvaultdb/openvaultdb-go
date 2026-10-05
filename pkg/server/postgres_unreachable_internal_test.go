@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -143,6 +144,31 @@ func logLines(t *testing.T, logs *bytes.Buffer) []map[string]any {
 	return lines
 }
 
+// logTextWithoutTime is the text of the lines the server logged without the time of each:
+// the fraction of a second of a time can hold the digits of a port, so a search of the raw
+// log for the connection fails at random.
+func logTextWithoutTime(t *testing.T, logs *bytes.Buffer) string {
+	t.Helper()
+	var text strings.Builder
+	for _, raw := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		if raw == "" {
+			continue
+		}
+		line := map[string]json.RawMessage{}
+		if err := json.Unmarshal([]byte(raw), &line); err != nil {
+			t.Fatalf("a line of the log is not JSON: %s", raw)
+		}
+		delete(line, slog.TimeKey)
+		encoded, err := json.Marshal(line)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text.Write(encoded)
+		text.WriteByte('\n')
+	}
+	return text.String()
+}
+
 // Every route, every kind of failure: 503 database_unavailable with the one message.
 func TestAMountThatCannotBeReachedIsAFixed503OnEveryRouteWhateverTheFailure(t *testing.T) {
 	for _, kind := range unreachableKinds {
@@ -157,7 +183,7 @@ func TestAMountThatCannotBeReachedIsAFixed503OnEveryRouteWhateverTheFailure(t *t
 					t.Errorf("message = %q, want the fixed message", message)
 				}
 				requireNoConnection(t, "the answer", resp.raw)
-				requireNoConnection(t, "the log", logs.String())
+				requireNoConnection(t, "the log", logTextWithoutTime(t, logs))
 				if strings.Contains(resp.raw, kind.sentence) {
 					t.Errorf("the adapter's sentence is in the answer: %s", resp.raw)
 				}
@@ -183,7 +209,7 @@ func TestAMountThatCannotBeReachedIsA503ForAHeadToo(t *testing.T) {
 	if resp.status != http.StatusServiceUnavailable || resp.raw != "" {
 		t.Fatalf("status %d: %q", resp.status, resp.raw)
 	}
-	requireNoConnection(t, "the log", logs.String())
+	requireNoConnection(t, "the log", logTextWithoutTime(t, logs))
 	if lines := logLines(t, logs); len(lines) != 1 || lines[0]["database"] != "pg" {
 		t.Fatalf("log = %s", logs)
 	}
@@ -198,7 +224,7 @@ func TestTheHumanPageOfAMountThatCannotBeReachedIsA503(t *testing.T) {
 		t.Fatalf("status %d: %s", resp.status, resp.raw)
 	}
 	requireNoConnection(t, "the page", resp.raw)
-	requireNoConnection(t, "the log", logs.String())
+	requireNoConnection(t, "the log", logTextWithoutTime(t, logs))
 	if lines := logLines(t, logs); len(lines) != 1 || lines[0]["database"] != "pg" {
 		t.Fatalf("log = %s", logs)
 	}
@@ -240,7 +266,7 @@ func TestAPagedCaptureOfAMountThatCannotBeReachedIsAFixed503(t *testing.T) {
 				t.Fatalf("status %d: %s", resp.status, resp.raw)
 			}
 			requireNoConnection(t, "the answer", resp.raw)
-			requireNoConnection(t, "the log", logs.String())
+			requireNoConnection(t, "the log", logTextWithoutTime(t, logs))
 			if lines := logLines(t, logs); len(lines) != 1 || lines[0]["database"] != "pg" || lines[0]["msg"] != "database unreachable" {
 				t.Fatalf("log = %s", logs)
 			}
@@ -267,7 +293,27 @@ func TestARelationalDocumentWhoseBudgetEndsOnAConnectionAttemptIsStillA504(t *te
 				t.Fatalf("status %d: %s", resp.status, resp.raw)
 			}
 			requireNoConnection(t, "the answer", resp.raw)
-			requireNoConnection(t, "the log", logs.String())
+			requireNoConnection(t, "the log", logTextWithoutTime(t, logs))
 		})
+	}
+}
+
+// A line of the log carries the time it was written, whose fraction of a second can hold
+// any digits, the four of the stand-in port among them (the test of the answers failed at
+// random on that: about one run in thirty). What is searched for the connection is the log
+// without its time.
+func TestTheLogSearchedForTheConnectionHasNoTimeInIt(t *testing.T) {
+	logs := &bytes.Buffer{}
+	logs.WriteString(`{"time":"2026-10-05T15:19:33.` + unreachablePort + `99+01:00","level":"ERROR","msg":"database unreachable","database":"pg"}` + "\n")
+	logs.WriteString(`{"time":"2026-10-05T15:19:34.000001+01:00","level":"ERROR","msg":"database unreachable","database":"pg"}` + "\n\n")
+	text := logTextWithoutTime(t, logs)
+	if strings.Contains(text, unreachablePort) || strings.Contains(text, "time") || strings.Contains(text, "2026") {
+		t.Fatalf("the time is in the text: %s", text)
+	}
+	if strings.Count(text, "database unreachable") != 2 || !strings.Contains(text, `"database":"pg"`) {
+		t.Fatalf("the rest of the lines is lost: %s", text)
+	}
+	if empty := logTextWithoutTime(t, &bytes.Buffer{}); empty != "" {
+		t.Fatalf("an empty log is %q", empty)
 	}
 }

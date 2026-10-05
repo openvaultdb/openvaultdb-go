@@ -16,8 +16,8 @@ import (
 // A read of one collection whose result is larger than the buffer of the server is a
 // refusal the client can act on: 422 query_budget_exceeded, the answer a relational
 // result over its bound gets, with a hint that says to narrow or to page the read, and
-// no ERROR line in the log. It used to be a 500 internal with a logged error. A result
-// of exactly the buffer is answered.
+// no ERROR line in the log. It was a 500 internal before. A result of exactly the
+// buffer is answered.
 
 // bufferDriver is a PostgreSQL driver whose structured read answers one row whose name
 // is pad bytes long.
