@@ -6,7 +6,7 @@ toolchain go1.27.0
 
 require (
 	cloud.google.com/go/firestore v1.24.0
-	github.com/dal-go/dalgo v0.90.1
+	github.com/dal-go/dalgo v0.90.2
 	github.com/dal-go/dalgo2firestore v0.10.3
 	github.com/dal-go/dalgo2mysql v0.2.2
 	github.com/dal-go/dalgo2postgres v0.6.0
@@ -74,7 +74,7 @@ require (
 require (
 	github.com/RoaringBitmap/roaring/v2 v2.29.0 // indirect
 	github.com/bits-and-blooms/bitset v1.24.6 // indirect
-	github.com/dal-go/dalgo2openvaultdb v0.3.2-0.20260909113030-cacd422564fc
+	github.com/dal-go/dalgo2openvaultdb v0.3.3
 	github.com/dal-go/dalgo2sql v0.27.0
 	github.com/dal-go/dalgo2sqlite v0.2.3
 	github.com/gofrs/flock v0.13.0
