@@ -17,8 +17,8 @@ var keyColumnCases = []string{"ID", "Id", "iD"}
 
 // TestWriteDataNamingTheKeyColumnInAnotherCaseIsRefusedBeforeTheAdapter: every
 // spelling of the key column is the one column on sqlite, postgres and mysql, and
-// an adapter that skips only "id" would write another spelling into it. A write
-// whose data names the key column in another case is refused whole with
+// the adapter skips only "id" when it lists the columns to write. A write whose
+// data names the key column in another case is refused whole with
 // ErrKeyColumnCase (a bad request, an ErrInvalidFieldName), before any adapter
 // call, whatever else the batch holds; "id" itself is left to the adapter, which
 // skips it.

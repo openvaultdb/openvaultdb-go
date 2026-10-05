@@ -14,12 +14,12 @@ import (
 	"github.com/openvaultdb/openvaultdb-go/pkg/mount"
 )
 
-// TestSQLiteTableWithAKeyColumnIsNotWrittenThroughAnotherSpellingOfIt: on a real
-// SQLite file whose table already exists, a manifest that declares a field named
-// as another spelling of the key column (ID) does not open and the file is
-// unchanged; a manifest that declares only other fields opens, and a write whose
-// data names that spelling is refused before the file is touched.
-func TestSQLiteTableWithAKeyColumnIsNotWrittenThroughAnotherSpellingOfIt(t *testing.T) {
+// TestSQLiteKeyColumnSpellingsAreRefusedOnAnExistingTable: on a real SQLite file
+// whose table already exists, a manifest that declares a field named as another
+// spelling of the key column (ID) does not open and the file is unchanged; a
+// manifest that declares only other fields opens, and a write whose data names
+// that spelling is refused before the file is touched.
+func TestSQLiteKeyColumnSpellingsAreRefusedOnAnExistingTable(t *testing.T) {
 	dir := t.TempDir()
 	dataPath := filepath.Join(dir, "data.sqlite")
 	raw, err := sql.Open("sqlite", dataPath)
