@@ -152,8 +152,8 @@ func TestUndeclaredCollectionIs404BeforeAdapterOnSQLEngines(t *testing.T) {
 
 // TestNestedKeysAre404BeforeAdapterOnSQLEngines: a SQL mount has no
 // subcollections. Even with every segment declared, dalgo2sql would address
-// another table than the root collection the capability was checked on (its
-// delete names only the leaf table), so a key with a parent is a 404.
+// another recordset than the root collection the capability was checked on (one
+// named after the whole path), so a key with a parent is a 404.
 func TestNestedKeysAre404BeforeAdapterOnSQLEngines(t *testing.T) {
 	for _, engine := range writeGuardSQLEngines {
 		t.Run(engine, func(t *testing.T) {

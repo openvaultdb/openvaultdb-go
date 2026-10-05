@@ -108,6 +108,23 @@ func clipKeyOpen(t *testing.T, db dal.DB) *Database {
 	return opened
 }
 
+// clipKeySQLOpen opens a strict sqlite database that declares customers over db.
+func clipKeySQLOpen(t *testing.T, db dal.DB) *Database {
+	t.Helper()
+	m := &manifest.Manifest{
+		Database: manifest.Database{ID: "clipkey", SchemaMode: schema.ModeStrict},
+		Storage:  manifest.Storage{Engine: "sqlite"},
+		Schemas: &schema.Schemas{Collections: map[string]schema.Collection{
+			"customers": {Fields: map[string]schema.Field{"name": {Type: schema.TypeString}}},
+		}},
+	}
+	opened, err := Open(m, db, []schema.Mode{schema.ModeStrict}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return opened
+}
+
 // TestMessagesClipTheKeyTheyRepeat: whatever the name of a collection or the id
 // of a record, the message of a failed Get or Apply repeats at most
 // maxEchoedNameLen bytes of each segment of the key, and a short key is shown
@@ -129,25 +146,30 @@ func TestMessagesClipTheKeyTheyRepeat(t *testing.T) {
 		mode clipKeyMode
 		run  func(*Database, *record.Key) error
 		is   error
+		sql  bool // on a sqlite database that declares customers, with keys that have no parent
 	}{
-		{"Get, not found by the adapter", clipKeyAbsent, func(db *Database, key *record.Key) error { _, err := db.Get(context.Background(), key); return err }, ErrNotFound},
-		{"Get, not found by the record", clipKeyAbsentQuiet, func(db *Database, key *record.Key) error { _, err := db.Get(context.Background(), key); return err }, ErrNotFound},
-		{"set, refused by the adapter", clipKeyAbsent, apply("set", setData, nil), errClipKeyAdapter},
-		{"insert, refused by the adapter", clipKeyAbsent, apply("insert", setData, nil), errClipKeyAdapter},
-		{"update, refused by the adapter", clipKeyPresent, apply("update", nil, rename), errClipKeyAdapter},
-		{"delete, refused by the adapter", clipKeyPresent, apply("delete", nil, nil), errClipKeyAdapter},
-		{"batch check, record unreadable", clipKeyBroken, apply("set", setData, nil), errClipKeyAdapter},
-		{"batch check, insert of an existing record", clipKeyPresent, apply("insert", setData, nil), ErrAlreadyExists},
-		{"batch check, update of a missing record", clipKeyAbsent, apply("update", nil, rename), ErrUpdateOfMissingRecord},
-		{"batch check, update that does not apply", clipKeyPresent, apply("update", nil, []UpdateOp{{FieldName: "name", FieldPath: []string{"name"}, Value: "Bob"}}), nil},
+		{"Get, not found by the adapter", clipKeyAbsent, func(db *Database, key *record.Key) error { _, err := db.Get(context.Background(), key); return err }, ErrNotFound, false},
+		{"Get, not found by the record", clipKeyAbsentQuiet, func(db *Database, key *record.Key) error { _, err := db.Get(context.Background(), key); return err }, ErrNotFound, false},
+		{"set, refused by the adapter", clipKeyAbsent, apply("set", setData, nil), errClipKeyAdapter, false},
+		{"insert, refused by the adapter", clipKeyAbsent, apply("insert", setData, nil), errClipKeyAdapter, false},
+		{"update, refused by the adapter", clipKeyPresent, apply("update", nil, rename), errClipKeyAdapter, false},
+		{"delete, refused by the adapter", clipKeyPresent, apply("delete", nil, nil), errClipKeyAdapter, false},
+		{"batch check, record unreadable", clipKeyBroken, apply("set", setData, nil), errClipKeyAdapter, false},
+		{"batch check, insert of an existing record", clipKeyPresent, apply("insert", setData, nil), ErrAlreadyExists, false},
+		{"batch check, update of a missing record", clipKeyAbsent, apply("update", nil, rename), ErrUpdateOfMissingRecord, false},
+		{"batch check, update that does not apply", clipKeyPresent, apply("update", nil, []UpdateOp{{FieldName: "name", FieldPath: []string{"name"}, Value: "Bob"}}), nil, false},
+		{"batch check, set of an existing record that names no field", clipKeyPresent, apply("set", map[string]any{}, nil), ErrEmptyWrite, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			db := clipKeyOpen(t, clipKeyDB{mode: c.mode})
-			err := c.run(db, short)
-			if err == nil || !strings.Contains(err.Error(), "customers/c1/orders/o1") {
+			db, shortKey, longKey, wantShort := clipKeyOpen(t, clipKeyDB{mode: c.mode}), short, long, "customers/c1/orders/o1"
+			if c.sql {
+				db, shortKey, longKey, wantShort = clipKeySQLOpen(t, clipKeyDB{mode: c.mode}), record.NewKeyWithID("customers", "c1"), record.NewKeyWithID("customers", huge), "customers/c1"
+			}
+			err := c.run(db, shortKey)
+			if err == nil || !strings.Contains(err.Error(), wantShort) {
 				t.Fatalf("a short key is shown whole: %v", err)
 			}
-			err = c.run(db, long)
+			err = c.run(db, longKey)
 			if err == nil || (c.is != nil && !errors.Is(err, c.is)) {
 				t.Fatalf("long key: %v", err)
 			}

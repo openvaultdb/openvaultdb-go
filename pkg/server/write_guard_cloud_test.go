@@ -19,9 +19,10 @@ import (
 // manifest declares a table by its quoted storage identifier ('"Order Details"'),
 // the mount opens, the embedder renames the live manifest's keys to the public
 // names, and its middleware rewrites GET and HEAD of /records and /read?key= to
-// the quoted name, the only form dalgo2sql can read. The write guard's
-// allow-list is what the mount registered, so those reads keep answering 200
-// while a collection nobody declared is a 404.
+// the quoted name. The declared set is what the mount registered, and the
+// adapter is given the collection's public name whichever spelling the key
+// carries, so those reads keep answering 200 while a collection nobody declared
+// is a 404.
 func TestQuotedCollectionKeyReadsSurviveTheManifestRename(t *testing.T) {
 	dir := t.TempDir()
 	storage, err := sql.Open("sqlite", filepath.Join(dir, "data.sqlite"))
