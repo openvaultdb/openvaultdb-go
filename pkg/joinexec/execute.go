@@ -512,46 +512,84 @@ func (r *run) database(ctx context.Context, query dal.StructuredQuery, source So
 // inMemory runs the document above guarded leaves. DALgo's federated executor
 // runs a document whose sources all name their database and that has no
 // subquery, one leaf per database: it keeps the streaming join, and a plain
-// one-source document (no null test, aggregation or scan clause) is handed to
-// the mount whole, with its WHERE, ORDER BY and LIMIT. DALgo reads a one-source
-// document with GROUP BY, HAVING, an aggregate, or a scan clause beside a WHERE,
-// ORDER BY or offset, with a plain scan of the collection and evaluates it above
-// the leaf. The federated executor cannot read a derived source (it asks every
-// FROM node for a database), and a one-source document with a null test would
-// be handed whole to an engine that cannot compile it, so every other document
+// one-source document (no null test, ordering expression, aggregation or scan
+// clause) is handed to the mount whole, with its WHERE, ORDER BY and LIMIT. DALgo
+// reads a one-source document with GROUP BY, HAVING, an aggregate, or a scan
+// clause beside a WHERE, ORDER BY or offset, with a plain scan of the collection
+// and evaluates it above the leaf. The federated executor cannot read a derived
+// source (it asks every FROM node for a database), a one-source document with a null test would
+// be handed whole to an engine that cannot compile it, and one that orders by
+// arithmetic would be handed to an executor that skips the ordering and
+// answers in the order it reads the records, so every other document
 // runs through DALgo's recursive executor over a router that picks the leaf of
 // each source's database. A join with a null test stays with the federated
 // executor: it reads plain collections and evaluates the test above them.
 //
-// Before either reads a row, the unqualified fields of the document are checked
+// Before either reads a row, the qualifiers of the document are checked (a field that names
+// a source that no query it stands in has is refused, with DALgo's own words: the executor of
+// a mount that is handed the document whole reads the name of a field and nothing else, so
+// it ignored the qualifier, and DALgo's recursive executor, which checks it, is not asked
+// for such a document), and then the unqualified fields of the document are checked
 // against the field lists the sources supply (checkScopes): a query of several
 // sources in which one source has no list is refused, with a scope error, for an
 // unqualified field, because DALgo would bind it to the first source of the query.
 // So is a name that two lists carry, and so is a name that only a later source
-// carries in the GROUP BY, HAVING, ORDER BY or columns of a query that aggregates,
-// because DALgo's aggregation would read it from the first source. DALgo is then
-// given the document with the aliases of its select lists resolved in HAVING and
-// ORDER BY (resolveAliases), which its own check of the fields against the lists
-// does not know.
+// carries in the GROUP BY, HAVING, ORDER BY or columns of a query that aggregates, or in
+// an ON condition, because DALgo would read it from the first source. A column field that
+// an earlier column of a query that aggregates carries as its alias is refused (DALgo reads
+// the column), and so is the ORDER BY of a query that does not aggregate by the alias of
+// a column that is an expression, or by a name that no source whose list is supplied
+// carries (the executor of a mount that is handed the document whole ignores a field it
+// does not know). The key pseudo-field is ordered by only where a mount is handed the
+// document whole (keyOrderedByTheMount): DALgo does not know it. DALgo is then given the
+// document with the aliases of its select lists
+// resolved in HAVING and ORDER BY (resolveAliases), which its own check of the fields
+// against the lists does not know, and, in a query that does not aggregate, the alias of a
+// field in ORDER BY replaced by the field, so that the answer is sorted the way a SQL
+// database that runs the whole document sorts it.
 func (r *run) inMemory(ctx context.Context, query dal.StructuredQuery, doc document, databases []string, qualified bool) ([]record.Record, error) {
 	var (
 		reader dal.RecordsReader
 		err    error
 	)
 	router := newRouter(r, databases)
-	// Before anything is read: a field that DALgo cannot bind to a source is refused,
-	// not bound to the first one (see checkScopes).
-	if err := checkScopes(ctx, query, router.JoinFields); err != nil {
+	// Before anything is read: a qualifier that names no source is refused (see above), and
+	// so is a field that DALgo cannot bind to a source (see checkScopes).
+	if err := dal.ValidateQueryScope(query); err != nil {
+		return nil, r.guard.Classify(err, RouteInMemory)
+	}
+	// A document of one source that a mount could not evaluate whole is read as a plain scan
+	// and evaluated above it: one with a null test (a SQL adapter cannot compile it), and one
+	// that orders by an expression that is not a field (an executor skips it, and answers in
+	// the order it reads the records).
+	evaluated := len(doc.sources) == 1 && (doc.hasNull || ordersByExpression(query))
+	federated := qualified && !doc.hasSubquery && !evaluated
+	var opts []scopeOption
+	if federated && len(doc.sources) == 1 && !doc.anyScan() && !dal.HasAggregation(query) {
+		// DALgo's federated executor hands this document to the mount whole.
+		opts = append(opts, keyOrderedByTheMount)
+	}
+	if err := checkScopes(ctx, query, router.JoinFields, opts...); err != nil {
 		return nil, r.guard.Classify(err, RouteInMemory)
 	}
 	query = resolveAliases(query)
-	handedWhole := doc.hasNull && len(doc.sources) == 1
-	if qualified && !doc.hasSubquery && !handedWhole {
+	if federated {
 		reader, err = dal.ExecuteFederatedQueryWithOptions(ctx, query, r.resolve, dal.FederatedQueryOptions{})
 	} else {
 		reader, err = dal.ExecuteRecursiveQuery(ctx, router, query)
 	}
 	return r.collect(ctx, reader, err, RouteInMemory)
+}
+
+// ordersByExpression reports whether an ordering of query is not a plain field: arithmetic,
+// which an executor that is handed the document whole does not apply.
+func ordersByExpression(query dal.StructuredQuery) bool {
+	for _, order := range query.OrderBy() {
+		if _, plain := order.Expression().(dal.FieldRef); !plain {
+			return true
+		}
+	}
+	return false
 }
 
 // collect is the only place a result is read: it drains reader through

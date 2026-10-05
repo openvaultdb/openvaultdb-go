@@ -113,9 +113,12 @@ func flattenedBoundPattern(category string, bounds map[string]dalgoBound) *regex
 // dal.QueryValidationError, whose Error methods the tests pin) and by the categories
 // of DALgo that are refusals of a document, so that a caller who made the mistake is
 // answered it. A derived source inside a derived source nests the same text once more,
-// as a join_plan error, and is read the same way; a join_plan error whose cause is not
-// a refusal (a failed read, a close) and a category that is not a refusal (a bound, which
-// flattenedBound reads, or one this code does not know) are left as they are.
+// as a join_plan error, and is read the same way. A join_plan error is a refusal when its
+// message is one of those IsJoinPlanRefusal lists (a wildcard over a source with no field
+// list, a test that is not one): the others carry the text of a failed read (a scan, a
+// close), or are a bound, which flattenedBound reads. A join_plan error whose cause is not
+// a refusal and a category that is not a refusal (a bound, or one this code does not know)
+// are left as they are.
 var flattenedRefusalPattern = regexp.MustCompile(`(?s)^(?:cannot )?scan \S+: (join_plan|` + strings.Join(refusalCategories, "|") + `)(?: at (\S+))?: (.*)$`)
 
 // refusalCategories are the categories of DALgo's errors that report a document it
@@ -125,6 +128,39 @@ var flattenedRefusalPattern = regexp.MustCompile(`(?s)^(?:cannot )?scan \S+: (jo
 var refusalCategories = []string{
 	"scope", "shape", "cardinality", "query_shape",
 	"join_shape", "join_scope", "join_key_type", "join_field", "join_cycle", "join_algorithm", "join_type", "join_operator",
+}
+
+// joinPlanRefusals are the messages of the join_plan category that DALgo gives a
+// document it cannot run, the only ones of that category a caller can act on. Every
+// other join_plan error carries the text of a failed read (a scan, a close, a field
+// load) or of an encoding fault, or reports a bound that Execute maps to a budget
+// refusal first, so it is a server fault.
+var joinPlanRefusals = map[string]bool{
+	"wildcard expansion requires ordered schema metadata": true,
+	"generic JOIN does not support provider cursors":      true,
+	"IN or NOT IN requires an array":                      true,
+	"IS NULL requires an operand":                         true,
+}
+
+// joinPlanOperatorRefusal starts the message of a comparison operator DALgo's join
+// does not evaluate; the rest of it is the operator the document wrote.
+const joinPlanOperatorRefusal = "unsupported operator "
+
+// joinPlanTypeRefusal matches the whole message of DALgo's join when it meets an
+// expression or a condition of a type it does not evaluate (a parameter that no
+// binder replaced, for one): the text after the words is the name of a Go type,
+// never a word of the request. A message that goes on after the type, or that
+// carries the words as the cause of a failed read ("cannot scan c: unsupported
+// expression ..."), is not this refusal.
+var joinPlanTypeRefusal = regexp.MustCompile(`^unsupported (?:expression|condition) \S+$`)
+
+// IsJoinPlanRefusal reports whether message, the Message of a join_plan error of DALgo's
+// join, is the refusal of a document a caller made and can change: a wildcard over a source
+// with no field list, a cursor, an array that is not one, a null test of nothing, an
+// operator or a type of expression or condition the join does not evaluate. Any other
+// message of the category is a failed read, a fault of encoding or a bound.
+func IsJoinPlanRefusal(message string) bool {
+	return joinPlanRefusals[message] || strings.HasPrefix(message, joinPlanOperatorRefusal) || joinPlanTypeRefusal.MatchString(message)
 }
 
 // MapDalgoError returns a *BudgetError when err is, or wraps, one of DALgo's
@@ -193,9 +229,15 @@ func flattenedBound(message, route string) *BudgetError {
 // derived source's query.
 func flattenedRefusal(err *dal.JoinValidationError) error {
 	path, message := err.Path, err.Message
+	peeled := false
 	for {
 		m := flattenedRefusalPattern.FindStringSubmatch(message)
 		if m == nil {
+			// What is left of the text, after at least one derived source, is the message of
+			// the error DALgo raised inside the innermost one.
+			if peeled && IsJoinPlanRefusal(message) {
+				return refusal("join_plan", path, message)
+			}
 			return nil
 		}
 		path = path + ".query"
@@ -205,7 +247,7 @@ func flattenedRefusal(err *dal.JoinValidationError) error {
 		if m[1] != "join_plan" {
 			return refusal(m[1], path, m[3])
 		}
-		message = m[3]
+		message, peeled = m[3], true
 	}
 }
 

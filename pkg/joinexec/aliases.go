@@ -24,12 +24,24 @@ import (
 // computes it from the same group, so the answer is the one it gave for the alias.
 //
 // A name is replaced only where DALgo reads it as the column: not in the argument of an
-// aggregate, where DALgo reads a field of a source, and not in a query that does not
-// aggregate, where it is a field of a source in every clause (checkScopes treats the
-// two the same way). A query that names no alias is returned as it is, so a document
-// that never needed the rewrite reaches DALgo as it was built. A query inside an
-// aggregate's argument is not looked at: DALgo refuses the argument of an aggregate that
-// is not a field, a constant or arithmetic over them.
+// aggregate, where DALgo reads a field of a source, and not in WHERE, ON, GROUP BY or the
+// columns of any query (checkScopes treats them the same way). A query that names no alias
+// is returned as it is, so a document that never needed the rewrite reaches DALgo as it was
+// built. A query inside an aggregate's argument is not looked at: DALgo refuses the argument
+// of an aggregate that is not a field, a constant or arithmetic over them.
+//
+// ORDER BY of a query that does not aggregate is the one clause where DALgo reads a name
+// as a field of a source and a SQL database that runs the whole document reads it as the
+// column. A name that a column carries as the alias of a field of a source is replaced by
+// that field here too, at every level of the document, so the answer is sorted the way the
+// database sorts it, by the field the column selects, and no executor (DALgo, or the one of
+// a mount that is handed the document whole) is given a name it reads as another field or
+// does not know. Only an ORDER BY expression that is the bare name is the column: inside
+// arithmetic the database reads a field of a source (order by b*1 is the table's own b, not
+// the alias), so a name there is left alone, for checkScopes to look at as the field it is.
+// The alias of a column that is not a field has nothing to be replaced by: checkScopes
+// refuses it. Nothing here runs on the database route, where the SQL database reads the
+// alias itself.
 //
 // Nor is a name replaced when the replacement would be read as another column. DALgo's
 // aggregation reads an unqualified field of an expression first as the column of the select
@@ -100,7 +112,8 @@ func isNamedAs(column dal.Column) bool {
 }
 
 // resolveAliases returns query with the aliases of its select lists resolved in HAVING
-// and ORDER BY, at every level of the document, or query itself when it names none.
+// and ORDER BY (of a query that does not aggregate: the alias of a field in ORDER BY), at
+// every level of the document, or query itself when it names none.
 // Execute walks and checks the document before it gets here, so every node is of a type
 // the walk accepts.
 func resolveAliases(query dal.StructuredQuery) dal.StructuredQuery {
@@ -126,6 +139,19 @@ func resolveQuery(query dal.StructuredQuery) (dal.StructuredQuery, bool) {
 			return reorder(order, expression), changed
 		})
 		havingChanged = havingChanged || haveAliasChanged
+		orderChanged = orderChanged || orderAliasChanged
+	} else if fields := namesOfColumns(columns).fields; len(fields) > 0 {
+		var orderAliasChanged bool
+		orderBy, orderAliasChanged = mapEach(orderBy, func(order dal.OrderExpression) (dal.OrderExpression, bool) {
+			// Only the bare name is the column: inside arithmetic a SQL database reads a field
+			// of a source (order by b*1 is not order by b), and so does this.
+			field, bare := order.Expression().(dal.FieldRef)
+			if !bare {
+				return order, false
+			}
+			expression, changed := replaceInExpression(field, fields)
+			return reorder(order, expression), changed
+		})
 		orderChanged = orderChanged || orderAliasChanged
 	}
 	if !fromChanged && !whereChanged && !groupChanged && !columnsChanged && !havingChanged && !orderChanged {

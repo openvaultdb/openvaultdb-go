@@ -635,6 +635,24 @@ func TestMapDalgoErrorFlattenedRefusalsInsideADerivedSourceAreRecovered(t *testi
 			refusal{false, "shape", "from.query.from.query.orderBy[0]", `field "x" is unavailable`}},
 		"three levels, the middle without a path": {"cannot scan e: join_plan: cannot scan d: join_plan at from.joins[0]: cannot scan c: scope at columns[0]: ambiguous unqualified field k",
 			refusal{false, "scope", "from.query.query.from.joins[0].query.columns[0]", "ambiguous unqualified field k"}},
+		// The join_plan messages that are refusals of the document (IsJoinPlanRefusal), read the
+		// same way, as the join_plan error DALgo raised.
+		"a wildcard over a source with no field list": {"cannot scan d: join_plan at columns[0]: wildcard expansion requires ordered schema metadata",
+			refusal{true, "join_plan", "from.query.columns[0]", "wildcard expansion requires ordered schema metadata"}},
+		"an array that is not one": {"cannot scan d: join_plan at where: IN or NOT IN requires an array",
+			refusal{true, "join_plan", "from.query.where", "IN or NOT IN requires an array"}},
+		"an operator the join does not evaluate": {"cannot scan d: join_plan at where: unsupported operator <>",
+			refusal{true, "join_plan", "from.query.where", "unsupported operator <>"}},
+		"a null test of nothing, read by the reader": {"scan d: join_plan at where: IS NULL requires an operand",
+			refusal{true, "join_plan", "from.query.where", "IS NULL requires an operand"}},
+		"a type of condition the join does not evaluate": {"cannot scan d: join_plan at where: unsupported condition dal.weird",
+			refusal{true, "join_plan", "from.query.where", "unsupported condition dal.weird"}},
+		"a cursor": {"cannot scan d: join_plan at from: generic JOIN does not support provider cursors",
+			refusal{true, "join_plan", "from.query.from", "generic JOIN does not support provider cursors"}},
+		"a refusal of the join, without a path": {"cannot scan d: join_plan: IS NULL requires an operand",
+			refusal{true, "join_plan", "from.query", "IS NULL requires an operand"}},
+		"a derived source inside a derived source, the inner one a join_plan refusal": {"cannot scan e: join_plan at from: cannot scan d: join_plan at columns[0]: wildcard expansion requires ordered schema metadata",
+			refusal{true, "join_plan", "from.query.from.query.columns[0]", "wildcard expansion requires ordered schema metadata"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			in := &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: tc.message}
@@ -665,15 +683,19 @@ func TestMapDalgoErrorFlattenedRefusalsInsideADerivedSourceAreRecovered(t *testi
 
 func TestMapDalgoErrorLeavesTextThatIsNotAFlattenedRefusalAlone(t *testing.T) {
 	for name, message := range map[string]string{
-		"no scan prefix":                         "something d: shape at columns[0]: field is unavailable",
-		"a category that is not a refusal":       "cannot scan d: weird at columns[0]: field is unavailable",
-		"a bound that is not one DALgo reports":  "cannot scan d: query_limit at from: something_new",
-		"the failure of a read":                  "cannot scan d: disk I/O error",
-		"a failed read inside a derived source":  "cannot scan e: join_plan at from: close scan d: boom",
-		"text that is not a category at all":     "cannot scan d: Shape at columns[0]: field is unavailable",
-		"a category with nothing after it":       "cannot scan d: shape at columns[0]",
-		"a category glued to the word before it": "cannot scan d: reshape at columns[0]: field is unavailable",
-		"a unknown refusal behind a derived one": "cannot scan e: join_plan at from: cannot scan d: weird at columns[0]: boom",
+		"no scan prefix":                                           "something d: shape at columns[0]: field is unavailable",
+		"a category that is not a refusal":                         "cannot scan d: weird at columns[0]: field is unavailable",
+		"a bound that is not one DALgo reports":                    "cannot scan d: query_limit at from: something_new",
+		"the failure of a read":                                    "cannot scan d: disk I/O error",
+		"a failed read inside a derived source":                    "cannot scan e: join_plan at from: close scan d: boom",
+		"text that is not a category at all":                       "cannot scan d: Shape at columns[0]: field is unavailable",
+		"a category with nothing after it":                         "cannot scan d: shape at columns[0]",
+		"a category glued to the word before it":                   "cannot scan d: reshape at columns[0]: field is unavailable",
+		"a unknown refusal behind a derived one":                   "cannot scan e: join_plan at from: cannot scan d: weird at columns[0]: boom",
+		"a join_plan message that is not a refusal":                "cannot scan d: join_plan at columns[0]: output is not JSON serializable: boom",
+		"a join_plan message that is a refusal, not behind a scan": "join_plan at columns[0]: wildcard expansion requires ordered schema metadata",
+		"a refusal that goes on after the words":                   "cannot scan d: join_plan at where: IS NULL requires an operand, or something else",
+		"a bound that is a join_plan message":                      "cannot scan d: join_plan at from: relation scan exceeds row or byte bound and more",
 	} {
 		t.Run(name, func(t *testing.T) {
 			in := &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: message}
@@ -691,5 +713,68 @@ func TestMapDalgoErrorLeavesTextThatIsNotAFlattenedRefusalAlone(t *testing.T) {
 		if got := MapDalgoError(in, RouteInMemory); got != in {
 			t.Fatalf("got %v, want the original error %v", got, in)
 		}
+	}
+}
+
+// The join_plan messages of DALgo that are refusals of the document, a mistake of the
+// caller who can change it, and not the text of a failed read, an encoding fault or a bound.
+func TestIsJoinPlanRefusal(t *testing.T) {
+	for message, want := range map[string]bool{
+		"wildcard expansion requires ordered schema metadata": true,
+		"generic JOIN does not support provider cursors":      true,
+		"IN or NOT IN requires an array":                      true,
+		"IS NULL requires an operand":                         true,
+		"unsupported operator <>":                             true,
+		"unsupported operator ":                               true,
+		"unsupported expression dal.weird":                    true,
+		"unsupported condition dal.weird":                     true,
+
+		"cannot scan d: boom":                             false,
+		"close scan d: boom":                              false,
+		"cannot load fields for d: boom":                  false,
+		"output is not JSON serializable: boom":           false,
+		"joined row bound exceeded":                       false,
+		"unsupported expression dal.weird and more":       false,
+		"cannot scan c: unsupported expression dal.weird": false,
+		"unsupported operatorx":                           false,
+		"IS NULL requires an operand, or something else":  false,
+		"": false,
+	} {
+		if got := IsJoinPlanRefusal(message); got != want {
+			t.Errorf("IsJoinPlanRefusal(%q) = %v, want %v", message, got, want)
+		}
+	}
+}
+
+// Through Execute: a document that DALgo refuses inside a derived source in the base
+// position, a wildcard over a source that supplies no field list, is the refusal DALgo gave,
+// with the path under the derived source, and not the text of a failed scan. (The other
+// join_plan refusals are read from the text in the table above: DALgo's recursive plan
+// raises them as refusals of another category, which that table reads too.)
+func TestAJoinPlanRefusalInsideADerivedSourceInTheBasePositionIsReturnedAsTheRefusal(t *testing.T) {
+	derived := func(inner dal.StructuredQuery) dal.StructuredQuery {
+		return dal.From(dal.NewQuerySource(inner, "d")).NewQuery().SelectColumns(dal.Column{Expression: dal.NewFieldRef("d", "name")})
+	}
+	for name, tc := range map[string]struct {
+		query   dal.StructuredQuery
+		path    string
+		message string
+	}{
+		"a wildcard over a source with no field list": {
+			derived(dal.From(exRef("", "A", "x")).NewQuery().SelectColumns(dal.Column{Wildcard: &dal.WildcardProjection{Source: "x", Exclude: []string{"none"}}})),
+			"from.query.columns[0]", "wildcard expansion requires ordered schema metadata"},
+		"a derived source inside a derived source": {
+			derived(dal.From(dal.NewQuerySource(dal.From(exRef("", "A", "x")).NewQuery().SelectColumns(dal.Column{Wildcard: &dal.WildcardProjection{Source: "x", Exclude: []string{"none"}}}), "e")).
+				NewQuery().SelectColumns(dal.Column{Expression: dal.NewFieldRef("e", "name")})),
+			"from.query.from.query.columns[0]", "wildcard expansion requires ordered schema metadata"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mount := exMount("one", "ingitdb", false, map[string][]record.Record{"A": exRows("A", "a", 3)}) // no field list
+			_, err := exRun(t, tc.query, "one", newExRegistry(mount), exAllow, Limits{})
+			var refused *dal.JoinValidationError
+			if !errors.As(err, &refused) || refused.Category != "join_plan" || refused.Path != tc.path || refused.Message != tc.message {
+				t.Fatalf("got %T %v, want the join_plan refusal %q at %s", err, err, tc.message, tc.path)
+			}
+		})
 	}
 }

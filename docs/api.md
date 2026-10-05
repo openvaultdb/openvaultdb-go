@@ -1165,6 +1165,257 @@ reflect the same moment: a write that lands between two reads can show in one so
 the other. There is no transaction across databases, and a source's own external writes during its
 one read are not excluded (the same statement the [snapshot paging](#dtql) contract makes).
 
+#### Fields, ordering and aliases
+
+A document that runs in memory reads each source through the mount of its database, and what a
+name means there depends on what the mount can say about the fields of its collections. A
+document that a rule below refuses is answered `400 invalid_dtql` before any source is read; it is
+never answered with the value of another field, or in an order that ignores part of the
+document.
+
+**Field lists.** A SQLite database knows the columns of its tables, the key column `id` among
+them. A strict inGitDB database knows the fields its manifest declares (not `id`), except for a
+collection that declares a field of type `object` or `any`, or no field at all: such a collection
+supplies no list either. A partial or schemaless database, a database with access policies and a
+subquery used as a source supply no list. A source that supplies no list cannot be checked by the
+rules below: a name it is asked for is left to its mount.
+
+**What the mount is handed whole.** A document of one source that names its database, with no
+subquery, null test, aggregate, scan clause or ordering expression that is not a plain field, is
+handed to its mount whole, and the mount's own executor reads it. On a document engine (inGitDB)
+that executor reads a field the source does not have as a null (in a column or in `where`: the
+answer is `200`, not the `400` below), and does not support a wildcard (the answer is `500`). Every
+other document is evaluated by DALgo above a plain read of each source, and the rules below hold
+as they are written.
+
+What the mount's executor decides is the order of the records it sorts. It places a record that
+lacks a numeric ordering field after every number when the order is ascending (and first when it is
+descending), where SQLite and DALgo, which sort every other document, place it first when the order
+is ascending. So the same document can come back in another order, and with a `limit` with other
+rows, from a document that is handed whole and from one that is not (the per-database endpoint, for
+one). That comparator belongs to the document engine, and this server does not change it.
+
+**A field without its `source`.** A document that reads several sources and names a field without
+its source is accepted only when every source of that query has a known field list and exactly
+one of them carries the field. Two carrying it is a `400 invalid_dtql` naming the field; a source
+with no list is a `400 invalid_dtql` that says to qualify the field with its source. A join
+document with no subquery or derived source never reaches the engine with an unqualified field:
+the DTQL parser refuses it first (`unqualified JOIN field requires schema metadata`, which does
+not name the field).
+
+In a query that aggregates (it has a `groupBy`, a `having` or an aggregate), a bare name in
+`groupBy`, `having`, `orderBy` or the columns must be a field of the first source of the query. A
+name that a later source carries is refused, with a message that says to qualify it, even when
+that source is the only one that carries it. A name that a column of the select list carries as its
+alias is that column in `having` and `orderBy`, and is not refused, unless the expression of that
+column names another column of the select list (it would be read as that column, and the name is
+refused as unavailable). In the columns, an unqualified
+field that an earlier column carries as its alias (or selects under that name) would be read as
+that column and not as the field, so it is refused too: rename the alias, or qualify the field.
+
+<!-- doc-example method=POST path=/v1/dtql status=400 -->
+```yaml
+from:
+  database: chinook
+  name: Customer
+  alias: c
+  joins:
+    - type: inner
+      from: {database: countries, name: Country, alias: k}
+      on:
+        - {left: {field: country, source: c}, op: '==', right: {field: code, source: k}}
+where:
+  exists:
+    query:
+      from: {database: countries, name: Country, alias: x}
+groupBy:
+  - {field: region}
+columns:
+  - {field: region}
+  - {aggregate: {function: count, args: [{star: true}]}, as: customers}
+```
+```json
+{
+  "error": {
+    "code": "invalid_dtql",
+    "message": "scope at groupBy[0]: cannot read the unqualified field region from a source other than the first in a query that aggregates: qualify the field with its source"
+  }
+}
+```
+
+**Wildcards.** A wildcard of a source in a document that DALgo evaluates stands for the columns of
+its table (SQLite, `id` included) or the declared fields (strict inGitDB), minus the names it
+excludes; on the database route the SQL database expands it as before. A wildcard of a source that
+supplies no field list is `400 invalid_dtql` (`join_plan at ...: wildcard expansion requires
+ordered schema metadata`), inside a derived source too, where the path names the derived source
+(`from.query.columns[0]`). (A wildcard in a document of one source that is handed whole to an
+inGitDB mount is the `500` above.)
+
+**Fields that no source has.** A field of the query itself that no source of a document that DALgo
+evaluates has is a `400 invalid_dtql` (`... is unavailable`, or `unknown field` in `orderBy`), as on
+the database route. A field that no source has, inside an `exists` test or a scalar subquery, is read
+as a null (an unknown name in the `orderBy` of such a query is refused like any other). In a
+document handed whole to an inGitDB mount only the `orderBy` is checked.
+
+**Ordering.** In a query that does not aggregate, a name in `orderBy` is a field of a source, or
+the alias of a column of the select list. The alias is the column only where it is the whole of the
+ordering expression, as in SQLite: inside arithmetic (`b * 1`) a name is a field of a source, and
+the source's own field wins over a column that is called so.
+
+- The alias of a column that selects a field of a source is that field. The answer is sorted by
+  it, on every route and on both endpoints, the way a SQLite database sorts it when it runs the
+  whole document (except for the place of a record that lacks a numeric field in a document that is
+  handed whole to an inGitDB mount, above).
+- The alias of a column that is an expression (arithmetic, a function) is refused when the document
+  is not run whole by a SQL database: order by the fields of the expression.
+- A name that is neither an alias nor a field of any source that supplies a field list is a
+  `400 invalid_dtql` (`unknown field`) before anything is read, for a document of one source as for
+  several, and whether or not the document is handed whole to a mount. So is a field that names its
+  source (`{field: nope, source: c}`) when the list of that source does not carry it. A source that
+  supplies no field list (see above) cannot be checked, and the name is left to its mount.
+- A name inside arithmetic that a column of the select list also carries as its alias (`orderBy`
+  `t + 0` over the column `{field: x, as: t}`) is a field of the source where the source supplies its
+  field list, as in SQLite when the table has a column of that name, and is unknown where it does not.
+  Where the one source supplies no field list nothing can say whether the name is the field or the
+  alias (SQLite reads the alias when its table has no such column), and the name is a
+  `400 invalid_dtql` that says to qualify the field with its source. A name that no column carries
+  is left to the mount, as above.
+- A `source` that names no source of the query, in `orderBy` and in every other clause, is a
+  `400 invalid_dtql` (`query_scope at orderBy[0].source: unknown alias "zzz"`) on both endpoints, for
+  a document that is handed whole to a mount too. The source of a query around a subquery is one the
+  subquery may name. The qualifier of a source that has an alias is the alias, and the name of its
+  collection only when it has none.
+- The key pseudo-field `$id` of the document engines is sorted by only in a document of one source
+  that is handed whole to its mount. Wherever DALgo evaluates the document (the per-database
+  endpoint, a join, a subquery or derived source, a null test, a scan clause, and an ordering
+  expression beside it) DALgo does not know the key: over a source with a field list it would refuse
+  it, and over one with none it would read it as a null and sort by nothing. An `orderBy` of `$id` in
+  such a document is a `400 invalid_dtql` that says to order by a field.
+- An ordering expression that is not a plain field (arithmetic) is applied on every route: a
+  document of one source that would be handed whole to a mount is evaluated by DALgo instead, so
+  that it is sorted. (The SQLite adapter compiles no such ordering of a document of one source,
+  which stays a `422 authorization_unsupported` on the database route. A database with access
+  policies is not run by a relational document at all, so the endpoints answer its documents
+  `422 authorization_unsupported` before any of this applies.)
+
+<!-- doc-example method=POST path=/v1/dtql status=200 -->
+```yaml
+from:
+  database: chinook
+  name: Customer
+  alias: c
+  joins:
+    - type: inner
+      from: {database: countries, name: Country, alias: k}
+      on:
+        - {left: {field: country, source: c}, op: '==', right: {field: code, source: k}}
+where:
+  exists:
+    query:
+      from: {database: countries, name: Country, alias: x}
+orderBy:
+  - {field: label, desc: true}
+columns:
+  - {field: name, source: c, as: label}
+  - {field: region, source: k}
+```
+```json
+{
+  "columns": [
+    "label",
+    "region"
+  ],
+  "execution": {
+    "elapsedMs": 0,
+    "route": "in-memory",
+    "rowsReturned": 3,
+    "sources": [
+      {
+        "collection": "Customer",
+        "database": "chinook",
+        "elapsedMs": 0,
+        "rows": 3
+      },
+      {
+        "collection": "Country",
+        "database": "countries",
+        "elapsedMs": 0,
+        "rows": 4
+      }
+    ]
+  },
+  "records": [
+    {
+      "data": {
+        "label": "Grace",
+        "region": "Americas"
+      }
+    },
+    {
+      "data": {
+        "label": "Edsger",
+        "region": "Europe"
+      }
+    },
+    {
+      "data": {
+        "label": "Ada",
+        "region": "Europe"
+      }
+    }
+  ]
+}
+```
+
+The same document ordered by the alias of an expression, or by a name nobody carries, is refused:
+
+<!-- doc-example method=POST path=/v1/dtql status=400 -->
+```yaml
+from: {database: chinook, name: Invoice, alias: i}
+where: {exists: {query: {from: {database: countries, name: Country, alias: k}}}}
+orderBy:
+  - {field: doubled, desc: true}
+columns:
+  - {binary: {op: '*', left: {field: total, source: i}, right: {value: 2}}, as: doubled}
+```
+```json
+{
+  "error": {
+    "code": "invalid_dtql",
+    "message": "scope at orderBy[0]: cannot order by doubled, the alias of a column that is not a field, when the document is not run whole by a SQL database: order by the fields of its expression"
+  }
+}
+```
+
+<!-- doc-example method=POST path=/v1/dtql status=400 -->
+```yaml
+from:
+  database: chinook
+  name: Customer
+  alias: c
+  joins:
+    - type: inner
+      from: {database: countries, name: Country, alias: k}
+      on:
+        - {left: {field: country, source: c}, op: '==', right: {field: code, source: k}}
+where:
+  exists:
+    query:
+      from: {database: countries, name: Country, alias: x}
+orderBy:
+  - {field: nope}
+columns:
+  - {field: name, source: c}
+```
+```json
+{
+  "error": {
+    "code": "invalid_dtql",
+    "message": "shape at orderBy[0]: unknown field \"nope\" in ORDER BY: no source of the query carries it, and no column has it as its alias"
+  }
+}
+```
+
 #### Launch rulings
 
 Three rulings shape what a relational document does at launch.

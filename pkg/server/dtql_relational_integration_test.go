@@ -350,6 +350,10 @@ type relIntCase struct {
 type relIntDiagnostic struct {
 	Category string `json:"category"`
 	Path     string `json:"path"`
+	// Message is the message of the diagnostic. An answer holds it when the fixture has
+	// one: the category and the path alone cannot tell a refusal for the fixture's reason
+	// from a refusal for another.
+	Message string `json:"message"`
 }
 
 // relIntExpectationElsewhere names the expectation of a document that has no
@@ -359,6 +363,18 @@ type relIntDiagnostic struct {
 var relIntExpectationElsewhere = map[string]string{
 	"joins/chinook-hinted":   "dalgo:dtql/testdata/joins/chinook-nested.rows.json",
 	"joins/chinook-wildcard": "local:testdata/joins-chinook/chinook-wildcard.rows.json",
+}
+
+// relIntParserWording is the message this server gives to a refusal that DALgo's DTQL
+// parser words differently from the fixture that asks for it. The fixtures of the DALgo
+// module in go.mod say "forward source alias ci is unavailable" and "unknown source alias
+// missing", and the parser of the same module says what is below, for the same documents
+// and at the same path. An answer must hold the message of its fixture, or the wording given
+// here for the case, so a refusal that has the category and the path of the fixture and
+// another reason is not taken for it.
+var relIntParserWording = map[string]string{
+	"subqueries/scope-forward-join":      `unknown or forward alias "ci"`,
+	"subqueries/scope-unknown-qualifier": `unknown or forward alias "missing"`,
 }
 
 // relIntLoadCases reads every document of a fixture directory with its expectation.
@@ -401,6 +417,9 @@ func relIntLoadCases(t *testing.T, corpus, dir string) []relIntCase {
 			c.err = &relIntDiagnostic{}
 			if err := json.Unmarshal(raw, c.err); err != nil {
 				t.Fatalf("%s: %v", errorPath, err)
+			}
+			if wording, ok := relIntParserWording[c.id]; ok {
+				c.err.Message = wording
 			}
 		default:
 			t.Fatalf("%s has neither a .rows.json nor an .error.json: add an expectation to relIntExpectationElsewhere", c.id)
@@ -468,7 +487,7 @@ func relIntMatches(t *testing.T, c relIntCase, resp relHTTPResponse) bool {
 	t.Helper()
 	if c.err != nil {
 		return resp.status == http.StatusBadRequest && resp.errorField("code") == "invalid_dtql" &&
-			strings.Contains(resp.errorField("message"), c.err.Category+" at "+c.err.Path)
+			strings.Contains(resp.errorField("message"), c.err.Category+" at "+c.err.Path+": "+c.err.Message)
 	}
 	return resp.status == http.StatusOK && reflect.DeepEqual(resp.rows(t), c.rows)
 }
@@ -481,6 +500,28 @@ func relIntDescribe(resp relHTTPResponse) string {
 		return fmt.Sprintf("status 200, records %s", rows)
 	}
 	return fmt.Sprintf("status %d %s: %s", resp.status, resp.errorField("code"), resp.errorField("message"))
+}
+
+// relIntEntryMismatch is how an answer differs from what an entry of the divergence file
+// says it is: its status and code, the fragment of its message and the route of its
+// execution block when the entry pins them, and its rows. It is empty when the answer is
+// the one the entry lists.
+func relIntEntryMismatch(t *testing.T, entry relIntDivergence, resp relHTTPResponse) string {
+	t.Helper()
+	switch {
+	case resp.status != entry.Status || (entry.Code != "" && resp.errorField("code") != entry.Code):
+		return fmt.Sprintf("joins-divergences.json says status %d %s: %s", entry.Status, entry.Code, relIntDescribe(resp))
+	case entry.Message != "" && !strings.Contains(resp.errorField("message"), entry.Message):
+		return fmt.Sprintf("joins-divergences.json says the message holds %q: %s", entry.Message, relIntDescribe(resp))
+	case entry.Route != "":
+		if route, _ := resp.execution(t)["route"].(string); route != entry.Route {
+			return fmt.Sprintf("joins-divergences.json says the route is %q, the answer says %q: %s", entry.Route, route, relIntDescribe(resp))
+		}
+	}
+	if entry.Rows != nil && !reflect.DeepEqual(resp.rows(t), entry.Rows) {
+		return fmt.Sprintf("joins-divergences.json lists other rows: %s", relIntDescribe(resp))
+	}
+	return ""
 }
 
 // Every document of DALgo's join and subquery fixtures, posted over HTTP to a SQLite
@@ -575,19 +616,8 @@ func TestRelationalFixtureCorpusOverHTTP(t *testing.T) {
 						case entry == nil:
 							return
 						}
-						if resp.status != entry.Status || (entry.Code != "" && resp.errorField("code") != entry.Code) {
-							t.Fatalf("joins-divergences.json says status %d %s: %s", entry.Status, entry.Code, relIntDescribe(resp))
-						}
-						if entry.Message != "" && !strings.Contains(resp.errorField("message"), entry.Message) {
-							t.Fatalf("joins-divergences.json says the message holds %q: %s", entry.Message, relIntDescribe(resp))
-						}
-						if entry.Route != "" {
-							if route, _ := resp.execution(t)["route"].(string); route != entry.Route {
-								t.Fatalf("joins-divergences.json says the route is %q, the answer says %q: %s", entry.Route, route, relIntDescribe(resp))
-							}
-						}
-						if entry.Rows != nil && !reflect.DeepEqual(resp.rows(t), entry.Rows) {
-							t.Fatalf("joins-divergences.json lists other rows: %s", relIntDescribe(resp))
+						if mismatch := relIntEntryMismatch(t, *entry, resp); mismatch != "" {
+							t.Fatal(mismatch)
 						}
 					})
 				}

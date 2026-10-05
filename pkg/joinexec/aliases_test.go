@@ -177,8 +177,10 @@ func TestADocumentThatNamesNoAliasIsNotRebuilt(t *testing.T) {
 		"an alias in the argument of an aggregate": alPerName(func(b dal.IQueryBuilder) dal.IQueryBuilder {
 			return b.OrderBy(dal.Ascending(dal.NewAggregate("MAX", false, alTotal)))
 		}),
-		"an alias of a query that does not aggregate": dal.From(exRef("", "A", "a")).NewQuery().OrderBy(dal.Ascending(alTotal)).
-			SelectColumns(dal.Column{Expression: alK, Alias: "total"}),
+		// The alias of a field in the ORDER BY of a query that does not aggregate is replaced
+		// since OJ-16: see TestTheOrderByAliasOfAFieldIsReplacedByTheFieldWhereverTheQueryStands.
+		"an alias of an expression, in a query that does not aggregate": dal.From(exRef("", "A", "a")).NewQuery().OrderBy(dal.Ascending(alTotal)).
+			SelectColumns(dal.Column{Expression: dal.Binary(alK, dal.Add, dal.NewConstant(1)), Alias: "total"}),
 		"a column that has no alias and a wildcard": dal.From(exRef("", "A", "a")).NewQuery().GroupBy(alName).OrderBy(dal.Ascending(alName)).
 			SelectColumns(dal.Column{Expression: alName}, dal.Column{Wildcard: &dal.WildcardProjection{Source: "a"}}, dal.CountAs(dal.Star(), "n")),
 		"nested queries that name none": dal.From(dal.NewQuerySource(exPlain("", "A"), "d")).NewQuery().
