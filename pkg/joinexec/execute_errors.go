@@ -19,6 +19,13 @@ var (
 	// mount was resolved for it.
 	ErrInvalidDocument = errors.New("joinexec: invalid document")
 
+	// ErrProfileMismatch is returned, wrapped in ErrInvalidDocument as well, when
+	// the Profile handed to Execute does not describe the query the walk found:
+	// another set of sources or another answer about subqueries. It tells a
+	// disagreement between the classifier that built the profile and the walk (a
+	// defect of the server) from a document that is merely invalid.
+	ErrProfileMismatch = errors.New("joinexec: the profile does not match the query")
+
 	// ErrSourceWithoutDatabase is returned when a source names no database and
 	// there is no single default one to read it from: the request has no default
 	// database, or the document reads several databases and so must name the
@@ -88,4 +95,15 @@ type EngineNotJoinableError struct {
 
 func (e *EngineNotJoinableError) Error() string {
 	return fmt.Sprintf("the %q storage engine of database %q is not enabled for joins and aggregation", e.Engine, e.Database)
+}
+
+// CapacityError reports that no slot was free for a request on its route: the
+// server is running as many queries of that kind as it allows. Nothing was read.
+type CapacityError struct {
+	// Route is RouteInMemory or RouteDatabase.
+	Route string
+}
+
+func (e *CapacityError) Error() string {
+	return fmt.Sprintf("the server is running as many %s queries as it allows", e.Route)
 }

@@ -3,6 +3,7 @@ package server_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/dal-go/dalgo/access"
+	"github.com/dal-go/dalgo/dtql"
 	az "github.com/dal-go/dalgo/dtql/authorization"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
@@ -90,7 +92,11 @@ var nestedScopeDocuments = map[string]string{
 // capability is scoped to a collection. A DTQL document of one collection can
 // read another inside a subquery, so the capability is checked for every
 // collection the document reads, before anything is read, on every engine, for a
-// plain request, a request that pages a snapshot and a parameterised one.
+// plain request, a request that pages a snapshot and a parameterised one. A
+// document with a subquery is a relational document, so a caller who passes the
+// capability check meets the refusals every relational document meets before a
+// read: the paging headers, and an engine the server does not join (firestore, by
+// default). Neither depends on the caller, and neither reads.
 func TestDTQLReadsOfAnotherCollectionAreAuthorizedPerCollection(t *testing.T) {
 	for _, engine := range []string{"sqlite", "ingitdb", "firestore"} {
 		t.Run(engine, func(t *testing.T) {
@@ -121,10 +127,25 @@ func TestDTQLReadsOfAnotherCollectionAreAuthorizedPerCollection(t *testing.T) {
 					if fake.queries != queries || fake.gets != gets {
 						t.Fatalf("%s %s: the adapter was read (%d queries, %d gets)", label, call.name, fake.queries-queries, fake.gets-gets)
 					}
-					// A token for both collections, and the owner, are not stopped.
+					// A token for both collections, and the owner, are not stopped by the
+					// capability check: they read, or meet the refusal of the request itself.
+					refusal := ""
+					switch {
+					case call.name == "snapshot page":
+						refusal = "snapshot_unsupported"
+					case engine == "firestore":
+						refusal = "join_engine_unsupported"
+					}
 					for _, token := range []string{nestedScopeBothToken, ownerToken} {
 						before := fake.queries
 						status, body := send(t, ts, with(token))
+						detail, _ := body["error"].(map[string]any)
+						if refusal != "" {
+							if status != http.StatusUnprocessableEntity || detail["code"] != refusal || fake.queries != before {
+								t.Errorf("%s %s, token for both: %d %v (%d reads), want a 422 %s and no read", label, call.name, status, body, fake.queries-before, refusal)
+							}
+							continue
+						}
 						if status == http.StatusForbidden || fake.queries == before {
 							t.Errorf("%s %s, token for both: %d %v (%d reads)", label, call.name, status, body, fake.queries-before)
 						}
@@ -179,29 +200,120 @@ func TestAccessSampleReadsOfAnotherCollectionAreAuthorizedPerCollection(t *testi
 	}
 }
 
-// TestDTQLDocumentWhoseSourcesCannotBeListedIsRefusedForAScopedToken: the
-// capability check needs the collections a document reads. A document the
-// parser accepts but whose sources cannot be listed (a chain of derived sources
-// inside two nested join trees, past the depth the source walk allows) is
-// refused with 400 invalid_dtql before anything is read, for a token that is not
-// the owner's. The owner's request is not checked per collection.
-func TestDTQLDocumentWhoseSourcesCannotBeListedIsRefusedForAScopedToken(t *testing.T) {
+// nestedScopeUnlistableDocument is a document of one root collection with an EXISTS
+// subquery whose join reads a derived source, whose WHERE nests groups of AND around
+// one comparison. The source walk of core.QueryCollections counts a derived source
+// on a join edge one level deeper than the name walk of the classifier does, and
+// both stop at 16: with 13 groups the classifier accepts the document (and so does
+// the single-collection validator) and QueryCollections refuses it; with 14 both
+// refuse it.
+func nestedScopeUnlistableDocument(groups int) string {
+	where := "{op: '==', left: {field: name}, right: {value: x}}"
+	for i := 0; i < groups; i++ {
+		where = "{and: [" + where + "]}"
+	}
+	return "from: {name: customers}\nwhere: {exists: {query: {from: {name: orders, joins: [{from: {query: {as: d, from: {name: customers}, where: " + where +
+		"}}, on: [{op: '==', left: {field: id, source: orders}, right: {field: id, source: d}}]}]}}}}\n"
+}
+
+// nestedScopeRequireUnlistable checks the premise of the tests that use
+// nestedScopeUnlistableDocument: the classifier and the single-collection validator
+// accept the document, and QueryCollections cannot list its sources.
+func nestedScopeRequireUnlistable(t *testing.T, doc string) {
+	t.Helper()
+	query, err := dtql.Deserialize([]byte(doc))
+	if err != nil {
+		t.Fatalf("the document does not parse: %v", err)
+	}
+	if _, err := core.ClassifyDTQL(query); err != nil {
+		t.Fatalf("the classifier refuses the document, so it is not the case under test: %v", err)
+	}
+	if _, _, err := core.ParseDTQL([]byte(doc)); err != nil {
+		t.Fatalf("the single-collection validator refuses the document, so it is not the case under test: %v", err)
+	}
+	if _, err := core.QueryCollections(query); !errors.Is(err, core.ErrInvalidDTQL) {
+		t.Fatalf("QueryCollections lists the sources of the document (%v), so it is not the case under test", err)
+	}
+}
+
+// TestDTQLDocumentTooDeepForTheClassifierIsRefusedForEveryCaller: a document the
+// parser accepts but that nests derived sources inside two nested join trees past
+// the depth the classifier allows is refused with 400 invalid_dtql before anything
+// is read, for a token and for the owner alike: the classifier's refusal comes before
+// the capability check.
+func TestDTQLDocumentTooDeepForTheClassifierIsRefusedForEveryCaller(t *testing.T) {
 	derived := "{name: customers}"
 	for i := 0; i < 14; i++ {
 		derived = fmt.Sprintf("{query: {as: d%d, from: %s}}", i, derived)
 	}
 	doc := "from: {name: customers}\nwhere: {exists: {query: {from: {name: orders, joins: [{from: {name: customers, alias: c2, joins: [{from: " + derived +
 		", on: [{op: '==', left: {field: id, source: c2}, right: {field: id, source: d13}}]}]}, on: [{op: '==', left: {field: id, source: orders}, right: {field: id, source: c2}}]}]}}}}\n"
+	if _, _, err := core.ParseDTQL([]byte(doc)); err != nil {
+		t.Fatalf("the single-collection validator refuses the document: %v", err)
+	}
+	ts, fake := nestedScopeServer(t, "ingitdb")
+	for name, token := range map[string]string{"scoped token": nestedScopeBothToken, "owner": ownerToken} {
+		status, body := send(t, ts, guardCall{method: "POST", path: "/v1/databases/guarded/dtql", body: doc, headers: map[string]string{"Authorization": "Bearer " + token}})
+		detail, _ := body["error"].(map[string]any)
+		if status != http.StatusBadRequest || detail["code"] != "invalid_dtql" || fake.queries != 0 {
+			t.Fatalf("%s: %d %v (%d reads)", name, status, body, fake.queries)
+		}
+	}
+}
+
+// TestSampleDocumentWhoseSourcesCannotBeListedIsRefusedForAScopedToken: the sample
+// route runs a document through the single-collection validator alone and lists
+// the collections it reads with core.QueryCollections to check the capability for
+// each. A document the classifier accepts and the listing cannot list is refused with
+// 400 invalid_dtql for a token that is not the owner's, before the mount is asked;
+// the owner's request is not checked per collection and reaches the mount's own
+// refusal of a second source (422 authorization_unsupported).
+func TestSampleDocumentWhoseSourcesCannotBeListedIsRefusedForAScopedToken(t *testing.T) {
+	doc := nestedScopeUnlistableDocument(13)
+	nestedScopeRequireUnlistable(t, doc)
+	service := server.New("test", map[string]*core.Database{"crm": hiddenSourceDB(t, true)},
+		server.WithPrincipalResolver(func(context.Context, *auth.Principal) (access.Principal, error) {
+			return access.Principal{Roles: []string{"reader"}}, nil
+		}),
+		server.WithAuth(&auth.Config{OwnerToken: ownerToken, Store: nestedScopeStore(t, "crm")}))
+	ts := httptest.NewServer(service.Handler())
+	t.Cleanup(ts.Close)
+	op := writeGuardProtectedOp("update", "/customers", writeGuardProtectedSet("name"))
+	data, _ := json.Marshal(api.Request{APIVersion: az.APIVersion, Mode: az.ModeSample, DiagnosticLevel: "ordinary", Operations: []api.Operation{op},
+		Sample: &api.Sample{Limit: 1, Query: api.Query{Format: "dtql-yaml", Text: doc}}})
+	status, body := request(t, ts, http.MethodPost, "/v1/databases/crm/access/evaluate", nestedScopeBothToken, string(data))
+	if status != http.StatusBadRequest || errorCode(t, body) != "invalid_dtql" {
+		t.Fatalf("scoped token: %d %s", status, body)
+	}
+	if status, body = request(t, ts, http.MethodPost, "/v1/databases/crm/access/evaluate", ownerToken, string(data)); status != http.StatusUnprocessableEntity || errorCode(t, body) != "authorization_unsupported" {
+		t.Fatalf("owner: %d %s", status, body)
+	}
+}
+
+// TestDTQLDocumentWhoseSourcesCannotBeListedIsAuthorizedBySourcesTheClassifierLists:
+// the per-database endpoint answers a document with a subquery as a relational
+// document, whose capability check reads the sources the classifier found, not the
+// listing of core.QueryCollections. A document the classifier accepts and the listing
+// cannot list is therefore refused for no caller by the listing: a token that lacks
+// one of the collections it reads is a 403 before anything is read, and every caller
+// that holds them all (a token for both, the owner) reaches the adapter.
+func TestDTQLDocumentWhoseSourcesCannotBeListedIsAuthorizedBySourcesTheClassifierLists(t *testing.T) {
+	doc := nestedScopeUnlistableDocument(13)
+	nestedScopeRequireUnlistable(t, doc)
 	ts, fake := nestedScopeServer(t, "ingitdb")
 	call := func(token string) (int, map[string]any) {
 		return send(t, ts, guardCall{method: "POST", path: "/v1/databases/guarded/dtql", body: doc, headers: map[string]string{"Authorization": "Bearer " + token}})
 	}
-	status, body := call(nestedScopeBothToken)
+	status, body := call(nestedScopeCustomersToken)
 	detail, _ := body["error"].(map[string]any)
-	if status != http.StatusBadRequest || detail["code"] != "invalid_dtql" || fake.queries != 0 {
-		t.Fatalf("scoped token: %d %v (%d reads)", status, body, fake.queries)
+	if status != http.StatusForbidden || detail["code"] != "forbidden" || fake.queries != 0 {
+		t.Fatalf("token for customers: %d %v (%d reads)", status, body, fake.queries)
 	}
-	if status, body = call(ownerToken); status == http.StatusBadRequest || fake.queries == 0 {
-		t.Fatalf("owner: %d %v (%d reads)", status, body, fake.queries)
+	for name, token := range map[string]string{"token for both": nestedScopeBothToken, "owner": ownerToken} {
+		before := fake.queries
+		status, body = call(token)
+		if status == http.StatusBadRequest || status == http.StatusForbidden || fake.queries == before {
+			t.Fatalf("%s: %d %v (%d reads)", name, status, body, fake.queries-before)
+		}
 	}
 }

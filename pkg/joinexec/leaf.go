@@ -101,7 +101,10 @@ func (l *leaf) ExecuteQueryToRecordsetReader(context.Context, dal.Query, ...reco
 
 // JoinFields passes schema-ordered fields through from the source's executor,
 // after the same authorisation as a read: field names are schema, and a denied
-// collection's schema is not served either.
+// collection's schema is not served either. A source with access policies serves
+// no schema through this path at all: whether it declares a collection is decided
+// where its policy decides a read, at the read, and not by a question that comes
+// before it.
 //
 // DALgo asks for the fields of every FROM node, derived or not, before it
 // decides how to run it. A derived source has no schema of its own to serve and
@@ -122,6 +125,9 @@ func (l *leaf) JoinFields(ctx context.Context, source dal.RecordsetSource) ([]st
 	collection, err := l.resolve(source)
 	if err != nil {
 		return nil, err
+	}
+	if l.src.HasAccessPolicies() {
+		return nil, nil
 	}
 	if provider, ok := l.src.Executor().(dal.JoinFieldsProvider); ok {
 		fields, err := provider.JoinFields(ctx, source)

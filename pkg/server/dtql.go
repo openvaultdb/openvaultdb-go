@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/dal-go/dalgo/access"
+	"github.com/dal-go/dalgo/dal"
+	"github.com/dal-go/dalgo/dtql"
 	az "github.com/dal-go/dalgo/dtql/authorization"
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
@@ -18,53 +20,44 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// crossDatabaseDTQLPath is the endpoint that takes documents which read several
+// databases. The per-database endpoint takes the others.
+const crossDatabaseDTQLPath = "/v1/dtql"
+
 // handleDTQL authenticates a bounded DTQL query and executes it through the
-// mounted database's secured DALgo handle.
+// mounted database's secured DALgo handle. A document is classified once, after
+// the two qualifiers of its root source that name what the endpoint supplies are
+// dropped (the default schema of the engine and the endpoint's own database): a
+// document of one source with no other relational feature takes the
+// single-collection path, whose records carry keys, and every other document the
+// classifier accepts is answered by serveRelationalDTQL, a document whose only
+// relational feature is a subquery included, so one query has one answer. The
+// classifier's own refusals apply to both.
 func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	db := s.db(w, r)
 	if db == nil {
 		return
 	}
-	var doc []byte
-	var err error
-	if r.Method == http.MethodGet {
-		doc, err = dtqlFromURL(r.URL)
-		if err != nil {
-			status := http.StatusBadRequest
-			if errors.Is(err, errDTQLURLTooLong) {
-				status = http.StatusRequestURITooLong
-			}
-			writeError(w, status, "bad_request", err.Error())
-			return
-		}
-	} else {
-		doc, err = io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "bad_request", "failed to read body: "+err.Error())
-			return
-		}
-		if len(doc) == 0 {
-			writeError(w, http.StatusBadRequest, "bad_request", "body must contain a DTQL YAML document")
-			return
-		}
-		if strings.EqualFold(strings.TrimSpace(strings.SplitN(r.Header.Get("Content-Type"), ";", 2)[0]), "application/json") {
-			doc, err = bindDTQLParameters(doc)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "invalid_dtql", err.Error())
-				return
-			}
-		}
+	doc, ok := s.readDTQLDocument(w, r)
+	if !ok {
+		return
 	}
-	query, collection, err := core.ParseDTQL(doc)
+	doc = withoutOwnDatabase(withoutDefaultSchema(doc, db.Engine()), db.ID())
+	query, profile, err := classifyDTQLDocument(doc)
 	if err != nil {
-		s.writeMappedError(w, r, err)
+		s.writeMappedError(w, r, clippedError{err})
 		return
 	}
+	if profile.Kind == core.ProfileRelational {
+		s.serveRelationalDTQL(w, r, db, query, profile)
+		return
+	}
+	// A document of this kind reads one plain collection and no other (no join, no
+	// subquery), so the capability on that collection is the whole check: the
+	// listing of core.QueryCollections is that collection and nothing else.
+	collection := profile.Sources[0].Collection
 	if !s.authorize(w, r, db.ID(), auth.CapRecordsRead, collection) {
-		return
-	}
-	if !s.authorizeQueryReads(w, r, db, query) {
 		return
 	}
 	if r.Header.Get("OVDB-Page-Size") != "" || r.Header.Get("OVDB-Page-Token") != "" || r.Header.Get("OVDB-Page-Close") != "" {
@@ -92,6 +85,68 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 	}
 	s.cacheReadResponse(w, r, db)
 	writeJSON(w, http.StatusOK, map[string]any{"records": out})
+}
+
+// readDTQLDocument returns the DTQL document of a request: the q parameter of a
+// GET, or the body of a POST (with its parameters bound when the body is JSON).
+// It answers the 4xx of a request that carries none and reports false.
+func (s *Server) readDTQLDocument(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	if r.Method == http.MethodGet {
+		doc, err := dtqlFromURL(r.URL)
+		if err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, errDTQLURLTooLong) {
+				status = http.StatusRequestURITooLong
+			}
+			writeError(w, status, "bad_request", clipText(err.Error(), maxRefusalText))
+			return nil, false
+		}
+		return doc, true
+	}
+	doc, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "failed to read body: "+err.Error())
+		return nil, false
+	}
+	if len(doc) == 0 {
+		writeError(w, http.StatusBadRequest, "bad_request", "body must contain a DTQL YAML document")
+		return nil, false
+	}
+	if strings.EqualFold(strings.TrimSpace(strings.SplitN(r.Header.Get("Content-Type"), ";", 2)[0]), "application/json") {
+		doc, err = bindDTQLParameters(doc)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_dtql", clipText(err.Error(), maxRefusalText))
+			return nil, false
+		}
+	}
+	return doc, true
+}
+
+// maxRefusalText is the most bytes of the text of a refused document an error body
+// repeats. It is long enough to keep the whole message of any realistic name, and
+// short enough that a name as long as the request body does not come back whole.
+const maxRefusalText = 1024
+
+// clippedError is err with the text of its message cut at maxRefusalText. It keeps
+// the chain, so the status and code of the error are the ones err would have.
+type clippedError struct{ err error }
+
+func (e clippedError) Error() string { return clipText(e.err.Error(), maxRefusalText) }
+func (e clippedError) Unwrap() error { return e.err }
+
+// classifyDTQLDocument deserialises a document and classifies it. The error of
+// a document that is not DTQL, or that the classifier refuses, wraps
+// core.ErrInvalidDTQL.
+func classifyDTQLDocument(doc []byte) (dal.StructuredQuery, core.Profile, error) {
+	query, err := dtql.Deserialize(doc)
+	if err != nil {
+		return nil, core.Profile{}, fmt.Errorf("%w: %v", core.ErrInvalidDTQL, err)
+	}
+	profile, err := core.ClassifyDTQL(query)
+	if err != nil {
+		return nil, core.Profile{}, err
+	}
+	return query, profile, nil
 }
 
 var errDTQLURLTooLong = errors.New("DTQL URL exceeds 8 KiB limit")
