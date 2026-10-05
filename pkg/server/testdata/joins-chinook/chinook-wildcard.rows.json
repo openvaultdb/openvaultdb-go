@@ -1,0 +1,6 @@
+[
+  {"invoice_id": 4, "FirstName": "Ignored", "employee": "Evan"},
+  {"invoice_id": 3, "FirstName": "Bea", "employee": null},
+  {"invoice_id": 2, "FirstName": "Ada", "employee": "Evan"},
+  {"invoice_id": 1, "FirstName": "Ada", "employee": "Evan"}
+]

@@ -145,8 +145,9 @@ func relProtectedMount(t *testing.T) (*core.Database, *relProtectedFake) {
 }
 
 // relProtectedServer serves the protected mount to a principal that holds role,
-// with a source budget of one row and the real executor. Two callers can read: the
-// owner, and a token granted the read capability on the whole database.
+// with a source budget of one row and the real executor. Three callers can read: the
+// owner, a token granted the read capability on the whole database, and a token
+// granted it on the collection customers only.
 func relProtectedServer(t *testing.T, role string) (*httptest.Server, *relProtectedFake) {
 	t.Helper()
 	db, fake := relProtectedMount(t)
@@ -155,6 +156,11 @@ func relProtectedServer(t *testing.T, role string) (*httptest.Server, *relProtec
 		t.Fatal(err)
 	}
 	if err := store.CreateGrant(&auth.Grant{DatabaseID: "crm", Capabilities: []auth.Capability{{Action: auth.CapRecordsRead}}}, relProtectedGranted); err != nil {
+		t.Fatal(err)
+	}
+	// A grant of the read capability on one collection of the database only.
+	scoped := &auth.Grant{DatabaseID: "crm", Capabilities: []auth.Capability{{Action: auth.CapRecordsRead, Collection: "customers"}}}
+	if err := store.CreateGrant(scoped, relProtectedScoped); err != nil {
 		t.Fatal(err)
 	}
 	service := New("test", map[string]*core.Database{"crm": db},
@@ -172,6 +178,7 @@ func relProtectedServer(t *testing.T, role string) (*httptest.Server, *relProtec
 const (
 	relProtectedOwner   = "owner-of-crm"
 	relProtectedGranted = "token-for-crm"
+	relProtectedScoped  = "token-for-customers"
 )
 
 // relProtectedShapes are the shapes a relational document takes. Each is a format
@@ -278,22 +285,36 @@ func TestARelationalDocumentIsNotRunOnADatabaseWithAccessPolicies(t *testing.T) 
 // that first, and a database that is not mounted is still a 404.
 func TestTheRefusalOfAProtectedDatabaseComesAfterTheCapabilityAndTheLeaseOnly(t *testing.T) {
 	host, fake := relProtectedServer(t, "reader")
-	const join = "from: {database: crm, name: orders, alias: o, joins: [{from: {database: %s, name: customers, alias: c}, on: [{left: {field: customer_id, source: o}, op: '==', right: {field: id, source: c}}]}]}\n"
+	const (
+		join    = "from: {database: crm, name: orders, alias: o, joins: [{from: {database: %s, name: customers, alias: c}, on: [{left: {field: customer_id, source: o}, op: '==', right: {field: id, source: c}}]}]}\n"
+		inverse = "from: {database: crm, name: customers, alias: c, joins: [{from: {database: crm, name: orders, alias: o}, on: [{left: {field: id, source: c}, op: '==', right: {field: customer_id, source: o}}]}]}\n"
+	)
 	for _, tc := range []struct {
 		name, path, token, doc string
 		headers                map[string]string
 		status                 int
 		code                   string
+		names                  string // a collection the message names, when it names one
 	}{
-		{"a paging header", "/v1/dtql", relProtectedOwner, fmt.Sprintf(join, "crm"), map[string]string{"OVDB-Page-Size": "10"}, 422, "authorization_unsupported"},
-		{"a protected database next to one that is not mounted", "/v1/dtql", relProtectedOwner, fmt.Sprintf(join, "nowhere"), nil, 404, "not_found"},
-		{"no token", "/v1/dtql", "", fmt.Sprintf(join, "crm"), nil, 401, ""},
-		{"a source the per-database endpoint does not take", "/v1/databases/crm/dtql", relProtectedOwner, fmt.Sprintf(join, "other"), nil, 400, "invalid_dtql"},
+		{"a paging header", "/v1/dtql", relProtectedOwner, fmt.Sprintf(join, "crm"), map[string]string{"OVDB-Page-Size": "10"}, 422, "authorization_unsupported", ""},
+		{"a protected database next to one that is not mounted", "/v1/dtql", relProtectedOwner, fmt.Sprintf(join, "nowhere"), nil, 404, "not_found", ""},
+		{"no token", "/v1/dtql", "", fmt.Sprintf(join, "crm"), nil, 401, "", ""},
+		{"a source the per-database endpoint does not take", "/v1/databases/crm/dtql", relProtectedOwner, fmt.Sprintf(join, "other"), nil, 400, "invalid_dtql", ""},
+		// A token granted one collection of the database is refused a join of two before
+		// the refusal of the database, on both endpoints and whichever of the two the
+		// document starts from: the message names the collection it lacks.
+		{"a token scoped to customers, a join that starts from orders, on /v1/dtql", "/v1/dtql", relProtectedScoped, fmt.Sprintf(join, "crm"), nil, 403, "forbidden", "orders"},
+		{"a token scoped to customers, a join that starts from orders, on the per-database endpoint", "/v1/databases/crm/dtql", relProtectedScoped, fmt.Sprintf(join, "crm"), nil, 403, "forbidden", "orders"},
+		{"a token scoped to customers, a join that starts from customers, on /v1/dtql", "/v1/dtql", relProtectedScoped, inverse, nil, 403, "forbidden", "orders"},
+		{"a token scoped to customers, a join that starts from customers, on the per-database endpoint", "/v1/databases/crm/dtql", relProtectedScoped, inverse, nil, 403, "forbidden", "orders"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := relFakeDo(t, host, http.MethodPost, tc.path, tc.token, tc.doc, tc.headers)
 			if resp.status != tc.status || (tc.code != "" && resp.code() != tc.code) {
 				t.Fatalf("status %d code %q, want %d %q: %s", resp.status, resp.code(), tc.status, tc.code, resp.raw)
+			}
+			if message := fmt.Sprint(resp.errorDetail()["message"]); tc.names != "" && !strings.Contains(message, `collection "`+tc.names+`"`) {
+				t.Fatalf("the message %q does not name the collection %s", message, tc.names)
 			}
 		})
 	}
