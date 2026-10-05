@@ -407,6 +407,9 @@ func TestLogUnpreparedCollections(t *testing.T) {
 	if err := json.Unmarshal(logs.Bytes(), &entry); err != nil {
 		t.Fatalf("%v: %s", err, logs.String())
 	}
+	if entry.Msg != "protected session refused an operation" {
+		t.Errorf("logged the message %q", entry.Msg)
+	}
 	if entry.Level != "WARN" || entry.Method != "PATCH" || entry.Path != "/v1/databases/crm/records/b/01" || !slices.Equal(entry.Collections, []string{"a", "b"}) || strings.Count(logs.String(), "\n") != 1 {
 		t.Errorf("logged %s", logs.String())
 	}

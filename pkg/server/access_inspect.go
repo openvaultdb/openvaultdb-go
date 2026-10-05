@@ -366,7 +366,8 @@ func (s *Server) inspectProtected(r *http.Request, db *core.Database, coordinato
 }
 
 // inspectOnce assesses ops in one protected session. refused reports that the
-// session was refused with access.ErrAccessDenied before anything was assessed.
+// session was refused with access.ErrAccessDenied before anything was assessed
+// while the request was still alive (see refusedWhileAlive).
 func inspectOnce(ctx context.Context, coordinator inspectionCoordinator, ops []access.ProtectedOperation, requester access.Principal) (got inspected, refused bool, err error) {
 	assessed := false
 	err = coordinator.WithinInspection(ctx, ops, func(session access.InspectionSession) error {
@@ -381,7 +382,26 @@ func inspectOnce(ctx context.Context, coordinator inspectionCoordinator, ops []a
 		got.visible, visibleErr = session.ReadVisibilityFor(ctx, requester)
 		return visibleErr
 	})
-	return got, !assessed && errors.Is(err, access.ErrAccessDenied), err
+	if assessed {
+		return got, false, err
+	}
+	refused, err = refusedWhileAlive(ctx, err)
+	return got, refused, err
+}
+
+// refusedWhileAlive tells whether err is a refusal of a protected session, with
+// access.ErrAccessDenied, that is answered as a table the caller may not see. That
+// holds only while ctx has no error: a session that ran out of time, or whose
+// request was canceled, says nothing of the table, so the failure it gets is the
+// failure of the context, as any other session failure is answered.
+func refusedWhileAlive(ctx context.Context, err error) (bool, error) {
+	if !errors.Is(err, access.ErrAccessDenied) {
+		return false, err
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, ctxErr
+	}
+	return true, err
 }
 
 // inspectEach assesses each of ops in a protected session of its own and puts the
@@ -449,16 +469,17 @@ func reduceAssessment(a, b access.AssessmentOutcome) access.AssessmentOutcome {
 }
 
 // logUnpreparedCollections tells the operator which declared collections the
-// protected session could not prepare, so that a table that is answered as one the
-// caller may not see has a cause that can be found. One record is written for a
-// request, with the method, the route path and the names of the collections, which
-// have passed guardOperation; nothing of it is in the response.
+// protected session refused an operation on, so that a table that is answered as
+// one the caller may not see can be looked into. It does not state why the session
+// refused. One record is written for a request, with the method, the route path and
+// the names of the collections, which have passed guardOperation; nothing of it is
+// in the response.
 func (s *Server) logUnpreparedCollections(r *http.Request, collections []string) {
 	if len(collections) == 0 {
 		return
 	}
 	slices.Sort(collections)
-	s.logger.WarnContext(r.Context(), "protected session cannot prepare a collection",
+	s.logger.WarnContext(r.Context(), "protected session refused an operation",
 		slog.String("method", r.Method),
 		slog.String("path", r.URL.Path),
 		slog.Any("collections", slices.Compact(collections)))
@@ -477,6 +498,11 @@ func writeProtectedFailure(w http.ResponseWriter, err error) {
 	}
 }
 
+// executionCoordinator is the part of the coordinator that a protected update uses.
+type executionCoordinator interface {
+	WithinExecution(ctx context.Context, operations []access.ProtectedOperation, execute func(access.ExecutionSession) error) error
+}
+
 func (s *Server) handleProtectedUpdate(w http.ResponseWriter, r *http.Request, db *core.Database, key *record.Key) {
 	w.Header().Set("Cache-Control", "no-store")
 	coordinator := db.Coordinator()
@@ -484,6 +510,11 @@ func (s *Server) handleProtectedUpdate(w http.ResponseWriter, r *http.Request, d
 		writeError(w, 422, "authorization_unsupported", "protected execution unavailable")
 		return
 	}
+	s.updateProtected(w, r, db, key, coordinator)
+}
+
+// updateProtected answers a protected PATCH with the session of coordinator.
+func (s *Server) updateProtected(w http.ResponseWriter, r *http.Request, db *core.Database, key *record.Key, coordinator executionCoordinator) {
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, api.MaxRequestBytes))
 	if err != nil {
 		writeError(w, 400, "bad_request", "invalid request size")
@@ -543,6 +574,11 @@ func (s *Server) handleProtectedUpdate(w http.ResponseWriter, r *http.Request, d
 				// the database does not declare is (see refuseOperation), by the same
 				// function, so the two bodies are built from the same facts.
 				writeUnavailableOperation(w, az.ModeExecution, op)
+			case ctx.Err() != nil:
+				// The request was canceled or ran past its deadline after the
+				// assessment: nothing was found wrong with the candidate, so the
+				// failure is the context's, not a refusal of the candidate.
+				writeProtectedFailure(w, ctx.Err())
 			case errors.Is(err, access.ErrDataRevisionConflict):
 				writeError(w, 409, "data_revision_conflict", "record changed; reload before retrying")
 			case !errors.Is(err, access.ErrAccessDenied):
@@ -552,11 +588,13 @@ func (s *Server) handleProtectedUpdate(w http.ResponseWriter, r *http.Request, d
 			}
 			return
 		}
-		if errors.Is(err, access.ErrAccessDenied) {
-			// The protected session was refused before anything was assessed: it
-			// cannot prepare the operation (for a table whose shape it does not
-			// support, for instance). The answer is the one for a record the
-			// caller may not see, by the same function the evidence route uses.
+		var refused bool
+		if refused, err = refusedWhileAlive(ctx, err); refused {
+			// The protected session was refused before anything was assessed, while
+			// the request was alive: it cannot prepare the operation (for a table
+			// whose shape it does not support, for instance). The answer is the one
+			// for a record the caller may not see, by the same function the
+			// evidence route uses.
 			s.logUnpreparedCollections(r, []string{op.Resource.Table})
 			writeUnavailableOperation(w, az.ModeExecution, op)
 			return
@@ -612,12 +650,10 @@ func (s *Server) handleAccessEvidence(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
-	var evidence []access.AuthorizedPointEvidence
-	err = coordinator.WithinInspection(ctx, []access.ProtectedOperation{internal}, func(session access.InspectionSession) error {
-		var err error
-		evidence, err = session.Evidence(ctx)
-		return err
-	})
+	evidence, refused, err := evidenceOnce(ctx, coordinator, internal)
+	if refused {
+		s.logUnpreparedCollections(r, []string{op.Resource.Table})
+	}
 	if err != nil || len(evidence) != 1 || !evidence[0].Exists {
 		if err != nil && !errors.Is(err, access.ErrAccessDenied) && !errors.Is(err, access.ErrProtectedResourceUnavailable) {
 			writeProtectedFailure(w, err)
@@ -644,6 +680,24 @@ func (s *Server) handleAccessEvidence(w http.ResponseWriter, r *http.Request) {
 	body.Resource = op.Resource
 	body.Resource.Columns = nil
 	writeJSON(w, 200, map[string]any{"apiVersion": az.APIVersion, "resource": body.Resource, "exists": true, "dataRevision": evidence[0].DataRevision, "fields": fields})
+}
+
+// evidenceOnce asks one protected session for the evidence of op. refused reports
+// that the session was refused with access.ErrAccessDenied before it was entered
+// while the request was still alive (see refusedWhileAlive).
+func evidenceOnce(ctx context.Context, coordinator inspectionCoordinator, op access.ProtectedOperation) (evidence []access.AuthorizedPointEvidence, refused bool, err error) {
+	entered := false
+	err = coordinator.WithinInspection(ctx, []access.ProtectedOperation{op}, func(session access.InspectionSession) error {
+		entered = true
+		var err error
+		evidence, err = session.Evidence(ctx)
+		return err
+	})
+	if entered {
+		return evidence, false, err
+	}
+	refused, err = refusedWhileAlive(ctx, err)
+	return evidence, refused, err
 }
 
 func writeUnavailablePoint(w http.ResponseWriter, db *core.Database, key *record.Key, action string) {
