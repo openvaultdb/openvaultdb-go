@@ -28,6 +28,20 @@ import (
 // a join with no subquery as well, but Execute takes any query and does not depend on
 // it.
 //
+// That binding is not what an aggregation reads. DALgo's check of the fields binds a name
+// to the one list that carries it, and then its aggregation evaluates the expressions of
+// GROUP BY and the arguments of the aggregates (and compares what HAVING, ORDER BY and the
+// columns name with them by their text) against the first source of the query and against
+// no other: a name that only another source carries is read as null there, or as the key
+// of that name that a record of the first source holds outside its list. So a query of
+// several sources that aggregates (dal.HasAggregation, DALgo's own test) is held to one
+// rule more: an unqualified field in its GROUP BY, HAVING, ORDER BY or columns, whatever
+// the clause reads it for, is a field of the first source or is refused, with the same
+// scope error that says to qualify the field. WHERE and ON are not aggregated, DALgo
+// evaluates them on the joined row and binds a name there to its carrier, so they are not
+// held to it. A name that no source carries is left to DALgo, which refuses it as
+// unavailable.
+//
 // A query here is one level of the document: the root query, a derived source, a
 // scalar subquery or an EXISTS test, each with its own sources. A field is read
 // against the sources of the query whose clause holds it; a subquery inside a
@@ -35,11 +49,12 @@ import (
 //
 // A name that a column of the select list carries as its alias is not a field of a
 // source where DALgo reads it as the column: in HAVING and ORDER BY of a query that
-// aggregates, outside the argument of an aggregate (resolveAliases replaces such a
-// name by the column before DALgo sees it). Everywhere else, the WHERE, ON, GROUP BY
-// and column expressions, the argument of an aggregate, and the ORDER BY of a query
-// that does not aggregate, DALgo reads a field of a source, whatever the select list
-// calls its columns, so the name is looked at like any other.
+// aggregates, outside the argument of an aggregate, and when resolveAliases replaces
+// it (replaceableAliases says which names it does) by the column before DALgo sees it.
+// Everywhere else, the WHERE, ON, GROUP BY and column expressions, the argument of an
+// aggregate, and the ORDER BY of a query that does not aggregate, DALgo reads a field
+// of a source, whatever the select list calls its columns, so the name is looked at
+// like any other; so is an alias that resolveAliases does not replace.
 
 // fieldSupplier answers the field list of a source, the way the executors DALgo
 // reads through do (dal.JoinFieldsProvider): nil when the source has no list.
@@ -49,6 +64,10 @@ type fieldSupplier func(ctx context.Context, source dal.RecordsetSource) ([]stri
 type scopeRef struct {
 	name string
 	path string
+	// aggregated is true for a field of GROUP BY, HAVING, ORDER BY or the columns of a
+	// query that aggregates, which DALgo's aggregation reads from the first source of
+	// the query.
+	aggregated bool
 }
 
 // scopeLevel is one query of the document.
@@ -59,8 +78,9 @@ type scopeLevel struct {
 
 // checkScopes refuses the first unqualified field of a query of several sources,
 // in document order, that DALgo cannot bind because a source of that query
-// supplies no field list, or that two of the lists carry. The refusal is a scope
-// error (*dal.QueryValidationError), which the server answers as a 400
+// supplies no field list, that two of the lists carry, or that DALgo's aggregation
+// would read from the first source when only another carries it. The refusal is a
+// scope error (*dal.QueryValidationError), which the server answers as a 400
 // invalid_dtql, and nothing has been read when it is returned. An error of fields
 // is returned as it is. A query with one source, and a field a source qualifies or
 // that is the alias of a column where DALgo reads it as the column, are not looked
@@ -90,11 +110,19 @@ func checkScopes(ctx context.Context, query dal.StructuredQuery, fields fieldSup
 			lists = append(lists, list)
 		}
 		for _, ref := range level.refs {
-			if carriers(lists, ref.name) > 1 {
+			switch count := carriers(lists, ref.name); {
+			case count > 1:
 				return &dal.QueryValidationError{
 					Category: "scope",
 					Path:     ref.path,
 					Message:  fmt.Sprintf("ambiguous unqualified field %s", clip(ref.name)),
+				}
+			case count == 1 && ref.aggregated && !slices.Contains(lists[0], ref.name):
+				return &dal.QueryValidationError{
+					Category: "scope",
+					Path:     ref.path,
+					Message: fmt.Sprintf("cannot read the unqualified field %s from a source other than the first in a query that aggregates: qualify the field with its source",
+						clip(ref.name)),
 				}
 			}
 		}
@@ -136,13 +164,16 @@ func (w *scopeWalk) query(query dal.StructuredQuery, path string) {
 	flow := &scopeFlow{walk: w, level: level}
 	flow.from(query.From(), path+"from")
 	flow.condition(query.Where(), path+"where")
+	// From here on, an aggregating query reads a field from the first source: the clauses
+	// below are the aggregation's, and WHERE and ON above are not.
+	flow.aggregated = dal.HasAggregation(query)
 	for i, group := range query.GroupBy() {
 		flow.expression(group, fmt.Sprintf("%sgroupBy[%d]", path, i))
 	}
 	// HAVING and ORDER BY of a query that aggregates read the alias of a column as the
 	// column.
-	if dal.HasAggregation(query) {
-		flow.aliases = columnAliases(query.Columns())
+	if flow.aggregated {
+		flow.aliases = replaceableAliases(query.Columns())
 	}
 	flow.condition(query.Having(), path+"having")
 	for i, order := range query.OrderBy() {
@@ -160,9 +191,12 @@ type scopeFlow struct {
 	walk  *scopeWalk
 	level *scopeLevel
 	// aliases are the names a field may carry without naming a field of a source: the
-	// aliases of the columns, while HAVING and ORDER BY of a query that aggregates are
-	// walked, and none otherwise.
+	// aliases of the columns that resolveAliases replaces, while HAVING and ORDER BY of
+	// a query that aggregates are walked, and none otherwise.
 	aliases map[string]dal.Expression
+	// aggregated is set once the walk is past WHERE and ON of a query that aggregates: the
+	// fields it finds from then on are read by DALgo's aggregation.
+	aggregated bool
 }
 
 // from walks a relation tree: its base source, then each join's relation tree and
@@ -209,7 +243,7 @@ func (f *scopeFlow) expression(expression dal.Expression, path string) {
 	switch value := expression.(type) {
 	case dal.FieldRef:
 		if _, alias := f.aliases[value.Name()]; value.Source() == "" && !alias {
-			f.level.refs = append(f.level.refs, scopeRef{name: value.Name(), path: path})
+			f.level.refs = append(f.level.refs, scopeRef{name: value.Name(), path: path, aggregated: f.aggregated})
 		}
 	case dal.BinaryExpression:
 		f.expression(value.Left, path+".left")

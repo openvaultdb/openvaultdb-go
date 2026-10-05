@@ -526,10 +526,13 @@ func (r *run) database(ctx context.Context, query dal.StructuredQuery, source So
 // Before either reads a row, the unqualified fields of the document are checked
 // against the field lists the sources supply (checkScopes): a query of several
 // sources in which one source has no list is refused, with a scope error, for an
-// unqualified field, because DALgo would bind it to the first source of the query,
-// and so is a name that two lists carry. DALgo is then given the document with the
-// aliases of its select lists resolved in HAVING and ORDER BY (resolveAliases),
-// which its own check of the fields against the lists does not know.
+// unqualified field, because DALgo would bind it to the first source of the query.
+// So is a name that two lists carry, and so is a name that only a later source
+// carries in the GROUP BY, HAVING, ORDER BY or columns of a query that aggregates,
+// because DALgo's aggregation would read it from the first source. DALgo is then
+// given the document with the aliases of its select lists resolved in HAVING and
+// ORDER BY (resolveAliases), which its own check of the fields against the lists
+// does not know.
 func (r *run) inMemory(ctx context.Context, query dal.StructuredQuery, doc document, databases []string, qualified bool) ([]record.Record, error) {
 	var (
 		reader dal.RecordsReader

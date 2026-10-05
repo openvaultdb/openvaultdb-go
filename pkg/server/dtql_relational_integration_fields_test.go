@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -281,12 +282,14 @@ func TestARefusalInsideADerivedSourceInTheBasePositionIsAClientError(t *testing.
 }
 
 // What the field checks do not reach is pinned here, so that the sentences about them
-// in the documentation stay as true as the code: a wildcard stands for the keys each row
-// holds, an unknown column inside an EXISTS test or a scalar subquery is read as a null,
-// and an unqualified field is looked for in the sources of its own query only.
+// in the documentation stay as true as the code: a wildcard lists the fields of its source
+// and a record that lacks an optional one has no key for it on DALgo's recursive plan and a
+// null on its streaming plan, an unknown column inside an EXISTS test or a scalar subquery
+// is read as a null, and an unqualified field is looked for in the sources of its own query
+// only.
 func TestWhatTheFieldChecksDoNotReachIsReadAsItAlwaysWas(t *testing.T) {
-	// A strict mount whose records may lack an optional field: the wildcard lists the
-	// field and the record that lacks it has no key for it, not a null.
+	// A strict mount whose records may lack an optional field: on the recursive plan the
+	// wildcard lists the field and the record that lacks it has no key for it, not a null.
 	db := relIntOpen(t, t.TempDir(), "database: {id: people, schema_mode: strict}\nstorage: {engine: ingitdb, path: data}\n"+
 		"schemas:\n  collections:\n    Person:\n      fields:\n        name: {type: string}\n        nick: {type: string}\n")
 	for _, person := range []struct {
@@ -314,6 +317,19 @@ func TestWhatTheFieldChecksDoNotReachIsReadAsItAlwaysWas(t *testing.T) {
 		t.Fatalf("columns = %v", got)
 	}
 
+	// The streaming plan is DALgo's for a flat join of two sources that each name their
+	// database, with no subquery, no ORDER BY and no aggregation: it projects the wildcard
+	// from the list the mount supplied, and writes a null for the field a record lacks.
+	streamed := relHTTPPost(t, people, "/v1/dtql", "",
+		"from: {database: people, name: Person, alias: p, joins: [{type: inner, from: {database: people, name: Person, alias: q}, "+
+			"on: [{left: {field: name, source: p}, op: '==', right: {field: name, source: q}}]}]}\n"+
+			"columns: [{wildcard: {source: p, exclude: [none]}}]\n")
+	rows := streamed.rows(t)
+	sort.Slice(rows, func(i, j int) bool { return rows[i]["name"].(string) < rows[j]["name"].(string) })
+	if want := []map[string]any{{"name": "Ada", "nick": "ada"}, {"name": "Bea", "nick": nil}}; streamed.status != http.StatusOK || !reflect.DeepEqual(rows, want) {
+		t.Fatalf("the streaming plan answered status %d, rows %v, want %v: %s", streamed.status, rows, want, streamed.raw)
+	}
+
 	sales := relIntFieldsServer(t)
 	const customers = "from: {name: Customer, alias: c}\norderBy: [{field: CustomerId, source: c}]\n"
 	oneInvoice := "from: {name: Invoice, alias: i}, where: {op: '==', left: {field: InvoiceId, source: i}, right: {value: 10}}"
@@ -336,6 +352,61 @@ func TestWhatTheFieldChecksDoNotReachIsReadAsItAlwaysWas(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			relIntRowsAre(t, relHTTPPost(t, sales, "/v1/databases/gitdb/dtql", "", tc.doc), tc.want)
+		})
+	}
+}
+
+// DALgo's aggregation reads the unqualified field of a column's expression as the column
+// that is named so, so the name that stands for a column is not replaced by an expression
+// that names another column: the answer is a refusal of the name, never an order by the
+// other column. (The SQL engine of a SQLite database answers the same document on the
+// database route; a test that puts it in memory, like the one below, does not.)
+func TestAnAliasWhoseExpressionNamesAnotherColumnIsRefusedInsteadOfBeingReadAsIt(t *testing.T) {
+	base := relIntFieldsServer(t)
+	doc := "from: {name: Invoice, alias: i}\n" + relIntFieldsAnyCustomer +
+		"groupBy: [{field: CustomerId}]\norderBy: [{field: customer, desc: true}]\n" +
+		"columns:\n  - {field: CustomerId, as: customer}\n  - {aggregate: {function: count, args: [{star: true}]}, as: CustomerId}\n"
+	relIntFieldsEachRoute(t, base, doc, func(t *testing.T, resp relHTTPResponse) {
+		message := resp.errorField("message")
+		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || !strings.Contains(message, "customer") || resp.body["records"] != nil {
+			t.Fatalf("status %d, want a 400 invalid_dtql that names customer: %s", resp.status, resp.raw)
+		}
+	})
+}
+
+// ORDER BY the alias of a column of a query that does not aggregate is a field of a source
+// to DALgo. One SQLite database runs the whole document and sorts by the column; a source
+// that supplies its fields and is read in memory refuses the name as unavailable (it was
+// answered unsorted, with no error, before the field lists were supplied). The two are
+// pinned here so that the sentence about the difference in the documentation stays as true
+// as the code. The document of one source that names its database, which the server hands
+// whole to the mount's executor, is not pinned: that executor ignores a field it does not
+// know, and is a defect of its own.
+func TestOrderByTheAliasOfAColumnOfAQueryThatDoesNotAggregateIsSortedByTheDatabaseAndRefusedInMemory(t *testing.T) {
+	base := relIntFieldsServer(t)
+	doc := "from: {name: Customer, alias: c}\norderBy: [{field: name, desc: true}]\ncolumns: [{field: FirstName, source: c, as: name}]\n"
+	for _, tc := range []struct {
+		name, path, database string
+		sqlite               bool
+	}{
+		{"sqlite, per-database endpoint", "/v1/databases/litedb/dtql", "", true},
+		{"sqlite, /v1/dtql", "/v1/dtql", "litedb", true},
+		{"ingitdb, per-database endpoint", "/v1/databases/gitdb/dtql", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := relHTTPPost(t, base, tc.path, "", string(relIntRewrite(t, []byte(doc), tc.database)))
+			if tc.sqlite {
+				relIntRowsAre(t, resp, []map[string]any{{"name": "Cy"}, {"name": "Bea"}, {"name": "Ada"}})
+				if got := resp.execution(t)["route"]; got != "database" {
+					t.Fatalf("route = %v, want the database route", got)
+				}
+				return
+			}
+			message := resp.errorField("message")
+			if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || !strings.Contains(message, "orderBy[0]") ||
+				!strings.Contains(message, `"name"`) || resp.body["records"] != nil {
+				t.Fatalf("status %d, want a 400 invalid_dtql that refuses the name at orderBy[0]: %s", resp.status, resp.raw)
+			}
 		})
 	}
 }

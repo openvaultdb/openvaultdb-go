@@ -30,20 +30,73 @@ import (
 // that never needed the rewrite reaches DALgo as it was built. A query inside an
 // aggregate's argument is not looked at: DALgo refuses the argument of an aggregate that
 // is not a field, a constant or arithmetic over them.
+//
+// Nor is a name replaced when the replacement would be read as another column. DALgo's
+// aggregation reads an unqualified field of an expression first as the column of the select
+// list that is named so, and as a field only when none is. A column that selects the
+// unqualified field n under the alias a, beside a column that is named n, would be ordered
+// by the other column: the name a is left as it is, and DALgo refuses it as unavailable
+// (replaceableAliases says which names are replaced).
 
-// columnAliases lists the columns of a select list that carry an alias, by alias,
-// each with the expression it computes. DALgo's aggregation names a column by its
-// alias, and only by an alias a column carries: the result name of a scalar
-// subquery is not one (a scalar subquery cannot be a column of a query that
-// aggregates).
-func columnAliases(columns []dal.Column) map[string]dal.Expression {
-	aliases := map[string]dal.Expression{}
+// replaceableAliases lists the columns of a select list that carry an alias and that
+// resolveAliases may replace the alias of, by alias, each with the expression it
+// computes. DALgo's aggregation names a column by its alias, and only by an alias a column
+// carries: the result name of a scalar subquery is not one (a scalar subquery cannot be a
+// column of a query that aggregates).
+//
+// An alias is left out when what it stands for would be read as another column: its
+// expression holds, outside an aggregate, an unqualified field that a column of the select
+// list is named after, by its alias or, with none, by the field it selects. DALgo reads
+// such a field as that column (aggregationColumnName names the columns), so the
+// replacement of the alias would order or filter by the other column. The one exception is
+// a column that is a field named as its own alias: the replacement is the name itself.
+func replaceableAliases(columns []dal.Column) map[string]dal.Expression {
+	named := map[string]bool{}
 	for _, column := range columns {
-		if column.Alias != "" && column.Expression != nil {
-			aliases[column.Alias] = column.Expression
+		if name := selectedName(column); name != "" {
+			named[name] = true
 		}
 	}
+	aliases := map[string]dal.Expression{}
+	for _, column := range columns {
+		if column.Alias == "" || column.Expression == nil || (readsAColumn(column.Expression, named) && !isNamedAs(column)) {
+			continue
+		}
+		aliases[column.Alias] = column.Expression
+	}
 	return aliases
+}
+
+// selectedName is the name DALgo's aggregation gives the column in its answer, and so the
+// name an unqualified field of an expression is read as when it is the same: the alias, or
+// the name of the field the column selects. A column that is neither has no name a field
+// can be (a wildcard selects none, and an expression is named by its text).
+func selectedName(column dal.Column) string {
+	if column.Alias != "" {
+		return column.Alias
+	}
+	if field, ok := column.Expression.(dal.FieldRef); ok {
+		return field.Name()
+	}
+	return ""
+}
+
+// readsAColumn reports whether expression holds, outside an aggregate, an unqualified field
+// that is named like one of the columns.
+func readsAColumn(expression dal.Expression, named map[string]bool) bool {
+	switch value := expression.(type) {
+	case dal.FieldRef:
+		return value.Source() == "" && named[value.Name()]
+	case dal.BinaryExpression:
+		return readsAColumn(value.Left, named) || readsAColumn(value.Right, named)
+	}
+	return false
+}
+
+// isNamedAs reports whether the column is an unqualified field named as its own alias.
+func isNamedAs(column dal.Column) bool {
+	field, ok := column.Expression.(dal.FieldRef)
+	return ok && field.Source() == "" && field.Name() == column.Alias
 }
 
 // resolveAliases returns query with the aliases of its select lists resolved in HAVING
@@ -65,7 +118,7 @@ func resolveQuery(query dal.StructuredQuery) (dal.StructuredQuery, bool) {
 	having, havingChanged := resolveCondition(query.Having())
 	orderBy, orderChanged := mapEach(query.OrderBy(), resolveOrder)
 	if dal.HasAggregation(query) {
-		aliases := columnAliases(columns)
+		aliases := replaceableAliases(columns)
 		var haveAliasChanged, orderAliasChanged bool
 		having, haveAliasChanged = replaceInCondition(having, aliases)
 		orderBy, orderAliasChanged = mapEach(orderBy, func(order dal.OrderExpression) (dal.OrderExpression, bool) {
@@ -299,6 +352,17 @@ func (q aliasResolvedQuery) Having() dal.Condition          { return q.having }
 func (q aliasResolvedQuery) OrderBy() []dal.OrderExpression { return q.orderBy }
 func (q aliasResolvedQuery) Columns() []dal.Column          { return q.columns }
 func (q aliasResolvedQuery) String() string                 { return dal.QueryString(q) }
+
+// Money hands on the money configuration the wrapped query declares, which DALgo's
+// federated executor reads from a query by type assertion: a wrapper that did not have the
+// method would hide it, and the executor would run a money document as plain numbers. A
+// query that declares none declares none here.
+func (q aliasResolvedQuery) Money() *dal.MoneyConfig {
+	if declarative, ok := q.StructuredQuery.(interface{ Money() *dal.MoneyConfig }); ok {
+		return declarative.Money()
+	}
+	return nil
+}
 
 func (q aliasResolvedQuery) GetRecordsReader(ctx context.Context, executor dal.QueryExecutor) (dal.RecordsReader, error) {
 	return executor.ExecuteQueryToRecordsReader(ctx, q)

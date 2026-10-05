@@ -2,7 +2,10 @@ package joinexec
 
 import (
 	"context"
+	"errors"
 	"reflect"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/dal-go/dalgo/dal"
@@ -262,4 +265,104 @@ func (p *alProbe) ExecuteQueryToRecordsReader(_ context.Context, query dal.Query
 func (p *alProbe) ExecuteQueryToRecordsetReader(_ context.Context, query dal.Query, _ ...recordset.Option) (dal.RecordsetReader, error) {
 	p.recordset = query
 	return nil, nil
+}
+
+// A name that stands for a column is replaced by that column's expression, and DALgo's
+// aggregation reads an unqualified field of that expression as it reads any other: as a
+// column of the select list when one has that name, not as the field. So an alias whose
+// expression holds an unqualified field that a column of the select list is named after
+// (by its alias, or by the field it selects) is not replaced: the replacement would be
+// read as the other column, and the name is left for DALgo to refuse as unavailable.
+func TestAnAliasWhoseExpressionNamesAnotherColumnIsNotReplaced(t *testing.T) {
+	k := dal.NewFieldRef("", "k")
+	// ordered orders alPerName-like groups by the alias kk, over the columns given.
+	ordered := func(columns ...dal.Column) dal.StructuredQuery {
+		return dal.From(exRef("", "A", "a")).NewQuery().GroupBy(k).OrderBy(dal.Descending(dal.NewFieldRef("", "kk"))).SelectColumns(columns...)
+	}
+	for name, columns := range map[string][]dal.Column{
+		"a column is named after the field by its alias": {{Expression: k, Alias: "kk"}, dal.CountAs(dal.Star(), "k")},
+		"a column selects a field of that name":          {{Expression: k, Alias: "kk"}, {Expression: dal.NewFieldRef("a", "k")}},
+		"the expression is arithmetic over the field":    {{Expression: dal.Binary(k, dal.Add, dal.NewConstant(1)), Alias: "kk"}, dal.CountAs(dal.Star(), "k")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			query := ordered(columns...)
+			if got := resolveAliases(query); !reflect.DeepEqual(got, query) {
+				t.Fatalf("the query was rebuilt, and its ORDER BY is %v", got.OrderBy())
+			}
+			rows, err := alRun(t, query)
+			if err == nil {
+				t.Fatalf("the document was answered with %v, want a refusal of the name kk", rows)
+			}
+			var invalid *dal.QueryValidationError
+			if !errors.As(err, &invalid) || !strings.Contains(err.Error(), "kk") {
+				t.Fatalf("got %T: %v, want a refusal that names kk", err, err)
+			}
+		})
+	}
+}
+
+// replaceableAliases names the aliases resolveAliases replaces, and the expression each
+// stands for.
+func TestTheAliasesThatAreReplaced(t *testing.T) {
+	k, kk := dal.NewFieldRef("", "k"), dal.NewFieldRef("", "kk")
+	qualified := dal.NewFieldRef("a", "k")
+	total := dal.NewAggregate("SUM", false, k)
+	for name, tc := range map[string]struct {
+		columns []dal.Column
+		want    []string
+	}{
+		"an aggregate": {[]dal.Column{{Expression: total, Alias: "total"}}, []string{"total"}},
+		"an aggregate over a name that is an alias":        {[]dal.Column{{Expression: total, Alias: "total"}, dal.CountAs(dal.Star(), "k")}, []string{"k", "total"}},
+		"a qualified field named like an alias":            {[]dal.Column{{Expression: qualified, Alias: "kk"}, dal.CountAs(dal.Star(), "k")}, []string{"k", "kk"}},
+		"a field that no column is named after":            {[]dal.Column{{Expression: k, Alias: "kk"}, dal.CountAs(dal.Star(), "n")}, []string{"kk", "n"}},
+		"a column named after the field, as itself":        {[]dal.Column{{Expression: k, Alias: "k"}, dal.CountAs(dal.Star(), "n")}, []string{"k", "n"}},
+		"a column that selects another field":              {[]dal.Column{{Expression: kk, Alias: "other"}, {Expression: qualified}}, []string{"other"}},
+		"a field a column is named after, by alias":        {[]dal.Column{{Expression: k, Alias: "kk"}, dal.CountAs(dal.Star(), "k")}, []string{"k"}},
+		"a field a column is named after, by field":        {[]dal.Column{{Expression: k, Alias: "kk"}, {Expression: qualified}}, nil},
+		"arithmetic over the column's own alias":           {[]dal.Column{{Expression: dal.Binary(k, dal.Add, dal.NewConstant(1)), Alias: "k"}}, nil},
+		"arithmetic over a name that is no column":         {[]dal.Column{{Expression: dal.Binary(k, dal.Add, dal.NewConstant(1)), Alias: "next"}}, []string{"next"}},
+		"a column without an alias and a wildcard":         {[]dal.Column{{Expression: k}, {Wildcard: &dal.WildcardProjection{Source: "a"}}}, nil},
+		"a column with neither an expression nor an alias": {[]dal.Column{{}}, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var got []string
+			for alias := range replaceableAliases(tc.columns) {
+				got = append(got, alias)
+			}
+			sort.Strings(got)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("replaced %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// alMoneyQuery is a query that declares its money configuration the way DALgo's own
+// query of a money document does, which its federated executor reads by type assertion.
+type alMoneyQuery struct {
+	dal.StructuredQuery
+	money *dal.MoneyConfig
+}
+
+func (q alMoneyQuery) Money() *dal.MoneyConfig { return q.money }
+
+// The query DALgo is given is the one that was written in what an executor reads from it
+// beyond the clauses: a money configuration that the query declared is still declared, and
+// a query that declared none still declares none.
+func TestTheQueryWithItsAliasesResolvedKeepsItsMoneyConfiguration(t *testing.T) {
+	declared := &dal.MoneyConfig{MinorUnitScale: 2, DivisionScale: 4, Rounding: "half-up"}
+	money := func(q dal.StructuredQuery) *dal.MoneyConfig {
+		t.Helper()
+		rebuilt, ok := resolveAliases(q).(interface{ Money() *dal.MoneyConfig })
+		if !ok {
+			t.Fatalf("the rebuilt query of %T has no Money method, so DALgo would read none", q)
+		}
+		return rebuilt.Money()
+	}
+	if got := money(alMoneyQuery{StructuredQuery: alOrderedPerName(), money: declared}); got != declared {
+		t.Fatalf("Money() = %v, want the configuration the query declared", got)
+	}
+	if got := money(alOrderedPerName()); got != nil {
+		t.Fatalf("Money() = %v, want none for a query that declared none", got)
+	}
 }
