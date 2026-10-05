@@ -28,8 +28,12 @@ reads, writes, updates and queries through to the driver natively:
   increment, server timestamps) executed by the driver;
 - queries: wire JSON → `dal.StructuredQuery` builder → the driver's own query
   evaluator; **DTQL** documents (dalgo's native lossless YAML serialization of
-  `dal.StructuredQuery`) pass through via `POST /v1/databases/{db}/dtql` —
-  ovdb's job there is only routing/auth, never query evaluation. Structured
+  `dal.StructuredQuery`) are read by `POST /v1/databases/{db}/dtql` and
+  `POST /v1/dtql`: the server parses, classifies and validates the document,
+  runs a single-collection one through the mount, and runs a relational one
+  (joins, grouping, aggregates, subqueries, several mounted databases) through
+  DALgo, in the database where one database can run it and in memory
+  otherwise; see docs/api.md. Structured
   queries run on SQLite, inGitDB and Firestore only: a PostgreSQL or MySQL
   mount is refused them with `501 query_unsupported` until a reviewed query
   compiler lands (see "Names and queries on the SQL engines" below);
@@ -291,7 +295,7 @@ schemas:                    # required for strict; optional for partial
 See docs/api.md. Summary: records CRUD at
 `/v1/databases/{db}/records/{key...}` (key = `dal.Key.String()` path),
 `/batch` (ordered ops, one dal transaction), `/query` (JSON structured
-query), `/dtql` (DTQL YAML pass-through), `/inferred-schema`, `/status`,
+query), `/dtql` (DTQL YAML documents), `/inferred-schema`, `/status`,
 `/databases`.
 
 ## Runtime database provisioning (--data-dir)
@@ -336,9 +340,9 @@ docs/api.md).
 
 In: `ovdb` CLI + `serve`, minimal HTTP API, SQLite strict engine, inGitDB
 strict/partial/schemaless engine, manifest (incl. push policy), inferred
-schema catalogue, DTQL pass-through, dalgo2openvaultdb, Sneat CLI validation.
+schema catalogue, single-collection DTQL (the relational profile came later; see docs/api.md), dalgo2openvaultdb, Sneat CLI validation.
 
 Out (see docs/roadmap.md): hosted service, billing,
 auth, GraphSpec/ModelSpec, GraphQL, admin UI, replication/sync, migrations,
-SQLite partial/schemaless, cursors/offset/projections/group-by over the wire,
+SQLite partial/schemaless, cursors/offset/projections/group-by on `/query`,
 update preconditions, cross-request transaction isolation.

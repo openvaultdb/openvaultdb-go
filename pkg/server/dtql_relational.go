@@ -109,12 +109,9 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	// A database with access policies is not read by a relational document. The
 	// refusal is decided by the databases the document names, before a collection
 	// name is looked at, so no answer says which collections that database declares.
-	for _, id := range order {
-		if databases[id].HasAccessPolicies() {
-			writeError(w, http.StatusUnprocessableEntity, "authorization_unsupported", fmt.Sprintf("database %q has access policies and is read one source at a time: "+
-				"a relational document (a join, a grouping, an alias, a subquery or a source that names its database) is not run on it", clipName(id)))
-			return
-		}
+	if err := s.refuseEach(stageAccessPolicies, databases, order); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "authorization_unsupported", err.Error())
+		return
 	}
 	// A collection that a database on an engine that builds SQL does not declare is
 	// not read, whatever the grant says, and neither is one the document spells
@@ -278,23 +275,91 @@ func (s *Server) joinEngines() []string {
 	return engines
 }
 
-// checkRelationalEngines refuses a database whose engine the structured-query
-// guard does not clear (the operator's list never lifts that), and then one the
-// operator's list leaves out. It compares db.Engine(), which tells a GitHub-backed
-// inGitDB mount from a local one, not the engine written in the manifest.
-func (s *Server) checkRelationalEngines(databases map[string]*core.Database, order []string) error {
-	for _, id := range order {
-		if db := databases[id]; !db.CanQuery() {
-			return &joinexec.EngineNotQueryableError{Database: id, Engine: db.Engine()}
+// relationalStage is one test of the rule that decides whether a database takes
+// part in a relational document. It returns nil for a database that passes and the
+// refusal otherwise.
+type relationalStage func(s *Server, id string, db *core.Database) error
+
+// accessPoliciesError is the refusal of a database with access policies: a
+// relational document is not run on it (a launch limit).
+type accessPoliciesError struct{ Database string }
+
+func (e *accessPoliciesError) Error() string {
+	return fmt.Sprintf("database %q has access policies and is read one source at a time: "+
+		"a relational document (a join, a grouping, an alias, a subquery or a source that names its database) is not run on it", clipName(e.Database))
+}
+
+// stageAccessPolicies refuses a database with access policies.
+func stageAccessPolicies(_ *Server, id string, db *core.Database) error {
+	if db.HasAccessPolicies() {
+		return &accessPoliciesError{Database: id}
+	}
+	return nil
+}
+
+// stageQueryable refuses a database whose engine the structured-query guard does
+// not clear (the operator's list never lifts that).
+func stageQueryable(_ *Server, id string, db *core.Database) error {
+	if !db.CanQuery() {
+		return &joinexec.EngineNotQueryableError{Database: id, Engine: db.Engine()}
+	}
+	return nil
+}
+
+// stageJoinable refuses a database whose engine the operator's list leaves out. It
+// compares db.Engine(), which tells a GitHub-backed inGitDB mount from a local one,
+// not the engine written in the manifest.
+func stageJoinable(s *Server, id string, db *core.Database) error {
+	for _, engine := range s.joinEngines() {
+		if engine == db.Engine() {
+			return nil
 		}
 	}
-	joinable := map[string]bool{}
-	for _, engine := range s.joinEngines() {
-		joinable[engine] = true
-	}
+	return &joinexec.EngineNotJoinableError{Database: id, Engine: db.Engine()}
+}
+
+// relationalStages is the rule, in the order a request meets it: a database takes
+// part in a relational document, and is advertised as joining, only when every
+// stage passes it. The handler runs the stages one at a time, over all the
+// databases a document names, because the collection check and the paging headers
+// come between the first and the others; discovery runs them together for one
+// database (relationalRefusal).
+var relationalStages = []relationalStage{stageAccessPolicies, stageQueryable, stageJoinable}
+
+// engineStages are the stages that look at the engine.
+var engineStages = relationalStages[1:]
+
+// refuseEach runs one stage over the databases in order and returns the first
+// refusal.
+func (s *Server) refuseEach(stage relationalStage, databases map[string]*core.Database, order []string) error {
 	for _, id := range order {
-		if engine := databases[id].Engine(); !joinable[engine] {
-			return &joinexec.EngineNotJoinableError{Database: id, Engine: engine}
+		if err := stage(s, id, databases[id]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkRelationalEngines refuses a database whose engine the structured-query
+// guard does not clear, and then one the operator's list leaves out; the guard is
+// checked for every database before the list is.
+func (s *Server) checkRelationalEngines(databases map[string]*core.Database, order []string) error {
+	for _, stage := range engineStages {
+		if err := s.refuseEach(stage, databases, order); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// relationalRefusal reports why a relational document that names db is refused
+// whatever else it says, or nil when db takes part in one. It is the rule the
+// handler applies, read for one database: discovery advertises db as joining
+// exactly when this is nil.
+func (s *Server) relationalRefusal(id string, db *core.Database) error {
+	for _, stage := range relationalStages {
+		if err := stage(s, id, db); err != nil {
+			return err
 		}
 	}
 	return nil
