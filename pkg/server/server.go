@@ -51,7 +51,8 @@ type Server struct {
 	snapshotDir         string
 	snapshotDirErr      error
 	snapshotKey         [32]byte
-	queryLimits         QueryLimits // relational query limits; always normalized after New
+	snapshotLimits      SnapshotLimits // WithSnapshotLimits; DefaultSnapshotLimits otherwise
+	queryLimits         QueryLimits    // relational query limits; always normalized after New
 	queryGate           *queryGate
 	// joinExecute runs a relational document. It is joinexec.Execute; tests of
 	// the handler replace it to drive every status the handler maps.
@@ -118,7 +119,7 @@ func New(version string, dbs map[string]*core.Database, opts ...Option) *Server 
 	if dbs == nil {
 		dbs = map[string]*core.Database{}
 	}
-	s := &Server{version: version, dbs: dbs, inflight: map[*core.Database]*sync.WaitGroup{}, accessInstance: "local", logger: slog.Default(), joinExecute: joinexec.Execute}
+	s := &Server{version: version, dbs: dbs, inflight: map[*core.Database]*sync.WaitGroup{}, accessInstance: "local", logger: slog.Default(), snapshotLimits: DefaultSnapshotLimits(), joinExecute: joinexec.Execute}
 	for _, opt := range opts {
 		opt(s)
 	}
