@@ -154,10 +154,12 @@ an ordinary identifier and a declared `Orders Status` reads its own table, never
 collection, field or primary-key name must be a plain ASCII identifier (ASCII
 letters, digits and underscores, not starting with a digit) and any other is
 refused by the adapter without a statement being sent (a `500 internal`, or a
-`404` for `HEAD`). A manifest that declares such a name is not refused when the
-database opens; that is left to the task that gives the two mounts a reviewed
-dialect (OV-01). The structured-query path of a PostgreSQL or MySQL mount has no
-reviewed dialect yet either. ovdb does not depend on the adapter for either:
+`404` for `HEAD`). A `postgres` or `mysql` manifest that declares a collection or
+field name outside that rule does not open: provisioning the declared collections
+refuses the name, so the mount fails when the database opens. Quoting on those
+two engines is left to the task that gives them a reviewed dialect (OV-01). The
+structured-query path of a PostgreSQL or MySQL mount has no reviewed dialect yet
+either. ovdb does not depend on the adapter for either:
 
 - **Queries.** `/query` and `/dtql` are refused on `postgres` and `mysql` with
   `501 query_unsupported` before any query reaches the driver. They are not
@@ -184,9 +186,14 @@ reviewed dialect yet either. ovdb does not depend on the adapter for either:
   spellings of one row are one record in a batch, and the mount provisions the
   table under the canonical name. On the key routes a capability scoped to either
   spelling covers a key written with either (`core.Database.CollectionSpellings`,
-  used by the server's key-route check); the routes that give the adapter the
-  collection as written (`/query`, `/dtql`, the protected `PATCH` and the
-  authorization endpoints) match a capability against the spelling sent. A
+  used by the server's key-route check). The routes that give the adapter, or the
+  coordinator that reads it by key, the collection as written (`/query`, `/dtql`,
+  the protected `PATCH` and the authorization endpoints) take the canonical name
+  only (`core.Database.GuardCanonicalCollection`): the quoted spelling names the
+  table whose name carries the quote characters, so on those routes it is a
+  collection the database does not declare, and a capability is matched against
+  the name sent. On a mount with access policies that answer is the one for a
+  declared collection the policy hides. A
   manifest in which one name would be a spelling of two collections, or two keys
   that are one table declare different fields, is refused when the database opens
   (`core.ErrCollectionNamesConflict`). The access-policy layer sees the canonical
@@ -199,7 +206,11 @@ reviewed dialect yet either. ovdb does not depend on the adapter for either:
   is `400 bad_request` before the adapter is called. The later segments of a
   `fieldPath` are map keys: the same rule on the SQL engines, and on `inGitDB`
   and Firestore only a non-blank segment without control characters
-  (Sneat's linkage writes `id@spaceID` keys there).
+  (Sneat's linkage writes `id@spaceID` keys there). On the SQL engines an update
+  that names the record's key column (`id`, in any spelling of its case) is
+  `400 bad_request` too (`core.ErrKeyUpdate`), and so is a write body whose keys
+  name it in a case other than `id` (`core.ErrKeyColumnCase`); a manifest that
+  declares a field so named does not open (`core.ErrFieldNamesConflict`).
 - **Empty writes**, on the SQL engines. An `update` with no operation, and a
   `set` that names no field but `id` for a record that exists, leave the adapter
   nothing to put in a statement and are `400 bad_request` before the write.

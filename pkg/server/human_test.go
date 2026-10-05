@@ -77,6 +77,65 @@ schemas:
 	}
 }
 
+// TestHumanCollectionReadsTheForeignKeysOfTheCanonicalTable: the collection page
+// of a collection that a SQLite manifest keys by its quoted SQL identifier shows
+// the foreign keys of the table of its canonical name. The file also holds a table
+// named with the quote characters of that key, which the manifest does not
+// declare and whose foreign key is not shown.
+func TestHumanCollectionReadsTheForeignKeysOfTheCanonicalTable(t *testing.T) {
+	dir := t.TempDir()
+	sqlDB, err := sql.Open("sqlite", filepath.Join(dir, "data.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE Parent (id TEXT PRIMARY KEY)`,
+		`CREATE TABLE Other (id TEXT PRIMARY KEY)`,
+		`CREATE TABLE Child (id TEXT PRIMARY KEY, parent_id TEXT,
+		 FOREIGN KEY (parent_id) REFERENCES Parent(id) ON DELETE CASCADE)`,
+		`CREATE TABLE """Child""" (id TEXT PRIMARY KEY, other_id TEXT,
+		 FOREIGN KEY (other_id) REFERENCES Other(id) ON DELETE SET NULL)`,
+	} {
+		if _, err := sqlDB.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	declaration := `database: {id: relationships, schema_mode: strict}
+storage: {engine: sqlite, path: ./data.sqlite}
+schemas:
+  collections:
+    Parent:
+      fields:
+        id: {type: string}
+    Other:
+      fields:
+        id: {type: string}
+    '"Child"':
+      fields:
+        id: {type: string}
+        parent_id: {type: string}
+`
+	manifestPath := filepath.Join(dir, "db.yaml")
+	if err := os.WriteFile(manifestPath, []byte(declaration), 0600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := mount.File(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	s := New("test", map[string]*core.Database{"relationships": db})
+	t.Cleanup(s.CloseSnapshots)
+	child := humanRequest(s.Handler(), "/ovdb/dbs/relationships/collections/"+url.PathEscape(`"Child"`))
+	body := child.Body.String()
+	if child.Code != 200 || !strings.Contains(body, "on delete: CASCADE") || strings.Contains(body, "SET NULL") || strings.Contains(body, "other_id") {
+		t.Fatalf("the foreign keys of the canonical table: %d %s", child.Code, body)
+	}
+}
+
 func humanRequest(h http.Handler, path string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(http.MethodGet, "http://localhost:8080"+path, nil)
 	w := httptest.NewRecorder()
@@ -112,6 +171,46 @@ func TestHumanQueryLinkEncodesCollectionNameAsJSON(t *testing.T) {
 	}
 	if query.Collection != name || query.Limit != 50 {
 		t.Fatalf("unexpected query link payload: %+v", query)
+	}
+}
+
+// TestHumanQueryLinkNamesTheCanonicalCollection: /query takes the canonical name
+// of a collection only, so the link of a collection that a SQLite manifest keys by
+// its quoted SQL identifier names the public name, which is the name the route
+// accepts, and a plain key is its own canonical name.
+func TestHumanQueryLinkNamesTheCanonicalCollection(t *testing.T) {
+	m := &manifest.Manifest{
+		Database: manifest.Database{ID: "db", SchemaMode: schema.ModeStrict},
+		Storage:  manifest.Storage{Engine: "sqlite"},
+		Schemas: &schema.Schemas{Collections: map[string]schema.Collection{
+			`"Order Details"`: {Fields: map[string]schema.Field{"name": {Type: schema.TypeString}}},
+			"Orders":          {Fields: map[string]schema.Field{"name": {Type: schema.TypeString}}},
+		}},
+	}
+	db, err := core.Open(m, guardOperationDB{}, []schema.Mode{schema.ModeStrict}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New("test", map[string]*core.Database{"db": db})
+	t.Cleanup(s.CloseSnapshots)
+	databases, err := s.humanDatabases(httptest.NewRequest(http.MethodGet, "http://localhost/ovdb/dbs/db", nil), false, "db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked := map[string]string{}
+	for _, collection := range databases[0].Collections {
+		queryURL, err := url.Parse(collection.QueryURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var query core.Query
+		if err := json.Unmarshal([]byte(queryURL.Query().Get("q")), &query); err != nil {
+			t.Fatal(err)
+		}
+		linked[collection.Name] = query.Collection
+	}
+	if want := map[string]string{`"Order Details"`: "Order Details", "Orders": "Orders"}; len(linked) != len(want) || linked[`"Order Details"`] != want[`"Order Details"`] || linked["Orders"] != want["Orders"] {
+		t.Errorf("the links query %v, want %v", linked, want)
 	}
 }
 

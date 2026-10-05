@@ -56,5 +56,5 @@ func (d *Database) validateProtectedCandidate(ctx context.Context, op access.Pro
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return schema.ValidateRecord(d.Manifest.Database.SchemaMode, op.Key().Collection(), d.Manifest.Schemas.Collection(op.Key().Collection()), candidate)
+	return schema.ValidateRecord(d.Manifest.Database.SchemaMode, op.Key().Collection(), d.schemaCollection(op.Key().Collection()), candidate)
 }

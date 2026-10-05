@@ -43,9 +43,10 @@ engine.
   more than one way (a SQLite manifest key that is a quoted SQL identifier, and its public name)
   has one canonical name. On the key routes (`/records`, `/read?key=`, `/batch`) a grant scoped
   to any spelling holds for a key written with any of them, and the adapter is given the
-  canonical name; on the routes that give the adapter the collection as written (`/query`,
-  `/dtql`, the protected `PATCH`, `/access/evaluate`, `/access/evidence`) a grant is matched
-  against the spelling sent. A nested key on `ingitdb` or `firestore` is a subcollection of the parent record in
+  canonical name; the routes that give the adapter or the coordinator the collection as
+  written (`/query`, `/dtql`, the protected `PATCH`, `/access/evaluate`, `/access/evidence`)
+  take the canonical name only, and refuse any other spelling as a collection the database
+  does not declare. A nested key on `ingitdb` or `firestore` is a subcollection of the parent record in
   every adapter call (Get, Set, Insert, Update, Delete), so the root collection is the one the
   key is written under.
 - **Names that reach SQL text** are a separate rule: `ValidateSegment` accepts quotes, spaces and
