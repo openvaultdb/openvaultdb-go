@@ -45,6 +45,11 @@ type scriptedQueryDB struct {
 	dal.DB
 	openErr error
 	reader  dal.RecordsReader
+	// beginErr fails a read transaction before its function runs, and commitErr after
+	// it ran and returned no error: the two ways a driver fails a transaction that its
+	// function did not.
+	beginErr  error
+	commitErr error
 }
 
 func (f *scriptedQueryDB) ExecuteQueryToRecordsReader(context.Context, dal.Query) (dal.RecordsReader, error) {
@@ -59,7 +64,25 @@ func (f *scriptedQueryDB) ExecuteQueryToRecordsetReader(context.Context, dal.Que
 }
 
 func (f *scriptedQueryDB) RunReadonlyTransaction(ctx context.Context, worker dal.ROTxWorker, _ ...dal.TransactionOption) error {
-	return worker(ctx, &scriptedTx{db: f})
+	if f.beginErr != nil {
+		return f.beginErr
+	}
+	if err := worker(ctx, &scriptedTx{db: f}); err != nil {
+		return err
+	}
+	return f.commitErr
+}
+
+// scriptedFieldsDB is scriptedQueryDB with a catalog: it supplies the field list of a
+// collection, or fails to.
+type scriptedFieldsDB struct {
+	scriptedQueryDB
+	fields    []string
+	fieldsErr error
+}
+
+func (f *scriptedFieldsDB) JoinFields(context.Context, dal.RecordsetSource) ([]string, error) {
+	return f.fields, f.fieldsErr
 }
 
 // scriptedTx is the read transaction of scriptedQueryDB: it answers the structured
@@ -77,7 +100,7 @@ func (t *scriptedTx) ExecuteQueryToRecordsetReader(ctx context.Context, query da
 	return t.db.ExecuteQueryToRecordsetReader(ctx, query, options...)
 }
 
-func openScripted(t *testing.T, engine string, fake *scriptedQueryDB) *Database {
+func openScripted(t *testing.T, engine string, fake dal.DB) *Database {
 	t.Helper()
 	m := &manifest.Manifest{
 		Database: manifest.Database{ID: "scripted", SchemaMode: schema.ModeStrict},
@@ -287,5 +310,86 @@ func TestAReadThatEndsOrFailsCleanlyIsNotChangedByTheBuiltErrors(t *testing.T) {
 	}
 	if err := reader.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+}
+
+// TestAFailedTransactionOrFieldListOfAServerEngineIsBuiltAndRepeatsNoDriverText: the
+// two ways a join source reaches the driver besides a query (a read transaction that
+// cannot begin or cannot commit, and the field list of a collection) fail with the
+// built error of a server engine too. The driver's text there can name the user, the
+// database and the host of the connection, or the nearest table the database has, and
+// it would reach a log. A cancellation and a deadline keep their identity, and an engine
+// that is not a server keeps the adapter's error in the chain.
+func TestAFailedTransactionOrFieldListOfAServerEngineIsBuiltAndRepeatsNoDriverText(t *testing.T) {
+	setPreview(t, true, "1")
+	ctx := context.Background()
+	driverFailure := errors.New(`failed to begin transaction: dial tcp: connection to server "` + failureMarker + `" refused`)
+	source := dal.NewRootCollectionRef("customers", "")
+	routes := map[string]func(*testing.T, string, error) (*Database, error){
+		"begin": func(t *testing.T, engine string, cause error) (*Database, error) {
+			db := openScripted(t, engine, &scriptedQueryDB{beginErr: cause})
+			return db, db.ReadTx(ctx, func(dal.QueryExecutor) error { return nil })
+		},
+		"commit": func(t *testing.T, engine string, cause error) (*Database, error) {
+			db := openScripted(t, engine, &scriptedQueryDB{commitErr: cause})
+			return db, db.ReadTx(ctx, func(dal.QueryExecutor) error { return nil })
+		},
+		"field list": func(t *testing.T, engine string, cause error) (*Database, error) {
+			db := openScripted(t, engine, &scriptedFieldsDB{fieldsErr: cause})
+			fields, err := db.Executor().(dal.JoinFieldsProvider).JoinFields(ctx, source)
+			if fields != nil {
+				t.Errorf("a failed field list supplied %v", fields)
+			}
+			return db, err
+		},
+	}
+	for name, route := range routes {
+		t.Run(name+"/the driver fails", func(t *testing.T) {
+			_, err := route(t, "postgres", driverFailure)
+			if err == nil {
+				t.Fatal("no error")
+			}
+			if strings.Contains(err.Error(), failureMarker) || errors.Is(err, driverFailure) {
+				t.Errorf("the error repeats or wraps the driver's: %v", err)
+			}
+			if errors.Is(err, ErrQueryNotRunnable) {
+				t.Errorf("a failure of the server is not a query the adapter cannot run: %v", err)
+			}
+		})
+		t.Run(name+"/the adapter cannot run it", func(t *testing.T) {
+			_, err := route(t, "postgres", fmt.Errorf("%w: "+failureMarker, dal.ErrNotSupported))
+			if !errors.Is(err, ErrQueryNotRunnable) || strings.Contains(err.Error(), failureMarker) {
+				t.Errorf("%v, want a built ErrQueryNotRunnable with none of the adapter's text", err)
+			}
+		})
+		for cname, cause := range map[string]error{"canceled": context.Canceled, "deadline": context.DeadlineExceeded} {
+			t.Run(name+"/"+cname, func(t *testing.T) {
+				_, err := route(t, "postgres", fmt.Errorf("driver: %w: "+failureMarker, cause))
+				if !errors.Is(err, cause) || strings.Contains(err.Error(), failureMarker) {
+					t.Errorf("%v, want the identity of %v and none of the driver's text", err, cause)
+				}
+			})
+		}
+		t.Run(name+"/an engine that is not a server", func(t *testing.T) {
+			cause := errors.New("sqlite says " + failureMarker)
+			if _, err := route(t, "sqlite", cause); !errors.Is(err, cause) {
+				t.Errorf("%v, want the adapter's error in the chain", err)
+			}
+		})
+	}
+}
+
+// TestAFunctionOfAReadTransactionThatFailsIsReturnedAsItWasGiven: the error the function
+// of a read transaction returns reaches the caller as the function gave it, whatever
+// the driver reports, and a transaction that fails after a function that did not is
+// the failure of the transaction.
+func TestAFunctionOfAReadTransactionThatFailsIsReturnedAsItWasGiven(t *testing.T) {
+	setPreview(t, true, "1")
+	given := errors.New("the function's own error")
+	for _, engine := range []string{"sqlite", "postgres"} {
+		db := openScripted(t, engine, &scriptedQueryDB{commitErr: errors.New("the commit " + failureMarker)})
+		if err := db.ReadTx(context.Background(), func(dal.QueryExecutor) error { return given }); err != given {
+			t.Errorf("%s: %v, want the function's error as it was given", engine, err)
+		}
 	}
 }

@@ -29,6 +29,10 @@ type previewPGDriver struct {
 	dal.DB
 	openErr error
 	reads   atomic.Int32
+	// beginErr fails a read transaction before it runs, commitErr fails it after its
+	// function returned without an error, and fieldsErr fails the field list of a
+	// collection (the catalog lookup of the adapter).
+	beginErr, commitErr, fieldsErr error
 }
 
 // previewPGEmpty is a result with no row.
@@ -52,7 +56,13 @@ func (f *previewPGDriver) ExecuteQueryToRecordsetReader(context.Context, dal.Que
 }
 
 func (f *previewPGDriver) RunReadonlyTransaction(ctx context.Context, worker dal.ROTxWorker, _ ...dal.TransactionOption) error {
-	return worker(ctx, &previewPGTx{driver: f})
+	if f.beginErr != nil {
+		return f.beginErr
+	}
+	if err := worker(ctx, &previewPGTx{driver: f}); err != nil {
+		return err
+	}
+	return f.commitErr
 }
 
 // previewPGTx is the read transaction of previewPGDriver.
@@ -70,7 +80,7 @@ func (t *previewPGTx) ExecuteQueryToRecordsetReader(ctx context.Context, query d
 }
 
 func (f *previewPGDriver) JoinFields(context.Context, dal.RecordsetSource) ([]string, error) {
-	return nil, nil
+	return nil, f.fieldsErr
 }
 
 const previewPGMarker = "MARKER-text-of-the-database-server-7c2a"
@@ -80,8 +90,13 @@ const previewPGMarker = "MARKER-text-of-the-database-server-7c2a"
 // returns the host and what the server logs.
 func previewPGServer(t *testing.T, openErr error) (*httptest.Server, *bytes.Buffer, *previewPGDriver) {
 	t.Helper()
+	return previewPGServerOf(t, &previewPGDriver{openErr: openErr})
+}
+
+// previewPGServerOf is previewPGServer for a driver the test scripted.
+func previewPGServerOf(t *testing.T, driver *previewPGDriver) (*httptest.Server, *bytes.Buffer, *previewPGDriver) {
+	t.Helper()
 	previewPGSwitch(t, "1", true)
-	driver := &previewPGDriver{openErr: openErr}
 	m := &manifest.Manifest{
 		Database: manifest.Database{ID: "pg", SchemaMode: schema.ModeStrict},
 		Storage:  manifest.Storage{Engine: "postgres"},
@@ -203,5 +218,73 @@ func TestADeadlineOfAPostgresQueryIsStillATimeout(t *testing.T) {
 				t.Errorf("text of the driver is in the answer %s or in the log %s", resp.raw, logs)
 			}
 		})
+	}
+}
+
+// previewPGSameDatabaseJoin is a join of two collections of the PostgreSQL mount: the
+// document runs in one read transaction of the mount (the route "database").
+const previewPGSameDatabaseJoin = `from:
+  database: pg
+  name: orders
+  alias: o
+  joins:
+    - type: inner
+      from: {database: pg, name: customers, alias: c}
+      on:
+        - {left: {field: customer_id, source: o}, op: '==', right: {field: id, source: c}}
+`
+
+// TestAFailedTransactionOrFieldListOfAPostgresMountRepeatsNoDriverTextInTheAnswerOrTheLog:
+// a read transaction that cannot begin or cannot commit (the text of the driver names
+// the user, the database and the host of the connection) and a field list that cannot
+// be loaded (it names the nearest table the database has) are answered 500 internal
+// with a line that is built, as a failed query is, and a deadline in any of them is
+// still 504. None of the driver's text is in the answer or in the log.
+func TestAFailedTransactionOrFieldListOfAPostgresMountRepeatsNoDriverTextInTheAnswerOrTheLog(t *testing.T) {
+	driverFailure := errors.New(`failed to begin transaction: failed to connect to user=ovdb database=` + previewPGMarker + ` host=db.internal`)
+	database := []struct{ name, body string }{
+		{"relational document, alone", "from: {database: pg, name: customers}\n"},
+		{"relational document, joined in the database", previewPGSameDatabaseJoin},
+	}
+	for _, c := range []struct {
+		name   string
+		fail   func(*previewPGDriver, error)
+		routes []struct{ name, body string }
+	}{
+		{"begin", func(d *previewPGDriver, err error) { d.beginErr = err }, database},
+		{"commit", func(d *previewPGDriver, err error) { d.commitErr = err }, database},
+		{"field list", func(d *previewPGDriver, err error) { d.fieldsErr = err }, []struct{ name, body string }{
+			{"relational document, joined to another database", previewPGRoutes[3].body},
+		}},
+	} {
+		for _, route := range c.routes {
+			t.Run(c.name+"/the driver fails/"+route.name, func(t *testing.T) {
+				driver := &previewPGDriver{}
+				c.fail(driver, driverFailure)
+				host, logs, _ := previewPGServerOf(t, driver)
+				resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", route.body, nil)
+				if resp.status != http.StatusInternalServerError || resp.code() != "internal" {
+					t.Fatalf("status %d: %s", resp.status, resp.raw)
+				}
+				if strings.Contains(resp.raw, previewPGMarker) || strings.Contains(logs.String(), previewPGMarker) {
+					t.Errorf("text of the driver is in the answer %s or in the log %s", resp.raw, logs)
+				}
+				if !strings.Contains(logs.String(), "the database server could not run the query") {
+					t.Errorf("the log does not say what failed: %s", logs)
+				}
+			})
+			t.Run(c.name+"/a deadline/"+route.name, func(t *testing.T) {
+				driver := &previewPGDriver{}
+				c.fail(driver, fmt.Errorf("driver: %w: "+previewPGMarker, context.DeadlineExceeded))
+				host, logs, _ := previewPGServerOf(t, driver)
+				resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", route.body, nil)
+				if resp.status != http.StatusGatewayTimeout || resp.code() != "query_timeout" {
+					t.Fatalf("status %d: %s", resp.status, resp.raw)
+				}
+				if strings.Contains(resp.raw, previewPGMarker) || strings.Contains(logs.String(), previewPGMarker) {
+					t.Errorf("text of the driver is in the answer %s or in the log %s", resp.raw, logs)
+				}
+			})
+		}
 	}
 }
