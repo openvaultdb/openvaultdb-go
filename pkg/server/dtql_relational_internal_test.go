@@ -29,6 +29,7 @@ import (
 	"github.com/openvaultdb/openvaultdb-go/pkg/joinexec"
 	"github.com/openvaultdb/openvaultdb-go/pkg/manifest"
 	"github.com/openvaultdb/openvaultdb-go/pkg/mount"
+	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 	_ "modernc.org/sqlite"
 )
 
@@ -86,20 +87,35 @@ func (f *relFakeExecutor) only(t *testing.T) relFakeCall {
 	return f.calls[0]
 }
 
-// relFakeMount is a database that holds no data: the handler asks it for its id,
-// engine, cache time and whether it has policies.
+// relFakeDB is a driver that is never reached: the executor is a fake, and the
+// handler asks the mounts only for their id, engine, cache time, declared
+// collections and whether they have policies.
+type relFakeDB struct{ dal.DB }
+
+// relFakeMount is a mount of engine that declares the collections orders and
+// customers and holds no data.
 func relFakeMount(id, engine, cacheTTL string) *core.Database {
-	return &core.Database{Manifest: &manifest.Manifest{
-		Database: manifest.Database{ID: id, CacheTTL: cacheTTL},
+	return relFakeOpen(&manifest.Manifest{
+		Database: manifest.Database{ID: id, CacheTTL: cacheTTL, SchemaMode: schema.ModeStrict},
 		Storage:  manifest.Storage{Engine: engine},
-	}}
+	})
+}
+
+func relFakeOpen(m *manifest.Manifest) *core.Database {
+	m.Schemas = &schema.Schemas{Collections: map[string]schema.Collection{"orders": {}, "customers": {}}}
+	db, err := core.Open(m, relFakeDB{}, []schema.Mode{schema.ModeStrict}, "")
+	if err != nil {
+		panic(err)
+	}
+	return db
 }
 
 // relFakeGitHubMount is an inGitDB mount backed by GitHub.
 func relFakeGitHubMount(id string) *core.Database {
-	db := relFakeMount(id, "ingitdb", "")
-	db.Manifest.Storage.InGitDB = &manifest.InGitDBOptions{GitHub: &manifest.InGitDBGitHubOptions{Owner: "o", Repo: "r"}}
-	return db
+	return relFakeOpen(&manifest.Manifest{
+		Database: manifest.Database{ID: id, SchemaMode: schema.ModeStrict},
+		Storage:  manifest.Storage{Engine: "ingitdb", InGitDB: &manifest.InGitDBOptions{GitHub: &manifest.InGitDBGitHubOptions{Owner: "o", Repo: "r"}}},
+	})
 }
 
 // relFakeServer serves mounts with the fake executor in place of
@@ -518,6 +534,49 @@ func TestLeaseRelationalDatabasesHoldsOneLeasePerDatabase(t *testing.T) {
 	if _, _, status := lease(nil, []relationalTarget{{"alpha", "a"}, {"zeta", "b"}}); status != http.StatusNotFound {
 		t.Fatalf("status %d", status)
 	}
+}
+
+// A collection that a database on an engine that builds SQL does not declare is
+// a 404 before the executor is called, whatever the grant says, ahead of the
+// paging and engine refusals; a document engine takes any collection.
+func TestRelationalHandlerRefusesAnUndeclaredCollectionBeforeAnythingElse(t *testing.T) {
+	ghost := "from: {database: alpha, name: ghost}\n"
+	for _, tc := range []struct {
+		name    string
+		engine  string
+		doc     string
+		headers map[string]string
+		status  int
+	}{
+		{"sqlite", "sqlite", ghost, nil, 404},
+		{"postgres, whose engine is refused as well", "postgres", ghost, nil, 404},
+		{"mysql", "mysql", ghost, nil, 404},
+		{"with a paging header", "sqlite", ghost, map[string]string{"OVDB-Page-Size": "10"}, 404},
+		{"named by a subquery", "sqlite", "from: {database: alpha, name: orders}\nwhere: {exists: {query: {from: {database: alpha, name: ghost}}}}\n", nil, 404},
+		{"a declared collection is read", "sqlite", "from: {database: alpha, name: orders}\n", nil, 200},
+		{"ingitdb takes any collection", "ingitdb", ghost, nil, 200},
+		{"firestore takes any collection but is not joined", "firestore", ghost, nil, 422},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &relFakeExecutor{result: joinexec.Result{Columns: []string{}}}
+			_, host := relFakeServer(t, fake, []*core.Database{relFakeMount("alpha", tc.engine, "")})
+			resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", tc.doc, tc.headers)
+			if resp.status != tc.status {
+				t.Fatalf("status %d, want %d: %s", resp.status, tc.status, resp.raw)
+			}
+			if tc.status == 404 && (resp.code() != "not_found" || fake.count() != 0 || !strings.Contains(resp.raw, "ghost")) {
+				t.Fatalf("code %q, executor calls %d: %s", resp.code(), fake.count(), resp.raw)
+			}
+		})
+	}
+	t.Run("the collection and database names are clipped", func(t *testing.T) {
+		fake := &relFakeExecutor{}
+		_, host := relFakeServer(t, fake, []*core.Database{relFakeMount("alpha", "sqlite", "")})
+		resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", "from: {database: alpha, name: "+strings.Repeat("g", 5000)+"}\n", nil)
+		if resp.status != 404 || len(resp.raw) > 400 {
+			t.Fatalf("status %d, %d bytes", resp.status, len(resp.raw))
+		}
+	})
 }
 
 // A database that is named, granted and not mounted is a 404, and nothing runs.

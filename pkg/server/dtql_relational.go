@@ -29,8 +29,9 @@ import (
 // does not rely on it: it settles the database of every source the classifier
 // found (the root, joins at any depth, derived sources, subqueries), refuses a
 // document that strays outside the endpoint, checks the caller's capability on
-// every database and collection, and only then leases the databases and runs.
-// Nothing is leased, gated or read for a request that fails a check before it.
+// every database and collection, and only then leases the databases, checks that
+// the collections are declared and runs. Nothing is gated or read for a request
+// that fails a check before it.
 
 // joinExecuteFunc is the signature of joinexec.Execute: the seam the handler
 // runs a relational document through.
@@ -93,15 +94,25 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 			return
 		}
 	}
+	databases, order, ok := s.leaseRelationalDatabases(w, r, endpoint, targets)
+	if !ok {
+		return
+	}
+	// A collection that a database on an engine that builds SQL does not declare is
+	// not read, whatever the grant says. The executor reads one source at a time, so
+	// without this check a document that names one would reach the adapter for the
+	// sources before it.
+	for _, target := range targets {
+		if err := databases[target.database].GuardCollection(target.collection); err != nil {
+			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("collection not found: %q in database %q", clipName(target.collection), clipName(target.database)))
+			return
+		}
+	}
 	for _, header := range pagingHeaders {
 		if r.Header.Get(header) != "" {
 			writeError(w, http.StatusUnprocessableEntity, "snapshot_unsupported", "a joined result is returned whole: the paging headers are not supported on a relational query")
 			return
 		}
-	}
-	databases, order, ok := s.leaseRelationalDatabases(w, r, endpoint, targets)
-	if !ok {
-		return
 	}
 	if err := s.checkRelationalEngines(databases, order); err != nil {
 		s.writeRelationalError(w, r, err)
