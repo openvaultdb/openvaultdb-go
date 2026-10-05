@@ -650,7 +650,16 @@ func TestPostgresIntegration_ProbesAreRowsAnEmptyResultOrARefusal(t *testing.T) 
 	mistake("/v1/dtql, a qualifier no source has", relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", "from: {database: pg, name: customers, alias: c}\nwhere: {op: '==', left: {field: name, source: x}, right: {value: x}}\n", nil))
 	mistake("/v1/dtql, a qualifier no source has, in a join", relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", pgITDoc(pgITJoin, "pg")+"where: {op: '==', left: {field: name, source: x}, right: {value: x}}\n", nil))
 	mistake("/v1/dtql, an undeclared field of a joined source", relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", strings.Replace(pgITDoc(pgITJoin, "pg"), "{field: name, source: c, as: customer}", "{field: nosuch, source: c, as: customer}", 1), nil))
-	if want := (len(pgITValueProbes)+3)*4 + 11; mistakes != want {
+	// A name that a column carries as its alias is read as the alias only in HAVING and ORDER BY,
+	// outside an aggregate, and in the spelling the column wrote: anywhere else it is a name no
+	// column has, which the server refuses before the driver (and which the adapter would fail as
+	// a plain error). An alias over the 63 bytes of a name in PostgreSQL is refused the same way.
+	mistake("/v1/dtql, a name that is only an alias, in where", relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", "from: {database: pg, name: customers}\ncolumns: [{field: name, as: x}]\nwhere: {op: '==', left: {field: x}, right: {value: Ada}}\n", nil))
+	mistake("/v1/dtql, a name that is only an alias, in group by", relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", "from: {database: pg, name: customers}\ncolumns: [{aggregate: {function: count, args: [{star: true}]}, as: n}]\ngroupBy: [{field: n}]\n", nil))
+	mistake("/v1/dtql, a name that is only an alias, in an aggregate", relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", "from: {database: pg, name: customers}\ncolumns: [{aggregate: {function: count, args: [{star: true}]}, as: n}]\nhaving: {op: '>', left: {aggregate: {function: sum, args: [{field: n}]}}, right: {value: 1}}\n", nil))
+	mistake("/dtql, a name that is only an alias, in where", relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/dtql", "", "from: {name: customers}\ncolumns: [{field: name, as: x}]\nwhere: {op: '==', left: {field: x}, right: {value: Ada}}\n", nil))
+	mistake("/v1/dtql, a source alias over the length of a name", relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", "from: {database: pg, name: customers, alias: "+strings.Repeat("a", 64)+"}\ncolumns: [{field: id, source: "+strings.Repeat("a", 64)+"}]\n", nil))
+	if want := (len(pgITValueProbes)+3)*4 + 16; mistakes != want {
 		t.Errorf("%d probes of a mistake were made, want %d", mistakes, want)
 	}
 

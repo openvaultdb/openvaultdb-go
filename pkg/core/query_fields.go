@@ -24,13 +24,20 @@ import (
 // collection), and any source of an enclosing query as well. The columns of a
 // collection are known only where the mount provisioned them from what the
 // manifest declares: a strict mount, whose table holds the key column "id" and the
-// declared fields, each under the name the server folds it to. A partial or
-// schemaless mount, whose table may hold more, and a derived source, whose output
-// is its query's, check no field: the qualifier is still checked. An unqualified
-// field is checked in a query of one source, and it may name a column the query gives
-// an alias (an ORDER BY or a HAVING reads one); in a query with a join the compiler
-// refuses it as it is, and it is not looked at here. The key pseudo-field of DALgo
-// (dal.DocumentID) has no column and is the adapter's to refuse.
+// declared fields, each under the name the server folds it to. A derived source,
+// whose output is its query's, checks no field: the qualifier is still checked, and
+// so is a qualifier on a mount whose tables may hold more than it declares, which
+// checks no field either (no PostgreSQL mount is one: it is strict only, see
+// pkg/mount/postgres.go, so no mount of this repository reaches that branch, which is
+// kept as a defence). An unqualified field is checked in a query of one source. It may
+// name a column the query gives an alias only where the compiler reads an alias: in
+// HAVING and in ORDER BY, outside the argument of an aggregate, by the spelling the
+// column wrote. Anywhere else (a column, WHERE, GROUP BY, a scan order, an aggregate's
+// argument) such a name is the name of a column, and one the table lacks is refused. In
+// a query with a join the compiler refuses an unqualified field as it is, and it is not
+// looked at here. The key pseudo-field of DALgo (dal.DocumentID) has no column and is the
+// adapter's to refuse. A source alias longer than the server holds in a name is refused
+// as well, which the compiler could only fail with an error of its own.
 //
 // It does nothing while the mount is not cleared for queries, so that a mount that
 // read the preview switch off answers every query as it always did (501), and it
@@ -42,6 +49,15 @@ func (d *Database) guardFields(query dal.StructuredQuery) error {
 	}
 	return fieldGuard{db: d}.query(query, nil, 0)
 }
+
+// maxServerNameBytes is the most bytes PostgreSQL holds in a name (NAMEDATALEN is 64, and
+// a name ends at 63): the compiler of the adapter refuses a source alias over it, with a
+// plain error. It is the limit of the one server engine that is cleared for queries.
+const maxServerNameBytes = 63
+
+// errSourceAliasTooLong is the refusal of a source alias over maxServerNameBytes. It gives
+// the limit and not the alias, which can be as long as the request allows.
+var errSourceAliasTooLong = fmt.Errorf("%w: a source alias is longer than %d bytes, the most the database holds in a name", ErrInvalidDTQL, maxServerNameBytes)
 
 // fieldSource is one source a field of a query can be qualified with.
 type fieldSource struct {
@@ -119,6 +135,9 @@ func (g fieldGuard) query(query dal.StructuredQuery, outer fieldScope, depth int
 	}
 	scope := slices.Clone(outer)
 	for _, source := range sources {
+		if ref, ok := source.(dal.CollectionRef); ok && len(g.fold(ref.Alias())) > maxServerNameBytes {
+			return errSourceAliasTooLong
+		}
 		scope = append(scope, g.sourceOf(source))
 	}
 	w := fieldWalk{fieldGuard: g, scope: scope, aliases: map[string]struct{}{}}
@@ -127,7 +146,7 @@ func (g fieldGuard) query(query dal.StructuredQuery, outer fieldScope, depth int
 	}
 	for _, column := range query.Columns() {
 		if column.Alias != "" {
-			w.aliases[g.fold(column.Alias)] = struct{}{}
+			w.aliases[column.Alias] = struct{}{}
 		}
 	}
 	for _, source := range sources {
@@ -172,11 +191,11 @@ func (g fieldGuard) query(query dal.StructuredQuery, outer fieldScope, depth int
 			return err
 		}
 	}
-	if err := w.condition(query.Having(), depth); err != nil {
+	if err := w.reading(true).condition(query.Having(), depth); err != nil {
 		return err
 	}
 	for _, order := range query.OrderBy() {
-		if err := w.expression(order.Expression(), depth); err != nil {
+		if err := w.reading(true).expression(order.Expression(), depth); err != nil {
 			return err
 		}
 	}
@@ -190,8 +209,20 @@ type fieldWalk struct {
 	// single is the one source of a query without a join, which an unqualified field
 	// belongs to, and nil for a query with more.
 	single *fieldSource
-	// aliases are the aliases of the columns of the query, folded.
+	// aliases are the aliases of the columns of the query, as the columns wrote them: the
+	// compiler matches an alias by the exact spelling, so a name that differs by case
+	// from every alias is a column.
 	aliases map[string]struct{}
+	// readsAliases is set while the walk is where the compiler replaces an alias by the
+	// expression of its column: in HAVING and in ORDER BY, and not inside the argument of
+	// an aggregate.
+	readsAliases bool
+}
+
+// reading is the walk w with readsAliases set to on.
+func (w fieldWalk) reading(on bool) fieldWalk {
+	w.readsAliases = on
+	return w
 }
 
 func errNoSuchSource(qualifier string) error {
@@ -209,8 +240,8 @@ func (w fieldWalk) field(field dal.FieldRef) error {
 			return errNoSuchSource(qualifier)
 		}
 		source = &found
-	} else if source != nil {
-		if _, alias := w.aliases[w.fold(field.Name())]; alias {
+	} else if source != nil && w.readsAliases {
+		if _, alias := w.aliases[field.Name()]; alias {
 			return nil
 		}
 	}
@@ -260,8 +291,11 @@ func (w fieldWalk) expression(expression dal.Expression, depth int) error {
 		}
 		return w.expression(e.Right, depth+1)
 	case dal.AggregateFunc:
+		// The compiler reads the argument of an aggregate per row, from the source: an alias is
+		// not replaced there.
+		inside := w.reading(false)
 		for _, arg := range e.FuncArgs() {
-			if err := w.expression(arg, depth+1); err != nil {
+			if err := inside.expression(arg, depth+1); err != nil {
 				return err
 			}
 		}

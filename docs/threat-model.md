@@ -214,8 +214,11 @@ server for a query). With the switch on, the adapter compiles a query with its
 typed PostgreSQL dialect: every value is a bound parameter and every name is
 quoted, and ovdb still refuses, before the adapter, a field name outside the
 plain-name rule, a collection the manifest does not declare, a field that no
-column of a declared collection of a strict mount has and a source qualifier that
-no source of the query has (400 `invalid_dtql`, nothing logged). The mount states
+column of a declared collection of a strict mount has (a name that a column of the
+query carries as its alias is read as the alias only in HAVING and ORDER BY,
+outside an aggregate, as the compiler reads it), a source qualifier that no source
+of the query has, and a source alias longer than the 63 bytes of a name in
+PostgreSQL (400 `invalid_dtql`, nothing logged). The mount states
 that names are folded to lower case. What the adapter says on this path never
 reaches a response or a log: `dal.ErrNotSupported` and an unknown dialect are
 422 `query_unsupported` with a fixed message; a value or a name the server

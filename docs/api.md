@@ -426,20 +426,23 @@ aggregates and joins of one database) it runs on the server, and the answer repo
 engine of this server, and its source bounds apply. A document the adapter cannot compile is
 `422 query_unsupported` with the message `the storage engine cannot run this query`.
 
-What the tables of the mount do not hold is the caller's mistake, and on a strict mount it is a
-refusal, never a failure of the server. A field that no column of a declared collection has, and a
-qualifier that no source of the query has, are `400 invalid_dtql`, refused before the driver is
-reached. A strict mount holds the key column `id` and the fields its manifest declares, each under
-the name the server folds it to, so a dotted name is no column; a source is named by its alias, or
-by its collection when it has none. A partial or schemaless mount may hold columns its manifest does
-not list, so it checks no field (a qualifier is still checked), and a field its table does not have
-is answered by the adapter as a failure of the server, `500 internal`. A value that the server
-cannot read as the type of its column (a word compared with an integer field, a number or a boolean
-compared with a text field) is `400 invalid_dtql` as well, on every mount: the server refuses it
-with a SQLSTATE of class 22, or 42883, 42804, 42703 or 42P18, which is read from the error by type
-and never from its text. The message of that answer is fixed (`a value or a name of the query does
-not fit the field it is used with`), it repeats nothing of the request or of the server, and nothing
-is logged. A SQLite mount answers some of these requests with an empty result.
+What the tables of the mount do not hold is the caller's mistake, and it is a refusal, never a
+failure of the server: a `postgres` mount is strict, so the check always applies. A field that no
+column of a declared collection has, and a qualifier that no source of the query has, are `400
+invalid_dtql`, refused before the driver is reached. A strict mount holds the key column `id` and
+the fields its manifest declares, each under the name the server folds it to, so a dotted name is no
+column; a source is named by its alias, or by its collection when it has none. A column of the select
+list may carry an alias, and a name that is only that alias is read as the alias in `having` and in
+`orderBy`, outside the argument of an aggregate and in the spelling the column wrote it; anywhere
+else (a column, `where`, `groupBy`, an aggregate's argument) it is a name no column has, and is
+refused like any other. A source alias longer than 63 bytes, the most PostgreSQL holds in a name, is
+`400 invalid_dtql` as well, and the message gives the limit and not the alias. A value that the
+server cannot read as the type of its column (a word compared with an integer field, a number or a
+boolean compared with a text field) is `400 invalid_dtql` too: the server refuses it with a SQLSTATE
+of class 22, or 42883, 42804, 42703 or 42P18, which is read from the error by type and never from
+its text. The message of that answer is fixed (`a value or a name of the query does not fit the
+field it is used with`), it repeats nothing of the request or of the server, and nothing is logged.
+A SQLite mount answers some of these requests with an empty result.
 
 A failure of the database server of any other kind is `500 internal`, and the log line says only
 which step failed: no text of the driver or of the server, which can repeat a value of the request

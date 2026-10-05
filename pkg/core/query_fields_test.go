@@ -104,6 +104,9 @@ func fieldsCases() []fieldsCase {
 	}
 	innerOrders := func() dal.StructuredQuery { return selectQuery(fieldsOf(fromTree(rootRef("orders")))) }
 
+	longAlias := func(n int) string { return "a" + strings.Repeat("b", n-1) }
+	tooLong := "a source alias is longer than 63 bytes"
+
 	return []fieldsCase{
 		// What the table holds passes, under any case of the name.
 		{"a column the manifest declares", selectQuery(customers().Where(equalTo(dal.Field("name"), "Ada"))), ""},
@@ -119,12 +122,23 @@ func fieldsCases() []fieldsCase {
 			Where(equalTo(ref("c", "name"), "Ada")).OrderBy(dal.Ascending(ref("o", "total")))), ""},
 		{"an unqualified field of a join, which the compiler refuses as it is", selectQuery(joined().Where(equalTo(dal.Field("nosuch"), 1))), ""},
 		{"a name in order by that no column has and no alias gives", selectQuery(customers().OrderBy(dal.AscendingField("n"))), hasNoField("customers", "n")},
-		{"an alias of a column in order by, declared by the query", shapeQuery{StructuredQuery: customers().SelectColumns(
+		{"an alias of a column in order by, in the spelling the column wrote", shapeQuery{StructuredQuery: customers().SelectColumns(
 			dal.Column{Alias: "Revenue", Expression: dal.NewAggregate("sum", false, dal.Field("country"))}),
-			orderBy: []dal.OrderExpression{dal.AscendingField("revenue")}}, ""},
+			orderBy: []dal.OrderExpression{dal.AscendingField("Revenue")}}, ""},
+		{"an alias of a column in order by, inside arithmetic", shapeQuery{StructuredQuery: customers().SelectColumns(
+			dal.Column{Alias: "n", Expression: dal.NewAggregate("count", false, dal.Star())}),
+			orderBy: []dal.OrderExpression{dal.Ascending(dal.Binary(dal.Field("n"), dal.Multiply, dal.Constant{Value: 2}))}}, ""},
 		{"an alias of a column in having", shapeQuery{StructuredQuery: customers().SelectColumns(
 			dal.Column{Alias: "n", Expression: dal.NewAggregate("count", false, dal.Star())}),
 			having: dal.NewComparison(dal.Field("n"), dal.GreaterThen, dal.Constant{Value: 1})}, ""},
+		{"an alias of a column in having, inside a group of conditions", shapeQuery{StructuredQuery: customers().SelectColumns(
+			dal.Column{Alias: "n", Expression: dal.NewAggregate("count", false, dal.Star())}),
+			having: dal.NewGroupCondition(dal.And,
+				dal.NewComparison(dal.Field("n"), dal.GreaterThen, dal.Constant{Value: 1}),
+				dal.NewIsNotNullCondition(dal.Field("n")))}, ""},
+		{"an alias of an enclosing query is no alias of a subquery", fieldsOf(fromTree(rootRef("customers"))).Where(dal.NewExistsCondition(
+			shapeQuery{StructuredQuery: selectQuery(fieldsOf(fromTree(rootRef("orders")))), orderBy: []dal.OrderExpression{dal.AscendingField("x")}})).
+			SelectColumns(dal.Column{Alias: "x", Expression: dal.Field("name")}), hasNoField("orders", "x")},
 		{"a column of a derived source, which the query of it decides", selectQuery(fieldsOf(derived(innerOrders(), "d")).
 			Where(equalTo(ref("d", "anything"), 1))), ""},
 		{"an unqualified field over a derived source", selectQuery(fieldsOf(derived(innerOrders(), "d")).
@@ -149,11 +163,46 @@ func fieldsCases() []fieldsCase {
 		{"a field in a null test", selectQuery(customers().Where(dal.NewIsNullCondition(dal.Field("nosuch")))), hasNoField("customers", "nosuch")},
 		{"a field in group by", shapeQuery{StructuredQuery: customers().SelectColumns(dal.Column{Expression: dal.Field("name")}), groupBy: []dal.Expression{dal.Field("nosuch")}}, hasNoField("customers", "nosuch")},
 		{"a field in having", shapeQuery{StructuredQuery: customers().SelectColumns(dal.Column{Expression: dal.Field("name")}), having: equalTo(dal.Field("nosuch"), 1)}, hasNoField("customers", "nosuch")},
+		// The compiler reads the alias of a column in HAVING and ORDER BY, outside an aggregate,
+		// and only in the spelling the column wrote. A name that a column also carries as its
+		// alias is the name of a column everywhere else, so one the table lacks is refused.
+		{"an alias of a column in order by, in another case than the column wrote", shapeQuery{StructuredQuery: customers().SelectColumns(
+			dal.Column{Alias: "Revenue", Expression: dal.NewAggregate("sum", false, dal.Field("country"))}),
+			orderBy: []dal.OrderExpression{dal.AscendingField("revenue")}}, hasNoField("customers", "revenue")},
+		{"a name that is also an alias, in a column", customers().SelectColumns(
+			dal.Column{Alias: "nosuch", Expression: dal.Field("nosuch")}), hasNoField("customers", "nosuch")},
+		{"a name that is also an alias, in where", customers().Where(equalTo(dal.Field("x"), "Ada")).SelectColumns(
+			dal.Column{Alias: "x", Expression: dal.Field("name")}), hasNoField("customers", "x")},
+		{"a name that is also an alias, in group by", shapeQuery{StructuredQuery: customers().SelectColumns(
+			dal.Column{Alias: "n", Expression: dal.NewAggregate("count", false, dal.Star())}),
+			groupBy: []dal.Expression{dal.Field("n")}}, hasNoField("customers", "n")},
+		{"a name that is also an alias, in the argument of an aggregate of a column", customers().SelectColumns(
+			dal.Column{Alias: "n", Expression: dal.NewAggregate("sum", false, dal.Field("n"))}), hasNoField("customers", "n")},
+		{"a name that is also an alias, in the argument of an aggregate of having", shapeQuery{StructuredQuery: customers().SelectColumns(
+			dal.Column{Alias: "n", Expression: dal.NewAggregate("count", false, dal.Star())}),
+			having: dal.NewComparison(dal.NewAggregate("sum", false, dal.Field("n")), dal.GreaterThen, dal.Constant{Value: 1})}, hasNoField("customers", "n")},
+		{"a name that is also an alias, in the argument of an aggregate of order by", shapeQuery{StructuredQuery: customers().SelectColumns(
+			dal.Column{Alias: "n", Expression: dal.NewAggregate("count", false, dal.Star())}),
+			orderBy: []dal.OrderExpression{dal.Ascending(dal.NewAggregate("sum", false, dal.Field("n")))}}, hasNoField("customers", "n")},
+		{"a name that is also an alias, in a scan order", fieldsOf(fromTree(rootRef("customers").WithScan(1, dal.AscendingField("n")))).
+			SelectColumns(dal.Column{Alias: "n", Expression: dal.Field("name")}), hasNoField("customers", "n")},
 		{"a field in a scan order", selectQuery(fieldsOf(fromTree(rootRef("customers").WithScan(1, dal.AscendingField("nosuch"))))), hasNoField("customers", "nosuch")},
 		{"a field of the source of a subquery", withExists("customers", selectQuery(fieldsOf(fromTree(rootRef("orders"))).Where(equalTo(dal.Field("nosuch"), 1)))), hasNoField("orders", "nosuch")},
 		{"a field in a scalar subquery", selectQuery(customers().Where(eqCondition(dal.Field("name"),
 			dal.NewQueryExpression(selectQuery(fieldsOf(fromTree(rootRef("orders"))).Where(equalTo(dal.Field("nosuch"), 1))), "s")))), hasNoField("orders", "nosuch")},
 		{"a field in a derived source", selectQuery(fieldsOf(derived(selectQuery(fieldsOf(fromTree(rootRef("orders"))).Where(equalTo(dal.Field("nosuch"), 1))), "d"))), hasNoField("orders", "nosuch")},
+
+		// PostgreSQL holds a name of at most 63 bytes, and the compiler refuses a source alias
+		// over it with an error of its own, which a server could only answer as its own failure.
+		{"a source alias of the most bytes a name holds", selectQuery(fieldsOf(fromTree(aliased("orders", longAlias(63)))).Where(equalTo(ref(longAlias(63), "total"), 5))), ""},
+		{"a source alias over the most bytes a name holds", selectQuery(fieldsOf(fromTree(aliased("orders", longAlias(64))))), tooLong},
+		{"a joined source alias over the most bytes a name holds", selectQuery(fieldsOf(fromTree(aliased("orders", "o"), dal.NewJoinedSource(
+			aliased("customers", longAlias(64)), dal.JoinInner, eqCondition(ref("o", "customer_id"), ref(longAlias(64), "id"))))).
+			Where(equalTo(ref("o", "total"), 5))), tooLong},
+		{"a source alias over the most bytes a name holds, in a subquery", withExists("customers", selectQuery(fieldsOf(fromTree(aliased("orders", longAlias(64)))))), tooLong},
+		{"a source alias over the most bytes a name holds, in a derived source", selectQuery(fieldsOf(derived(
+			selectQuery(fieldsOf(fromTree(aliased("orders", longAlias(64))))), "d"))), tooLong},
+		{"a derived source alias over the most bytes a name holds, which no statement carries", selectQuery(fieldsOf(derived(innerOrders(), longAlias(64)))), ""},
 
 		// A qualifier that no source has is refused.
 		{"a qualifier no source has", selectQuery(customers().Where(equalTo(ref("x", "name"), 1))), noSource("x")},
@@ -358,5 +407,26 @@ func TestTheFieldCheckOfADatabaseThatDeclaresACollectionNobodyKnowsAndTheFoldOfA
 	}
 	if err := db.guardFields(noFromQuery{selectQuery(fieldsOf(fromTree(rootRef("customers"))))}); !errors.Is(err, ErrInvalidDTQL) {
 		t.Errorf("a query with no from clause: %v", err)
+	}
+}
+
+// TestALongSourceAliasIsRefusedWithoutRepeatingIt: the sentence gives the limit and not the
+// name, which can be as long as the request allows.
+func TestALongSourceAliasIsRefusedWithoutRepeatingIt(t *testing.T) {
+	setPreview(t, true, "1")
+	alias := "z" + strings.Repeat("y", 200)
+	db, fake := openFields(t, "postgres", schema.ModeStrict)
+	query := selectQuery(fieldsOf(fromTree(dal.NewRootCollectionRef("orders", alias))))
+	_, err := db.Executor().ExecuteQueryToRecordsReader(context.Background(), query)
+	if !errors.Is(err, ErrInvalidDTQL) || strings.Contains(err.Error(), "zyyy") {
+		t.Fatalf("%v, want an invalid query that does not repeat the alias", err)
+	}
+	if fake.queries != 0 {
+		t.Fatalf("the adapter was reached %d times by a refused query", fake.queries)
+	}
+	// An engine that is not a server is not held to the limit of PostgreSQL's names.
+	lite, liteFake := openFields(t, "sqlite", schema.ModeStrict)
+	if _, err := lite.Executor().ExecuteQueryToRecordsReader(context.Background(), query); !errors.Is(err, errFakeReached) || liteFake.queries != 1 {
+		t.Fatalf("sqlite: %v with %d adapter calls, want the query to reach the adapter", err, liteFake.queries)
 	}
 }

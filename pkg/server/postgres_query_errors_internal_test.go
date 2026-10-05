@@ -106,6 +106,14 @@ func previewPGServer(t *testing.T, openErr error) (*httptest.Server, *bytes.Buff
 // previewPGServerOf is previewPGServer for a driver the test scripted.
 func previewPGServerOf(t *testing.T, driver *previewPGDriver) (*httptest.Server, *bytes.Buffer, *previewPGDriver) {
 	t.Helper()
+	host, logs := previewPGServerWith(t, driver)
+	return host, logs, driver
+}
+
+// previewPGServerWith is previewPGServerOf for any handle of the PostgreSQL mount: one that
+// went through dal.NewDB, as an adapter's does, plans a join before its adapter sees it.
+func previewPGServerWith(t *testing.T, driver dal.DB) (*httptest.Server, *bytes.Buffer) {
+	t.Helper()
 	previewPGSwitch(t, "1", true)
 	m := &manifest.Manifest{
 		Database: manifest.Database{ID: "pg", SchemaMode: schema.ModeStrict},
@@ -132,7 +140,7 @@ func previewPGServerOf(t *testing.T, driver *previewPGDriver) (*httptest.Server,
 	t.Cleanup(service.CloseSnapshots)
 	host := httptest.NewServer(service.Handler())
 	t.Cleanup(host.Close)
-	return host, logs, driver
+	return host, logs
 }
 
 // previewPGRoutes are the routes a structured query takes to the PostgreSQL mount
@@ -357,6 +365,13 @@ func TestAFieldOrQualifierThePostgresTablesDoNotHaveIsARefusalBeforeTheDriver(t 
 		{"relational document, the collection of an aliased source", "/v1/dtql", "from: {database: pg, name: customers, alias: c}\nwhere: {op: '==', left: {field: name, source: customers}, right: {value: x}}\n", `no source of the query is named "customers"`},
 		{"relational document, a join on", "/v1/dtql", strings.Replace(previewPGSameDatabaseJoin, "{field: customer_id, source: o}", "{field: nosuch, source: o}", 1), `collection "orders" has no field "nosuch"`},
 		{"relational document, a join order", "/v1/dtql", previewPGSameDatabaseJoin + "orderBy: [{field: nosuch, source: c}]\n", `collection "customers" has no field "nosuch"`},
+		// A name that a column carries as its alias is read as the alias only in HAVING and ORDER BY.
+		{"relational document, a name that is only an alias, in where", "/v1/dtql", "from: {database: pg, name: customers}\ncolumns: [{field: name, as: x}]\nwhere: {op: '==', left: {field: x}, right: {value: x}}\n", `has no field "x"`},
+		{"relational document, a name that is only an alias, in group by", "/v1/dtql", "from: {database: pg, name: customers}\ncolumns: [{aggregate: {function: count, args: [{star: true}]}, as: n}]\ngroupBy: [{field: n}]\n", `has no field "n"`},
+		{"relational document, a name that is only an alias, in an aggregate", "/v1/dtql", "from: {database: pg, name: customers}\ncolumns: [{aggregate: {function: count, args: [{star: true}]}, as: n}]\nhaving: {op: '>', left: {aggregate: {function: sum, args: [{field: n}]}}, right: {value: 1}}\n", `has no field "n"`},
+		{"DTQL of the database, a name that is only an alias, in where", "/v1/databases/pg/dtql", "from: {name: customers}\ncolumns: [{field: name, as: x}]\nwhere: {op: '==', left: {field: x}, right: {value: x}}\n", `has no field "x"`},
+		// An alias over the 63 bytes of a name in PostgreSQL: the sentence gives the limit and not the alias.
+		{"relational document, a source alias over the length of a name", "/v1/dtql", "from: {database: pg, name: customers, alias: " + strings.Repeat("a", 64) + "}\ncolumns: [{field: id, source: " + strings.Repeat("a", 64) + "}]\n", `a source alias is longer than 63 bytes`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			host, logs, driver := previewPGServer(t, nil)
