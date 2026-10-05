@@ -974,3 +974,173 @@ func TestPostgresIntegration_WithoutTheSwitchEveryQueryRouteRefusesAndNoStatemen
 	}
 	pgITCanary(t, admin)
 }
+
+// pgITMajorEnv names the major version of the server the job runs against (17 or 18).
+// The job sets it from its matrix, so a leg that met another server fails.
+const pgITMajorEnv = "OVDB_TEST_POSTGRES_MAJOR"
+
+// pgITServerMajor is the major version of the server the administration connection
+// reached.
+func pgITServerMajor(t *testing.T, admin *sql.DB) int {
+	t.Helper()
+	var number int
+	if err := admin.QueryRow("SELECT current_setting('server_version_num')::int").Scan(&number); err != nil {
+		t.Fatal(err)
+	}
+	return number / 10000
+}
+
+// TestPostgresIntegration_ServerIsTheVersionTheLegNames: the job runs these tests on two
+// server versions, and a row that holds on one only (the ordering over a column whose
+// not-null constraint is not validated shows only on PostgreSQL 18) proves nothing if a
+// leg met the wrong server. The leg names its version in OVDB_TEST_POSTGRES_MAJOR.
+func TestPostgresIntegration_ServerIsTheVersionTheLegNames(t *testing.T) {
+	admin := pgITAdmin(t)
+	want := os.Getenv(pgITMajorEnv)
+	if want == "" {
+		t.Skipf("%s is not set: the job names the version of its leg there", pgITMajorEnv)
+	}
+	if got := fmt.Sprint(pgITServerMajor(t, admin)); got != want {
+		t.Fatalf("the server is PostgreSQL %s, the leg names %s", got, want)
+	}
+}
+
+// TestPostgresIntegration_OrderOverAColumnWithAnUnvalidatedNotNullConstraint: since
+// PostgreSQL 18 a column can be marked not null by a constraint added NOT VALID while rows
+// that were there hold NULL, and the catalog then says the column is not null. DALgo's rule
+// puts a NULL first in an ascending order and last in a descending one, and the compiler
+// writes the NULLS clause that makes PostgreSQL do so unless the column cannot hold one;
+// before dalgo2sql v0.26.7 it left the clause out for such a column and PostgreSQL put the
+// NULL last in an ascending order and first in a descending one. The rows asserted are the
+// ones a SQLite mount holding the same rows answers, with a limit, in both directions, on
+// /query, on /dtql and on a relational document. On PostgreSQL 17, which has no such
+// constraint, the same table holds the column as nullable and the rows are the same; the row
+// shows the fix only on 18, which the job runs beside 17.
+func TestPostgresIntegration_OrderOverAColumnWithAnUnvalidatedNotNullConstraint(t *testing.T) {
+	admin := pgITAdmin(t)
+	pg, lite := pgITMount(t, "pg", "ovdb-it-order", true), pgITLite(t, "lite")
+	base := pgITServe(t, map[string]*core.Database{"pg": pg, "lite": lite})
+	for _, id := range []string{"pg", "lite"} {
+		pgITSeed(t, base, id)
+		// An order with no total: a NULL in the column, before any constraint covers it.
+		if resp := relHTTPDo(t, base, http.MethodPut, "/v1/databases/"+id+"/records/orders/o6", "", `{"data":{"customer_id":"c9","status":"draft"}}`, nil); resp.status != http.StatusNoContent {
+			t.Fatalf("PUT orders/o6 into %s: status %d: %s", id, resp.status, resp.raw)
+		}
+	}
+	var holdsNull int
+	if err := admin.QueryRow("SELECT count(*) FROM orders WHERE total IS NULL").Scan(&holdsNull); err != nil || holdsNull != 1 {
+		t.Fatalf("the table holds %d rows with no total (%v), want 1", holdsNull, err)
+	}
+	if major := pgITServerMajor(t, admin); major >= 18 {
+		if _, err := admin.Exec("ALTER TABLE orders ADD CONSTRAINT orders_total_not_null NOT NULL total NOT VALID"); err != nil {
+			t.Fatalf("add the not-null constraint NOT VALID: %v", err)
+		}
+		// The condition that shows the fault is in place: the catalog says the column is
+		// not null, and the constraint that says so is not validated.
+		var notNull, unvalidated bool
+		if err := admin.QueryRow(`SELECT a.attnotnull,
+			EXISTS (SELECT 1 FROM pg_catalog.pg_constraint c WHERE c.conrelid = a.attrelid AND c.contype = 'n' AND a.attnum = ANY (c.conkey) AND NOT c.convalidated)
+			FROM pg_catalog.pg_attribute a WHERE a.attrelid = 'orders'::regclass AND a.attname = 'total'`).Scan(&notNull, &unvalidated); err != nil {
+			t.Fatal(err)
+		}
+		if !notNull || !unvalidated {
+			t.Fatalf("on PostgreSQL %d the column is attnotnull=%v with an unvalidated constraint=%v: the row would show nothing", major, notNull, unvalidated)
+		}
+	}
+
+	ascending := []string{"orders/o6", "orders/o5", "orders/o3", "orders/o1", "orders/o2", "orders/o4"}
+	descending := []string{"orders/o4", "orders/o2", "orders/o1", "orders/o3", "orders/o5", "orders/o6"}
+	for _, direction := range []struct {
+		name string
+		desc bool
+		keys []string
+	}{{"ascending", false, ascending}, {"descending", true, descending}} {
+		for _, limit := range []int{2, 6} {
+			want := direction.keys[:limit]
+			wire := fmt.Sprintf(`{"collection":"orders","orderBy":[{"field":"total","desc":%v}],"limit":%d}`, direction.desc, limit)
+			doc := fmt.Sprintf("from: {name: orders}\norderBy: [{field: total, desc: %v}]\nlimit: %d\n", direction.desc, limit)
+			t.Run(fmt.Sprintf("/query, %s, limit %d", direction.name, limit), func(t *testing.T) {
+				resp := pgITBoth(t, base, http.MethodPost, "/v1/databases/pg/query", "/v1/databases/lite/query", wire, wire)
+				if keys := pgITKeys(resp); !reflect.DeepEqual(keys, want) {
+					t.Fatalf("keys = %v, want %v", keys, want)
+				}
+			})
+			t.Run(fmt.Sprintf("/dtql, %s, limit %d", direction.name, limit), func(t *testing.T) {
+				resp := pgITBoth(t, base, http.MethodPost, "/v1/databases/pg/dtql", "/v1/databases/lite/dtql", doc, doc)
+				if keys := pgITKeys(resp); !reflect.DeepEqual(keys, want) {
+					t.Fatalf("keys = %v, want %v", keys, want)
+				}
+			})
+			t.Run(fmt.Sprintf("relational document, %s, limit %d", direction.name, limit), func(t *testing.T) {
+				relational := fmt.Sprintf("from: {database: DB, name: orders, alias: o}\ncolumns:\n  - {field: id, source: o}\n  - {field: total, source: o}\norderBy: [{field: total, source: o, desc: %v}]\nlimit: %d\n", direction.desc, limit)
+				resp := pgITBoth(t, base, http.MethodPost, "/v1/dtql", "/v1/dtql", pgITDoc(relational, "pg"), pgITDoc(relational, "lite"))
+				rows := resp.rows(t)
+				if len(rows) != len(want) {
+					t.Fatalf("rows = %v, want %d rows", rows, len(want))
+				}
+				for i, key := range want {
+					if got, _ := rows[i]["id"].(string); got != strings.TrimPrefix(key, "orders/") {
+						t.Fatalf("rows = %v, want the orders %v in this order", rows, want)
+					}
+				}
+			})
+		}
+	}
+	pgITCanary(t, admin)
+}
+
+// TestPostgresIntegration_NamesOver63BytesAreA400AndNoStatementIsSent: PostgreSQL keeps 63
+// bytes of a name and cuts the rest, so a name of 64 bytes would address the table or
+// the column named by its first 63. Each route that takes a name (a key, a write, a
+// query, a relational document) answers 400 with the code of its kind and the message
+// that gives the limit, and the server's own list of sessions shows that no statement
+// was started for any of them. The control, a request the mount answers, does show a
+// statement, so the observation sees statements.
+func TestPostgresIntegration_NamesOver63BytesAreA400AndNoStatementIsSent(t *testing.T) {
+	admin := pgITAdmin(t)
+	pg := pgITMount(t, "pg", "ovdb-it-names", true)
+	base := pgITServe(t, map[string]*core.Database{"pg": pg})
+	long := strings.Repeat("n", 64)
+	routes := []struct{ name, method, path, body, code string }{
+		{"key read, a collection", http.MethodGet, "/v1/databases/pg/records/" + long + "/k1", "", "invalid_key"},
+		{"key write, a collection", http.MethodPut, "/v1/databases/pg/records/" + long + "/k1", `{"data":{"name":"x"}}`, "invalid_key"},
+		{"key write, a field", http.MethodPut, "/v1/databases/pg/records/customers/k1", `{"data":{"` + long + `":"x"}}`, "bad_request"},
+		{"key update, a field", http.MethodPatch, "/v1/databases/pg/records/customers/c1", `{"updates":[{"fieldName":"` + long + `","value":"x"}]}`, "bad_request"},
+		{"key delete, a collection", http.MethodDelete, "/v1/databases/pg/records/" + long + "/k1", "", "invalid_key"},
+		{"batch, a field", http.MethodPost, "/v1/databases/pg/batch", `{"ops":[{"op":"set","key":"customers/k1","data":{"` + long + `":"x"}}]}`, "bad_request"},
+		{"wire query, a collection", http.MethodPost, "/v1/databases/pg/query", `{"collection":"` + long + `"}`, "invalid_key"},
+		{"wire query, a field", http.MethodPost, "/v1/databases/pg/query", `{"collection":"customers","where":[{"field":"` + long + `","op":"==","value":"x"}]}`, "invalid_dtql"},
+		{"DTQL of the database, a collection", http.MethodPost, "/v1/databases/pg/dtql", "from: {name: " + long + "}\n", "invalid_key"},
+		{"DTQL of the database, a field", http.MethodPost, "/v1/databases/pg/dtql", "from: {name: customers}\norderBy: [{field: " + long + "}]\n", "invalid_dtql"},
+		{"relational document, a collection", http.MethodPost, "/v1/dtql", "from: {database: pg, name: " + long + "}\n", "invalid_key"},
+		{"relational document, a field", http.MethodPost, "/v1/dtql", "from: {database: pg, name: customers, alias: c}\nwhere: {op: '==', left: {field: " + long + ", source: c}, right: {value: x}}\n", "invalid_dtql"},
+	}
+	// The mount must hold a session, or "no statement" would say nothing.
+	if pgITSessions(t, admin, "ovdb-it-names") == 0 {
+		t.Fatal("the server holds no session of the mount: the observation below would prove nothing")
+	}
+	at := pgITNow(t, admin)
+	for _, route := range routes {
+		resp := relHTTPDo(t, base, route.method, route.path, "", route.body, nil)
+		if resp.status != http.StatusBadRequest || resp.errorField("code") != route.code {
+			t.Errorf("%s: status %d, want 400 %s: %s", route.name, resp.status, route.code, resp.raw)
+			continue
+		}
+		if message := resp.errorField("message"); !strings.Contains(message, "63 bytes") || strings.Contains(resp.raw, long) {
+			t.Errorf("%s: the message must give the limit and not the name: %s", route.name, resp.raw)
+		}
+	}
+	if n := pgITStatementsSince(t, admin, "ovdb-it-names", at); n != 0 {
+		t.Errorf("%d sessions of the mount started a statement while every route refused a long name", n)
+	}
+
+	// The control: a request the mount answers is seen as a statement.
+	at = pgITNow(t, admin)
+	if resp := relHTTPDo(t, base, http.MethodPut, "/v1/databases/pg/records/customers/k1", "", `{"data":{"name":"Key"}}`, nil); resp.status != http.StatusNoContent {
+		t.Fatalf("PUT: status %d: %s", resp.status, resp.raw)
+	}
+	if n := pgITStatementsSince(t, admin, "ovdb-it-names", at); n == 0 {
+		t.Error("the server reports no statement for a write that was answered: the observation does not see statements")
+	}
+	pgITCanary(t, admin)
+}

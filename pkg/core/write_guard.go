@@ -95,10 +95,15 @@ func (d *Database) GuardKey(key *record.Key) error {
 // opened is the allow-list (see collectionNames: every spelling of a declared
 // collection is accepted and has one canonical name). Names match exactly, case
 // included. Document engines keep their own rule: any collection that passes
-// ValidateCollectionName. The error wraps ErrNotFound.
+// ValidateCollectionName. The error wraps ErrNotFound. A collection name longer than the
+// engine's server keeps in a name (63 bytes on PostgreSQL, see nameLimits) is refused first
+// with an error that wraps ErrInvalidKey, declared or not.
 func (d *Database) GuardCollection(name string) error {
 	if d.isDocumentEngine() {
 		return nil
+	}
+	if d.nameTooLong(name) {
+		return d.errCollectionNameTooLong()
 	}
 	if _, ok := d.names.canonical[name]; ok {
 		return nil
@@ -115,10 +120,14 @@ func (d *Database) GuardCollection(name string) error {
 // spelling that is not the canonical name would address the table of that
 // literal name, which is a different table. Document engines keep their own rule
 // and are not refused. The error wraps ErrNotFound and names the collection,
-// clipped, as GuardCollection does.
+// clipped, as GuardCollection does; a name over the engine's limit is refused as
+// GuardCollection refuses it.
 func (d *Database) GuardCanonicalCollection(name string) error {
 	if d.isDocumentEngine() {
 		return nil
+	}
+	if d.nameTooLong(name) {
+		return d.errCollectionNameTooLong()
 	}
 	if canonical, declared := d.CanonicalCollection(name); declared && canonical == name {
 		return nil
@@ -159,7 +168,8 @@ func SQLiteLogicalName(name string) (string, bool) {
 // (Sneat's linkage writes ["related", ext, collection, "id@spaceID"]), so only
 // a segment that is blank (empty, or only white space) or carries a control
 // character is refused: update.ByFieldPath panics on a blank segment inside the
-// transaction. A path with no segment at all is refused too. The error wraps
+// transaction. A path with no segment at all is refused too, and so is a segment
+// longer than the engine's server keeps in a name (nameLimits). The error wraps
 // ErrInvalidFieldName.
 func (d *Database) ValidateFieldPath(path []string) error {
 	if len(path) == 0 {
@@ -167,6 +177,11 @@ func (d *Database) ValidateFieldPath(path []string) error {
 	}
 	if err := ValidateFieldNames(path[:1]); err != nil {
 		return err
+	}
+	for _, segment := range path {
+		if d.nameTooLong(segment) {
+			return d.errFieldNameTooLong(ErrInvalidFieldName)
+		}
 	}
 	check := ValidateFieldName
 	if d.isDocumentEngine() {
@@ -210,14 +225,20 @@ func validateMapKey(key string) error {
 
 // ValidateDataKeys checks the top-level keys of the data of an insert or a set,
 // which an adapter that builds SQL writes as columns: each must be a plain name
-// (ValidateFieldNames), and on an engine that builds SQL (or one nobody
-// classified) none may be the record's key column in a case other than "id",
+// (ValidateFieldNames) and no longer than the engine's server keeps in a name
+// (nameLimits), and on an engine that builds SQL (or one nobody classified) none
+// may be the record's key column in a case other than "id",
 // which is the same column (ErrKeyColumnCase). A document engine keeps the key
 // outside the record's fields and is not refused here. No data is fine.
 func (d *Database) ValidateDataKeys(data map[string]any) error {
 	names := slices.Sorted(maps.Keys(data))
 	if err := ValidateFieldNames(names); err != nil {
 		return err
+	}
+	for _, name := range names {
+		if d.nameTooLong(name) {
+			return d.errFieldNameTooLong(ErrInvalidFieldName)
+		}
 	}
 	if d.isDocumentEngine() {
 		return nil

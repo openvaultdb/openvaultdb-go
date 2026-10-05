@@ -121,7 +121,15 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	// of an engine, as it does on the other routes: a collection that is not there
 	// is a 404 whatever else is wrong with the request.
 	for _, target := range targets {
-		if db := databases[target.database]; !readableCollection(db, target.collection) {
+		db := databases[target.database]
+		// A name longer than the engine's server keeps is the caller's mistake in the
+		// name, a 400 as on the routes that take a key, and not a collection that is
+		// missing.
+		if err := db.GuardCollection(target.collection); errors.Is(err, core.ErrInvalidKey) {
+			writeError(w, http.StatusBadRequest, "invalid_key", err.Error())
+			return
+		}
+		if !readableCollection(db, target.collection) {
 			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("collection not found: %q in database %q", clipName(target.collection), clipName(target.database)))
 			return
 		}

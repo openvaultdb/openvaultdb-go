@@ -223,6 +223,17 @@ by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
   collections refuses the name, so the mount fails when the database opens and no request is
   served for it. Quoting on those two engines follows the task that gives the two mounts a
   reviewed dialect (OV-01).
+- **Names over 63 bytes on a `postgres` mount.** PostgreSQL keeps 63 bytes of a name and cuts the
+  rest without saying so, so a name of 64 bytes or more would address the table or the column
+  named by its first 63. Every route refuses such a name **before any statement is sent**, and the
+  message gives the limit and not the name: a collection (of a key, of a query, of a source of a
+  document) is `400 invalid_key`, the same status and code as every collection name outside the
+  name rule, and it is checked before the question whether the database declares the collection, so
+  a name that long is never a `404`; a field of a write (the top-level keys of `data`, the
+  `fieldName` of an update and every segment of its `fieldPath`) is `400 bad_request`; a field of
+  a query (`/query`, `/dtql`, a relational document) is `400 invalid_dtql`, as a source alias over
+  the same length is. A name of exactly 63 bytes is accepted. `HEAD` of a key answers `400`, with
+  no body. No other engine has this limit.
 - **Access policies and spellings.** The access-policy layer sees the collection under the name
   the adapter is given. On `sqlite`, for a key read or write, that is the public name whichever
   spelling the caller sent, so a policy path names the public name; a policy path written with
@@ -241,8 +252,8 @@ by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
 - **Field names, on every engine.** Every field name a write carries that can become a column
   must pass the same rule as the names in `/query` and `/dtql`: dot-separated segments of
   letters, digits, underscore and hyphen (Unicode letters allowed), each optionally starting with
-  `$` before a letter (`$id`), at most 256 bytes, no `--`. (The adapter of `postgres` and `mysql`
-  accepts less; see above.) That covers the top-level keys of
+  `$` before a letter (`$id`), at most 256 bytes (63 on a `postgres` mount, see above), no `--`.
+  (The adapter of `postgres` and `mysql` accepts less; see above.) That covers the top-level keys of
   `data` in `PUT`, `POST` and batch `set`/`insert` ops, the `fieldName` of an update
   (`delete: true` included), the first segment of an update's `fieldPath`, and the same in a
   protected operation's columns and changes. Anything else is `400 bad_request`; an update that

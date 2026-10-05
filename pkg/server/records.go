@@ -112,6 +112,10 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
+		if errors.Is(err, core.ErrInvalidKey) {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		if err != nil || !exists {
 			w.WriteHeader(http.StatusNotFound)
 			return
