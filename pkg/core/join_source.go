@@ -172,11 +172,21 @@ func singleSourceRead(query dal.StructuredQuery) bool {
 	return ok && ref.ScanLimit() == 0 && len(ref.ScanOrders()) == 0
 }
 
+// handed is the query the adapter is given, once guardStructured has passed it. On an engine
+// reached through a connection string a join does not carry the database its sources name
+// (see withoutDatabaseNames); any other query, and any other engine, is handed on as it is.
+func (g guardedQueryExecutor) handed(query dal.Query) dal.Query {
+	if structured, ok := query.(dal.StructuredQuery); ok && serverEngines[g.db.queryEngine()] {
+		return withoutDatabaseNames(structured)
+	}
+	return query
+}
+
 func (g guardedQueryExecutor) ExecuteQueryToRecordsReader(ctx context.Context, query dal.Query) (dal.RecordsReader, error) {
 	if err := g.guardStructured(query); err != nil {
 		return nil, err
 	}
-	reader, err := g.executor.ExecuteQueryToRecordsReader(ctx, query)
+	reader, err := g.executor.ExecuteQueryToRecordsReader(ctx, g.handed(query))
 	if err != nil {
 		return nil, g.db.queryError("failed to query", err)
 	}
@@ -190,7 +200,7 @@ func (g guardedQueryExecutor) ExecuteQueryToRecordsetReader(ctx context.Context,
 	if err := g.guardStructured(query); err != nil {
 		return nil, err
 	}
-	reader, err := g.executor.ExecuteQueryToRecordsetReader(ctx, query, options...)
+	reader, err := g.executor.ExecuteQueryToRecordsetReader(ctx, g.handed(query), options...)
 	if err != nil {
 		return nil, g.db.queryError("failed to query", err)
 	}

@@ -178,8 +178,14 @@ not depend on the adapter for either:
   that run a whole document in the database all ask it). The errors the adapter
   of a database server returns on this path are built in `pkg/core` and repeat
   none of its text: `dal.ErrNotSupported` and an unknown dialect are `422
-  query_unsupported` with a fixed message, any other failure a `500` whose log
-  line says which step failed.
+  query_unsupported` with a fixed message; a value or a name the server refuses
+  by a SQLSTATE read by type, a field or a qualifier the tables do not hold and
+  an over-long source alias are `400 invalid_dtql`; what DALgo refuses above the
+  adapter keeps its type (a bound of its own join is `422
+  query_budget_exceeded`, a document it cannot run `400 invalid_dtql`); any
+  other failure is a `500` whose log line says which step failed. A join of the
+  mount's own database is handed to the adapter without the database its sources
+  name, so that the adapter can run it as one statement.
 - **Collections.** On `sqlite`, `postgres` and `mysql` (and any engine ovdb
   does not recognise) a key read or write whose collection is not one the
   mount declared in the manifest's `schemas` when it opened is `404 not_found`

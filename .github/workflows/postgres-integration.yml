@@ -79,6 +79,7 @@ jobs:
             CrossDatabaseJoin \
             ProbesAreRowsAnEmptyResultOrARefusal \
             MixedCaseFieldNames \
+            AJoinOfOneDatabaseRunsInTheDatabase \
             WithoutTheSwitchEveryQueryRouteRefusesAndNoStatementIsSent; do
             if ! grep -qE "^--- PASS: TestPostgresIntegration_${name} " /tmp/gotest.log; then
               echo "::error::TestPostgresIntegration_${name} did not report PASS"

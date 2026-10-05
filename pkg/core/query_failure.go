@@ -76,7 +76,9 @@ func isQueryNotRunnable(err error) bool {
 // through a connection string (serverEngines) gets a built error and nothing of the
 // adapter's: a cancellation and a deadline keep their identity, a refusal of the
 // server because of what the query holds (isQueryThatDoesNotFit) is
-// ErrQueryDoesNotFit, and any other failure is a fixed sentence, because the text of a
+// ErrQueryDoesNotFit, a refusal that DALgo raised above the adapter, in its planner or in
+// the join it evaluates itself (dalgoRefusal), is kept as the typed error it is, rebuilt from
+// its parts, and any other failure is a fixed sentence, because the text of a
 // database server's error can repeat a value, a name or a hint of the request, and it
 // would reach a log. The other engines keep the adapter's error in the chain.
 func (d *Database) queryError(prefix string, err error) error {
@@ -91,6 +93,9 @@ func (d *Database) queryError(prefix string, err error) error {
 		return fmt.Errorf("%s: %w", prefix, context.DeadlineExceeded)
 	case isQueryThatDoesNotFit(err):
 		return fmt.Errorf("%s: %w", prefix, ErrQueryDoesNotFit)
+	}
+	if refusal := dalgoRefusal(err); refusal != nil {
+		return fmt.Errorf("%s: %w", prefix, refusal)
 	}
 	return fmt.Errorf("%s: the database server could not run the query", prefix)
 }

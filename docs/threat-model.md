@@ -224,12 +224,18 @@ reaches a response or a log: `dal.ErrNotSupported` and an unknown dialect are
 422 `query_unsupported` with a fixed message; a value or a name the server
 refuses by a SQLSTATE read by type (class 22, 42883, 42804, 42703, 42P18, which a
 caller's mistake can cause) is a 400 `invalid_dtql` with a fixed message and
-nothing logged, so no caller can fill the log with them; and any other failure
-of the server, a read transaction that cannot begin or commit and the field list
-of a collection included, is a 500 whose log line names the step and the
-collection and holds no text of the driver. Access control on a PostgreSQL mount stays refused when the
-manifest is mounted. The switch is removed after the security review of the
-whole path. MySQL has no dialect and stays refused.
+nothing logged, so no caller can fill the log with them; a refusal that DALgo
+itself raises above the adapter, in its planner or in the join it evaluates when
+the adapter declines one, keeps its type, rebuilt from its category, path and
+message, so a bound of that join is a 422 `query_budget_exceeded` and a document
+it cannot run a 400 (a message that reports a read that failed is not kept); and
+any other failure of the server, a read transaction that cannot begin or commit
+and the field list of a collection included, is a 500 whose log line names the
+step and the collection and holds no text of the driver. A join of the mount's
+own database reaches the adapter without the database its sources name, which
+the source guard has checked is the mount's own. Access control on a PostgreSQL
+mount stays refused when the manifest is mounted. The switch is removed after
+the security review of the whole path. MySQL has no dialect and stays refused.
 
 
 ## CORS (2026-07-09)

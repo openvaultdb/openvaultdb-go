@@ -716,6 +716,83 @@ func TestPostgresIntegration_ProbesAreRowsAnEmptyResultOrARefusal(t *testing.T) 
 	}
 }
 
+// pgITBulkJoin joins the orders of the mount to their customers and keeps the few orders whose
+// total is at least 12999, every source naming its database.
+const pgITBulkJoin = `from:
+  database: pg
+  name: orders
+  alias: o
+  joins:
+    - type: inner
+      from: {database: pg, name: customers, alias: c}
+      on:
+        - {left: {field: customer_id, source: o}, op: '==', right: {field: id, source: c}}
+where: {op: '>=', left: {field: total, source: o}, right: {value: 12999}}
+orderBy:
+  - {field: total, source: o}
+columns:
+  - {field: id, source: o, as: order_id}
+  - {field: name, source: c, as: customer}
+  - {field: total, source: o}
+`
+
+// pgITBulkMismatchedJoin is the join above on two columns of types the server cannot equate (an
+// integer and a text), which the compiler of the adapter declines: DALgo reads the tables
+// and joins them itself.
+const pgITBulkMismatchedJoin = `from:
+  database: pg
+  name: orders
+  alias: o
+  joins:
+    - type: inner
+      from: {database: pg, name: customers, alias: c}
+      on:
+        - {left: {field: total, source: o}, op: '==', right: {field: id, source: c}}
+columns:
+  - {field: id, source: o, as: order_id}
+  - {field: name, source: c, as: customer}
+`
+
+// TestPostgresIntegration_AJoinOfOneDatabaseRunsInTheDatabase: a join of two collections of
+// the PostgreSQL mount, with the database named on each source as /v1/dtql takes it, is run by
+// the server as one statement. The orders table holds 12,005 rows, more than the 10,000 that
+// DALgo reads of a table when it joins the rows itself in the transaction, and the join
+// answers the two orders its filter keeps: it passes only if the filter reaches the server. A
+// join the compiler of the adapter declines (two columns of types it cannot equate) is read
+// by DALgo and is bound by it: the answer is a 422 query_budget_exceeded, and the server logs
+// no error.
+func TestPostgresIntegration_AJoinOfOneDatabaseRunsInTheDatabase(t *testing.T) {
+	admin := pgITAdmin(t)
+	pg := pgITMount(t, "pg", "ovdb-it-bulk", true)
+	base, logs := pgITServeLogged(t, map[string]*core.Database{"pg": pg})
+	pgITSeed(t, base, "pg")
+	if _, err := admin.Exec(`INSERT INTO orders (id, customer_id, total, status)
+		SELECT 'g' || i, 'c' || (i % 4 + 1), 1000 + i, 'bulk' FROM generate_series(1, 12000) AS i`); err != nil {
+		t.Fatalf("seed the bulk of orders: %v", err)
+	}
+
+	t.Run("one statement over 12,005 rows", func(t *testing.T) {
+		resp := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", pgITBulkJoin, nil)
+		relIntRowsAre(t, resp, []map[string]any{
+			{"order_id": "g11999", "customer": "Dee", "total": float64(12999)},
+			{"order_id": "g12000", "customer": "Ada", "total": float64(13000)},
+		})
+		if route := pgITRoute(resp); route != "database" {
+			t.Errorf("route = %q, want database", route)
+		}
+	})
+	t.Run("a join the adapter declines is bound by DALgo", func(t *testing.T) {
+		resp := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", pgITBulkMismatchedJoin, nil)
+		if resp.status != http.StatusUnprocessableEntity || resp.errorField("code") != "query_budget_exceeded" {
+			t.Fatalf("status %d, want 422 query_budget_exceeded: %s", resp.status, resp.raw)
+		}
+	})
+	if strings.Contains(logs.String(), `"level":"ERROR"`) {
+		t.Errorf("the server logged an error while it answered:\n%s", logs)
+	}
+	pgITCanary(t, admin)
+}
+
 // pgITNameDocs are documents that select a field of people under a spelling of its name
 // (SPELLING), alone in one database and joined to the customers of another.
 const (
@@ -796,6 +873,26 @@ func TestPostgresIntegration_MixedCaseFieldNames(t *testing.T) {
 
 	across := func(spelling, people, customers string) string {
 		return strings.NewReplacer("SPELLING", spelling, "PEOPLE", people, "CUSTOMERS", customers).Replace(pgITNameJoinDoc)
+	}
+	// A join of two collections of one database runs in the database, which finds the field by
+	// either spelling and labels the column as the document wrote it, as a document of one source does.
+	for _, spelling := range []string{"FirstName", "firstname"} {
+		t.Run("a join in one database, "+spelling, func(t *testing.T) {
+			resp := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", across(spelling, "pg", "pg"), nil)
+			relIntRowsAre(t, resp, []map[string]any{{"first": "Ada", "customer": "Ada"}, {"first": "Bob", "customer": "Bob"}})
+			if route := pgITRoute(resp); route != "database" {
+				t.Errorf("route = %q, want database", route)
+			}
+			if got := resp.columns(); !reflect.DeepEqual(got, []string{"first", "customer"}) {
+				t.Errorf("columns = %v, want [first customer]", got)
+			}
+			if spelling == "FirstName" {
+				lite := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", across(spelling, "lite", "lite"), nil)
+				if !reflect.DeepEqual(resp.body["records"], lite.body["records"]) {
+					t.Fatalf("PostgreSQL: %s\nSQLite:     %s", resp.raw, lite.raw)
+				}
+			}
+		})
 	}
 	t.Run("a join across databases, the folded spelling", func(t *testing.T) {
 		pgResp := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", across("firstname", "pg", "lite"), nil)

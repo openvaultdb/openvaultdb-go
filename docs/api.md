@@ -421,28 +421,37 @@ as the adapter's own DDL does. Access control is not offered on a `postgres` mou
 turns it on fails to mount. Records of a query carry the key they were written under.
 
 What a client sees. Where the adapter can run a document (filters, order, limit, grouping,
-aggregates and joins of one database) it runs on the server, and the answer reports
-`execution.route: "database"`; a document with a subquery, and a join across databases, runs in the
-engine of this server, and its source bounds apply. A document the adapter cannot compile is
-`422 query_unsupported` with the message `the storage engine cannot run this query`.
+aggregates and joins of one database) it runs on the server, as one statement, and the answer
+reports `execution.route: "database"`. A document of `/v1/dtql` names the database of every source,
+and the adapter does not write a join whose sources name one as a single statement, so the server
+hands the mount a join of its own database without those names; nothing else of the document
+changes. A document with a subquery, and a join across databases, runs in the engine of this
+server, and its source bounds apply. A join the adapter cannot write as one statement (two columns
+of types it cannot equate, a wildcard it has no form for) is not refused: DALgo reads each table
+whole, with no filter, in the transaction of the mount and joins the rows itself, under bounds of
+its own (10,000 rows and 16 MiB of the tables together), and the answer still reports
+`execution.route: "database"`. What DALgo refuses there is answered as it is on every engine: a
+bound is `422 query_budget_exceeded` and names it, and a document it cannot run (a field or an alias
+that is wrong, an alias used twice) is `400 invalid_dtql`. A document the adapter cannot compile
+otherwise is `422 query_unsupported` with the message `the storage engine cannot run this query`.
 
 What the tables of the mount do not hold is the caller's mistake, and it is a refusal, never a
 failure of the server: a `postgres` mount is strict, so the check always applies. A field that no
 column of a declared collection has, and a qualifier that no source of the query has, are `400
 invalid_dtql`, refused before the driver is reached. A strict mount holds the key column `id` and
 the fields its manifest declares, each under the name the server folds it to, so a dotted name is no
-column; a source is named by its alias, or by its collection when it has none. A column of the select
-list may carry an alias, and a name that is only that alias is read as the alias in `having` and in
-`orderBy`, outside the argument of an aggregate and in the spelling the column wrote it; anywhere
-else (a column, `where`, `groupBy`, an aggregate's argument) it is a name no column has, and is
-refused like any other. A source alias longer than 63 bytes, the most PostgreSQL holds in a name, is
-`400 invalid_dtql` as well, and the message gives the limit and not the alias. A value that the
-server cannot read as the type of its column (a word compared with an integer field, a number or a
-boolean compared with a text field) is `400 invalid_dtql` too: the server refuses it with a SQLSTATE
-of class 22, or 42883, 42804, 42703 or 42P18, which is read from the error by type and never from
-its text. The message of that answer is fixed (`a value or a name of the query does not fit the
-field it is used with`), it repeats nothing of the request or of the server, and nothing is logged.
-A SQLite mount answers some of these requests with an empty result.
+column; a source is named by its alias, or by its collection when it has none. A column of the
+select list may carry an alias, and a name that is only that alias is read as the alias in `having`
+and in `orderBy`, outside the argument of an aggregate and in the spelling the column wrote it;
+anywhere else (a column, `where`, `groupBy`, an aggregate's argument) it is a name no column has,
+and is refused like any other. A source alias longer than 63 bytes, the most PostgreSQL holds in a
+name, is `400 invalid_dtql` as well, and the message gives the limit and not the alias. A value that
+the server cannot read as the type of its column (a word compared with an integer field, a number or
+a boolean compared with a text field) is `400 invalid_dtql` too: the server refuses it with a
+SQLSTATE of class 22, or 42883, 42804, 42703 or 42P18, which is read from the error by type and
+never from its text. The message of that answer is fixed (`a value or a name of the query does not
+fit the field it is used with`), it repeats nothing of the request or of the server, and nothing is
+logged. A SQLite mount answers some of these requests with an empty result.
 
 A failure of the database server of any other kind is `500 internal`, and the log line says only
 which step failed: no text of the driver or of the server, which can repeat a value of the request
@@ -451,10 +460,11 @@ begin or commit and for the field list of a collection, as it does for a query.
 
 A field declared with capitals (`FirstName`) is held by PostgreSQL in lower case. A route that reads
 one collection finds it by the declared spelling and by the lower-case one, and answers a record
-under the declared name. A document that runs in the database finds it by either spelling too, and
-labels the column as the document wrote it. A join across databases, and a subquery, run in the
-engine of this server over the names the database holds, which are lower case: such a document
-writes `firstname`, and the declared spelling is `400 invalid_dtql` there (a SQLite mount reads the
+under the declared name. A document that runs in the database as one statement, a join of one
+database included, finds it by either spelling too, and labels the column as the document wrote it.
+A join across databases, and a join that DALgo reads table by table (above), run in the engine of
+this server over the names the database holds, which are lower case: such a document writes
+`firstname`, and the declared spelling is `400 invalid_dtql` there (a SQLite mount reads the
 declared spelling and refuses the lower-case one).
 
 A `postgres` mount takes part in a relational document only when `postgres` is in the join engines
