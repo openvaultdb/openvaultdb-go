@@ -21,7 +21,8 @@ const markerDSN = "postgres://app:" + markerPassword + "@db.example.test:5432/or
 // validated and holds anything else there is refused before the environment is
 // read or the opener is called, with a message that does not repeat the value.
 func TestSQLMountChecksTheDSNVariableNameBeforeNamingIt(t *testing.T) {
-	t.Setenv("TEST_SQL_MOUNT_DSN", "postgres://app@db.example.test/orders")
+	// The variable the manifest names is set, so a mount that read it would open.
+	t.Setenv(markerDSN, "postgres://app@db.example.test/orders")
 	for _, engine := range []string{"postgres", "mysql"} {
 		t.Run(engine, func(t *testing.T) {
 			m := sqlMountManifest(engine)
@@ -44,11 +45,11 @@ func TestSQLMountChecksTheDSNVariableNameBeforeNamingIt(t *testing.T) {
 				})
 			}
 			want := "storage." + engine + ".dsn_env is not the name of an environment variable"
-			if err == nil || err.Error() != want {
-				t.Fatalf("got %v, want %q", err, want)
-			}
 			if calls != 0 {
 				t.Errorf("the opener was called %d times", calls)
+			}
+			if err == nil || err.Error() != want {
+				t.Fatalf("got %v, want %q", err, want)
 			}
 			assertNoMarker(t, err, markerPassword, markerDSN, "app:", "db.example.test")
 		})
