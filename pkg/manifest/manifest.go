@@ -75,9 +75,10 @@ type FirestoreOptions struct {
 // (which carries credentials) is NEVER stored in the manifest: DSNEnv names
 // the environment variable that holds it.
 type PostgresOptions struct {
-	// DSNEnv is the environment variable holding the Postgres DSN
-	// (default "OVDB_POSTGRES_DSN"), e.g.
-	// postgres://user:pass@host:5432/db?sslmode=require.
+	// DSNEnv is the name of the environment variable holding the Postgres DSN
+	// (default "OVDB_POSTGRES_DSN"); the DSN is e.g.
+	// postgres://user:pass@host:5432/db?sslmode=require. Validate accepts only a
+	// variable name (see ValidEnvVarName).
 	DSNEnv string `yaml:"dsn_env,omitempty" json:"dsnEnv,omitempty"`
 }
 
@@ -93,9 +94,10 @@ func (o *PostgresOptions) DSNEnvVar() string {
 // carries credentials) is NEVER stored in the manifest: DSNEnv names the
 // environment variable that holds it.
 type MySQLOptions struct {
-	// DSNEnv is the environment variable holding the MySQL DSN
-	// (default "OVDB_MYSQL_DSN"), in go-sql-driver form, e.g.
-	// user:pass@tcp(host:3306)/db?parseTime=true.
+	// DSNEnv is the name of the environment variable holding the MySQL DSN
+	// (default "OVDB_MYSQL_DSN"); the DSN is in go-sql-driver form, e.g.
+	// user:pass@tcp(host:3306)/db?parseTime=true. Validate accepts only a
+	// variable name (see ValidEnvVarName).
 	DSNEnv string `yaml:"dsn_env,omitempty" json:"dsnEnv,omitempty"`
 }
 
@@ -190,6 +192,13 @@ func (o *InGitDBOptions) PushBranch() string {
 }
 
 var dbIDRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+
+var envVarNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// ValidEnvVarName reports whether name can be the name of an environment
+// variable as a manifest writes it: an ASCII letter or an underscore followed by
+// ASCII letters, digits and underscores.
+func ValidEnvVarName(name string) bool { return envVarNameRe.MatchString(name) }
 
 // maxEchoedIDLen bounds how much of a database id an error message repeats: the
 // id of a request or a manifest is checked here, and what fails the check can
@@ -312,6 +321,13 @@ func (m *Manifest) Validate() error {
 	}
 	if m.Storage.MySQL != nil && m.Storage.Engine != "mysql" {
 		return fmt.Errorf("storage.mysql options are only valid with engine 'mysql', got %q", m.Storage.Engine)
+	}
+	// The message names the field and does not repeat the value.
+	if o := m.Storage.Postgres; o != nil && o.DSNEnv != "" && !ValidEnvVarName(o.DSNEnv) {
+		return fmt.Errorf("storage.postgres.dsn_env must be the name of an environment variable (ASCII letters, digits and underscores, not starting with a digit)")
+	}
+	if o := m.Storage.MySQL; o != nil && o.DSNEnv != "" && !ValidEnvVarName(o.DSNEnv) {
+		return fmt.Errorf("storage.mysql.dsn_env must be the name of an environment variable (ASCII letters, digits and underscores, not starting with a digit)")
 	}
 	if o := m.Storage.InGitDB; o != nil {
 		if m.Storage.Engine != "ingitdb" {

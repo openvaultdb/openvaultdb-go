@@ -35,6 +35,11 @@ func openPostgres(m *manifest.Manifest) (dal.DB, []schema.Mode, error) {
 // An error from it is not returned or wrapped (see postgresOpenError).
 func openPostgresWith(m *manifest.Manifest, open postgresOpener) (dal.DB, []schema.Mode, error) {
 	envVar := m.Storage.Postgres.DSNEnvVar()
+	if !manifest.ValidEnvVarName(envVar) {
+		// A manifest that was not validated (see manifest.Manifest.Validate): the
+		// message does not repeat the value.
+		return nil, nil, errors.New("storage.postgres.dsn_env is not the name of an environment variable")
+	}
 	dsn := os.Getenv(envVar)
 	if dsn == "" {
 		return nil, nil, fmt.Errorf("postgres DSN not set: expected connection string in $%s", envVar)

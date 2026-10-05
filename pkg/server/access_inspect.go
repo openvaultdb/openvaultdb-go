@@ -62,9 +62,13 @@ func protectedOperation(op api.Operation) (access.ProtectedOperation, error) {
 // projectInspection uses the same pinned assessment as execution. Metadata is
 // taken from that assessment, never reloaded while a policy lease is held.
 // hidden holds the ids of operations on a table the database does not declare
-// (see inspectAccess): no layer decides them, and they are redacted whatever the
-// caller may inspect, which is how an operation on a declared table the policy
-// hides is answered for a caller who may not inspect protected rows.
+// (see inspectAccess) or that the protected session cannot prepare: no layer
+// decides them, and they are redacted whatever the caller may inspect, which is
+// how an operation on a declared table the policy hides is answered for a caller
+// who may not inspect protected rows. A caller who may inspect protected rows is
+// given layer detail for a record it cannot read, but not for an operation whose
+// table the policy hides from it (see deniedWhateverTheRow), so a declared table
+// is answered to that caller as an undeclared one is.
 func (s *Server) projectInspection(r *http.Request, db *core.Database, request api.Request, owners []core.PolicyLayer, assessment access.Assessment, readable, hidden map[string]bool) az.Result {
 	// Data visibility requires both owner ACLs and the actual token's data
 	// capability; write-only or policy-admin credentials do not imply reads.
@@ -80,6 +84,7 @@ func (s *Server) projectInspection(r *http.Request, db *core.Database, request a
 	for _, op := range request.Operations {
 		result.Operations = append(result.Operations, az.OperationResult{ID: op.ID, RequestOperationID: op.ID, Action: op.Action, Resource: op.Resource, Result: az.OutcomeAllow, RestrictionIDs: []string{}, AllOf: []string{}, ExecutionClass: op.ExecutionClass, Callable: op.Callable})
 	}
+	tableHidden := deniedWhateverTheRow(assessment)
 	for _, owner := range owners {
 		source := s.accessSource(db, owner.Kind)
 		layer := az.Layer{LayerID: sourceLayerID(source), Source: source, ACLState: "disabled", Result: az.OutcomeAllow, Decisions: []az.LayerDecision{}}
@@ -108,7 +113,7 @@ func (s *Server) projectInspection(r *http.Request, db *core.Database, request a
 					}
 				}
 				outcome = reduceOutcome(outcome, decisionOutcome)
-				details := readable[op.ID] || s.ownerAllows(r, source, auth.CapAccessInspectProtected, op.Resource)
+				details := readable[op.ID] || !tableHidden[op.ID] && s.ownerAllows(r, source, auth.CapAccessInspectProtected, op.Resource)
 				visible := details && request.DiagnosticLevel != "ordinary" && s.ownerAllows(r, source, auth.CapAccessDiagnostics, op.Resource) && (pa.Policy.Visibility == access.PolicyVisibilityPublic || s.ownerAllows(r, source, auth.CapPoliciesAdmin, op.Resource)) && pa.Policy.Revision != ""
 				if !visible {
 					continue
@@ -151,7 +156,7 @@ func (s *Server) projectInspection(r *http.Request, db *core.Database, request a
 	for i, op := range request.Operations {
 		details := readable[op.ID]
 		if !details {
-			details = true
+			details = !tableHidden[op.ID]
 			for _, owner := range owners {
 				if owner.Enabled && !s.ownerAllows(r, s.accessSource(db, owner.Kind), auth.CapAccessInspectProtected, op.Resource) {
 					details = false
@@ -190,6 +195,28 @@ func undecidedOperations(assessment access.Assessment) map[string]bool {
 		}
 	}
 	return undecided
+}
+
+// deniedWhateverTheRow returns the ids of the operations that a policy denies for
+// a reason that does not depend on the stored row (no rule admits the table for
+// the action, or a rule refuses it outright), which is what it means for the
+// policy to hide the table from the caller. A denial that the row's data decides
+// (a row condition, the image a write would leave, the fields of a rule) does not
+// hide the table, and a decision the policy could not make (an indeterminate code)
+// says nothing about it.
+func deniedWhateverTheRow(assessment access.Assessment) map[string]bool {
+	denied := map[string]bool{}
+	for _, pa := range assessment.Policies {
+		if pa.Decision.Allowed || pa.Decision.Code.IsIndeterminate() {
+			continue
+		}
+		switch pa.Decision.Code {
+		case access.CodeRowPredicateFailed, access.CodePostImageFailed, access.CodeColumnDenied:
+		default:
+			denied[pa.OperationID] = true
+		}
+	}
+	return denied
 }
 
 func redactPoint(result *az.Result, id string) {
@@ -242,7 +269,9 @@ func redactPoint(result *az.Result, id string) {
 // declared table the policy hides: 200, redacted, with nothing that tells the two
 // apart, and the adapter is never asked about it. Its field names and its
 // support by the protected session are checked first (guardOperation), as they
-// are for a declared table, so a refusal for them is the same for both.
+// are for a declared table, so a refusal for them is the same for both. An
+// operation on a declared table that the protected session cannot prepare is
+// answered the same way (see inspectProtected).
 func (s *Server) inspectAccess(w http.ResponseWriter, r *http.Request, db *core.Database, request api.Request, owners []core.PolicyLayer, requester access.Principal) {
 	coordinator := db.Coordinator()
 	if coordinator == nil {
@@ -263,40 +292,95 @@ func (s *Server) inspectAccess(w http.ResponseWriter, r *http.Request, db *core.
 		}
 		ops = append(ops, internal)
 	}
-	if len(ops) == 0 {
-		writeAuthorization(w, 200, s.projectInspection(r, db, request, owners, access.Assessment{}, map[string]bool{}, hidden))
-		return
-	}
-	var result az.Result
-	err := coordinator.WithinInspection(r.Context(), ops, func(session access.InspectionSession) error {
-		assessment, admissionErr := session.Assess(r.Context())
-		if admissionErr != nil && assessment.Outcome == "" {
-			return admissionErr
-		}
-		visible, err := session.ReadVisibilityFor(r.Context(), requester)
-		if err != nil {
-			return err
-		}
-		result = s.projectInspection(r, db, request, owners, assessment, visible, hidden)
-		if admissionErr != nil {
-			// Never publish an allow after failed admission. A hidden or
-			// missing point retains the same generic dry-run denial.
-			for _, op := range request.Operations {
-				if !visible[op.ID] {
-					redactPoint(&result, op.ID)
-				}
-			}
-			if result.Result != az.OutcomeDeny {
-				return admissionErr
-			}
-		}
-		return nil
-	})
+	result, err := s.inspectProtected(r, db, coordinator, request, owners, requester, ops, hidden)
 	if err != nil {
 		writeProtectedFailure(w, err)
 		return
 	}
 	writeAuthorization(w, 200, result)
+}
+
+// inspectionCoordinator is the part of the coordinator that an inspection uses.
+type inspectionCoordinator interface {
+	WithinInspection(ctx context.Context, operations []access.ProtectedOperation, inspect func(access.InspectionSession) error) error
+}
+
+// inspectProtected assesses ops in one protected session and projects the result
+// for the whole request, adding the ids of the operations in hidden (see
+// projectInspection). When the session is refused with access.ErrAccessDenied
+// before anything is assessed, the protected session could not prepare one of
+// the operations (for a table whose shape it does not support, for instance). The
+// session does not say which, so each operation is prepared alone, those it
+// refuses are added to hidden, which answers them as an operation on a table the
+// database does not declare, and the rest are assessed again. A refusal of the
+// session that no operation explains alone is returned as it came.
+func (s *Server) inspectProtected(r *http.Request, db *core.Database, coordinator inspectionCoordinator, request api.Request, owners []core.PolicyLayer, requester access.Principal, ops []access.ProtectedOperation, hidden map[string]bool) (az.Result, error) {
+	for len(ops) > 0 {
+		var result az.Result
+		assessed := false
+		err := coordinator.WithinInspection(r.Context(), ops, func(session access.InspectionSession) error {
+			assessed = true
+			assessment, admissionErr := session.Assess(r.Context())
+			if admissionErr != nil && assessment.Outcome == "" {
+				return admissionErr
+			}
+			visible, err := session.ReadVisibilityFor(r.Context(), requester)
+			if err != nil {
+				return err
+			}
+			result = s.projectInspection(r, db, request, owners, assessment, visible, hidden)
+			if admissionErr != nil {
+				// Never publish an allow after failed admission. A hidden or
+				// missing point retains the same generic dry-run denial.
+				for _, op := range request.Operations {
+					if !visible[op.ID] {
+						redactPoint(&result, op.ID)
+					}
+				}
+				if result.Result != az.OutcomeDeny {
+					return admissionErr
+				}
+			}
+			return nil
+		})
+		if err == nil || assessed || !errors.Is(err, access.ErrAccessDenied) {
+			return result, err
+		}
+		prepared := make([]access.ProtectedOperation, 0, len(ops))
+		for _, op := range ops {
+			refused, probeErr := refusedAlone(r.Context(), coordinator, op)
+			if probeErr != nil {
+				return az.Result{}, probeErr
+			}
+			if refused {
+				hidden[op.ID()] = true
+				continue
+			}
+			prepared = append(prepared, op)
+		}
+		if len(prepared) == len(ops) {
+			return az.Result{}, err
+		}
+		ops = prepared
+	}
+	return s.projectInspection(r, db, request, owners, access.Assessment{}, map[string]bool{}, hidden), nil
+}
+
+// refusedAlone reports whether the protected session is refused with
+// access.ErrAccessDenied, before anything is assessed, when it holds op alone.
+func refusedAlone(ctx context.Context, coordinator inspectionCoordinator, op access.ProtectedOperation) (bool, error) {
+	prepared := false
+	err := coordinator.WithinInspection(ctx, []access.ProtectedOperation{op}, func(access.InspectionSession) error {
+		prepared = true
+		return nil
+	})
+	switch {
+	case err == nil:
+		return false, nil
+	case !prepared && errors.Is(err, access.ErrAccessDenied):
+		return true, nil
+	}
+	return false, err
 }
 
 func writeProtectedFailure(w http.ResponseWriter, err error) {
@@ -385,6 +469,14 @@ func (s *Server) handleProtectedUpdate(w http.ResponseWriter, r *http.Request, d
 			default:
 				writeJSON(w, 403, errorBody{Error: errorDetail{Code: "access_denied", RequestID: result.RequestID, Authorization: &result}})
 			}
+			return
+		}
+		if errors.Is(err, access.ErrAccessDenied) {
+			// The protected session was refused before anything was assessed: it
+			// cannot prepare the operation (for a table whose shape it does not
+			// support, for instance). The answer is the one for a record the
+			// caller may not see, by the same function the evidence route uses.
+			writeUnavailableOperation(w, az.ModeExecution, op)
 			return
 		}
 		writeProtectedFailure(w, err)
