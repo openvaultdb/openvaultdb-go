@@ -142,11 +142,11 @@ func TestParseOfADocumentTheDecoderRefusesWithoutALineIsOneFixedSentence(t *test
 	}
 }
 
-// TestParseOfAMappingWithAMergeKeyAndAKeyThatCannotBeHashedIsAnErrorNotAPanic: the
-// YAML decoder panics for a mapping that holds a merge key and a key that is a
-// sequence or a mapping. Parse reports it, at the top level, in storage and in the
-// schemas.
-func TestParseOfAMappingWithAMergeKeyAndAKeyThatCannotBeHashedIsAnErrorNotAPanic(t *testing.T) {
+// TestParseOfAManifestTheDecoderCannotDecodeIsAnErrorNotAPanic: a manifest the
+// decoder cannot decode is reported, never a panic: at the top level, in storage and
+// in the schemas. (The decoder panics for a mapping that holds a merge key and a key
+// that is a sequence or a mapping.)
+func TestParseOfAManifestTheDecoderCannotDecodeIsAnErrorNotAPanic(t *testing.T) {
 	const head = "database: {id: sqlmount, schema_mode: strict}\n"
 	for _, c := range []struct{ name, doc string }{
 		{"at the top level", head + "<<: {a: b}\n? [a]\n: x\n"},

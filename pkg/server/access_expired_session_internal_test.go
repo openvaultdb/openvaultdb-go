@@ -292,14 +292,15 @@ func TestProtectedUpdateAnswersARefusalAsHiddenOnlyWhileTheRequestIsAlive(t *tes
 type scriptedExecution struct {
 	access.ExecutionSession
 	onExecute func() error
+	hidden    bool // the caller may not read the record
 }
 
 func (scriptedExecution) Assess(context.Context) (access.Assessment, error) {
 	return access.Assessment{Outcome: access.AssessmentAllow, Complete: true, Policies: []access.PolicyAssessment{{OperationID: "op1", Decision: access.Decision{Allowed: true}}}}, nil
 }
 
-func (scriptedExecution) ReadVisibilityFor(context.Context, access.Principal) (map[string]bool, error) {
-	return map[string]bool{"op1": true}, nil
+func (s scriptedExecution) ReadVisibilityFor(context.Context, access.Principal) (map[string]bool, error) {
+	return map[string]bool{"op1": !s.hidden}, nil
 }
 
 func (s scriptedExecution) Execute(context.Context) (access.Assessment, error) {
@@ -310,19 +311,23 @@ func (s scriptedExecution) Execute(context.Context) (access.Assessment, error) {
 // PATCH of a record the caller reads, whose request is canceled or runs past its
 // deadline while the update is executed, is answered 503 authorization_unavailable
 // and nothing is logged, whatever error the session reports. A failure of the
-// session while the request is alive keeps its own answer.
+// session while the request is alive keeps its own answer. A record the caller may
+// not see is answered 404 resource_unavailable first, whether or not the request
+// has run out: the order of the two answers is part of what is pinned here.
 func TestProtectedUpdateAnswers503WhenTheRequestRunsOutAfterTheAssessment(t *testing.T) {
 	rejected := errors.New("candidate rejected")
 	for _, c := range []struct {
 		name     string
 		cancel   bool
+		hidden   bool
 		fail     error
 		wantCode int
 		wantBody string
 	}{
-		{"canceled with the error of the context", true, context.Canceled, http.StatusServiceUnavailable, `"code":"authorization_unavailable"`},
-		{"canceled with another error", true, rejected, http.StatusServiceUnavailable, `"code":"authorization_unavailable"`},
-		{"alive with an error", false, rejected, http.StatusUnprocessableEntity, `"code":"validation_failed"`},
+		{"canceled with the error of the context", true, false, context.Canceled, http.StatusServiceUnavailable, `"code":"authorization_unavailable"`},
+		{"canceled with another error", true, false, rejected, http.StatusServiceUnavailable, `"code":"authorization_unavailable"`},
+		{"alive with an error", false, false, rejected, http.StatusUnprocessableEntity, `"code":"validation_failed"`},
+		{"a record the caller may not see, canceled in the execution", true, true, context.Canceled, http.StatusNotFound, `"code":"resource_unavailable"`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			s, logs := loggedServer()
@@ -332,7 +337,7 @@ func TestProtectedUpdateAnswers503WhenTheRequestRunsOutAfterTheAssessment(t *tes
 			r, key := updateRequest(ctx)
 			w := httptest.NewRecorder()
 			s.updateProtected(w, r, db, key, &scriptedExecutor{answer: func(execute func(access.ExecutionSession) error) error {
-				return execute(scriptedExecution{onExecute: func() error {
+				return execute(scriptedExecution{hidden: c.hidden, onExecute: func() error {
 					if c.cancel {
 						cancel()
 					}

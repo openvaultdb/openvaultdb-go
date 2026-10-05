@@ -186,7 +186,7 @@ without being repeated. A manifest that the YAML decoder cannot read is reported
 the line and the kind of each mistake, by the fixed message of the YAML scanner or
 parser, or by one fixed sentence (a manifest with no document in it is reported as empty),
 and never by the text of the document. A manifest that the decoder cannot decode is
-reported in the same way, and does not stop the process. Use `sslmode=require` (or stronger) for non-local servers; the
+reported in the same way, never by a panic. Use `sslmode=require` (or stronger) for non-local servers; the
 DSN, and thus the password, is visible to anything that can read the ovdb
 process environment. ovdb opens exactly one connection pool per mounted
 Postgres database. Record *values* travel as statement parameters. The
