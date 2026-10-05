@@ -101,7 +101,7 @@ func (s *Server) handleWellKnown(w http.ResponseWriter, r *http.Request) {
 		databases := make([]map[string]any, 0)
 		for _, id := range s.databaseIDs() {
 			db := s.getDB(id)
-			canQuery := db != nil && db.CanQuery()
+			canQuery := s.advertisesOrdinaryQuery(db)
 			joins := db != nil && s.advertisesJoins(db)
 			databases = append(databases, map[string]any{
 				"id":           id,

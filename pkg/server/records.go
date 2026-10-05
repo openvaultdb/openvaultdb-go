@@ -64,6 +64,9 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 	if db == nil {
 		return
 	}
+	if s.boundedImmutable(db) {
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	key, err := parseRecordKey(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_key", err.Error())
@@ -107,6 +110,10 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 		s.readRecord(w, r, db, key)
 	case http.MethodHead:
 		exists, err := db.Exists(ctx, key)
+		if err != nil && s.boundedImmutable(db) && !errors.Is(err, core.ErrNotFound) {
+			s.writeMappedError(w, r, err)
+			return
+		}
 		if err != nil || !exists {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -288,6 +295,10 @@ func (s *Server) executeQuery(w http.ResponseWriter, r *http.Request, db *core.D
 	if !s.authorize(w, r, db.ID(), auth.CapRecordsRead, scope) {
 		return
 	}
+	if s.boundedImmutable(db) {
+		writeError(w, http.StatusUnprocessableEntity, "read_profile_unsupported", "immutable lookup pages require the guarded ordinary DTQL route")
+		return
+	}
 	records, err := db.Execute(r.Context(), q)
 	if err != nil {
 		s.writeMappedError(w, r, hiddenAsDenied(db, err))
@@ -310,6 +321,11 @@ func (s *Server) executeQuery(w http.ResponseWriter, r *http.Request, db *core.D
 }
 
 func (s *Server) cacheReadResponse(w http.ResponseWriter, r *http.Request, db *core.Database) {
+	if s.boundedImmutable(db) {
+		w.Header().Set("Cache-Control", "no-store")
+		return
+	}
+
 	ttl := db.Manifest.Database.ReadCacheTTL()
 	if s.readOnly && ttl > 0 && r.Method == http.MethodGet &&
 		isReadCacheEndpoint(r) &&
