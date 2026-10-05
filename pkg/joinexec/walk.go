@@ -68,16 +68,18 @@ const maxEchoLen = 64
 // change to one rule without the other is caught. A name is a plain name when it
 // matches, so a character nobody thought of is refused.
 //
-// Three differences between the walk's name rules and the classifier's are known
+// Four differences between the walk's name rules and the classifier's are known
 // and pinned by that test. The classifier applies a wider quoted-name rule to the
 // field names of a relational document (a column named "zip code" is a name
 // there); the walk applies the strict rule on every route, so Execute refuses a
 // document with a field name that only the wider rule accepts. A field
 // qualifier may name a source of any query of the document, where the classifier
 // scopes it to its own query and the queries around it; the name is a validated
-// collection name or alias either way. And the walk refuses a query whose
-// columns carry one output name twice, which the classifier's name check does not
-// compare. The walk also refuses an arithmetic
+// collection name or alias either way. The walk refuses a query whose columns
+// carry one output name twice, which the classifier's name check does not
+// compare. And the walk refuses a parameter wherever it sits, because nothing
+// binds a parameter once a document reaches Execute, where the classifier takes
+// a parameter of a valid name as an operand. The walk also refuses an arithmetic
 // operator outside + - * / and an aggregate name outside the classifier's seven,
 // as the classifier does, so those are not differences. What only the classifier
 // checks is listed on Execute.

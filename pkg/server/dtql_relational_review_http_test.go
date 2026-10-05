@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -179,141 +178,56 @@ func TestColumnsWhoseOutputNamesDifferAreAnsweredOverHTTP(t *testing.T) {
 // that holds role: the policy of relHTTPProtected lets the role reader read
 // customers and orders (customers only in part) and gives every other role
 // nothing.
-func relRevProtectedServer(t *testing.T, role string) *httptest.Server {
+func relRevProtectedServer(t *testing.T, role string, opts ...server.Option) *httptest.Server {
 	t.Helper()
-	service := server.New("test", map[string]*core.Database{"crm": relHTTPProtected(t)},
+	opts = append([]server.Option{
 		server.WithPrincipalResolver(func(context.Context, *auth.Principal) (access.Principal, error) {
 			return access.Principal{Roles: []string{role}}, nil
 		}),
-		server.WithAuth(&auth.Config{OwnerToken: ownerToken}))
+		server.WithAuth(&auth.Config{OwnerToken: ownerToken}),
+	}, opts...)
+	service := server.New("test", map[string]*core.Database{"crm": relHTTPProtected(t)}, opts...)
 	t.Cleanup(service.CloseSnapshots)
 	host := httptest.NewServer(service.Handler())
 	t.Cleanup(host.Close)
 	return host
 }
 
-// A database with access policies answers a collection it does not declare as it
-// answers one the policy does not allow: the same status and the same body, so
-// the answer says nothing about which collections the database declares.
-func TestAnUndeclaredCollectionOfAProtectedDatabaseIsAnsweredAsADenial(t *testing.T) {
-	host := relRevProtectedServer(t, "nobody")
-	for _, endpoint := range []struct{ name, path string }{
-		{"per-database endpoint", "/v1/databases/crm/dtql"},
-		{"/v1/dtql", "/v1/dtql"},
-	} {
-		for _, tc := range []struct {
-			name              string
-			declared, missing string
-			headers           map[string]string
-		}{
-			{"as the root source", "from: {database: crm, name: customers}\n", "from: {database: crm, name: ghost}\n", nil},
-			{
-				"in a subquery",
-				"from: {database: crm, name: orders}\nwhere: {exists: {query: {from: {database: crm, name: customers}}}}\n",
-				"from: {database: crm, name: orders}\nwhere: {exists: {query: {from: {database: crm, name: ghost}}}}\n", nil,
-			},
-			{
-				"in a join",
-				"from: {database: crm, name: orders, alias: o, joins: [{from: {database: crm, name: customers, alias: c}, on: [{left: {field: customer_id, source: o}, op: '==', right: {field: id, source: c}}]}]}\n",
-				"from: {database: crm, name: orders, alias: o, joins: [{from: {database: crm, name: ghost, alias: c}, on: [{left: {field: customer_id, source: o}, op: '==', right: {field: id, source: c}}]}]}\n", nil,
-			},
-			{"with a paging header", "from: {database: crm, name: customers}\n", "from: {database: crm, name: ghost}\n", map[string]string{"OVDB-Page-Size": "10"}},
-			{"with a spelling the database does not declare", "from: {database: crm, name: customers}\n", "from: {database: crm, name: '\"customers\"'}\n", nil},
-		} {
-			t.Run(endpoint.name+", "+tc.name, func(t *testing.T) {
-				declared := relHTTPDo(t, host.URL, http.MethodPost, endpoint.path, ownerToken, tc.declared, tc.headers)
-				missing := relHTTPDo(t, host.URL, http.MethodPost, endpoint.path, ownerToken, tc.missing, tc.headers)
-				if declared.status/100 != 4 || declared.status != missing.status || declared.raw != missing.raw {
-					t.Fatalf("declared collection: %d %s\nundeclared collection: %d %s\nwant one answer for both", declared.status, declared.raw, missing.status, missing.raw)
-				}
-				if strings.Contains(missing.raw, "ghost") {
-					t.Fatalf("the answer repeats the name: %s", missing.raw)
-				}
-			})
-		}
-	}
-	t.Run("a role the policy allows reads what the policy allows, and an undeclared collection is still a denial", func(t *testing.T) {
-		host := relRevProtectedServer(t, "reader")
-		ok := relHTTPDo(t, host.URL, http.MethodPost, "/v1/dtql", ownerToken, "from: {database: crm, name: orders}\norderBy: [{field: id}]\ncolumns: [{field: id}]\n", nil)
-		if ok.status != http.StatusOK || len(ok.rows(t)) != 4 {
-			t.Fatalf("status %d: %s", ok.status, ok.raw)
-		}
-		// A subquery that reads what the policy allows is answered in memory on
-		// /v1/dtql, every read passing the policy; the per-database endpoint keeps the
-		// 422 of the single-collection path for a document of this shape.
-		evaluated := relHTTPDo(t, host.URL, http.MethodPost, "/v1/dtql", ownerToken, "from: {database: crm, name: orders}\nwhere: {exists: {query: {from: {database: crm, name: customers}}}}\norderBy: [{field: id}]\ncolumns: [{field: id}]\n", nil)
-		if evaluated.status != http.StatusOK || len(evaluated.rows(t)) != 4 || evaluated.execution(t)["route"] != "in-memory" {
-			t.Fatalf("a subquery of what the policy allows: status %d: %s", evaluated.status, evaluated.raw)
-		}
-		perDatabase := relHTTPDo(t, host.URL, http.MethodPost, "/v1/databases/crm/dtql", ownerToken, "from: {name: orders}\nwhere: {exists: {query: {from: {name: customers}}}}\n", nil)
-		if perDatabase.status != http.StatusUnprocessableEntity || perDatabase.errorField("code") != "authorization_unsupported" {
-			t.Fatalf("the same document on the per-database endpoint: status %d: %s", perDatabase.status, perDatabase.raw)
-		}
-		for name, doc := range map[string]string{
-			"as the root source": "from: {database: crm, name: ghost}\n",
-			// The executor loads the fields of the joined source before it reads a row.
-			"in a join":                       "from: {database: crm, name: orders, alias: o, joins: [{from: {database: crm, name: ghost, alias: g}, on: [{left: {field: customer_id, source: o}, op: '==', right: {field: id, source: g}}]}]}\ncolumns: [{field: id, source: o}]\n",
-			"in a subquery that is evaluated": "from: {database: crm, name: orders}\nwhere: {exists: {query: {from: {database: crm, name: ghost}}}}\n",
-		} {
-			missing := relHTTPDo(t, host.URL, http.MethodPost, "/v1/dtql", ownerToken, doc, nil)
-			if missing.status != http.StatusForbidden || missing.errorField("code") != "ACCESS_DENIED" || strings.Contains(missing.raw, "ghost") {
-				t.Fatalf("%s: status %d: %s", name, missing.status, missing.raw)
-			}
-		}
-	})
-}
-
-// relRevElapsed matches the time a request took, the one part of a successful
-// answer that differs between two runs of the same request.
-var relRevElapsed = regexp.MustCompile(`"elapsedMs":\d+`)
-
-// A database with access policies answers the shapes of a document that do not
-// reach a policy decision exactly as it answers them for a collection it does not
-// declare: the answer comes where a policy denial would, at the read, and no
-// answer before the read tells a declared collection from an undeclared one. The
-// three shapes: a document refused for its columns before anything is read, a
-// document refused for a field name only the classifier accepts, and a subquery
-// that is never evaluated because the condition before it is false. Each is sent
-// with a declared collection and with an undeclared one in the place the document
-// reads, for a principal the policy gives nothing and for one that may read.
-func TestAProtectedDatabaseAnswersADeclaredAndAnUndeclaredCollectionAlike(t *testing.T) {
+// A document that names a database with access policies is a 422
+// authorization_unsupported whatever collections it carries, for every role and on
+// both endpoints, with real SQLite files and the real executor: the answer for a
+// collection the policy lets the role read, one it hides, one the database does not
+// declare and a spelling that is not canonical is one and the same, and no row
+// comes back. The streamed join is the shape DALgo reads one source before the other:
+// under a source budget of one row a join of a collection with more rows than that
+// would otherwise end in the budget refusal for the collections the database
+// declares and in a denial for the ones it does not.
+func TestARelationalDocumentOnAProtectedDatabaseIsRefusedWhateverItNames(t *testing.T) {
 	const (
-		repeated = "columns: [{field: id}, {field: name, as: id}]\n"
-		spaced   = "columns: [{field: 'zip code'}]\n"
-		never    = "from: {database: crm, name: orders}\nwhere: {and: [{op: '==', left: {field: id}, right: {value: none}}, {exists: {query: {from: {database: crm, name: %s}}}}]}\n"
+		join     = "from: {%[2]sname: %[1]s, alias: r, joins: [{from: {%[2]sname: orders, alias: o}, on: [{left: {field: id, source: r}, op: '==', right: {field: customer_id, source: o}}]}]}\ncolumns: [{field: id, source: o}]\n"
+		subquery = "from: {%[2]sname: orders, alias: o}\nwhere: {exists: {query: {from: {%[2]sname: %[1]s}}}}\ncolumns: [{field: id, source: o}]\n"
+		root     = "from: {%[2]sname: %[1]s, alias: r}\ncolumns: [{field: id, source: r}]\n"
 	)
-	root := func(name, tail string) string { return "from: {database: crm, name: " + name + "}\n" + tail }
-	for _, role := range []struct {
-		name string
-		// never is the status of the subquery that is never evaluated: a principal
-		// the policy gives nothing is denied the collection the document reads first.
-		never int
-	}{{"nobody", http.StatusForbidden}, {"reader", http.StatusOK}} {
-		host := relRevProtectedServer(t, role.name)
-		for _, endpoint := range []struct{ name, path string }{
-			{"per-database endpoint", "/v1/databases/crm/dtql"},
-			{"/v1/dtql", "/v1/dtql"},
+	names := []string{"customers", "ghost", "orders", `'"customers"'`}
+	for _, role := range []string{"reader", "nobody"} {
+		host := relRevProtectedServer(t, role, server.WithQueryLimits(server.QueryLimits{MaxSourceRows: 1}))
+		for _, endpoint := range []struct{ name, path, database string }{
+			{"per-database endpoint", "/v1/databases/crm/dtql", ""},
+			{"/v1/dtql", "/v1/dtql", "database: crm, "},
 		} {
-			for _, tc := range []struct {
-				name              string
-				declared, missing string
-				status            int
-			}{
-				{"two columns of one output name", root("customers", repeated), root("ghost", repeated), http.StatusBadRequest},
-				{"a field name only the classifier accepts", root("customers", spaced), root("ghost", spaced), http.StatusBadRequest},
-				{"a subquery behind a false condition", fmt.Sprintf(never, "customers"), fmt.Sprintf(never, "ghost"), role.never},
-			} {
-				t.Run(role.name+", "+endpoint.name+", "+tc.name, func(t *testing.T) {
-					declared := relHTTPDo(t, host.URL, http.MethodPost, endpoint.path, ownerToken, tc.declared, nil)
-					missing := relHTTPDo(t, host.URL, http.MethodPost, endpoint.path, ownerToken, tc.missing, nil)
-					if declared.status != tc.status || missing.status != tc.status {
-						t.Fatalf("declared collection: %d %s\nundeclared collection: %d %s\nwant %d for both", declared.status, declared.raw, missing.status, missing.raw, tc.status)
-					}
-					if got, want := relRevElapsed.ReplaceAllString(missing.raw, `"elapsedMs":0`), relRevElapsed.ReplaceAllString(declared.raw, `"elapsedMs":0`); got != want {
-						t.Fatalf("declared collection: %s\nundeclared collection: %s\nwant one answer for both", declared.raw, missing.raw)
-					}
-					if strings.Contains(missing.raw, "ghost") {
-						t.Fatalf("the answer repeats the name: %s", missing.raw)
+			for shape, format := range map[string]string{"a streamed join": join, "a subquery": subquery, "one source": root} {
+				t.Run(role+", "+endpoint.name+", "+shape, func(t *testing.T) {
+					var first relHTTPResponse
+					for i, name := range names {
+						resp := relHTTPPost(t, host.URL, endpoint.path, ownerToken, fmt.Sprintf(format, name, endpoint.database))
+						if resp.status != http.StatusUnprocessableEntity || resp.errorField("code") != "authorization_unsupported" || resp.body["records"] != nil {
+							t.Fatalf("%s: status %d, want a 422 authorization_unsupported with no rows: %s", name, resp.status, resp.raw)
+						}
+						if i == 0 {
+							first = resp
+						} else if resp.raw != first.raw {
+							t.Fatalf("%s: %s\n%s: %s\nwant one answer for both", names[0], first.raw, name, resp.raw)
+						}
 					}
 				})
 			}

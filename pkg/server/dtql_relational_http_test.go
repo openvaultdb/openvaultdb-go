@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -350,13 +351,73 @@ func TestRelationalDTQLOverHTTPAcceptance(t *testing.T) {
 			t.Fatalf("records = %v", records)
 		}
 	})
-	t.Run("a one-source document that names its own database is relational", func(t *testing.T) {
-		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", "from: {database: chinook, name: Customer}\norderBy: [{field: id}]\ncolumns: [{field: name}]\n")
+	t.Run("a one-source document that names its own database is read as one that names none", func(t *testing.T) {
+		const bare = "from: {name: Customer}\norderBy: [{field: id}]\ncolumns: [{field: name}]\n"
+		want := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", bare)
+		if want.status != http.StatusOK || want.body["columns"] != nil || want.body["execution"] != nil {
+			t.Fatalf("status %d: %s", want.status, want.raw)
+		}
+		for name, doc := range map[string]string{
+			"flow form":            "from: {database: chinook, name: Customer}\norderBy: [{field: id}]\ncolumns: [{field: name}]\n",
+			"block form":           "from:\n  database: chinook\n  name: Customer\norderBy: [{field: id}]\ncolumns: [{field: name}]\n",
+			"the database last":    "from: {name: Customer, database: chinook}\norderBy: [{field: id}]\ncolumns: [{field: name}]\n",
+			"with the default one": "from: {database: chinook, schema: main, name: Customer}\norderBy: [{field: id}]\ncolumns: [{field: name}]\n",
+		} {
+			got := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", doc)
+			if got.status != want.status || got.raw != want.raw {
+				t.Errorf("%s: status %d: %s\nwant the body of the document that names no database: %s", name, got.status, got.raw, want.raw)
+			}
+		}
+		records, _ := want.body["records"].([]any)
+		if first, _ := records[0].(map[string]any); len(records) != 3 || first["key"] != "Customer/c1" {
+			t.Fatalf("records = %v, want keys", records)
+		}
+	})
+	t.Run("the same document on /v1/dtql is relational, without keys", func(t *testing.T) {
+		resp := relHTTPPost(t, host.URL, "/v1/dtql", "", "from: {database: chinook, name: Customer}\norderBy: [{field: id}]\ncolumns: [{field: name}]\n")
 		if resp.status != http.StatusOK || resp.body["columns"] == nil || resp.body["execution"] == nil {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
 		if got := relHTTPNames(resp.rows(t), "name"); !reflect.DeepEqual(got, []any{"Ada", "Grace", "Edsger"}) {
 			t.Fatalf("rows = %v", got)
+		}
+	})
+	t.Run("a document that names its own database and has another relational feature is relational", func(t *testing.T) {
+		for name, doc := range map[string]string{
+			"an alias":             "from: {database: chinook, name: Customer, alias: c}\norderBy: [{field: id, source: c}]\ncolumns: [{field: name, source: c}]\n",
+			"a column alias":       "from: {database: chinook, name: Customer}\norderBy: [{field: id}]\ncolumns: [{field: name, as: customer}]\n",
+			"a subquery":           "from: {database: chinook, name: Invoice}\nwhere: {exists: {query: {from: {database: chinook, name: Customer}}}}\norderBy: [{field: id}]\ncolumns: [{field: id}]\n",
+			"an aggregate":         "from: {database: chinook, name: Customer}\ncolumns: [{aggregate: {function: count, args: [{star: true}]}, as: n}]\n",
+			"a second source":      "from: {database: chinook, name: Invoice, alias: i, joins: [{from: {database: chinook, name: Customer, alias: c}, on: [{left: {field: customer_id, source: i}, op: '==', right: {field: id, source: c}}]}]}\ncolumns: [{field: id, source: i}]\n",
+			"a null test":          "from: {database: chinook, name: Customer}\nwhere: {isNotNull: {field: country}}\ncolumns: [{field: id}]\n",
+			"the other's database": "from: {database: chinook, name: Customer}\nwhere: {exists: {query: {from: {database: countries, name: Country}}}}\ncolumns: [{field: id}]\n",
+		} {
+			resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", doc)
+			if name == "the other's database" {
+				if resp.status != http.StatusBadRequest || !strings.Contains(resp.errorField("message"), "/v1/dtql") {
+					t.Errorf("%s: status %d: %s", name, resp.status, resp.raw)
+				}
+				continue
+			}
+			if resp.status != http.StatusOK || resp.body["columns"] == nil || resp.body["execution"] == nil {
+				t.Errorf("%s: status %d: %s", name, resp.status, resp.raw)
+			}
+		}
+	})
+	t.Run("a document whose only relational feature is a subquery is answered in memory, as on /v1/dtql", func(t *testing.T) {
+		// One query has one answer: the root unaliased or aliased, the sources
+		// naming the database or not, on either endpoint.
+		want := []any{"i1", "i2", "i3", "i4", "i5"}
+		for name, call := range map[string]struct{ path, doc string }{
+			"unaliased root":          {"/v1/databases/chinook/dtql", "from: {name: Invoice}\nwhere: {exists: {query: {from: {name: Customer}}}}\norderBy: [{field: id}]\ncolumns: [{field: id}]\n"},
+			"aliased root":            {"/v1/databases/chinook/dtql", "from: {name: Invoice, alias: i}\nwhere: {exists: {query: {from: {name: Customer}}}}\norderBy: [{field: id}]\ncolumns: [{field: id}]\n"},
+			"sources naming the base": {"/v1/databases/chinook/dtql", "from: {database: chinook, name: Invoice}\nwhere: {exists: {query: {from: {database: chinook, name: Customer}}}}\norderBy: [{field: id}]\ncolumns: [{field: id}]\n"},
+			"/v1/dtql":                {"/v1/dtql", "from: {database: chinook, name: Invoice}\nwhere: {exists: {query: {from: {database: chinook, name: Customer}}}}\norderBy: [{field: id}]\ncolumns: [{field: id}]\n"},
+		} {
+			resp := relHTTPPost(t, host.URL, call.path, "", call.doc)
+			if resp.status != http.StatusOK || resp.execution(t)["route"] != "in-memory" || !reflect.DeepEqual(relHTTPNames(resp.rows(t), "id"), want) {
+				t.Errorf("%s: status %d: %s", name, resp.status, resp.raw)
+			}
 		}
 	})
 	t.Run("the paging headers are refused on a relational document", func(t *testing.T) {
@@ -450,8 +511,8 @@ func TestSingleCollectionDocumentAndTheDefaultSchemaOverHTTP(t *testing.T) {
 	} {
 		t.Run("refused, "+name, func(t *testing.T) {
 			resp := post(doc)
-			if resp.status/100 != 4 {
-				t.Fatalf("status %d: %s", resp.status, resp.raw)
+			if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" {
+				t.Fatalf("status %d, want a 400 invalid_dtql: %s", resp.status, resp.raw)
 			}
 		})
 	}
@@ -754,12 +815,13 @@ func relHTTPProtected(t *testing.T) *core.Database {
 	return db
 }
 
-// A joined query on a policy-protected mount is read through the policy one
-// source at a time and joined above it: the answer holds only rows the caller
-// may read, the route is in-memory, and the response reports no row count for
-// the protected sources. The documents that would hand the protected mount a
-// whole joined query are never run on it.
-func TestRelationalDTQLOnAPolicyProtectedMountDoesNotReachItsDriverWithAJoin(t *testing.T) {
+// A relational document is not run on a mount with access policies: a join, a
+// grouping and a subquery are each a 422 authorization_unsupported on both
+// endpoints, and nothing is read for them. The mount itself refuses a joined read
+// transaction, which is the one way a whole joined query could be handed to its
+// driver. A document of one plain collection is answered as it always was, through
+// the policy, with keys; a scan clause is refused by the classifier.
+func TestRelationalDTQLOnAPolicyProtectedMountIsRefusedBeforeItsDriver(t *testing.T) {
 	crm := relHTTPProtected(t)
 	service := server.New("test", map[string]*core.Database{"crm": crm},
 		server.WithPrincipalResolver(func(context.Context, *auth.Principal) (access.Principal, error) {
@@ -770,77 +832,46 @@ func TestRelationalDTQLOnAPolicyProtectedMountDoesNotReachItsDriverWithAJoin(t *
 	host := httptest.NewServer(service.Handler())
 	defer host.Close()
 
-	join := `from:
-  name: orders
-  alias: o
-  joins:
-    - type: inner
-      from: {name: customers, alias: c}
-      on:
-        - {left: {field: customer_id, source: o}, op: '==', right: {field: id, source: c}}
-orderBy:
-  - {field: id, source: o}
-columns:
-  - {field: id, source: o, as: order_id}
-  - {field: name, source: c, as: customer}
-`
-	resp := relHTTPPost(t, host.URL, "/v1/databases/crm/dtql", ownerToken, join)
-	if resp.status != http.StatusOK {
-		t.Fatalf("status %d: %s", resp.status, resp.raw)
-	}
-	// Grace's customer row is not readable, so her order does not join.
-	if got := relHTTPNames(resp.rows(t), "order_id"); !reflect.DeepEqual(got, []any{"o1", "o3", "o4"}) {
-		t.Fatalf("order ids = %v", got)
-	}
-	execution := resp.execution(t)
-	if execution["route"] != "in-memory" {
-		t.Fatalf("a join on a protected mount must run in memory, got %v", execution)
-	}
-	// Each protected collection was read on its own through the policy (a read
-	// that took time and has no row count), and nothing was read as a whole.
-	sources := execution["sources"].([]any)
-	if len(sources) != 2 {
-		t.Fatalf("sources = %v, want one read per collection", sources)
-	}
-	for _, source := range sources {
-		entry := source.(map[string]any)
-		if _, hasRows := entry["rows"]; hasRows {
-			t.Fatalf("a protected source reports a row count: %v", entry)
-		}
-		if _, hasTime := entry["elapsedMs"]; !hasTime {
-			t.Fatalf("a protected source was not read through a leaf: %v", entry)
+	const (
+		join = "from: {%[1]sname: orders, alias: o, joins: [{from: {%[1]sname: customers, alias: c}, on: [{left: {field: customer_id, source: o}, op: '==', right: {field: id, source: c}}]}]}\n" +
+			"orderBy: [{field: id, source: o}]\ncolumns: [{field: id, source: o, as: order_id}, {field: name, source: c, as: customer}]\n"
+		count = "from: {%[1]sname: orders, alias: o, joins: [{from: {%[1]sname: customers, alias: c}, on: [{left: {field: customer_id, source: o}, op: '==', right: {field: id, source: c}}]}]}\n" +
+			"columns: [{aggregate: {function: count, args: [{star: true}]}, as: n}]\n"
+		subquery = "from: {%[1]sname: orders}\nwhere: {exists: {query: {from: {%[1]sname: customers}}}}\n"
+	)
+	for _, endpoint := range []struct{ name, path, database string }{
+		{"per-database endpoint", "/v1/databases/crm/dtql", ""},
+		{"/v1/dtql", "/v1/dtql", "database: crm, "},
+	} {
+		for shape, format := range map[string]string{"a join": join, "a grouped count": count, "a subquery": subquery} {
+			t.Run(endpoint.name+", "+shape, func(t *testing.T) {
+				resp := relHTTPPost(t, host.URL, endpoint.path, ownerToken, fmt.Sprintf(format, endpoint.database))
+				if resp.status != http.StatusUnprocessableEntity || resp.errorField("code") != "authorization_unsupported" || resp.body["records"] != nil {
+					t.Fatalf("status %d, want a 422 authorization_unsupported with no rows: %s", resp.status, resp.raw)
+				}
+			})
 		}
 	}
-	// The mount itself refuses a joined read transaction, which is the one way a
-	// whole joined query could be handed to its driver: it never runs the function.
 	ran := false
 	if err := crm.ReadTx(context.Background(), func(dal.QueryExecutor) error { ran = true; return nil }); !errors.Is(err, core.ErrProtectedReadTx) || ran {
 		t.Fatalf("ReadTx on a protected mount = %v (ran %v), want core.ErrProtectedReadTx and no run", err, ran)
 	}
-	// The same join as an aggregate counts only the rows the caller may read.
-	count := relHTTPPost(t, host.URL, "/v1/databases/crm/dtql", ownerToken, `from:
-  name: orders
-  alias: o
-  joins:
-    - type: inner
-      from: {name: customers, alias: c}
-      on:
-        - {left: {field: customer_id, source: o}, op: '==', right: {field: id, source: c}}
-columns:
-  - aggregate: {function: count, args: [{star: true}]}
-    as: n
-`)
-	if count.status != http.StatusOK {
-		t.Fatalf("status %d: %s", count.status, count.raw)
-	}
-	if got := relHTTPNames(count.rows(t), "n"); !reflect.DeepEqual(got, []any{float64(3)}) {
-		t.Fatalf("count = %v", got)
-	}
-	// A scan clause is not read on a protected mount.
-	scan := relHTTPPost(t, host.URL, "/v1/databases/crm/dtql", ownerToken, "from: {name: customers, scan: {limit: 1, orderBy: [{field: id}]}}\ncolumns: [{field: id}]\n")
-	if scan.status/100 != 4 {
-		t.Fatalf("scan: status %d: %s", scan.status, scan.raw)
-	}
+	t.Run("a document of one plain collection is read through the policy, with keys", func(t *testing.T) {
+		resp := relHTTPPost(t, host.URL, "/v1/databases/crm/dtql", ownerToken, "from: {name: customers}\norderBy: [{field: id}]\n")
+		records, _ := resp.body["records"].([]any)
+		if resp.status != http.StatusOK || len(records) != 2 || resp.body["columns"] != nil {
+			t.Fatalf("status %d: %s", resp.status, resp.raw)
+		}
+		if first, _ := records[0].(map[string]any); first["key"] != "customers/c1" {
+			t.Fatalf("records = %v", records)
+		}
+	})
+	t.Run("a scan clause is refused by the classifier", func(t *testing.T) {
+		resp := relHTTPPost(t, host.URL, "/v1/databases/crm/dtql", ownerToken, "from: {name: customers, scan: {limit: 1, orderBy: [{field: id}]}}\ncolumns: [{field: id}]\n")
+		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || !strings.Contains(resp.errorField("message"), "scan") {
+			t.Fatalf("status %d: %s", resp.status, resp.raw)
+		}
+	})
 }
 
 // relHTTPBig is a database with one collection of 1001 rows, one more than a
@@ -935,13 +966,13 @@ func TestRelationalDTQLStatusesOverHTTP(t *testing.T) {
 		// The walk of the executor holds the strict rule, whatever the engine: a
 		// column named with a space is a plain query on the single-collection path and
 		// a 400 on a relational document.
-		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", "from: {database: chinook, name: Customer}\ncolumns: [{field: 'first name'}]\n")
+		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", "from: {name: Customer, alias: c}\ncolumns: [{field: 'first name', source: c}]\n")
 		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || !strings.Contains(resp.errorField("message"), "field name") {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
 	})
 	t.Run("a column the database does not know is a 400 that names it", func(t *testing.T) {
-		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", "from: {database: chinook, name: Customer}\ncolumns: [{field: nosuchcolumn}]\n")
+		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", "from: {name: Customer, alias: c}\ncolumns: [{field: nosuchcolumn, source: c}]\n")
 		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || !strings.Contains(resp.errorField("message"), "nosuchcolumn") {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
@@ -971,7 +1002,7 @@ func TestRelationalDTQLBudgetErrorsOverHTTP(t *testing.T) {
 	// Three customers read from a source limited to two rows.
 	check(relHTTPPost(t, host.URL, "/v1/dtql", "", relHTTPCustomerRegions), "source_rows", 2, "in-memory")
 	// A result of 1001 rows is refused whole, not cut to 1000.
-	check(relHTTPPost(t, host.URL, "/v1/databases/big/dtql", "", "from: {database: big, name: N}\norderBy: [{field: id}]\n"), "response_rows", 1000, "database")
+	check(relHTTPPost(t, host.URL, "/v1/databases/big/dtql", "", "from: {name: N, alias: n}\norderBy: [{field: id, source: n}]\n"), "response_rows", 1000, "database")
 }
 
 // The request timeout is a 504 on both routes, and the server answers the next

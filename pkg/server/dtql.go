@@ -25,15 +25,14 @@ import (
 const crossDatabaseDTQLPath = "/v1/dtql"
 
 // handleDTQL authenticates a bounded DTQL query and executes it through the
-// mounted database's secured DALgo handle. A document the single-collection
-// validator accepts takes the path it always took, with every answer it always
-// gave: that includes a document of one root collection whose only relational
-// feature is a subquery, which the classifier calls relational and the
-// single-collection path has answered (or refused, on a mount with access
-// policies or an engine that cannot run it) since before the classifier. Only a
-// document the validator refuses and the classifier accepts (a join, a grouping, an
-// alias, a source that names its database, a null test) is answered by
-// serveRelationalDTQL. The classifier's own refusals apply to both.
+// mounted database's secured DALgo handle. A document is classified once, after
+// the two qualifiers of its root source that name what the endpoint supplies are
+// dropped (the default schema of the engine and the endpoint's own database): a
+// document of one source with no other relational feature takes the
+// single-collection path, whose records carry keys, and every other document the
+// classifier accepts is answered by serveRelationalDTQL, a document whose only
+// relational feature is a subquery included, so one query has one answer. The
+// classifier's own refusals apply to both.
 func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	db := s.db(w, r)
@@ -44,28 +43,21 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// A root source that carries the engine's default schema is read as one that
-	// carries none; every other schema is left for the classifier to refuse.
-	doc = withoutDefaultSchema(doc, db.Engine())
+	doc = withoutOwnDatabase(withoutDefaultSchema(doc, db.Engine()), db.ID())
 	query, profile, err := classifyDTQLDocument(doc)
 	if err != nil {
 		s.writeMappedError(w, r, clippedError{err})
 		return
 	}
-	collection := ""
 	if profile.Kind == core.ProfileRelational {
-		var singleCollection bool
-		if collection, singleCollection = singleCollectionRoot(doc); !singleCollection {
-			s.serveRelationalDTQL(w, r, db, query, profile)
-			return
-		}
-	} else {
-		collection = profile.Sources[0].Collection
-	}
-	if !s.authorize(w, r, db.ID(), auth.CapRecordsRead, collection) {
+		s.serveRelationalDTQL(w, r, db, query, profile)
 		return
 	}
-	if !s.authorizeQueryReads(w, r, db, query) {
+	// A document of this kind reads one plain collection and no other (no join, no
+	// subquery), so the capability on that collection is the whole check: the
+	// listing of core.QueryCollections is that collection and nothing else.
+	collection := profile.Sources[0].Collection
+	if !s.authorize(w, r, db.ID(), auth.CapRecordsRead, collection) {
 		return
 	}
 	if r.Header.Get("OVDB-Page-Size") != "" || r.Header.Get("OVDB-Page-Token") != "" || r.Header.Get("OVDB-Page-Close") != "" {
@@ -141,15 +133,6 @@ type clippedError struct{ err error }
 
 func (e clippedError) Error() string { return clipText(e.err.Error(), maxRefusalText) }
 func (e clippedError) Unwrap() error { return e.err }
-
-// singleCollectionRoot reports whether the single-collection validator accepts doc,
-// and the one root collection it reads. It is the test that keeps a document the
-// single-collection path has always served on that path whatever the classifier
-// calls it.
-func singleCollectionRoot(doc []byte) (string, bool) {
-	_, collection, err := core.ParseDTQL(doc)
-	return collection, err == nil
-}
 
 // classifyDTQLDocument deserialises a document and classifies it. The error of
 // a document that is not DTQL, or that the classifier refuses, wraps

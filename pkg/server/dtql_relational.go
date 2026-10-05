@@ -29,17 +29,17 @@ import (
 // does not rely on it: it settles the database of every source the classifier
 // found (the root, joins at any depth, derived sources, subqueries), refuses a
 // document that strays outside the endpoint, checks the caller's capability on
-// every database and collection, and only then leases the databases, checks that
-// the collections of a database without access policies are declared, refuses the
-// paging headers and the engines the server does not join, and runs. Nothing is
-// gated or read for a request that fails a check before it.
+// every database and collection, leases the databases, refuses a document that
+// names a database with access policies, and only then checks that the
+// collections are declared, refuses the paging headers and the engines the server
+// does not join, and runs. Nothing is gated or read for a request that fails a
+// check before it.
 //
-// A database with access policies is not asked which collections it declares
-// before the read. Its refusal of a collection it does not declare is the answer
-// of its policy to a collection it does not allow (a 403 ACCESS_DENIED with the
-// same body), and it is given where the policy gives it: at the read, by the
-// executor, so that no answer of the handler tells a declared collection from an
-// undeclared one (hideUndeclared).
+// A relational document is not run on a database with access policies. The
+// refusal depends on the databases the document names and on nothing else: it
+// comes before any collection name is looked up, any field is loaded or any source
+// is read, so the answer is the same whichever collections the document carries,
+// declared or not, readable or not.
 
 // joinExecuteFunc is the signature of joinexec.Execute: the seam the handler
 // runs a relational document through.
@@ -106,16 +106,25 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	if !ok {
 		return
 	}
+	// A database with access policies is not read by a relational document. The
+	// refusal is decided by the databases the document names, before a collection
+	// name is looked at, so no answer says which collections that database declares.
+	for _, id := range order {
+		if databases[id].HasAccessPolicies() {
+			writeError(w, http.StatusUnprocessableEntity, "authorization_unsupported", fmt.Sprintf("database %q has access policies and is read one source at a time: "+
+				"a relational document (a join, a grouping, an alias, a subquery or a source that names its database) is not run on it", clipName(id)))
+			return
+		}
+	}
 	// A collection that a database on an engine that builds SQL does not declare is
 	// not read, whatever the grant says, and neither is one the document spells
 	// another way than its canonical name. The executor reads one source at a time,
 	// so without this check a document that names one would reach the adapter for
 	// the sources before it. It comes before the refusal of the paging headers and
 	// of an engine, as it does on the other routes: a collection that is not there
-	// is a 404 whatever else is wrong with the request. A database with access
-	// policies is left out: it says nothing about what it declares (hideUndeclared).
+	// is a 404 whatever else is wrong with the request.
 	for _, target := range targets {
-		if db := databases[target.database]; !db.HasAccessPolicies() && !readableCollection(db, target.collection) {
+		if db := databases[target.database]; !readableCollection(db, target.collection) {
 			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("collection not found: %q in database %q", clipName(target.collection), clipName(target.database)))
 			return
 		}
@@ -145,7 +154,7 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	}
 	result, err := s.joinExecute(r.Context(), query, joinProfile(profile), defaultDatabase, leasedRegistry(databases), allowed, limits, opts...)
 	if err != nil {
-		s.writeRelationalError(w, r, hideUndeclared(databases, err))
+		s.writeRelationalError(w, r, err)
 		return
 	}
 	facts := make([]cacheFacts, 0, len(order))
@@ -179,25 +188,6 @@ func readableCollection(db *core.Database, collection string) bool {
 	}
 	canonical, declared := db.CanonicalCollection(collection)
 	return !declared || canonical == collection
-}
-
-// hideUndeclared returns the error a failed relational request is answered with.
-// A read that a database with access policies refused because the collection is
-// not one it declares (an error of that database's source that wraps
-// core.ErrNotFound) is answered as the read of a collection its policy denies, the
-// same 403 ACCESS_DENIED with the same body, so that the answer says nothing about
-// which collections the database declares. Any other error, and the error of a
-// database without access policies, is returned as it is.
-func hideUndeclared(databases map[string]*core.Database, err error) error {
-	var source *joinexec.SourceError
-	if !errors.As(err, &source) {
-		return err
-	}
-	db, leased := databases[source.Database]
-	if !leased {
-		return err
-	}
-	return hiddenAsDenied(db, err)
 }
 
 // relationalResponse is the body of a relational answer: rows without keys, the

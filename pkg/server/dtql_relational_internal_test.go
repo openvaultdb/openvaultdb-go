@@ -414,14 +414,18 @@ func TestRelationalHandlerAuthorisesBeforeItCallsTheExecutor(t *testing.T) {
 
 	t.Run("a refusal repeats no more than a bounded name", func(t *testing.T) {
 		long := strings.Repeat("c", 5000)
-		for name, tc := range map[string]struct{ path, doc, token string }{
-			"403 on /v1/dtql":                 {"/v1/dtql", "from: {database: beta, name: " + long + "}\n", "alpha-only"},
-			"400 for a source without a base": {"/v1/dtql", "from: {name: " + long + "}\n", "both"},
-			"400 for a foreign database":      {"/v1/databases/alpha/dtql", "from: {database: " + strings.Repeat("d", 60) + ", name: orders}\n", "both"},
+		for name, tc := range map[string]struct {
+			path, doc, token string
+			status           int
+			code             string
+		}{
+			"403 on /v1/dtql":                 {"/v1/dtql", "from: {database: beta, name: " + long + "}\n", "alpha-only", 403, "forbidden"},
+			"400 for a source without a base": {"/v1/dtql", "from: {name: " + long + "}\n", "both", 400, "invalid_dtql"},
+			"400 for a foreign database":      {"/v1/databases/alpha/dtql", "from: {database: " + strings.Repeat("d", 60) + ", name: orders}\n", "both", 400, "invalid_dtql"},
 		} {
 			resp := relFakeDo(t, host, http.MethodPost, tc.path, tc.token, tc.doc, nil)
-			if resp.status/100 != 4 || len(resp.raw) > 600 {
-				t.Errorf("%s: status %d, %d bytes: %.200s", name, resp.status, len(resp.raw), resp.raw)
+			if resp.status != tc.status || resp.code() != tc.code || len(resp.raw) > 600 {
+				t.Errorf("%s: status %d code %q, want %d %q; %d bytes: %.200s", name, resp.status, resp.code(), tc.status, tc.code, len(resp.raw), resp.raw)
 			}
 		}
 		if fake.count() != 0 {
@@ -443,7 +447,7 @@ func TestRelationalHandlerAuthorisesBeforeItCallsTheExecutor(t *testing.T) {
 	})
 	fake.calls = nil
 	t.Run("a collection-scoped token is cleared for its collection only", func(t *testing.T) {
-		resp := relFakeDo(t, host, http.MethodPost, "/v1/databases/alpha/dtql", "orders-only", "from: {database: alpha, name: orders}\n", nil)
+		resp := relFakeDo(t, host, http.MethodPost, "/v1/databases/alpha/dtql", "orders-only", "from: {name: orders, alias: o}\n", nil)
 		if resp.status != 200 {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
@@ -618,29 +622,6 @@ func TestRelationalHandlerRefusesAnUndeclaredCollectionBeforeTheExecutor(t *test
 			t.Fatalf("status %d, %d bytes", resp.status, len(resp.raw))
 		}
 	})
-}
-
-// hideUndeclared changes the answer only for a database with access policies. The
-// policy case runs over HTTP (TestAnUndeclaredCollectionOfAProtectedDatabase...); here
-// are the errors it leaves as they are.
-func TestHideUndeclaredLeavesEveryOtherErrorAsItIs(t *testing.T) {
-	missing := fmt.Errorf("%w: collection %q is not declared by this database", core.ErrNotFound, "ghost")
-	databases := map[string]*core.Database{"alpha": relFakeMount("alpha", "sqlite", "")}
-	for _, tc := range []struct {
-		name string
-		err  error
-	}{
-		{"an error of no source", missing},
-		{"a source of a database without access policies", &joinexec.SourceError{Database: "alpha", Collection: "ghost", Err: missing}},
-		{"a source of a database the request did not lease", &joinexec.SourceError{Database: "zeta", Collection: "ghost", Err: missing}},
-		{"a failed read of a database without access policies", &joinexec.SourceError{Database: "alpha", Collection: "orders", Err: errors.New("disk exploded")}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := hideUndeclared(databases, tc.err); got != tc.err {
-				t.Fatalf("hideUndeclared = %v, want the error as it was", got)
-			}
-		})
-	}
 }
 
 // A database that is named, granted and not mounted is a 404, and nothing runs.
@@ -1020,6 +1001,75 @@ func TestWithoutDefaultSchemaDropsOnlyTheDefaultSchemaOfTheRootSource(t *testing
 	})
 	t.Run("the rest of the document is kept", func(t *testing.T) {
 		got := withoutDefaultSchema([]byte("from: {schema: main, name: Customer, alias: c}\nwhere: {op: '>', left: {field: n, source: c}, right: {value: 1}}\nlimit: 5\ncolumns: [{field: id, source: c}]\n"), "sqlite")
+		query, err := dtql.Deserialize(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if query.Limit() != 5 || query.Where() == nil || len(query.Columns()) != 1 || query.From().Base().Alias() != "c" {
+			t.Fatalf("query = %v", query)
+		}
+	})
+}
+
+// A root source that names the database of the endpoint reads as one that names
+// none. Everything else, another database included, is left as it came.
+func TestWithoutOwnDatabaseDropsOnlyTheEndpointsDatabaseOfTheRootSource(t *testing.T) {
+	databaseOf := func(t *testing.T, doc []byte) string {
+		t.Helper()
+		query, err := dtql.Deserialize(doc)
+		if err != nil {
+			t.Fatalf("Deserialize(%q): %v", doc, err)
+		}
+		return query.From().Base().(dal.CollectionRef).Database()
+	}
+	for name, doc := range map[string]string{
+		"flow":     "from: {database: chinook, name: Customer}\norderBy: [{field: id}]\n",
+		"block":    "from:\n  database: chinook\n  name: Customer\norderBy: [{field: id}]\n",
+		"quoted":   "from: {database: \"chinook\", name: Customer}\norderBy: [{field: id}]\n",
+		"last":     "from: {name: Customer, database: chinook}\norderBy: [{field: id}]\n",
+		"join too": "from: {database: chinook, name: Customer, alias: c, joins: [{from: {name: Invoice, alias: i}, on: [{left: {field: a, source: c}, op: '==', right: {field: b, source: i}}]}]}\n",
+	} {
+		t.Run("dropped, "+name, func(t *testing.T) {
+			got := withoutOwnDatabase([]byte(doc), "chinook")
+			if string(got) == doc || strings.Contains(string(got), "database") {
+				t.Fatalf("the database is still there: %s", got)
+			}
+			if databaseOf(t, got) != "" {
+				t.Fatalf("database = %q", databaseOf(t, got))
+			}
+		})
+	}
+	for name, doc := range map[string]string{
+		"another database":                "from: {database: countries, name: Customer}\n",
+		"capitals":                        "from: {database: CHINOOK, name: Customer}\n",
+		"two database keys":               "from: {database: chinook, name: Customer, database: chinook}\n",
+		"a database that is not a scalar": "from: {database: [chinook], name: Customer}\n",
+		"a database that is a mapping":    "from: {database: {x: chinook}, name: Customer}\n",
+		"no database":                     "from: {name: Customer}\norderBy: [{field: id}]\n",
+		"no from":                         "where: {op: '==', left: {field: a}, right: {value: 1}}\n",
+		"from that is not a mapping":      "from: Customer\n",
+		"a document that is a list":       "- from: {database: chinook, name: Customer}\n",
+		"not YAML":                        "from: {database: chinook, name: Customer\n",
+		"an empty document":               "",
+		"two documents":                   "from: {database: chinook, name: A}\n---\nfrom: {name: B}\n",
+		"the database of a subquery":      "from: {name: A, alias: a}\nwhere: {exists: {query: {from: {database: chinook, name: B}}}}\n",
+		"the database of a join":          "from: {name: A, alias: a, joins: [{from: {database: chinook, name: B, alias: b}, on: [{left: {field: x, source: a}, op: '==', right: {field: y, source: b}}]}]}\n",
+	} {
+		t.Run("kept, "+name, func(t *testing.T) {
+			if got := withoutOwnDatabase([]byte(doc), "chinook"); string(got) != doc {
+				t.Fatalf("the document changed: %q", got)
+			}
+		})
+	}
+	t.Run("kept, the encoder fails", func(t *testing.T) {
+		doc := "from: {database: chinook, name: Customer}\n"
+		failing := func(any) ([]byte, error) { return nil, errors.New("cannot encode") }
+		if got := stripOwnDatabase([]byte(doc), "chinook", failing); string(got) != doc {
+			t.Fatalf("the document changed: %q", got)
+		}
+	})
+	t.Run("the rest of the document is kept", func(t *testing.T) {
+		got := withoutOwnDatabase([]byte("from: {database: chinook, name: Customer, alias: c}\nwhere: {op: '>', left: {field: n, source: c}, right: {value: 1}}\nlimit: 5\ncolumns: [{field: id, source: c}]\n"), "chinook")
 		query, err := dtql.Deserialize(got)
 		if err != nil {
 			t.Fatal(err)

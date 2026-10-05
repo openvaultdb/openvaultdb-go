@@ -7,12 +7,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// This file drops the two qualifiers of a root source that name what the
+// per-database endpoint already supplies: the default schema of the engine and the
+// database of the endpoint. A document that spells either out on its root source
+// reads exactly the collection it would read without it, so the server drops the
+// spelling before the document is classified and the document is then the one it
+// would have been.
+
 // defaultSchemas maps a storage engine to the schema its unqualified names live
-// in. A document that spells that schema out on its root source reads exactly the
-// collection it would read without it, so the server drops the spelling and the
-// document is then the one it would have been. Every other schema, and the
-// default schema of an engine not listed here, is left in place for the
-// classifier to refuse.
+// in. Every other schema, and the default schema of an engine not listed here, is
+// left in place for the classifier to refuse.
 var defaultSchemas = map[string]string{"sqlite": "main"}
 
 // withoutDefaultSchema returns doc without the `schema` of its root source when
@@ -36,6 +40,27 @@ func stripDefaultSchema(doc []byte, engine string, encode func(any) ([]byte, err
 	if schema == "" {
 		return doc
 	}
+	return stripRootSourceKey(doc, "schema", schema, encode)
+}
+
+// withoutOwnDatabase returns doc without the `database` of its root source when
+// that database is id, the database of the per-database endpoint, and doc itself
+// in every other case (the same cases as withoutDefaultSchema, and a root source
+// that names another database). A document of one source then reads as it would
+// have read had it named no database, and is classified as such.
+func withoutOwnDatabase(doc []byte, id string) []byte {
+	return stripOwnDatabase(doc, id, yaml.Marshal)
+}
+
+// stripOwnDatabase is withoutOwnDatabase with the encoder of the stripped document
+// as a parameter.
+func stripOwnDatabase(doc []byte, id string, encode func(any) ([]byte, error)) []byte {
+	return stripRootSourceKey(doc, "database", id, encode)
+}
+
+// stripRootSourceKey returns doc without the entry key of its root source when
+// the entry is a plain scalar equal to value, and doc itself in every other case.
+func stripRootSourceKey(doc []byte, key, value string, encode func(any) ([]byte, error)) []byte {
 	// The document is read as a stream so that a second document is seen: encoding
 	// the first alone would drop the rest, and the deserialiser would take a
 	// request it refuses as it came.
@@ -53,7 +78,7 @@ func stripDefaultSchema(doc []byte, engine string, encode func(any) ([]byte, err
 	}
 	at := -1
 	for i := 0; i+1 < len(from.Content); i += 2 {
-		if key := from.Content[i]; key.Kind == yaml.ScalarNode && key.Value == "schema" {
+		if name := from.Content[i]; name.Kind == yaml.ScalarNode && name.Value == key {
 			if at >= 0 {
 				return doc
 			}
@@ -63,7 +88,7 @@ func stripDefaultSchema(doc []byte, engine string, encode func(any) ([]byte, err
 	if at < 0 {
 		return doc
 	}
-	if value := from.Content[at+1]; value.Kind != yaml.ScalarNode || value.Value != schema {
+	if entry := from.Content[at+1]; entry.Kind != yaml.ScalarNode || entry.Value != value {
 		return doc
 	}
 	from.Content = append(from.Content[:at:at], from.Content[at+2:]...)
