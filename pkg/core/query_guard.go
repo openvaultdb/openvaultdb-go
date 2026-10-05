@@ -65,7 +65,12 @@ func (d *Database) queryEngine() string {
 // CanQuery reports whether structured queries (/query, /dtql) are allowed on
 // this mount. It is the same allow-list guardQuery enforces, so database
 // metadata can advertise exactly what the guard will accept.
-func (d *Database) CanQuery() bool { return queryEngines[d.queryEngine()] }
+func (d *Database) CanQuery() bool { return EngineCanQuery(d.queryEngine()) }
+
+// EngineCanQuery reports whether the storage engine, as a manifest writes it, is
+// cleared for structured queries. It is the allow-list CanQuery and guardQuery
+// ask, for a caller that holds an engine name and no database.
+func EngineCanQuery(engine string) bool { return queryEngines[engine] }
 
 const maxFieldNameLen = 256
 
@@ -402,13 +407,6 @@ func (w nameWalker) sources(sources []dal.RecordsetSource, depth int, outer sour
 	return scope, nil
 }
 
-// aggregateFunctions lists the aggregate function names the walker accepts, in
-// any position. DALgo validates the name only where it runs an aggregation, so
-// a name in a where, scan or ON operand would otherwise reach an adapter.
-var aggregateFunctions = map[string]bool{
-	"COUNT": true, "SUM": true, "AVG": true, "MIN": true, "MAX": true, "FIRST": true, "LAST": true,
-}
-
 func (w nameWalker) field(name string) error {
 	if err := w.names.validate(name); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidDTQL, err)
@@ -521,8 +519,11 @@ func (w nameWalker) expression(expression dal.Expression, depth int, scope sourc
 	case dal.StarExpression:
 		return nil
 	case dal.AggregateFunc:
-		if !aggregateFunctions[strings.ToUpper(e.FuncName())] {
-			return fmt.Errorf("%w: an aggregate function must be one of COUNT, SUM, AVG, MIN, MAX, FIRST, LAST", ErrInvalidDTQL)
+		// The names are the profile's (AggregateFunctions), in any position. DALgo
+		// validates the name only where it runs an aggregation, so a name in a where,
+		// scan or ON operand would otherwise reach an adapter.
+		if !IsAggregateFunction(e.FuncName()) {
+			return fmt.Errorf("%w: %s", ErrInvalidDTQL, unsupportedAggregateText(e.FuncName()))
 		}
 		for _, arg := range e.FuncArgs() {
 			if err := w.expression(arg, depth+1, scope); err != nil {

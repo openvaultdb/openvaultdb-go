@@ -229,7 +229,7 @@ are not exposed by the `ovdb` HTTP wire protocol in MVP. The `dalgo2openvaultdb`
 | Query `Offset`                    | Skip-N not in query wire format                                         |
 | Query column projections          | `Columns` field in `dal.Query` not translated                           |
 | Query `GroupBy` / `Having`        | Not in the `/query` wire format (DTQL documents have them)              |
-| Collection-group queries          | Not in the `/query` wire format (DTQL documents join collections)       |
+| Collection-group queries          | Not in the `/query` wire format; a DTQL document with a collection-group source is refused (`400 invalid_dtql`) |
 | Cross-transaction isolation       | No optimistic concurrency; no MVCC                                      |
 
 These are wire-protocol gaps, not engine limitations. Adding any of them requires extending the
