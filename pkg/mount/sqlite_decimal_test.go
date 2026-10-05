@@ -15,7 +15,11 @@ func TestSQLiteDecimalFunctionsRegisterBeforeOpeningAndPreserveText(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close SQLite connection: %v", err)
+		}
+	})
 	var add, multiply, divide, total, average string
 	if err := db.QueryRow(`SELECT decimal_add('9007199254740993.1', '0.9'), decimal_mul('12345678901234567890.12', '2'), decimal_div('1', '8', 4), decimal_sum(value), decimal_avg(value, 2) FROM (SELECT '9007199254740993.1' AS value UNION ALL SELECT '0.9')`).Scan(&add, &multiply, &divide, &total, &average); err != nil {
 		t.Fatal(err)
