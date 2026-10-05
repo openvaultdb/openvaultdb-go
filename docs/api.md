@@ -499,7 +499,8 @@ POST|GET /v1/dtql                    the document reads one or several databases
 A document of one plain collection (no alias, join, grouping, aggregate or subquery, and a root
 that names no database or names `{db}` itself) is answered as described under [DTQL](#dtql), with
 a key on every record. Any other document the classifier accepts is **relational**: a join, a
-`groupBy`, a `having`, an aggregate, a column alias, a subquery of any kind (a derived source, a
+`groupBy`, a `having`, an aggregate, a column alias, a null test (`isNull`, `isNotNull`), a column
+qualified with its `source`, a computed column, a subquery of any kind (a derived source, a
 scalar subquery, `exists`, a query-valued comparison), or a source that names its `database`. A
 relational document is answered as described below, on both endpoints.
 
@@ -576,9 +577,7 @@ server does, from the configuration it runs with:
         "sum",
         "avg",
         "min",
-        "max",
-        "first",
-        "last"
+        "max"
       ],
       "crossDatabase": true,
       "externalSources": false,
@@ -615,15 +614,20 @@ server does, from the configuration it runs with:
 
 - `endpoint` and `format`: the endpoint that reads several databases and the document format.
 - `features`: `joins` lists the join types (`inner` and `left`); `aggregates` the aggregate
-  functions; `crossDatabase` is true (one document may read several mounted databases);
-  `externalSources`, `windowFunctions` and `protectedDatabases` are false (see
+  functions every route answers (`count`, `sum`, `avg`, `min`, `max`; see `first` and `last` under
+  [Launch limits](#launch-limits)); `crossDatabase` is true (one document may read several
+  mounted databases); `externalSources`, `windowFunctions` and `protectedDatabases` are false (see
   [Launch limits](#launch-limits)); `fieldNames` is `plain`.
 - `limits`: the bounds of one request. `timeoutMs`, `maxSourceRows` and `maxSourceBytes` are the
   server's configuration (`QueryLimits`); `queueWaitMs` is how long a query waits for a free slot
   before it is refused with `503`, and `concurrentInMemory` and `concurrentDatabase` are the slots
-  of the two routes; `maxResultRows` and `maxResultBytes` bound the answer.
+  of the two routes; `maxResultRows` and `maxResultBytes` bound the answer. The bounds of the
+  in-memory route are under [Launch limits](#launch-limits).
 - `joinEngines`: the storage engines whose databases may take part in a relational document,
   after the server has dropped the engine of a GitHub-backed inGitDB mount, which no list enables.
+  The list is the operator's list, not a promise: an engine in it that is not cleared for
+  structured queries (`postgres`, `mysql`, an unknown engine) is still refused with `501`, and its
+  databases advertise `joins: false`.
 
 Each database in the list (listed when auth is off) and the metadata of a database
 (`GET /v1/databases/{db}`, the way to read it when auth is on) carry two booleans, `joins` and
@@ -1145,7 +1149,7 @@ Three rulings shape what a relational document does at launch.
    relational: it is answered with `columns` and `execution` and with no record keys.
 3. On `/v1/databases/{db}/dtql` a document of one source whose root names `{db}` itself is read as
    if it named none. The ruling holds for a `database` key written plainly: a key written through a
-   YAML alias, a merge key or a tag is not recognised, and the document is answered as a relational
+   YAML alias or a merge key is not recognised, and the document is answered as a relational
    one.
 
 <!-- doc-example method=POST path=/v1/databases/crm/dtql status=422 -->
@@ -1183,16 +1187,23 @@ columns:
 - The server joins only the databases mounted on it: `externalSources` is false. Window functions
   are not supported. A condition that the storage engine cannot run is `422 query_unsupported`.
 - Only the engines in `joinEngines` take part. A GitHub-backed inGitDB mount never does.
+- `first` and `last` pass the classifier but are not in `aggregates`: they are answered only where
+  the server evaluates the document itself (a join, or several databases), and a document over one
+  SQLite database that uses either is not answered (today a `500 internal`).
+- On the in-memory route a join holds at most 10,000 rows and 16 MiB, and a grouping at most
+  100,000 groups. Beyond that the answer is `422 query_budget_exceeded`, and `error.budget` names
+  the bound.
 
 #### Statuses
 
 | Status | `error.code` | Meaning |
 | --- | --- | --- |
+| `400` | `invalid_key` | A collection name of a source outside the name rule (an empty name, a control character, a relative path component such as `..`). |
 | `400` | `invalid_dtql` | Not a DTQL document, or outside the profile; a source without a database on `/v1/dtql`; a source of another database on the per-database endpoint; a field name outside the strict rule; a column the database does not have; a shape DALgo cannot join. The message holds the reason, clipped. |
 | `400` / `414` | `bad_request` | A malformed body or GET form; a GET URI over 8 KiB is `414`. |
 | `403` | `forbidden` | With auth on, the token does not grant `records:read` on a collection of a database the document names. |
 | `404` | `not_found` | A database that is not mounted, or a collection of a database on an engine that builds SQL that the database does not declare. |
-| `422` | `authorization_unsupported` | The document names a database with access policies. |
+| `422` | `authorization_unsupported` | The document names a database with access policies, or the adapter of a database without them could not compile the document (the answer is the one the adapter gives, with no further detail). |
 | `422` | `join_engine_unsupported` | The engine of a database is not in `joinEngines`. |
 | `422` | `snapshot_unsupported` | A paging header was sent. |
 | `422` | `query_budget_exceeded` | A bound of the request was reached. `error.budget` names it (`name`, `limit`, `route`, and `path` where it applies) and `error.hint` says what to change. |
@@ -1212,6 +1223,21 @@ from:
   "error": {
     "code": "invalid_dtql",
     "message": "this endpoint reads several databases, so every source names its database: collection \"Customer\" does not"
+  }
+}
+```
+
+<!-- doc-example method=POST path=/v1/dtql status=400 -->
+```yaml
+from:
+  database: chinook
+  name: ".."
+```
+```json
+{
+  "error": {
+    "code": "invalid_key",
+    "message": "invalid or unsupported DTQL query: relational profile: collection-name at from: invalid key: segment \"..\" contains a relative path component"
   }
 }
 ```

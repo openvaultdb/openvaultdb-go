@@ -97,3 +97,23 @@ func TestDocumentedOwnDatabaseRulingHoldsForAPlainKey(t *testing.T) {
 		}
 	}
 }
+
+// first and last are not advertised: over one SQLite database they are not
+// answered (the adapter declares no stable row order), and they are answered where
+// the server evaluates the document itself. The sentence of docs/api.md states
+// both, so a fix of the one-source case must change the sentence and the list of
+// aggregates together.
+func TestDocumentedFirstAndLastAreAnsweredOnlyWhereTheServerEvaluates(t *testing.T) {
+	host := docLimitServer(t)
+	for _, function := range []string{"first", "last"} {
+		aggregate := "{aggregate: {function: " + function + ", args: [{field: total, source: i}]}, as: x}"
+		one := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", "from: {name: Invoice, alias: i}\ncolumns: ["+aggregate+"]\n")
+		if one.status != http.StatusInternalServerError || one.errorField("code") != "internal" {
+			t.Errorf("%s over one SQLite database: status %d: %s", function, one.status, one.raw)
+		}
+		join := "from:\n  name: Invoice\n  alias: i\n  joins:\n    - type: inner\n      from: {name: Customer, alias: c}\n      on:\n        - {left: {field: customer_id, source: i}, op: '==', right: {field: id, source: c}}\ncolumns: [" + aggregate + "]\n"
+		if resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", join); resp.status != http.StatusOK {
+			t.Errorf("%s over a join: status %d: %s", function, resp.status, resp.raw)
+		}
+	}
+}

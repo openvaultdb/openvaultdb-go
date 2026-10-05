@@ -31,6 +31,71 @@ import (
 
 const docExampleOrigin = "http://localhost:8080"
 
+// docExampleCount is the number of runnable examples in docs/api.md.
+const docExampleCount = 13
+
+// docExampleSection is the heading of the section whose fenced blocks are examples.
+const docExampleSection = "### Query profile and relational documents"
+
+// docExampleEveryBlockHasAMarker fails for a yaml or json fenced block of the
+// section that is neither the body of a marked example nor the response of one: a
+// block opens directly after a marker, or directly after the request block that
+// follows one.
+func docExampleEveryBlockHasAMarker(t *testing.T, text string) {
+	t.Helper()
+	lines := strings.Split(text, "\n")
+	start := -1
+	for i, line := range lines {
+		if line == docExampleSection {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("docs/api.md has no %q section", docExampleSection)
+	}
+	// covered is the line of a fence the examples account for: the first fence after
+	// a marker and, for a POST, the second.
+	covered := map[int]bool{}
+	fenceAfter := func(from int) int {
+		for ; from < len(lines); from++ {
+			if strings.HasPrefix(lines[from], "```") {
+				return from
+			}
+		}
+		return len(lines)
+	}
+	closeOf := func(open int) int {
+		return fenceAfter(open + 1)
+	}
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		if strings.HasPrefix(lines[i], "## ") {
+			end = i
+			break
+		}
+	}
+	for i := start; i < end; i++ {
+		match := docExampleMarker.FindStringSubmatch(lines[i])
+		if match == nil {
+			continue
+		}
+		open := fenceAfter(i + 1)
+		covered[open] = true
+		if match[1] == http.MethodPost {
+			covered[fenceAfter(closeOf(open)+1)] = true
+		}
+	}
+	for i := start; i < end; i++ {
+		if !strings.HasPrefix(lines[i], "```") || strings.TrimPrefix(lines[i], "```") == "" {
+			continue
+		}
+		if !covered[i] {
+			t.Errorf("docs/api.md line %d: a %s block of the section has no doc-example marker", i+1, strings.TrimPrefix(lines[i], "```"))
+		}
+	}
+}
+
 var docExampleMarker = regexp.MustCompile(`^<!-- doc-example method=(GET|POST) path=(\S+) status=(\d+)(?: headers=(\S+))? -->$`)
 
 type docExample struct {
@@ -130,9 +195,13 @@ func TestDocumentedExamplesReturnWhatTheDocumentShows(t *testing.T) {
 		t.Fatal(err)
 	}
 	examples := docExamplesOf(t, string(text))
-	if len(examples) < 10 {
-		t.Fatalf("docs/api.md holds %d runnable examples, want at least 10", len(examples))
+	// Every example block of the section carries a marker, and the count is pinned,
+	// so a deleted marker or an example added without one fails here. Change the
+	// count with the document.
+	if len(examples) != docExampleCount {
+		t.Fatalf("docs/api.md holds %d runnable examples, want %d", len(examples), docExampleCount)
 	}
+	docExampleEveryBlockHasAMarker(t, string(text))
 	service := server.New("0.1.0", map[string]*core.Database{
 		"chinook":   relHTTPChinook(t, ""),
 		"countries": relHTTPCountries(t, ""),
@@ -163,5 +232,47 @@ func TestDocumentedExamplesReturnWhatTheDocumentShows(t *testing.T) {
 				t.Fatalf("the response differs from the document\nactual (origin %s):\n%s", host.URL, actual)
 			}
 		})
+	}
+}
+
+// Every aggregate the profile advertises is answered by real SQLite files, as a
+// document over one database and as a join, so a client is never told an aggregate
+// is supported and then refused.
+func TestEveryAdvertisedAggregateIsAnsweredOnSQLite(t *testing.T) {
+	service := server.New("0.1.0", map[string]*core.Database{"chinook": relHTTPChinook(t, ""), "countries": relHTTPCountries(t, "")})
+	defer service.CloseSnapshots()
+	host := httptest.NewServer(service.Handler())
+	defer host.Close()
+
+	var discovery struct {
+		Query struct {
+			Features struct {
+				Aggregates []string `json:"aggregates"`
+			} `json:"features"`
+		} `json:"query"`
+	}
+	resp := relHTTPDo(t, host.URL, http.MethodGet, "/.well-known/openvaultdb", "", "", nil)
+	if err := json.Unmarshal([]byte(resp.raw), &discovery); err != nil || len(discovery.Query.Features.Aggregates) == 0 {
+		t.Fatalf("no advertised aggregates: %v: %s", err, resp.raw)
+	}
+	for _, function := range discovery.Query.Features.Aggregates {
+		aggregate := "{aggregate: {function: " + function + ", args: [{field: total, source: i}]}, as: x}"
+		join := func(database, other string) string {
+			return "from:\n  " + database + "name: Invoice\n  alias: i\n  joins:\n    - type: left\n      from: {" + other + "name: Customer, alias: c}\n      on:\n        - {left: {field: customer_id, source: i}, op: '==', right: {field: id, source: c}}\ncolumns: [" + aggregate + "]\n"
+		}
+		documents := map[string]struct{ path, body string }{
+			"one source":       {"/v1/databases/chinook/dtql", "from: {name: Invoice, alias: i}\ncolumns: [" + aggregate + "]\n"},
+			"a join":           {"/v1/databases/chinook/dtql", join("", "")},
+			"a join over HTTP": {"/v1/dtql", join("database: chinook\n  ", "database: chinook, ")},
+			"in memory":        {"/v1/dtql", "from:\n  database: chinook\n  name: Invoice\n  alias: i\n  joins:\n    - type: left\n      from: {database: countries, name: Country, alias: k}\n      on:\n        - {left: {field: customer_id, source: i}, op: '==', right: {field: code, source: k}}\ncolumns: [" + aggregate + "]\n"},
+		}
+		for name, document := range documents {
+			t.Run(function+" "+name, func(t *testing.T) {
+				resp := relHTTPDo(t, host.URL, http.MethodPost, document.path, "", document.body, nil)
+				if resp.status != http.StatusOK {
+					t.Fatalf("status %d: %s", resp.status, resp.raw)
+				}
+			})
+		}
 	}
 }

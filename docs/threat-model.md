@@ -166,8 +166,10 @@ production-hosting ready — no TLS, no rate limits, no audit log):
   Grants persist with SHA-256 token hashes only (`--auth-store`, mode 0600),
   so the grants file never contains usable credentials.
 - Capabilities follow the spec taxonomy with optional collection scoping;
-  collection-scoped grants cannot use `/dtql` (target collection unknowable
-  before parsing) and cannot enumerate databases; `/v1/status` redacts the
+  a collection-scoped grant is checked against every collection a DTQL
+  document reads (the root, each join, each subquery), and the request is a
+  `403` if any is outside the grant; collection-scoped grants cannot
+  enumerate databases; `/v1/status` redacts the
   database list for non-owners.
 - Remaining gaps for hosted use: no user identity (OIDC/passkeys per spec),
   no refresh/rotation, consent page has no CSRF protection (dev-only flow),

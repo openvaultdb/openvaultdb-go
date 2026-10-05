@@ -16,8 +16,12 @@ import (
 const queryFormat = "dtql-yaml+json"
 
 // profileAggregates are the aggregate functions of the relational profile, as a
-// document writes them.
-var profileAggregates = []string{"count", "sum", "avg", "min", "max", "first", "last"}
+// document writes them: the ones every route answers. first and last pass the
+// classifier but are not listed, because a document over one SQLite database is
+// refused for them (the adapter declares no stable row order); a client is only
+// told what the launch engine runs. TestEveryAdvertisedAggregateIsAnsweredOnSQLite
+// posts each name to real SQLite files.
+var profileAggregates = []string{"count", "sum", "avg", "min", "max"}
 
 // advertisesJoins reports whether a client may send a relational document that
 // names db: a join, a grouping, an aggregate, a subquery or a source that names its

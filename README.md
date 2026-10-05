@@ -401,6 +401,6 @@ until the reviewed query compiler lands.
 - Replication, sync, conflict resolution, migrations
 - Read-your-writes across HTTP round-trips (driver buffers writes client-side)
 - Per-field SQLite columns / indexes
-- Query cursors, offsets, projections, group-by over the HTTP API
+- Query cursors, offsets, projections, group-by on `/query` (DTQL documents have grouping)
 
 See [docs/roadmap.md](docs/roadmap.md) for the prioritised follow-up list.

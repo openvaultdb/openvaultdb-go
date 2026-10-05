@@ -86,7 +86,7 @@ func TestWellKnownQueryBlockStatesTheProfileAsData(t *testing.T) {
 		"joins":              []any{"inner", "left"},
 		"groupBy":            true,
 		"having":             true,
-		"aggregates":         []any{"count", "sum", "avg", "min", "max", "first", "last"},
+		"aggregates":         []any{"count", "sum", "avg", "min", "max"},
 		"subqueries":         true,
 		"crossDatabase":      true,
 		"externalSources":    false,
@@ -265,7 +265,7 @@ func TestAdvertisedAggregatesAreTheOnesTheClassifierTakes(t *testing.T) {
 	if err := json.Unmarshal(raw, &query); err != nil {
 		t.Fatal(err)
 	}
-	if len(query.Features.Aggregates) != 7 {
+	if len(query.Features.Aggregates) != 5 {
 		t.Fatalf("aggregates = %v", query.Features.Aggregates)
 	}
 	_, host := relFakeServer(t, &relFakeExecutor{}, relFakeDefaultMounts())
