@@ -20,7 +20,7 @@ import (
 )
 
 // These tests hold the behaviour that came with the releases of the libraries
-// taken in the same change (dalgo v0.89.6, dalgo2sql v0.26.5, dalgo2postgres
+// taken in the same change (dalgo v0.89.6, dalgo2sql v0.26.6, dalgo2postgres
 // v0.4.1): what a mount answers where a library now refuses what it used to carry
 // out, or answers differently.
 
@@ -306,5 +306,54 @@ func TestAFailedReadInATransactionOfASQLiteMountReturnsNoReader(t *testing.T) {
 	}
 	if recordsetReader != nil {
 		t.Errorf("recordset path: reader %#v with the error %v, want no reader", recordsetReader, recordsetErr)
+	}
+}
+
+// TestAKeyReadThatIsCanceledBeforeItStartsFailsWithTheCancellation is the library pin of
+// dalgo2sql v0.26.6: a read of a record by its key (Get, GetMulti, Exists) runs under the
+// context it is given, and one that is canceled before the statement is sent fails with
+// the cancellation and reads nothing. Before v0.26.6 these reads ignored their context
+// and answered the record of a request that had already ended.
+func TestAKeyReadThatIsCanceledBeforeItStartsFailsWithTheCancellation(t *testing.T) {
+	dir := sqliteFieldsStorage(t,
+		`CREATE TABLE "things" ("id" TEXT PRIMARY KEY, "name" TEXT)`,
+		`INSERT INTO "things" VALUES ('a', 'alpha')`)
+	recordsets := map[string]*dalgo2sql.Recordset{"things": dalgo2sql.NewRecordset("things", dalgo2sql.Table, []dal.FieldRef{dal.Field("id")})}
+	driver, err := dalgo2sqlite.NewDatabaseWithOptions(filepath.Join(dir, "data.sqlite"), dal.NewSchema(nil, nil), dalgo2sql.DbOptions{Recordsets: recordsets, StructuredQueryDialect: "sqlite"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = driver.Close() }()
+	key := record.NewKeyWithID("things", "a")
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	t.Run("a live context reads the record", func(t *testing.T) {
+		rec := record.NewRecordWithData(key, map[string]any{})
+		if err := driver.Get(context.Background(), rec); err != nil || !rec.Exists() {
+			t.Fatalf("Get: %v, exists %v", err, rec.Exists())
+		}
+	})
+	for name, read := range map[string]func() error{
+		"Get": func() error {
+			return driver.Get(canceled, record.NewRecordWithData(key, map[string]any{}))
+		},
+		"GetMulti": func() error {
+			return driver.GetMulti(canceled, []record.Record{record.NewRecordWithData(key, map[string]any{})})
+		},
+		"Exists": func() error {
+			_, err := driver.Exists(canceled, key)
+			return err
+		},
+		"Get in a read transaction": func() error {
+			return driver.RunReadonlyTransaction(context.Background(), func(_ context.Context, tx dal.ReadTransaction) error {
+				return tx.Get(canceled, record.NewRecordWithData(key, map[string]any{}))
+			})
+		},
+	} {
+		t.Run(name+" with a canceled context", func(t *testing.T) {
+			if err := read(); !errors.Is(err, context.Canceled) {
+				t.Fatalf("%v, want the cancellation", err)
+			}
+		})
 	}
 }
