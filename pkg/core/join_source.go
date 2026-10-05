@@ -16,30 +16,37 @@ import (
 // assertion lives in the external test package (join_source_iface_test.go).
 //
 // Nothing here is a way around the structured-query guard. Executor and ReadTx
-// hand out a query-only executor that runs guardQuery before every call, so an
-// engine outside the allow-list is refused with *QueryUnsupportedError even if
-// an operator lists it as a join engine, and the raw driver (writes, schema,
+// hand out a query-only executor that runs guardStructured before every call, so
+// an engine outside the allow-list is refused with *QueryUnsupportedError even
+// if an operator lists it as a join engine, and the raw driver (writes, schema,
 // transactions) is never reachable from what they return. The executor accepts
 // only dal.StructuredQuery values, so a text query (which a SQL driver would
 // run verbatim) is refused too.
 //
-// Not checked here: Executor and ReadTx do not validate collection, field or
-// alias names, unlike Execute, ExecuteDTQLQuery and StreamDTQLSnapshot. The
-// caller must validate the names of every relational document before it
-// reaches an executor; a caller (the planner, the database route) must not be
-// wired to Executor or ReadTx before the name-check follow-up is on main.
+// Before the engine guard, the executor checks the query as Execute and
+// ExecuteDTQLQuery do. Its collection, field and alias names are checked with
+// the field-name rule of the mount's engine (checkRelationalNames), so an
+// engine outside quotedNameEngines is held to the strict rule here, in code. On
+// an engine that builds SQL, every collection the query reads must be declared
+// (guardSources), and JoinFields reads the schema of declared collections only.
 //
 // A policy-protected database is a single-source read through Executor. ReadTx
 // refuses it (ErrProtectedReadTx): DALgo's access layer authorises only the
 // base and first-level join sources of a query, so a joined query inside a
 // secured transaction would read deeper sources unsecured. The same limit
-// applies to a joined query given to Executor on a protected database, so a
-// caller must send protected databases single-source queries only.
+// applies to a query given to Executor on a protected database, which refuses
+// one that has a join, a derived source or a subquery (ErrProtectedSingleSource).
 
 // ErrProtectedReadTx is returned by ReadTx for a database that has access
 // policies: such a database is read through Executor, one single-source query
 // at a time, never inside a joined read transaction.
 var ErrProtectedReadTx = errors.New("a policy-protected database is read through Executor, not a read transaction")
+
+// ErrProtectedSingleSource is returned by the executors of a database that has
+// access policies for a query that is not a plain single-source read: one with a
+// join, a derived source, a subquery or a scan bound. Such a database is read
+// one collection at a time.
+var ErrProtectedSingleSource = errors.New("a policy-protected database is read one source at a time: no join, derived source or subquery")
 
 // errJoinSourceStructuredOnly refuses a query that is not a dal.StructuredQuery.
 var errJoinSourceStructuredOnly = fmt.Errorf("%w: only structured queries are accepted", ErrInvalidDTQL)
@@ -65,7 +72,7 @@ func (d *Database) Engine() string {
 // policies applied (it wraps the secured driver). The executor refuses with
 // *QueryUnsupportedError whenever the database cannot be queried (CanQuery).
 func (d *Database) Executor() dal.QueryExecutor {
-	return guardedQueryExecutor{guard: d.guardQuery, executor: d.db}
+	return guardedQueryExecutor{db: d, executor: d.db}
 }
 
 // ReadTx runs fn in one read transaction of the secured driver. It returns
@@ -88,7 +95,7 @@ func (d *Database) ReadTx(ctx context.Context, fn func(dal.QueryExecutor) error)
 	defer cancel()
 	var fnErr error
 	err := d.db.RunReadonlyTransaction(ctx, func(_ context.Context, tx dal.ReadTransaction) error {
-		fnErr = fn(guardedQueryExecutor{guard: d.guardQuery, executor: tx})
+		fnErr = fn(guardedQueryExecutor{db: d, executor: tx})
 		return fnErr
 	})
 	if fnErr != nil {
@@ -98,9 +105,9 @@ func (d *Database) ReadTx(ctx context.Context, fn func(dal.QueryExecutor) error)
 }
 
 // guardedQueryExecutor offers only the query surface of an executor (and its
-// optional join fields) and runs guard before each call.
+// optional join fields) and checks every call against the database it reads.
 type guardedQueryExecutor struct {
-	guard    func() error
+	db       *Database
 	executor dal.QueryExecutor
 }
 
@@ -109,16 +116,41 @@ var (
 	_ dal.JoinFieldsProvider = guardedQueryExecutor{}
 )
 
-// guardStructured runs the engine guard, then refuses any query that is not a
-// dal.StructuredQuery (a text query runs verbatim on a SQL driver).
+// guardStructured refuses, before the driver is reached, any query that is not
+// a dal.StructuredQuery (a text query runs verbatim on a SQL driver); a query
+// whose names are not plain for the engine; on a SQL engine a query that reads a
+// collection the database does not declare; an engine that is not cleared for
+// queries; and, on a database with access policies, a query that is not a
+// single-source read.
 func (g guardedQueryExecutor) guardStructured(query dal.Query) error {
-	if err := g.guard(); err != nil {
-		return err
-	}
-	if _, ok := query.(dal.StructuredQuery); !ok {
+	structured, ok := query.(dal.StructuredQuery)
+	if !ok {
 		return errJoinSourceStructuredOnly
 	}
+	if err := g.db.checkRelationalNames(structured); err != nil {
+		return err
+	}
+	if err := g.db.guardSources(structured); err != nil {
+		return err
+	}
+	if err := g.db.guardQuery(); err != nil {
+		return err
+	}
+	if g.db.HasAccessPolicies() && !singleSourceRead(structured) {
+		return ErrProtectedSingleSource
+	}
 	return nil
+}
+
+// singleSourceRead reports whether query reads one plain collection: no join,
+// no derived source, no subquery anywhere and no scan bound on the source.
+func singleSourceRead(query dal.StructuredQuery) bool {
+	from := query.From()
+	if from == nil || len(from.Joins()) != 0 || dal.HasSubquery(query) {
+		return false
+	}
+	ref, ok := from.Base().(dal.CollectionRef)
+	return ok && ref.ScanLimit() == 0 && len(ref.ScanOrders()) == 0
 }
 
 func (g guardedQueryExecutor) ExecuteQueryToRecordsReader(ctx context.Context, query dal.Query) (dal.RecordsReader, error) {
@@ -144,7 +176,10 @@ func (g guardedQueryExecutor) ExecuteQueryToRecordsetReader(ctx context.Context,
 // route ("wildcard expansion requires ordered schema metadata"). Callers
 // (OJ-03, OJ-05) must use explicit columns until a mount forwards JoinFields.
 func (g guardedQueryExecutor) JoinFields(ctx context.Context, source dal.RecordsetSource) ([]string, error) {
-	if err := g.guard(); err != nil {
+	if err := g.db.guardSource(source); err != nil {
+		return nil, err
+	}
+	if err := g.db.guardQuery(); err != nil {
 		return nil, err
 	}
 	if provider, ok := g.executor.(dal.JoinFieldsProvider); ok {

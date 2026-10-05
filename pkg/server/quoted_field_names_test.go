@@ -14,11 +14,13 @@ import (
 	"github.com/openvaultdb/openvaultdb-go/pkg/server"
 )
 
-// TestSQLiteColumnWithASpaceIsQueryableOverHTTP is the case the field-name rule
-// cost: a column named "zip code" (the Sakila customer_list view has one) could
-// not be selected, filtered or ordered on any route. It goes through the real
-// handler and a real SQLite file, on the wire query, DTQL over GET and POST,
-// and a snapshot page, and the name arrives quoted: the rows are the right ones.
+// TestSQLiteColumnWithASpaceIsQueryableOverHTTP shows that a declared SQLite
+// table with a string id and a column named "zip code" is selected, filtered and
+// ordered on every query route: the wire query, DTQL over GET and POST, and a
+// snapshot page. It goes through the real handler and a real SQLite file, and
+// the name arrives quoted, so the rows returned are the right ones. The table
+// models any declared relation with such a column; the test does not show that a
+// view without a string id column, which has no recordset, can be read.
 func TestSQLiteColumnWithASpaceIsQueryableOverHTTP(t *testing.T) {
 	dir := t.TempDir()
 	storage, err := sql.Open("sqlite", filepath.Join(dir, "data.sqlite"))

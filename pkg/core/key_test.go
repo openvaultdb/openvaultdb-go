@@ -3,6 +3,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -263,5 +264,37 @@ func TestValidateCollectionName(t *testing.T) {
 		if err != nil && !errors.Is(err, ErrInvalidKey) {
 			t.Errorf("ValidateCollectionName(%q) error %v does not wrap ErrInvalidKey", tc.name, err)
 		}
+	}
+}
+
+// TestSegmentMessagesClipTheName: a collection name or record id longer than
+// the bound is cut where an error message repeats it, and a short one is shown
+// whole, so the caller can tell which segment was refused.
+func TestSegmentMessagesClipTheName(t *testing.T) {
+	huge := strings.Repeat("x", 1<<16)
+	for label, name := range map[string]string{
+		"control character": huge + "\x00",
+		"separators only":   strings.Repeat("/", 1<<16),
+		"relative":          huge + "/../" + huge,
+	} {
+		if err := ValidateSegment(name); !errors.Is(err, ErrInvalidKey) || len(err.Error()) > 4*maxEchoedNameLen {
+			t.Errorf("ValidateSegment %s: %d bytes of message: %.100v", label, len(fmt.Sprint(err)), err)
+		}
+		if err := ValidateCollectionName(name); !errors.Is(err, ErrInvalidKey) || len(err.Error()) > 4*maxEchoedNameLen {
+			t.Errorf("ValidateCollectionName %s: %d bytes of message", label, len(fmt.Sprint(err)))
+		}
+	}
+	if _, err := ParseKey(huge+"\x00", "id"); !errors.Is(err, ErrInvalidKey) || len(err.Error()) > 4*maxEchoedNameLen {
+		t.Errorf("ParseKey: %d bytes of message", len(fmt.Sprint(err)))
+	}
+	if _, err := ParseKeyPath(huge + "%zz/id"); !errors.Is(err, ErrInvalidKey) || len(err.Error()) > 4*maxEchoedNameLen {
+		t.Errorf("ParseKeyPath: %d bytes of message", len(fmt.Sprint(err)))
+	}
+	// A short refused name is still quoted whole.
+	if err := ValidateSegment("a\x00b"); err == nil || !strings.Contains(err.Error(), `"a\x00b"`) {
+		t.Errorf("a short name is quoted whole: %v", err)
+	}
+	if err := ValidateSegment(".."); err == nil || !strings.Contains(err.Error(), `".."`) {
+		t.Errorf("a short name is quoted whole: %v", err)
 	}
 }

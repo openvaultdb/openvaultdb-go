@@ -8,15 +8,20 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/dal-go/dalgo/dal"
+	"github.com/dal-go/record"
 	_ "modernc.org/sqlite"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 	"github.com/openvaultdb/openvaultdb-go/pkg/mount"
 )
 
-var errJoinSrcSQLiteWorker = errors.New("join source sqlite test: worker failed")
+var (
+	errJoinSrcSQLiteWorker = errors.New("join source sqlite test: worker failed")
+	errJoinSrcSQLitePanic  = errors.New("join source sqlite test: callback panicked")
+)
 
 // joinSrcSQLiteMount mounts a temporary SQLite database holding two items.
 func joinSrcSQLiteMount(t *testing.T) *core.Database {
@@ -99,6 +104,53 @@ func TestJoinSourceOnSQLiteMount(t *testing.T) {
 		err := db.ReadTx(context.Background(), func(dal.QueryExecutor) error { return errJoinSrcSQLiteWorker })
 		if !errors.Is(err, errJoinSrcSQLiteWorker) {
 			t.Fatalf("err = %v, want the callback's error", err)
+		}
+	})
+
+	t.Run("a panic in the callback releases the transaction", func(t *testing.T) {
+		ctx := context.Background()
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != errJoinSrcSQLitePanic {
+					t.Errorf("recovered %v, want the callback's panic", recovered)
+				}
+			}()
+			_ = db.ReadTx(ctx, func(tx dal.QueryExecutor) error {
+				query, _, err := core.ParseDTQL([]byte("from: {name: items}\norderBy: [{field: id}]\n"))
+				if err != nil {
+					t.Error(err)
+					return err
+				}
+				// Read one row and leave the reader open, so the transaction
+				// holds the database's read lock when the callback panics.
+				reader, err := tx.ExecuteQueryToRecordsReader(ctx, query)
+				if err != nil {
+					t.Error(err)
+					return err
+				}
+				if _, err := reader.Next(); err != nil {
+					t.Error(err)
+				}
+				panic(errJoinSrcSQLitePanic)
+			})
+		}()
+		// A write needs the lock the read transaction held. The driver gives the
+		// connection back when its context is cancelled, which is asynchronous,
+		// so the write is retried for a short while.
+		op := []core.Op{{Op: "set", Key: record.NewKeyWithID("items", "c"), Data: map[string]any{"name": "gamma"}}}
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			_, err := db.Apply(ctx, op, "")
+			if err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the write still fails after the callback panicked: %v", err)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if ids := joinSrcReadAll(t, db.Executor(), "from: {name: items}\norderBy: [{field: id}]\n"); len(ids) != 3 || ids[2] != "c" {
+			t.Fatalf("ids = %v", ids)
 		}
 	})
 

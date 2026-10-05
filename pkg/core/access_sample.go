@@ -42,6 +42,12 @@ func (d *Database) SelectAccessSample(ctx context.Context, query dal.StructuredQ
 	if err != nil {
 		return nil, nil, err
 	}
+	if err = d.guardProtectedSources(query); err != nil {
+		return nil, nil, err
+	}
+	if err = d.guardSources(query); err != nil {
+		return nil, nil, err
+	}
 	if n < 1 || n > 100 || query.Offset() != 0 {
 		return nil, nil, fmt.Errorf("unsupported sample bounds")
 	}

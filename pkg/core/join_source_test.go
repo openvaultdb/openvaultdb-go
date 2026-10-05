@@ -111,6 +111,7 @@ func joinSrcOpen(t *testing.T, engine string, mutate func(*manifest.Storage), bu
 	m := &manifest.Manifest{
 		Database: manifest.Database{ID: "joinsrc", SchemaMode: schema.ModeStrict},
 		Storage:  manifest.Storage{Engine: engine},
+		Schemas:  joinSrcSchemas(),
 	}
 	if mutate != nil {
 		mutate(&m.Storage)
@@ -120,6 +121,13 @@ func joinSrcOpen(t *testing.T, engine string, mutate func(*manifest.Storage), bu
 		t.Fatal(err)
 	}
 	return db, calls
+}
+
+// joinSrcSchemas declares the one collection the tests of this file read.
+func joinSrcSchemas() *schema.Schemas {
+	return &schema.Schemas{Collections: map[string]schema.Collection{
+		"items": {Fields: map[string]schema.Field{"name": {Type: schema.TypeString}}},
+	}}
 }
 
 func joinSrcPlainDB(calls *joinSrcRecorder) dal.DB {
@@ -388,6 +396,7 @@ func TestJoinSourceReadTxRefusesAPolicyProtectedDatabase(t *testing.T) {
 	m := &manifest.Manifest{
 		Database: manifest.Database{ID: "joinsrc", SchemaMode: schema.ModeStrict},
 		Storage:  manifest.Storage{Engine: "sqlite"},
+		Schemas:  joinSrcSchemas(),
 	}
 	db, err := Open(m, joinSrcDB{calls: calls, tx: joinSrcTx{calls: calls}}, []schema.Mode{schema.ModeStrict}, "", joinSrcPolicy{})
 	if err != nil {
@@ -443,5 +452,148 @@ func TestJoinSourceExecutorRefusesNonStructuredQueries(t *testing.T) {
 	}
 	if calls.readers != 0 || calls.recordsets != 0 {
 		t.Fatalf("a text query reached the driver: %+v", *calls)
+	}
+}
+
+// joinSrcAllowPolicy allows every request; joinSrcDenyPolicy denies every one.
+// The decision is the policy's own, so a read that is denied never reaches the
+// driver, and one that is allowed reaches it through the same wrapper.
+type joinSrcAllowPolicy struct{}
+
+func (joinSrcAllowPolicy) Name() string { return "joinsrc-allow" }
+func (joinSrcAllowPolicy) Decide(_ context.Context, r access.Request) access.Decision {
+	return access.Decision{Allowed: true, Operation: r.Operation, Policy: "joinsrc-allow"}
+}
+func (joinSrcAllowPolicy) Authorize(context.Context, access.Request) error { return nil }
+
+type joinSrcDenyPolicy struct{}
+
+func (joinSrcDenyPolicy) Name() string { return "joinsrc-deny" }
+func (joinSrcDenyPolicy) Decide(_ context.Context, r access.Request) access.Decision {
+	return access.Decision{Allowed: false, Operation: r.Operation, Policy: "joinsrc-deny"}
+}
+func (joinSrcDenyPolicy) Authorize(context.Context, access.Request) error {
+	return access.ErrAccessDenied
+}
+
+// joinSrcProtected opens a fake-backed database with one access policy. It
+// declares the collections of srcGuardCases and items.
+func joinSrcProtected(t *testing.T, engine string, policy access.Policy) (*Database, *joinSrcRecorder) {
+	t.Helper()
+	calls := &joinSrcRecorder{}
+	m := &manifest.Manifest{
+		Database: manifest.Database{ID: "joinsrc", SchemaMode: schema.ModeStrict},
+		Storage:  manifest.Storage{Engine: engine},
+		Schemas:  joinSrcSchemas(),
+	}
+	for _, name := range []string{"customers", "orders", "ghost"} {
+		m.Schemas.Collections[name] = schema.Collection{Fields: map[string]schema.Field{"name": {Type: schema.TypeString}}}
+	}
+	db, err := Open(m, joinSrcDB{calls: calls, tx: joinSrcTx{calls: calls}}, []schema.Mode{schema.ModeStrict}, "", policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !db.HasAccessPolicies() {
+		t.Fatal("the database must have access policies")
+	}
+	return db, calls
+}
+
+// TestJoinSourceExecutorReadsThroughThePolicyWrapper: Executor wraps the secured
+// driver, so the access policies are applied to a read it serves.
+func TestJoinSourceExecutorReadsThroughThePolicyWrapper(t *testing.T) {
+	ctx := context.Background()
+	for _, engine := range []string{"sqlite", "ingitdb"} {
+		t.Run(engine, func(t *testing.T) {
+			denied, deniedCalls := joinSrcProtected(t, engine, joinSrcDenyPolicy{})
+			_, err := denied.Executor().ExecuteQueryToRecordsReader(ctx, joinSrcQuery(t))
+			if !errors.Is(err, access.ErrAccessDenied) {
+				t.Fatalf("a denying policy: got %v, want access.ErrAccessDenied", err)
+			}
+			if _, err = denied.Executor().ExecuteQueryToRecordsetReader(ctx, joinSrcQuery(t)); !errors.Is(err, access.ErrAccessDenied) {
+				t.Fatalf("a denying policy, recordset reader: got %v, want access.ErrAccessDenied", err)
+			}
+			if deniedCalls.readers != 0 || deniedCalls.recordsets != 0 {
+				t.Fatalf("a denied read reached the driver: %+v", *deniedCalls)
+			}
+
+			allowed, allowedCalls := joinSrcProtected(t, engine, joinSrcAllowPolicy{})
+			if _, err = allowed.Executor().ExecuteQueryToRecordsReader(ctx, joinSrcQuery(t)); !errors.Is(err, errJoinSrcReader) {
+				t.Fatalf("an allowing policy: got %v, want the driver's error", err)
+			}
+			if allowedCalls.readers != 1 {
+				t.Fatalf("an allowed read must reach the driver once: %+v", *allowedCalls)
+			}
+		})
+	}
+}
+
+// TestJoinSourceExecutorRefusesNonSingleSourceReadsOnAProtectedDatabase: DALgo's
+// access layer authorises only the base and first-level join sources, so a
+// protected database serves one plain collection per query, and no query with a
+// join, a derived source or a subquery reaches the driver.
+func TestJoinSourceExecutorRefusesNonSingleSourceReadsOnAProtectedDatabase(t *testing.T) {
+	ctx := context.Background()
+	for _, engine := range []string{"sqlite", "ingitdb"} {
+		for _, tc := range srcGuardCases("ghost") {
+			t.Run(engine+"/"+tc.name, func(t *testing.T) {
+				db, calls := joinSrcProtected(t, engine, joinSrcAllowPolicy{})
+				plain := tc.name == "root"
+				_, err := db.Executor().ExecuteQueryToRecordsReader(ctx, tc.query)
+				_, recordsetErr := db.Executor().ExecuteQueryToRecordsetReader(ctx, tc.query)
+				if plain {
+					if !errors.Is(err, errJoinSrcReader) || !errors.Is(recordsetErr, errJoinSrcReader) || calls.readers != 1 || calls.recordsets != 1 {
+						t.Fatalf("a single-source read: %v, %v, calls %+v", err, recordsetErr, *calls)
+					}
+					return
+				}
+				if !errors.Is(err, ErrProtectedSingleSource) || !errors.Is(recordsetErr, ErrProtectedSingleSource) {
+					t.Fatalf("got %v, %v; want ErrProtectedSingleSource", err, recordsetErr)
+				}
+				if calls.readers != 0 || calls.recordsets != 0 || calls.txStarts != 0 {
+					t.Fatalf("a refused read reached the driver: %+v", *calls)
+				}
+			})
+		}
+	}
+}
+
+// TestJoinSourceExecutorServesJoinsOnAnUnprotectedDatabase is the control of
+// the test above: without access policies the same joined query is passed on.
+func TestJoinSourceExecutorServesJoinsOnAnUnprotectedDatabase(t *testing.T) {
+	db, calls := srcGuardJoinOpen(t, "sqlite", "customers", "orders", "ghost")
+	for _, tc := range srcGuardCases("ghost") {
+		if _, err := db.Executor().ExecuteQueryToRecordsReader(context.Background(), tc.query); !errors.Is(err, errJoinSrcReader) {
+			t.Errorf("%s: %v", tc.name, err)
+		}
+	}
+	if calls.readers != len(srcGuardCases("ghost")) {
+		t.Fatalf("driver reads = %d", calls.readers)
+	}
+}
+
+func TestSingleSourceRead(t *testing.T) {
+	plain := dal.NewRootCollectionRef("items", "")
+	for label, tc := range map[string]struct {
+		query dal.StructuredQuery
+		want  bool
+	}{
+		"plain":            {selectQuery(fromTree(plain).NewQuery()), true},
+		"aliased":          {selectQuery(fromTree(dal.NewRootCollectionRef("items", "i")).NewQuery()), true},
+		"filtered":         {selectQuery(fromTree(plain).NewQuery().WhereField("name", dal.Equal, "x").OrderBy(dal.AscendingField("name"))), true},
+		"scan limit":       {selectQuery(fromTree(plain.WithScan(5)).NewQuery()), false},
+		"scan order":       {selectQuery(fromTree(plain.WithScan(0, dal.AscendingField("name"))).NewQuery()), false},
+		"join":             {selectQuery(fromTree(plain, dal.NewJoinedSource(rootRef("b"), dal.JoinInner, srcGuardJoinOn("items", "b"))).NewQuery()), false},
+		"derived":          {selectQuery(fromTree(dal.NewQuerySource(srcGuardInner("items"), "d")).NewQuery()), false},
+		"subquery":         {withExists("items", srcGuardInner("b")), false},
+		"collection group": {selectQuery(fromTree(dal.NewCollectionGroupRef("items", "")).NewQuery()), false},
+		"unknown source":   {selectQuery(fromTree(unknownSource{plain}).NewQuery()), false},
+		"pointer":          {selectQuery(fromTree(&plain).NewQuery()), false},
+		"no base":          {shapeQuery{StructuredQuery: srcGuardInner("items"), from: nilFrom{dal.From(plain)}, hasFrom: true}, false},
+		"no from":          {noFromQuery{srcGuardInner("items")}, false},
+	} {
+		if got := singleSourceRead(tc.query); got != tc.want {
+			t.Errorf("%s: singleSourceRead = %v, want %v", label, got, tc.want)
+		}
 	}
 }

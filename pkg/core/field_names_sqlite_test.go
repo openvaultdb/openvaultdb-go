@@ -31,6 +31,15 @@ var quotedNameClasses = map[string][]string{
 	"placeholders":             {"a?b", "?", "$1", "a$b", "$"},
 	"non-letter unicode":       {"temp °C", "price €", "emoji \U0001F600", "名前 ★"},
 	"invisible and separator":  {"a\u200bb", "a\u2028b", "a\ufeffb", "a\u202eb"},
+	// Characters that look like a quote or a semicolon but are not one: the
+	// rule refuses only the ASCII ones, and SQLite treats these as name text.
+	"look-alike quotes and semicolon": {"a\u2018b", "a\u201cb", "a\uff02b", "a\uff40b", "a\uff1bb"},
+	// A dot separates the segments of a name; a segment may hold what the strict
+	// rule refuses, and the column is still one identifier.
+	"dotted name with a widened segment": {"address.zip code", "a b.c d", "a.b-c"},
+	"other numbers":                      {"a\u00b2", "\u00bd", "\u2167", "x\u0663y"},
+	"leading combining mark":             {"\u0308name", "\u0301"},
+	"private use":                        {"a\ue000b", "\U000f0000x"},
 }
 
 // newQuotedNamesDB creates a SQLite file with one table whose columns carry

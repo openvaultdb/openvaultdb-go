@@ -706,18 +706,66 @@ func TestClassifyDTQLCollectionNameRefusalKeepsBothSentinels(t *testing.T) {
 	}
 }
 
-// TestClassifyDTQLRefusesWhatParseDTQLAcceptsOnlyForMoney documents the one
-// shape the single-collection profile accepts and the classifier refuses: the
-// relational rules are checked for every document, single-collection ones
-// included. (A schema-qualified root, a scan root and a database on the root
-// are refused by ParseDTQL too since the query guard.)
-func TestClassifyDTQLRefusesWhatParseDTQLAcceptsOnlyForMoney(t *testing.T) {
-	const money = "from: {name: a}\nmoney: {minorUnitScale: 2, divisionScale: 4, rounding: halfEven}\n"
-	if _, _, err := ParseDTQL([]byte(money)); err != nil {
-		t.Fatalf("ParseDTQL refuses a money document: %v", err)
+// TestClassifyDTQLRefusesWhatParseDTQLAccepts documents the shapes the
+// single-collection profile accepts and the classifier refuses: the relational
+// rules are checked for every document, single-collection ones included. A
+// document with no subquery is refused for money only; a subquery in its WHERE,
+// which ParseDTQL accepts, adds nesting deeper than the subquery cap, more
+// sources than the source cap, scan bounds on a nested source and money in a
+// nested query. (A schema-qualified root, a scan root and a database on the root
+// are refused by ParseDTQL too.)
+func TestClassifyDTQLRefusesWhatParseDTQLAccepts(t *testing.T) {
+	const moneyConfig = "money: {minorUnitScale: 2, divisionScale: 4, rounding: halfEven}"
+	// nestedExists is a root whose WHERE holds a chain of EXISTS subqueries,
+	// levels deep: the root is a0 and the subquery at level i reads a<i>.
+	nestedExists := func(levels int) string {
+		doc := fmt.Sprintf("from: {name: a%d}\n", levels)
+		for i := levels - 1; i >= 0; i-- {
+			doc = fmt.Sprintf("from: {name: a%d}\nwhere:\n  exists:\n    query:\n%s", i, indent(doc, "      "))
+		}
+		return doc
 	}
-	profile, err := ClassifyDTQL(mustDeserialize(t, money))
-	assertRefusal(t, profile, err, "money", "$")
+	// existsSources is a root and n subqueries that read one source each.
+	existsSources := func(n int) string {
+		var b strings.Builder
+		b.WriteString("from: {name: a0}\nwhere:\n  and:\n")
+		for i := 1; i <= n; i++ {
+			fmt.Fprintf(&b, "    - exists: {query: {from: {name: a%d}}}\n", i)
+		}
+		return b.String()
+	}
+	for _, tc := range []struct {
+		name string
+		doc  string
+		rule string
+		path string
+	}{
+		{"money", "from: {name: a}\n" + moneyConfig + "\n", "money", "$"},
+		{"money in a subquery", "from: {name: a}\nwhere:\n  exists:\n    query:\n      from: {name: b}\n      " + moneyConfig + "\n", "money", "where.exists.query"},
+		{"subqueries nested past the cap", nestedExists(relationalMaxSubqueryDepth + 1), "subquery-depth", strings.TrimSuffix(strings.Repeat("where.exists.query.", relationalMaxSubqueryDepth+1), ".")},
+		{"more sources than the cap", existsSources(relationalMaxSources), "source-count", fmt.Sprintf("where.and[%d].exists.query.from", relationalMaxSources-1)},
+		{"scan bounds on a nested source", "from: {name: a}\nwhere:\n  exists:\n    query:\n      from: {name: b, scan: {limit: 5, orderBy: [{field: id}]}}\n", "scan", "where.exists.query.from"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := ParseDTQL([]byte(tc.doc)); err != nil {
+				t.Fatalf("ParseDTQL refuses the document: %v\n%s", err, tc.doc)
+			}
+			profile, err := ClassifyDTQL(mustDeserialize(t, tc.doc))
+			assertRefusal(t, profile, err, tc.rule, tc.path)
+		})
+	}
+	// Each cap is exact: the same shapes one step inside it are accepted by both.
+	for name, doc := range map[string]string{
+		"subqueries nested at the cap": nestedExists(relationalMaxSubqueryDepth),
+		"sources at the cap":           existsSources(relationalMaxSources - 1),
+	} {
+		if _, _, err := ParseDTQL([]byte(doc)); err != nil {
+			t.Errorf("%s: ParseDTQL: %v", name, err)
+		}
+		if profile, err := ClassifyDTQL(mustDeserialize(t, doc)); err != nil || profile.Kind != ProfileRelational {
+			t.Errorf("%s: ClassifyDTQL: %+v, %v", name, profile, err)
+		}
+	}
 	for label, doc := range map[string]string{
 		"schema-qualified root": "from: {schema: main, name: a}\n",
 		"scan root":             "from: {name: a, scan: {limit: 5, orderBy: [{field: id}]}}\n",
@@ -748,28 +796,46 @@ func nestedArithmetic(depth int) dal.Expression {
 
 // TestClassifyDTQLNestingCap: the relational walk bounds how deep conditions
 // and expressions may nest, as one more relational rule. (The query guard's own
-// tighter limit still applies afterwards; this is the walk's own bound.)
+// tighter limit still applies afterwards; this is the walk's own bound.) The cap
+// is pinned at its boundary: the deepest accepted and the shallowest refused
+// nesting of each shape. A condition of nestedWhere(n) walks n+1 levels (its
+// comparison's operands are one level deeper than the comparison), an
+// expression of nestedArithmetic(n) walks n.
 func TestClassifyDTQLNestingCap(t *testing.T) {
 	base := func() dal.StructuredQuery { return buildQuery(dal.From(rootRef("a"))).SelectIntoRecordset() }
-	cases := map[string]func(depth int) dal.StructuredQuery{
-		"condition": func(depth int) dal.StructuredQuery { return dal.WithWhere(base(), nestedWhere(depth)) },
-		"expression": func(depth int) dal.StructuredQuery {
-			return dal.WithColumns(base(), []dal.Column{{Expression: nestedArithmetic(depth)}})
+	cases := map[string]struct {
+		build           func(depth int) dal.StructuredQuery
+		largestAccepted int
+	}{
+		"condition": {
+			build:           func(depth int) dal.StructuredQuery { return dal.WithWhere(base(), nestedWhere(depth)) },
+			largestAccepted: relationalMaxNesting - 1,
+		},
+		"expression": {
+			build: func(depth int) dal.StructuredQuery {
+				return dal.WithColumns(base(), []dal.Column{{Expression: nestedArithmetic(depth)}})
+			},
+			largestAccepted: relationalMaxNesting,
 		},
 	}
-	for label, build := range cases {
+	for label, tc := range cases {
 		t.Run(label, func(t *testing.T) {
-			// At the cap the walk itself accepts the query.
-			if err := (&profileWalk{}).query(build(relationalMaxNesting-2), 0); err != nil {
-				t.Fatalf("below the cap: %v", err)
+			// The deepest nesting the cap allows is accepted by the walk. (The query
+			// guard's tighter limit refuses it afterwards, in ClassifyDTQL, with its
+			// own message.)
+			if err := (&profileWalk{}).query(tc.build(tc.largestAccepted), 0); err != nil {
+				t.Fatalf("at the cap: %v", err)
 			}
-			// Beyond it the walk refuses, naming the rule.
-			err := (&profileWalk{}).query(build(relationalMaxNesting+2), 0)
+			if _, err := ClassifyDTQL(tc.build(tc.largestAccepted)); err == nil || strings.Contains(err.Error(), "relational profile: nesting") {
+				t.Fatalf("ClassifyDTQL at the cap: err = %v, want the query guard's refusal", err)
+			}
+			// One level deeper the walk refuses, naming the rule.
+			err := (&profileWalk{}).query(tc.build(tc.largestAccepted+1), 0)
 			if !errors.Is(err, ErrInvalidDTQL) || !strings.Contains(err.Error(), "relational profile: nesting at ") {
-				t.Fatalf("above the cap: err = %v", err)
+				t.Fatalf("one past the cap: err = %v", err)
 			}
 			// ClassifyDTQL refuses it with a zero profile.
-			profile, err := ClassifyDTQL(build(relationalMaxNesting + 2))
+			profile, err := ClassifyDTQL(tc.build(tc.largestAccepted + 1))
 			if !errors.Is(err, ErrInvalidDTQL) || !strings.Contains(err.Error(), "relational profile: nesting at ") || !reflect.DeepEqual(profile, Profile{}) {
 				t.Fatalf("ClassifyDTQL: profile %+v err %v", profile, err)
 			}

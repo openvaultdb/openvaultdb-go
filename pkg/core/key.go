@@ -32,16 +32,16 @@ func ValidateSegment(s string) error {
 	}
 	for _, r := range s {
 		if r < 0x20 || r == 0x7f {
-			return fmt.Errorf("%w: segment %q contains a control character", ErrInvalidKey, s)
+			return fmt.Errorf("%w: segment %q contains a control character", ErrInvalidKey, clipName(s))
 		}
 	}
 	parts := strings.FieldsFunc(s, func(r rune) bool { return r == '/' || r == '\\' })
 	if len(parts) == 0 {
-		return fmt.Errorf("%w: segment %q is only path separators", ErrInvalidKey, s)
+		return fmt.Errorf("%w: segment %q is only path separators", ErrInvalidKey, clipName(s))
 	}
 	for _, part := range parts {
 		if part == "." || part == ".." {
-			return fmt.Errorf("%w: segment %q contains a relative path component", ErrInvalidKey, s)
+			return fmt.Errorf("%w: segment %q contains a relative path component", ErrInvalidKey, clipName(s))
 		}
 	}
 	return nil
@@ -96,7 +96,7 @@ func ParseKeyPath(raw string) (*record.Key, error) {
 	for i, part := range parts {
 		seg, err := url.PathUnescape(part)
 		if err != nil {
-			return nil, fmt.Errorf("%w: invalid key segment %q: %v", ErrInvalidKey, part, err)
+			return nil, fmt.Errorf("%w: invalid key segment %q: %v", ErrInvalidKey, clipName(part), err)
 		}
 		segments[i] = seg
 	}

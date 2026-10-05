@@ -56,6 +56,10 @@ func writeMappedError(w http.ResponseWriter, err error) (internal bool) {
 		writeError(w, http.StatusBadRequest, "invalid_dtql", err.Error())
 	case errors.Is(err, core.ErrQueryUnsupported):
 		writeError(w, http.StatusNotImplemented, "query_unsupported", err.Error())
+	case errors.Is(err, core.ErrProtectedSingleSource):
+		// The shape of the query decides this, not the collections it names, so
+		// the message is the error's own: it names none.
+		writeError(w, http.StatusUnprocessableEntity, "authorization_unsupported", core.ErrProtectedSingleSource.Error())
 	case errors.Is(err, core.ErrNotFound), errors.Is(err, core.ErrUpdateOfMissingRecord):
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 	case errors.Is(err, core.ErrAlreadyExists):
@@ -67,6 +71,20 @@ func writeMappedError(w http.ResponseWriter, err error) (internal bool) {
 		return true
 	}
 	return false
+}
+
+// hiddenAsDenied returns the error a structured read is answered with. A mount
+// with access policies does not say which collections it declares: a read of a
+// collection the database does not declare (an error wrapping core.ErrNotFound)
+// is answered as the read of a declared collection the policy denies, as
+// readRecord answers a key. Any other error is returned as it is. A document that
+// reads a second source never reaches this on such a mount: core refuses it for
+// its shape (core.ErrProtectedSingleSource) before it looks at a name.
+func hiddenAsDenied(db *core.Database, err error) error {
+	if db.HasAccessPolicies() && errors.Is(err, core.ErrNotFound) {
+		return access.ErrAccessDenied
+	}
+	return err
 }
 
 // writeMappedError maps err like the package-level writeMappedError and logs
