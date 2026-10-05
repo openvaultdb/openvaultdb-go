@@ -735,9 +735,9 @@ columns:
 
 // TestPostgresIntegration_MixedCaseFieldNames: a manifest that declares a field with
 // capitals in its name (FirstName) holds it in a PostgreSQL table folded to lower case.
-// A route that reads one collection, and a document that runs in the database, find it
-// by the declared spelling and by the folded one, and answer as a SQLite mount does,
-// under the declared name. A join across databases reads the names the server holds,
+// A route that reads one collection answers as a SQLite mount does, under the declared
+// name, whichever spelling it was found by; a document that runs in the database finds it
+// by either spelling and labels the column as the document wrote it. A join across databases reads the names the server holds,
 // which are lower case: it answers the lower-case spelling, and refuses the declared one
 // (400), where a SQLite mount answers the declared spelling and refuses the lower-case
 // one. The limit is stated in docs/api.md.
@@ -766,7 +766,18 @@ func TestPostgresIntegration_MixedCaseFieldNames(t *testing.T) {
 		})
 		t.Run("/v1/dtql in one database, "+spelling, func(t *testing.T) {
 			doc := strings.ReplaceAll(pgITNameDoc, "SPELLING", spelling)
-			resp := pgITBoth(t, base, http.MethodPost, "/v1/dtql", "/v1/dtql", pgITDoc(doc, "pg"), pgITDoc(doc, "lite"))
+			var resp relHTTPResponse
+			if spelling == "FirstName" {
+				resp = pgITBoth(t, base, http.MethodPost, "/v1/dtql", "/v1/dtql", pgITDoc(doc, "pg"), pgITDoc(doc, "lite"))
+			} else {
+				// A SQLite mount reads the folded spelling as the column it is and answers it under
+				// the name it was declared with, listing both in its columns. The PostgreSQL mount
+				// labels the column as the document wrote it, so it is not compared with it.
+				resp = relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", pgITDoc(doc, "pg"), nil)
+				if got := resp.columns(); !reflect.DeepEqual(got, []string{"id", spelling}) {
+					t.Errorf("columns = %v, want [id %s]", got, spelling)
+				}
+			}
 			relIntRowsAre(t, resp, []map[string]any{{"id": "c1", spelling: "Ada"}})
 			if route := pgITRoute(resp); route != "database" {
 				t.Errorf("route = %q, want database", route)

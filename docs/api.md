@@ -446,9 +446,10 @@ or name the connection, reaches an answer or a log. That holds for a read transa
 begin or commit and for the field list of a collection, as it does for a query.
 
 A field declared with capitals (`FirstName`) is held by PostgreSQL in lower case. A route that reads
-one collection and a document that runs in the database find it by the declared spelling and by the
-lower-case one, and answer under the declared name. A join across databases, and a subquery, run in
-the engine of this server over the names the database holds, which are lower case: such a document
+one collection finds it by the declared spelling and by the lower-case one, and answers a record
+under the declared name. A document that runs in the database finds it by either spelling too, and
+labels the column as the document wrote it. A join across databases, and a subquery, run in the
+engine of this server over the names the database holds, which are lower case: such a document
 writes `firstname`, and the declared spelling is `400 invalid_dtql` there (a SQLite mount reads the
 declared spelling and refuses the lower-case one).
 
@@ -1538,7 +1539,10 @@ columns:
   are not supported. A condition that the storage engine cannot run is `422 query_unsupported`.
 - Only the engines in `joinEngines` take part. A GitHub-backed inGitDB mount never does.
 - The profile has five aggregate functions (`count`, `sum`, `avg`, `min`, `max`), in any ASCII
-  letter case (a name with a byte of 0x80 or above is refused). `first` and `last` are not in the profile: a document that uses either, in any position, is
+  letter case. DALgo raises the case of a name before it reads it, so two spellings with a letter
+  that is not ASCII are read as a function of the profile and answered: `ſum` (U+017F) is `sum`
+  and `mın` (U+0131) is `min`. Any other name with a byte of 0x80 or above is refused. `first` and
+  `last` are not in the profile: a document that uses either, in any position, is
   `400 invalid_dtql` before anything is read. Where the classifier refuses it the message names the
   function; where DALgo's parser refuses it first (`first` in `groupBy`, or inside another
   aggregate) the message is DALgo's. An aggregate function that DALgo does not know is refused in

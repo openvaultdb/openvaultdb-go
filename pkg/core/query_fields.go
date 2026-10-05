@@ -242,7 +242,7 @@ func (w fieldWalk) condition(condition dal.Condition, depth int) error {
 	case dal.IsNullCondition:
 		return w.expression(c.Operand(), depth+1)
 	case dal.ExistsCondition:
-		return w.fieldGuard.query(c.Query(), w.scope, depth+1)
+		return w.query(c.Query(), w.scope, depth+1)
 	}
 	return nil
 }
@@ -266,7 +266,7 @@ func (w fieldWalk) expression(expression dal.Expression, depth int) error {
 			}
 		}
 	case dal.QueryExpression:
-		return w.fieldGuard.query(e.Query(), w.scope, depth+1)
+		return w.query(e.Query(), w.scope, depth+1)
 	}
 	return nil
 }

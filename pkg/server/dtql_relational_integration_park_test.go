@@ -140,8 +140,9 @@ func relIntAwaitParked(t relIntFailer, gate *relIntParkGate, answer <-chan relIn
 // Documents of the parked mount. relIntParkedJoin reads Country inside the mount, so
 // it parks on the database route (the whole join is one statement of SQLite);
 // relIntParkedAcross reads it from another mount and parks on the in-memory one. Both
-// select the key column of the first source unaliased, which the SQLite adapter needs
-// to compile a join, so that the first document is not read again in memory.
+// select the key column of the first source unaliased. That is no longer needed to
+// compile a join (the SQL adapter keys a join by a qualified column of its base source
+// since dalgo2sql v0.26.5), and it keeps the documents the ones the test always parked.
 const (
 	relIntParkedJoin = `from:
   name: Customer

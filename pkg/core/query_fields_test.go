@@ -342,7 +342,7 @@ func TestTheFieldCheckOfADatabaseThatDeclaresACollectionNobodyKnowsAndTheFoldOfA
 	if err := db.guardFields(deepDerived); !errors.Is(err, errSourcesTooDeep) {
 		t.Errorf("a query of derived sources too deep: %v", err)
 	}
-	var deepCondition dal.Condition = equalTo(dal.Field("name"), 1)
+	deepCondition := equalTo(dal.Field("name"), 1)
 	for range maxQueryTreeDepth * 2 {
 		deepCondition = dal.NewGroupCondition(dal.And, deepCondition)
 	}

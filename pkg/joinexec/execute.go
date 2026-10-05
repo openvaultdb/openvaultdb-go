@@ -434,14 +434,17 @@ func (q *request) attempt(ctx context.Context, route string) ([]record.Record, *
 // retryInMemory reports whether err, the failure of the database route, is one
 // the in-memory route can answer instead: the whole-document denial of an adapter
 // that could not compile a join that does not aggregate. The SQL adapters answer
-// a compile failure of any kind with an enforcement-unsupported denial, and a
-// join that selects no unaliased column named like the collection's registered
-// key is one they cannot compile: they append an unqualified helper column for
-// the key, which the SQLite compiler refuses in a query with a join. A database
-// with access policies never takes the database route, so the document is read
-// again only from a database that has none, and every read of the retry is
-// authorised as any in-memory read is. A document with one source or with an
-// aggregation does not have that cause and keeps the adapter's answer.
+// a compile failure of any kind with an enforcement-unsupported denial. Before
+// dalgo2sql v0.26.5 the usual cause was a join that selects no unaliased column
+// named like the collection's registered key: the adapter appended an unqualified
+// helper column for the key, which the SQLite compiler refuses in a query with a
+// join. It keys a join by a qualified column of its base source now, and no adapter
+// answers the denial for that cause any more; the retry is kept for a compile
+// refusal of another kind that the in-memory engine can answer. A database with
+// access policies never takes the database route, so the document is read again
+// only from a database that has none, and every read of the retry is authorised as
+// any in-memory read is. A document with one source or with an aggregation does not
+// have that cause and keeps the adapter's answer.
 func (q *request) retryInMemory(err error) bool {
 	if len(q.doc.sources) < 2 || dal.HasAggregation(q.query) {
 		return false

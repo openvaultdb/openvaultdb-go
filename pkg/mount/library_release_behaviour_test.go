@@ -233,24 +233,66 @@ func failingReadMount(t *testing.T) *core.Database {
 	return db
 }
 
-// TestAFailedReadInATransactionOfASQLiteMountReturnsNoReader: a read that fails
-// inside a read transaction answers an error and a nil reader, on the records path
-// and on the recordset path. The recordset path used to return a typed nil
-// pointer, which is a reader that is not nil and whose Close panics, so a caller
-// that closed what it was given crashed.
+// failedReadQueries are a records query and a recordset query of the table things.
+func failedReadQueries() (records, recordset dal.StructuredQuery) {
+	recordset = dal.From(dal.NewRootCollectionRef("things", "")).NewQuery().SelectIntoRecordset()
+	records = dal.From(dal.NewRootCollectionRef("things", "")).NewQuery().SelectIntoRecord(func() record.Record {
+		return record.NewRecordWithData(record.NewKeyWithID("things", "x"), map[string]any{})
+	})
+	return records, recordset
+}
+
+// TestAFailedReadInAReadTransactionOfTheSQLiteDriverReturnsNoReader: the library pin. A
+// read that fails inside a read transaction of the driver itself (dalgo2sqlite, with no
+// mount of this repository between) answers an error and a nil reader, on the records
+// path and on the recordset path. The recordset path used to return a typed nil pointer,
+// which is a reader that is not nil and whose Close panics, so a caller that closed
+// what it was given crashed.
+func TestAFailedReadInAReadTransactionOfTheSQLiteDriverReturnsNoReader(t *testing.T) {
+	ctx := context.Background()
+	dir := sqliteFieldsStorage(t, `CREATE TABLE "things" ("id" TEXT PRIMARY KEY, "name" TEXT)`, `DROP TABLE "things"`)
+	driver, err := dalgo2sqlite.NewDatabaseWithOptions(filepath.Join(dir, "data.sqlite"), dal.NewSchema(nil, nil), dalgo2sql.DbOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = driver.Close() }()
+	recordsQuery, recordsetQuery := failedReadQueries()
+	var recordsReader dal.RecordsReader
+	var recordsetReader dal.RecordsetReader
+	var recordsErr, recordsetErr error
+	err = driver.RunReadonlyTransaction(ctx, func(ctx context.Context, tx dal.ReadTransaction) error {
+		recordsReader, recordsErr = tx.ExecuteQueryToRecordsReader(ctx, recordsQuery)
+		recordsetReader, recordsetErr = tx.ExecuteQueryToRecordsetReader(ctx, recordsetQuery)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recordsErr == nil || recordsetErr == nil {
+		t.Fatalf("the reads of a table that is not there succeeded: %v, %v", recordsErr, recordsetErr)
+	}
+	if recordsReader != nil {
+		t.Errorf("records path: reader %#v with the error %v, want no reader", recordsReader, recordsErr)
+	}
+	if recordsetReader != nil {
+		t.Errorf("recordset path: reader %#v with the error %v, want no reader", recordsetReader, recordsetErr)
+	}
+}
+
+// TestAFailedReadInATransactionOfASQLiteMountReturnsNoReader: the same read through the
+// executor a mount hands out (Database.ReadTx), which answers every failure with a nil
+// reader of its own, whatever the driver returns. It pins the mount's executor and not
+// the library (the test above does).
 func TestAFailedReadInATransactionOfASQLiteMountReturnsNoReader(t *testing.T) {
 	ctx := context.Background()
 	db := failingReadMount(t)
-	query := dal.From(dal.NewRootCollectionRef("things", "")).NewQuery().SelectIntoRecordset()
-	recordsQuery := dal.From(dal.NewRootCollectionRef("things", "")).NewQuery().SelectIntoRecord(func() record.Record {
-		return record.NewRecordWithData(record.NewKeyWithID("things", "x"), map[string]any{})
-	})
+	recordsQuery, recordsetQuery := failedReadQueries()
 	var recordsReader dal.RecordsReader
 	var recordsetReader dal.RecordsetReader
 	var recordsErr, recordsetErr error
 	err := db.ReadTx(ctx, func(tx dal.QueryExecutor) error {
 		recordsReader, recordsErr = tx.ExecuteQueryToRecordsReader(ctx, recordsQuery)
-		recordsetReader, recordsetErr = tx.ExecuteQueryToRecordsetReader(ctx, query)
+		recordsetReader, recordsetErr = tx.ExecuteQueryToRecordsetReader(ctx, recordsetQuery)
 		return nil
 	})
 	if err != nil {
