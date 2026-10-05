@@ -24,12 +24,44 @@ import (
 )
 
 const (
-	maxSnapshotSlots = 2 // with maxSnapshotBytes: at most 1 GiB globally
-	maxSnapshotBytes = 512 << 20
-	maxSnapshotRows  = 1_000_000
-	maxPageBytes     = 7 << 20
-	snapshotLifetime = 5 * time.Minute
+	defaultSnapshotSlots = 2 // with defaultSnapshotBytes: at most 1 GiB globally
+	defaultSnapshotBytes = 512 << 20
+	defaultSnapshotRows  = 1_000_000
+	maxPageBytes         = 7 << 20
+	snapshotLifetime     = 5 * time.Minute
 )
+
+// SnapshotLimits bounds the disk spool behind paged DTQL queries. The most
+// disk a server can use for snapshots is Slots * Bytes.
+type SnapshotLimits struct {
+	Slots int   // concurrent snapshots, including captures still being built
+	Bytes int64 // spooled bytes of one snapshot
+	Rows  int   // rows of one snapshot
+}
+
+// DefaultSnapshotLimits returns the limits a server uses without
+// WithSnapshotLimits: 2 snapshots of at most 512 MiB and 1,000,000 rows.
+func DefaultSnapshotLimits() SnapshotLimits {
+	return SnapshotLimits{Slots: defaultSnapshotSlots, Bytes: defaultSnapshotBytes, Rows: defaultSnapshotRows}
+}
+
+// WithSnapshotLimits sets the snapshot spool limits. Every field must be
+// positive: a zero or negative value never means "unlimited", and the option
+// panics when the server is built, as WithAccessInstanceID does.
+//
+// An operator on a memory-backed file system, such as Cloud Run, where the
+// spool in the temporary directory counts against the instance memory, should
+// set Slots * Bytes well below the instance memory (for example 1 slot of
+// 128 MiB on a 512 MiB instance), because a spool as large as the memory can
+// crash the instance.
+func WithSnapshotLimits(limits SnapshotLimits) Option {
+	return func(s *Server) {
+		if limits.Slots <= 0 || limits.Bytes <= 0 || limits.Rows <= 0 {
+			panic(fmt.Sprintf("invalid WithSnapshotLimits: slots, bytes and rows must be positive, got %+v", limits))
+		}
+		s.snapshotLimits = limits
+	}
+}
 
 // querySnapshot contains no live reader or transaction. Its complete result
 // was captured into a private temporary file before the first page was sent.
@@ -75,7 +107,7 @@ func (s *Server) pageOffset(token, dbID string, queryHash, actorHash [32]byte, p
 		return "", 0, false
 	}
 	offset, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil || offset < 0 || offset > maxSnapshotBytes {
+	if err != nil || offset < 0 || offset > s.snapshotLimits.Bytes {
 		return "", 0, false
 	}
 	want := s.pageToken(parts[0], offset, dbID, queryHash, actorHash, pageSize)
@@ -134,7 +166,7 @@ func (s *Server) handlePagedDTQL(w http.ResponseWriter, r *http.Request, db *cor
 		s.writeInternalError(w, r, "query snapshot storage is unavailable", s.snapshotDirErr)
 		return
 	}
-	path, size, err := spoolDTQL(r.Context(), db, query, s.snapshotDir)
+	path, size, err := spoolDTQL(r.Context(), db, query, s.snapshotDir, s.snapshotLimits)
 	if err != nil {
 		var bound *snapshotBoundError
 		if errors.As(err, &bound) {
@@ -175,7 +207,7 @@ type snapshotBoundError string
 
 func (e *snapshotBoundError) Error() string { return string(*e) }
 
-func spoolDTQL(ctx context.Context, db *core.Database, query dal.StructuredQuery, dir string) (path string, size int64, err error) {
+func spoolDTQL(ctx context.Context, db *core.Database, query dal.StructuredQuery, dir string, limits SnapshotLimits) (path string, size int64, err error) {
 	f, err := os.CreateTemp(dir, "snapshot-*")
 	if err != nil {
 		return "", 0, err
@@ -202,7 +234,7 @@ func spoolDTQL(ctx context.Context, db *core.Database, query dal.StructuredQuery
 			bound := snapshotBoundError("one query row exceeds the page size limit")
 			return &bound
 		}
-		if rows >= maxSnapshotRows || size+int64(len(row))+1 > maxSnapshotBytes {
+		if rows >= limits.Rows || size+int64(len(row))+1 > limits.Bytes {
 			bound := snapshotBoundError("query snapshot exceeds its row or disk size limit")
 			return &bound
 		}
@@ -277,7 +309,7 @@ func (s *Server) expireSnapshotsForDB(db *core.Database) {
 func (s *Server) reserveSnapshotSlot() bool {
 	s.snapshotMu.Lock()
 	defer s.snapshotMu.Unlock()
-	if s.snapshotSlots >= maxSnapshotSlots {
+	if s.snapshotSlots >= s.snapshotLimits.Slots {
 		return false
 	}
 	s.snapshotSlots++
