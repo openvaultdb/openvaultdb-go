@@ -525,7 +525,11 @@ func (r *run) database(ctx context.Context, query dal.StructuredQuery, source So
 // each source's database. A join with a null test stays with the federated
 // executor: it reads plain collections and evaluates the test above them.
 //
-// Before either reads a row, the unqualified fields of the document are checked
+// Before either reads a row, the qualifiers of the document are checked (a field that names
+// a source that no query it stands in has is refused, with DALgo's own words: the executor of
+// a mount that is handed the document whole reads the name of a field and nothing else, so
+// it ignored the qualifier, and DALgo's recursive executor, which checks it, is not asked
+// for such a document), and then the unqualified fields of the document are checked
 // against the field lists the sources supply (checkScopes): a query of several
 // sources in which one source has no list is refused, with a scope error, for an
 // unqualified field, because DALgo would bind it to the first source of the query.
@@ -536,7 +540,9 @@ func (r *run) database(ctx context.Context, query dal.StructuredQuery, source So
 // the column), and so is the ORDER BY of a query that does not aggregate by the alias of
 // a column that is an expression, or by a name that no source whose list is supplied
 // carries (the executor of a mount that is handed the document whole ignores a field it
-// does not know). DALgo is then given the document with the aliases of its select lists
+// does not know). The key pseudo-field is ordered by only where a mount is handed the
+// document whole (keyOrderedByTheMount): DALgo does not know it. DALgo is then given the
+// document with the aliases of its select lists
 // resolved in HAVING and ORDER BY (resolveAliases), which its own check of the fields
 // against the lists does not know, and, in a query that does not aggregate, the alias of a
 // field in ORDER BY replaced by the field, so that the answer is sorted the way a SQL
@@ -547,18 +553,27 @@ func (r *run) inMemory(ctx context.Context, query dal.StructuredQuery, doc docum
 		err    error
 	)
 	router := newRouter(r, databases)
-	// Before anything is read: a field that DALgo cannot bind to a source is refused,
-	// not bound to the first one (see checkScopes).
-	if err := checkScopes(ctx, query, router.JoinFields); err != nil {
+	// Before anything is read: a qualifier that names no source is refused (see above), and
+	// so is a field that DALgo cannot bind to a source (see checkScopes).
+	if err := dal.ValidateQueryScope(query); err != nil {
 		return nil, r.guard.Classify(err, RouteInMemory)
 	}
-	query = resolveAliases(query)
 	// A document of one source that a mount could not evaluate whole is read as a plain scan
 	// and evaluated above it: one with a null test (a SQL adapter cannot compile it), and one
 	// that orders by an expression that is not a field (an executor skips it, and answers in
 	// the order it reads the records).
-	handedWhole := len(doc.sources) == 1 && (doc.hasNull || ordersByExpression(query))
-	if qualified && !doc.hasSubquery && !handedWhole {
+	evaluated := len(doc.sources) == 1 && (doc.hasNull || ordersByExpression(query))
+	federated := qualified && !doc.hasSubquery && !evaluated
+	var opts []scopeOption
+	if federated && len(doc.sources) == 1 && !doc.anyScan() && !dal.HasAggregation(query) {
+		// DALgo's federated executor hands this document to the mount whole.
+		opts = append(opts, keyOrderedByTheMount)
+	}
+	if err := checkScopes(ctx, query, router.JoinFields, opts...); err != nil {
+		return nil, r.guard.Classify(err, RouteInMemory)
+	}
+	query = resolveAliases(query)
+	if federated {
 		reader, err = dal.ExecuteFederatedQueryWithOptions(ctx, query, r.resolve, dal.FederatedQueryOptions{})
 	} else {
 		reader, err = dal.ExecuteRecursiveQuery(ctx, router, query)

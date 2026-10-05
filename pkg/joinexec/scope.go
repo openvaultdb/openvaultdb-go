@@ -92,7 +92,17 @@ import (
 // a SQL database reads it: inside arithmetic (b*1) a name is a field of a source, and the
 // source that carries a field of that name wins over a column that is called so. The
 // alias of a column that is not a field is not refused there for what it is: it is a name
-// that a source carries or does not.
+// that a source carries or does not. Where the one source of the query supplies no list,
+// nothing can say which of the two the name was meant for (a SQL database reads the column
+// when its table has no field of the name, and the mount of the source would read a field
+// and sort nothing), so a name inside arithmetic that a column also carries as its alias is
+// refused there, with the way out, a qualified field.
+//
+// The key pseudo-field of the document engines (keyField) is ordered by only by a mount that is
+// handed the document whole. DALgo does not know it: over a source with a field list it is
+// refused as unavailable, and over a source with none it reads it as a null, which sorts
+// nothing. So where the document is evaluated by DALgo, which is every query but the root of a
+// document that a mount is handed whole (keyOrderedByTheMount), an ORDER BY of the key is refused.
 
 // fieldSupplier answers the field list of a source, the way the executors DALgo
 // reads through do (dal.JoinFieldsProvider): nil when the source has no list.
@@ -130,6 +140,10 @@ type scopeRef struct {
 	// inExpression is true for a name inside the arithmetic of an ORDER BY, where the alias
 	// of a column is not read as the column.
 	inExpression bool
+	// alsoAlias is true for a name inside arithmetic that a column of the select list carries
+	// as its alias or result name: a SQL database reads it as that column when its table has
+	// no column of the name, and as the table's own column when it has one.
+	alsoAlias bool
 }
 
 // scopeLevel is one query of the document.
@@ -159,8 +173,11 @@ type scopeLevel struct {
 // has been read when it is returned. An error of fields is returned as it is. A field a
 // source qualifies, and one that is the alias of a column where DALgo reads it as the
 // column, are not looked at.
-func checkScopes(ctx context.Context, query dal.StructuredQuery, fields fieldSupplier) error {
+func checkScopes(ctx context.Context, query dal.StructuredQuery, fields fieldSupplier, opts ...scopeOption) error {
 	scope := &scopeWalk{}
+	for _, opt := range opts {
+		opt(scope)
+	}
 	scope.query(query, "")
 	for _, level := range scope.levels {
 		if len(level.refusals) > 0 {
@@ -198,8 +215,10 @@ func (l *scopeLevel) checkUnqualified(lists *levelLists) error {
 		}
 		if !supplied {
 			if !several {
-				// The one source cannot say a name is unknown: the mount decides.
-				return nil
+				// The one source cannot say a name is unknown: the mount decides. It cannot
+				// say either whether a name inside arithmetic that a column also calls its
+				// own is the field or the column.
+				return l.aliasInArithmetic()
 			}
 			first := l.refs[0]
 			return &dal.QueryValidationError{
@@ -222,10 +241,30 @@ func (l *scopeLevel) checkUnqualified(lists *levelLists) error {
 	return nil
 }
 
+// aliasInArithmetic refuses the first name inside the arithmetic of an ORDER BY that a column
+// of the select list also carries as its alias, for a level whose one source supplies no
+// field list. A SQL database reads such a name as the alias when its table has no column of
+// that name; the mount of this source would read it as a field, and a record that has none
+// sorts nothing. Nothing says which the document meant, so it is refused with the way out.
+func (l *scopeLevel) aliasInArithmetic() error {
+	for _, ref := range l.refs {
+		if ref.alsoAlias {
+			return &dal.QueryValidationError{
+				Category: "scope",
+				Path:     ref.path,
+				Message: fmt.Sprintf("cannot tell whether %s inside arithmetic is a field of the source or the alias of a column, because the source has no field list: qualify the field with its source",
+					clip(ref.name)),
+			}
+		}
+	}
+	return nil
+}
+
 // checkQualified refuses the first field of an ORDER BY that names a source whose list does
 // not carry it. The source is the one whose alias, or collection with no alias, the field
-// names; a name that is no source of the level belongs to a query around it, and is left to
-// DALgo. The key pseudo-field is not refused.
+// names; a name that is no source of the level belongs to a query around it, which DALgo
+// binds to its source (a name that no query has is refused before this runs, by
+// dal.ValidateQueryScope). The key pseudo-field is not refused.
 func (l *scopeLevel) checkQualified(lists *levelLists) error {
 	for _, ref := range l.qualified {
 		if ref.name == keyField {
@@ -346,12 +385,23 @@ func suppliedFields(ctx context.Context, source dal.RecordsetSource, fields fiel
 // listed before the levels inside it.
 type scopeWalk struct {
 	levels []*scopeLevel
+	// keyOrdering is true when the root query is handed whole to a mount that sorts by the key.
+	keyOrdering bool
 }
+
+// scopeOption tells checkScopes something about how the document will be run.
+type scopeOption func(*scopeWalk)
+
+// keyOrderedByTheMount says the root query is handed to the mount whole, which sorts by
+// the key pseudo-field.
+func keyOrderedByTheMount(w *scopeWalk) { w.keyOrdering = true }
 
 func (w *scopeWalk) query(query dal.StructuredQuery, path string) {
 	level := &scopeLevel{}
 	w.levels = append(w.levels, level)
-	flow := &scopeFlow{walk: w, level: level}
+	// Only the root query is ever handed to a mount whole; every query inside it is evaluated
+	// by DALgo.
+	flow := &scopeFlow{walk: w, level: level, keyOrdering: w.keyOrdering && path == ""}
 	columns := query.Columns()
 	flow.from(query.From(), path+"from")
 	flow.condition(query.Where(), path+"where")
@@ -460,6 +510,9 @@ type scopeFlow struct {
 	// inExpression is true while the operands of arithmetic are walked: the alias of a column
 	// is read as the column only where it is the whole expression of an ORDER BY.
 	inExpression bool
+	// keyOrdering is true for the query that a mount is handed whole, which sorts by the key
+	// pseudo-field (keyField).
+	keyOrdering bool
 }
 
 // refuse adds a refusal that needs no field list to the level.
@@ -513,6 +566,10 @@ func (f *scopeFlow) condition(condition dal.Condition, path string) {
 func (f *scopeFlow) expression(expression dal.Expression, path string) {
 	switch value := expression.(type) {
 	case dal.FieldRef:
+		if f.kind == readOrdered && value.Name() == keyField && !f.keyOrdering {
+			f.refuse("scope", path, "cannot order by the key %s in this document, which a mount does not run whole (the key is sorted by a mount only): order by a field", keyField)
+			return
+		}
 		if value.Source() == "" {
 			f.field(value.Name(), path)
 		} else if f.kind == readOrdered {
@@ -559,7 +616,12 @@ func (f *scopeFlow) field(name, path string) {
 		f.refuse("scope", path, "the unqualified field %s is also the name of an earlier column of a query that aggregates, and would be read as that column: rename the alias or qualify the field with its source", clip(name))
 		return
 	}
-	f.level.refs = append(f.level.refs, scopeRef{name: name, path: path, kind: f.kind, inExpression: f.inExpression})
+	ref := scopeRef{name: name, path: path, kind: f.kind, inExpression: f.inExpression}
+	if f.inExpression {
+		_, field := f.names.fields[name]
+		ref.alsoAlias = field || f.names.computed[name]
+	}
+	f.level.refs = append(f.level.refs, ref)
 	if f.kind == readOrdered {
 		f.level.ordered = true
 	}

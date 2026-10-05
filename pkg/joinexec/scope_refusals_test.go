@@ -377,8 +377,9 @@ func TestAnAliasInsideOrderByArithmeticIsLookedAtAsAFieldOfASource(t *testing.T)
 		"the alias of a field, which the source does not carry": {onField(plusOne(label)), map[string][]string{"A": {"id", "x"}}, "orderBy[0].left"},
 		"the alias of an expression, which the source does not carry": {onExpression(dal.Binary(srOne, dal.Add, label)),
 			map[string][]string{"A": {"id", "x"}}, "orderBy[0].right"},
-		"the alias of a field, where no list says it is unknown": {onField(plusOne(label)), nil, ""},
-		"the bare alias of a field is still the column":          {onField(label), map[string][]string{"A": {"id", "x"}}, ""},
+		// Where no list says what the source carries, the name is refused (it cannot be told
+		// whether it is the field or the column): TestAnAliasInsideOrderByArithmeticOverASourceWithNoFieldListIsRefused.
+		"the bare alias of a field is still the column": {onField(label), map[string][]string{"A": {"id", "x"}}, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := checkScopes(context.Background(), tc.query, (&scSupplier{lists: tc.lists}).fields)
@@ -512,7 +513,9 @@ func TestAnOrderByNameIsLeftAloneWhenASourceCarriesItOrNoListCanSayItIsUnknown(t
 	} {
 		t.Run(name, func(t *testing.T) {
 			supplier := &scSupplier{lists: tc.lists}
-			if err := checkScopes(context.Background(), tc.query, supplier.fields); err != nil {
+			// The key pseudo-field is ordered by a mount that is handed the document whole (the
+			// rows of the key above); elsewhere it is refused (scope_qualifier_test.go).
+			if err := checkScopes(context.Background(), tc.query, supplier.fields, keyOrderedByTheMount); err != nil {
 				t.Fatalf("checkScopes: %v", err)
 			}
 			if !reflect.DeepEqual(supplier.asked, tc.asked) {
