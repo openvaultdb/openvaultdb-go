@@ -281,16 +281,27 @@ const maxParseProblems = 10
 
 var typeErrorLine = regexp.MustCompile(`^line [0-9]+: `)
 
+// scannerErrorText matches the text of an error of the YAML scanner or parser, which
+// the decoder builds from the line and a message of its own, never from the document.
+var scannerErrorText = regexp.MustCompile(`^yaml: line [0-9]+: `)
+
 // parseError is the error for a manifest that the YAML decoder refused. For a
 // value of the wrong type, a field the manifest does not have and a key written
 // twice the decoder quotes the start of the value or the whole name, and a manifest
 // can hold a connection string or a token there (as the value of storage.postgres,
 // for instance). Each such mistake is therefore reported by its line and its kind,
-// never by what the line holds. Any other error of the decoder is wrapped as it is.
+// never by what the line holds. A scanner or parser error, whose text is fixed, is
+// wrapped as it is. Any other error of the decoder (a scalar written with a tag it
+// does not fit, an anchor that is not defined or that holds itself, a key that
+// cannot be hashed) quotes the document too, so it is replaced by one sentence that
+// wraps nothing.
 func parseError(err error) error {
 	var typeErr *yaml.TypeError
 	if !errors.As(err, &typeErr) {
-		return fmt.Errorf("failed to parse manifest YAML: %w", err)
+		if scannerErrorText.MatchString(err.Error()) {
+			return fmt.Errorf("failed to parse manifest YAML: %w", err)
+		}
+		return errors.New("failed to parse manifest YAML: the document could not be decoded")
 	}
 	problems := make([]string, 0, maxParseProblems+1)
 	for i, text := range typeErr.Errors {

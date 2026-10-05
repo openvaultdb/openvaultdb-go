@@ -382,16 +382,19 @@ func (l *refusedLog) records(t *testing.T) []map[string]any {
 }
 
 // TestTableTheProtectedSessionRefusesIsLoggedOncePerRequest: the answer for a
-// declared table that the protected session cannot prepare says nothing of why, so
-// the server logs one warning for the request, with the method, the route path
-// and the names of the collections, for the inspection and for the protected
-// PATCH. A table the database does not declare, and one the session prepares, are
-// not logged.
+// declared table that the protected session refuses an operation on says nothing of
+// why, so the server logs one warning for the request, with the method, the route
+// path and the names of the collections, for the inspection, for the protected
+// PATCH and for the evidence route. A table the database does not declare, and one
+// the session prepares, are not logged.
 func TestTableTheProtectedSessionRefusesIsLoggedOncePerRequest(t *testing.T) {
 	var logs refusedLog
 	ts := refusedTableServer(t, server.WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
 	patchPath, patchBody := refusedPatch("with_default")
 	ghostPatchPath, ghostPatchBody := refusedPatch("ghost")
+	evidencePath, evidenceBody := refusedEvidence("with_default")
+	_, ghostEvidenceBody := refusedEvidence("ghost")
+	_, preparedEvidenceBody := refusedEvidence("customers")
 	for _, c := range []struct {
 		name, method, path, body, content string
 		want                              []string
@@ -400,6 +403,9 @@ func TestTableTheProtectedSessionRefusesIsLoggedOncePerRequest(t *testing.T) {
 		{"inspection of the same table twice", "POST", refusedEvaluate, refusedInspect(refusedGet("with_default"), refusedUpdate("with_default")), "application/json", []string{"with_default"}},
 		{"inspection of two tables", "POST", refusedEvaluate, refusedInspect(refusedGet("with_trigger"), refusedGet("customers"), refusedGet("with_default")), "application/json", []string{"with_default", "with_trigger"}},
 		{"PATCH", "PATCH", patchPath, patchBody, "application/vnd.dtql.operation+json", []string{"with_default"}},
+		{"evidence", "POST", evidencePath, evidenceBody, "application/json", []string{"with_default"}},
+		{"evidence of an undeclared table", "POST", evidencePath, ghostEvidenceBody, "application/json", nil},
+		{"evidence of a table the session prepares", "POST", evidencePath, preparedEvidenceBody, "application/json", nil},
 		{"inspection of a table the session prepares", "POST", refusedEvaluate, refusedInspect(refusedGet("customers"), refusedGet("orders")), "application/json", nil},
 		{"inspection of an undeclared table", "POST", refusedEvaluate, refusedInspect(refusedGet("ghost")), "application/json", nil},
 		{"PATCH of an undeclared table", "PATCH", ghostPatchPath, ghostPatchBody, "application/vnd.dtql.operation+json", nil},

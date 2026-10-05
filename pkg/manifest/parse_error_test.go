@@ -1,6 +1,8 @@
 package manifest_test
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -50,8 +52,46 @@ func TestParseErrorOfAValueOfTheWrongTypeDoesNotRepeatTheManifest(t *testing.T) 
 	})
 	t.Run("a syntax error is still reported", func(t *testing.T) {
 		_, err := manifest.Parse([]byte("database: {id: sqlmount\n"))
-		if err == nil || !strings.Contains(err.Error(), "failed to parse manifest YAML") {
+		if err == nil || !strings.Contains(err.Error(), "failed to parse manifest YAML: yaml: line ") {
 			t.Errorf("got %v", err)
 		}
 	})
+}
+
+// TestParseErrorOfADocumentTheDecoderRefusesForAnotherReasonDoesNotRepeatIt: the
+// decoder quotes the document in some errors that are not about the type of a
+// value (a scalar written with an explicit tag, an anchor that is not defined or
+// that holds itself, a key that cannot be hashed). The error that Parse gives for
+// each holds none of the document: not in its message, not in its detail, and not
+// in an error that it wraps.
+func TestParseErrorOfADocumentTheDecoderRefusesForAnotherReasonDoesNotRepeatIt(t *testing.T) {
+	const head = "database: {id: sqlmount, schema_mode: strict}\nstorage:\n  engine: postgres\n"
+	for _, c := range []struct{ name, doc string }{
+		{"a connection string with an explicit tag", head + "  postgres:\n    dsn_env: !!int postgres://app:pw-MARKER-31c8@db/x\n"},
+		{"a token variable with an explicit tag", head + "  ingitdb:\n    github:\n      token_env: !!int ghp_MARKER\n"},
+		{"an anchor that is not defined", head + "  postgres:\n    dsn_env: *MARKER\n"},
+		{"a token variable that is an undefined anchor", "database: {id: sqlmount, schema_mode: strict}\nstorage:\n  engine: ingitdb\n  ingitdb:\n    github:\n      token_env: *MARKER\n"},
+		{"an anchor that holds itself", head + "  postgres: &MARKER\n    dsn_env: [*MARKER]\n"},
+		{"a key that cannot be hashed", head + "  postgres:\n    ? [pw-MARKER]\n    : x\n"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := manifest.Parse([]byte(c.doc))
+			if err == nil {
+				t.Fatal("a manifest the decoder cannot decode is accepted")
+			}
+			for _, shown := range []string{err.Error(), fmt.Sprintf("%+v", err), fmt.Sprintf("%#v", err)} {
+				if strings.Contains(shown, "MARKER") || strings.Contains(shown, "app:") {
+					t.Errorf("the error repeats the document: %s", shown)
+				}
+			}
+			for wrapped := errors.Unwrap(err); wrapped != nil; wrapped = errors.Unwrap(wrapped) {
+				if strings.Contains(wrapped.Error(), "MARKER") {
+					t.Errorf("the error wraps one that repeats the document: %v", wrapped)
+				}
+			}
+			if !strings.HasPrefix(err.Error(), "failed to parse manifest YAML") {
+				t.Errorf("got %v", err)
+			}
+		})
+	}
 }
