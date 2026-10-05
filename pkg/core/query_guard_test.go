@@ -860,9 +860,9 @@ func TestFieldRuleFollowsTheEngine(t *testing.T) {
 }
 
 // TestEnginesThatQuoteAcceptNamesTheStrictRuleRefuses: a name with a space or
-// punctuation reaches the adapter on sqlite, ingitdb and firestore, from the
-// wire query and from DTQL, and is refused with no adapter call on every other
-// engine.
+// punctuation reaches the adapter on sqlite and ingitdb, from the wire query and
+// from DTQL, and is refused with no adapter call on every other engine
+// (firestore, postgres and mysql among them).
 func TestEnginesThatQuoteAcceptNamesTheStrictRuleRefuses(t *testing.T) {
 	for _, engine := range []string{"sqlite", "ingitdb", "firestore", "postgres", "mysql", "oracle", ""} {
 		t.Run(engine, func(t *testing.T) {
@@ -927,11 +927,11 @@ func openEngineDatabase(t *testing.T, engine string) *Database {
 	return db
 }
 
-// TestWildcardExcludeTakesNoMask: DALgo reads an exclude of a wildcard column as
-// a case-insensitive mask where * and ? stand for characters, so the name walk
-// refuses either character in an exclude, whatever the field-name rule, and
-// accepts any other name.
-func TestWildcardExcludeTakesNoMask(t *testing.T) {
+// TestWildcardExcludeNamesAFieldWithNoStarOrQuestionMark: DALgo reads an
+// exclude of a wildcard column that holds * as a case-insensitive mask, and
+// gives ? no meaning, so the name walk refuses either character in an exclude,
+// whatever the field-name rule, and accepts any other name.
+func TestWildcardExcludeNamesAFieldWithNoStarOrQuestionMark(t *testing.T) {
 	root := func() dal.IQueryBuilder { return dal.From(rootRef("customers")).NewQuery() }
 	db, _ := openEngine(t, "sqlite")
 	walks := map[string]func(dal.StructuredQuery) error{

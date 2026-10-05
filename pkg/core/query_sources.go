@@ -2,9 +2,12 @@ package core
 
 import (
 	"fmt"
+	"slices"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/dal-go/dalgo/dal"
+	"github.com/dal-go/record"
 )
 
 // maxEchoedNameLen bounds how much of a caller-supplied collection name or
@@ -25,6 +28,18 @@ func clipName(name string) string {
 		cut--
 	}
 	return fmt.Sprintf("%s...(%d bytes)", name[:cut], len(name))
+}
+
+// clipKey returns the path of key as it may appear in an error message: the
+// text record.Key.String gives, with the collection name and the id of every
+// segment clipped as clipName clips a name. It does not validate the key.
+func clipKey(key *record.Key) string {
+	var segments []string
+	for k := key; k != nil; k = k.Parent() {
+		segments = append(segments, clipName(record.EscapeID(fmt.Sprint(k.ID))), clipName(k.Collection()))
+	}
+	slices.Reverse(segments)
+	return strings.Join(segments, "/")
 }
 
 // errSourcesTooDeep refuses a query nested deeper than the query guard allows.
@@ -51,7 +66,7 @@ func (d *Database) guardSources(query dal.StructuredQuery) error {
 	if d.isDocumentEngine() {
 		return nil
 	}
-	return sourceGuard{d: d}.query(query, 0)
+	return sourceGuard{visit: d.checkSourceCollection}.query(query, 0)
 }
 
 // guardSource is guardSources for one source, for the call that reads the
@@ -60,14 +75,44 @@ func (d *Database) guardSource(source dal.RecordsetSource) error {
 	if d.isDocumentEngine() {
 		return nil
 	}
-	return sourceGuard{d: d}.source(source, 0)
+	return sourceGuard{visit: d.checkSourceCollection}.source(source, 0)
 }
 
-// sourceGuard walks a query tree and checks every collection source against
-// the database's declared collections. Its depth counting is that of the query
-// guard's name walk (nameWalker), so it accepts every tree that walk accepts
-// and refuses a deeper one, or a cyclic one, instead of recursing without bound.
-type sourceGuard struct{ d *Database }
+// QueryCollections lists the root collections a query reads, once each and in
+// document order: the root source, every joined source at any depth, every
+// derived source and every subquery, wherever it sits (the walk of the source
+// guard, whatever the engine). A caller that scopes a capability to a
+// collection uses it to authorise every read a query makes, not only the one
+// the route names. A source that a parent record, a schema or another database
+// qualifies is not named by one root collection of this database, and a shape
+// the walk does not know cannot be read: both are refused with ErrInvalidDTQL
+// and nothing is listed.
+func QueryCollections(query dal.StructuredQuery) ([]string, error) {
+	var names []string
+	walk := sourceGuard{visit: func(ref dal.CollectionRef) error {
+		if ref.Parent() != nil || ref.Schema() != "" || ref.Database() != "" {
+			return fmt.Errorf("%w: only plain root collections are supported as sources", ErrInvalidDTQL)
+		}
+		if !slices.Contains(names, ref.Name()) {
+			names = append(names, ref.Name())
+		}
+		return nil
+	}}
+	if err := walk.query(query, 0); err != nil {
+		return nil, err
+	}
+	return names, nil
+}
+
+// sourceGuard walks a query tree and applies visit to every collection source
+// it reaches, before it walks the scan orders of that source. Its depth
+// counting is that of the query guard's name walk (nameWalker) except that it
+// counts a nested join tree one level per nesting, where the name walk
+// flattens such a tree. It is therefore never laxer than the name walk: it
+// refuses a deeper tree, or a cyclic one, instead of recursing without bound.
+type sourceGuard struct {
+	visit func(dal.CollectionRef) error
+}
 
 func (g sourceGuard) query(query dal.StructuredQuery, depth int) error {
 	if query == nil {
@@ -148,22 +193,32 @@ func (g sourceGuard) source(source dal.RecordsetSource, depth int) error {
 }
 
 func (g sourceGuard) collection(ref dal.CollectionRef, depth int) error {
+	if err := g.visit(ref); err != nil {
+		return err
+	}
+	for _, order := range ref.ScanOrders() {
+		if err := g.order(order, depth+1); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkSourceCollection is the check of guardSources on one collection source:
+// it is refused unless it is a declared collection of this database, named
+// plainly (no parent record, no schema, no other database).
+func (d *Database) checkSourceCollection(ref dal.CollectionRef) error {
 	if ref.Parent() != nil {
 		return fmt.Errorf("%w: collection %q cannot be nested under a record on this database", ErrNotFound, clipName(ref.Name()))
 	}
 	if ref.Schema() != "" {
 		return errUndeclared(ref.Path())
 	}
-	if named := ref.Database(); named != "" && (g.d.Manifest == nil || named != g.d.Manifest.Database.ID) {
+	if named := ref.Database(); named != "" && (d.Manifest == nil || named != d.Manifest.Database.ID) {
 		return fmt.Errorf("%w: collection %q of database %q is not declared by this database", ErrNotFound, clipName(ref.Name()), clipName(named))
 	}
-	if g.d.GuardCollection(ref.Name()) != nil {
+	if d.GuardCollection(ref.Name()) != nil {
 		return errUndeclared(ref.Name())
-	}
-	for _, order := range ref.ScanOrders() {
-		if err := g.order(order, depth+1); err != nil {
-			return err
-		}
 	}
 	return nil
 }

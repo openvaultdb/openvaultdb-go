@@ -226,12 +226,12 @@ func (d *Database) Get(ctx context.Context, key *record.Key) (map[string]any, er
 	rec := record.NewRecordWithData(key, data)
 	if err := d.db.Get(ctx, rec); err != nil {
 		if record.IsNotFound(err) {
-			return nil, fmt.Errorf("%w: %s", ErrNotFound, key.String())
+			return nil, fmt.Errorf("%w: %s", ErrNotFound, clipKey(key))
 		}
 		return nil, err
 	}
 	if !rec.Exists() {
-		return nil, fmt.Errorf("%w: %s", ErrNotFound, key.String())
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, clipKey(key))
 	}
 	return d.coerceToSchema(key.Collection(), data), nil
 }
@@ -427,25 +427,25 @@ func (d *Database) Apply(ctx context.Context, ops []Op, message string) (int, er
 				rec := record.NewRecordWithData(dk, op.Data)
 				rec.SetError(nil)
 				if err = tx.Set(ctx, rec); err != nil {
-					return fmt.Errorf("failed to set %s: %w", op.Key.String(), err)
+					return fmt.Errorf("failed to set %s: %w", clipKey(op.Key), err)
 				}
 			case "insert":
 				rec := record.NewRecordWithData(dk, op.Data)
 				rec.SetError(nil)
 				if err = tx.Insert(ctx, rec); err != nil {
-					return fmt.Errorf("failed to insert %s: %w", op.Key.String(), err)
+					return fmt.Errorf("failed to insert %s: %w", clipKey(op.Key), err)
 				}
 			case "update":
 				updates, err := toDalUpdates(op.Updates)
 				if err != nil {
-					return fmt.Errorf("op %d (update %s): %w", i, op.Key.String(), err)
+					return fmt.Errorf("op %d (update %s): %w", i, clipKey(op.Key), err)
 				}
 				if err = tx.Update(ctx, dk, updates); err != nil {
-					return fmt.Errorf("failed to update %s: %w", op.Key.String(), err)
+					return fmt.Errorf("failed to update %s: %w", clipKey(op.Key), err)
 				}
 			case "delete":
 				if err = tx.Delete(ctx, dk); err != nil {
-					return fmt.Errorf("failed to delete %s: %w", op.Key.String(), err)
+					return fmt.Errorf("failed to delete %s: %w", clipKey(op.Key), err)
 				}
 			default:
 				return fmt.Errorf("op %d: unknown op %q", i, op.Op)
@@ -519,7 +519,7 @@ func (d *Database) validateOps(ctx context.Context, ops []Op) error {
 		}
 		st, err := load(op.Key)
 		if err != nil {
-			return fmt.Errorf("op %d (%s %s): %w", i, op.Op, op.Key.String(), err)
+			return fmt.Errorf("op %d (%s %s): %w", i, op.Op, clipKey(op.Key), err)
 		}
 		leafByKey[op.Key.String()] = op.Key.Collection()
 		switch op.Op {
@@ -527,15 +527,15 @@ func (d *Database) validateOps(ctx context.Context, ops []Op) error {
 			st.data = deepCopy(op.Data)
 		case "insert":
 			if st.data != nil {
-				return fmt.Errorf("%w: %s", ErrAlreadyExists, op.Key.String())
+				return fmt.Errorf("%w: %s", ErrAlreadyExists, clipKey(op.Key))
 			}
 			st.data = deepCopy(op.Data)
 		case "update":
 			if st.data == nil {
-				return fmt.Errorf("%w: %s", ErrUpdateOfMissingRecord, op.Key.String())
+				return fmt.Errorf("%w: %s", ErrUpdateOfMissingRecord, clipKey(op.Key))
 			}
 			if err = applyUpdates(st.data, op.Updates, now); err != nil {
-				return fmt.Errorf("op %d (update %s): %w", i, op.Key.String(), err)
+				return fmt.Errorf("op %d (update %s): %w", i, clipKey(op.Key), err)
 			}
 		case "delete":
 			st.data = nil

@@ -32,7 +32,11 @@ func (s *Server) sampleAccess(w http.ResponseWriter, r *http.Request, db *core.D
 		writeError(w, 400, "bad_request", "invalid sample query")
 		return
 	}
+	if !s.authorizeQueryReads(w, r, db, query) {
+		return
+	}
 	rows, order, selectionErr := db.SelectAccessSample(r.Context(), query, request.Sample.Limit, requester)
+	selectionErr = hiddenAsDenied(db, selectionErr)
 	result := newAuthorization(az.ModeSample)
 	result.Scope = az.ScopeSample
 	result.Result = az.OutcomeConditional

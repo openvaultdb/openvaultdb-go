@@ -69,6 +69,18 @@ func writeMappedError(w http.ResponseWriter, err error) (internal bool) {
 	return false
 }
 
+// hiddenAsDenied returns the error a structured read is answered with. A mount
+// with access policies does not say which collections it declares: a read of a
+// collection the database does not declare (an error wrapping core.ErrNotFound)
+// is answered as the read of a declared collection the policy denies, as
+// readRecord answers a key. Any other error is returned as it is.
+func hiddenAsDenied(db *core.Database, err error) error {
+	if db.HasAccessPolicies() && errors.Is(err, core.ErrNotFound) {
+		return access.ErrAccessDenied
+	}
+	return err
+}
+
 // writeMappedError maps err like the package-level writeMappedError and logs
 // errors answered as 500 through the server logger.
 func (s *Server) writeMappedError(w http.ResponseWriter, r *http.Request, err error) {

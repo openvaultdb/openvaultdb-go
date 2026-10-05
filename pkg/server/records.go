@@ -274,7 +274,7 @@ func (s *Server) executeQuery(w http.ResponseWriter, r *http.Request, db *core.D
 	}
 	records, err := db.Execute(r.Context(), q)
 	if err != nil {
-		s.writeMappedError(w, r, err)
+		s.writeMappedError(w, r, hiddenAsDenied(db, err))
 		return
 	}
 	type recordOut struct {

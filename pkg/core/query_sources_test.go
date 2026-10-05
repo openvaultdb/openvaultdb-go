@@ -571,9 +571,11 @@ func TestSourceGuardWalksScanOrders(t *testing.T) {
 	}
 }
 
-// TestSourceGuardAcceptsEveryShapeTheNameWalkAccepts: the guard refuses no
-// shape that a document can carry and the name walk accepts.
-func TestSourceGuardAcceptsEveryShapeTheNameWalkAccepts(t *testing.T) {
+// TestSourceGuardAcceptsConstantsParamsAggregatesNullTestsAndLeftJoins: the
+// guard refuses none of these shapes, which the name walk accepts: constants and
+// arrays, a parameter, a count of everything, a wildcard with an exclude, an
+// aggregate with group by and having, a null test and a left join.
+func TestSourceGuardAcceptsConstantsParamsAggregatesNullTestsAndLeftJoins(t *testing.T) {
 	db, _ := writeGuardOpen(t, "sqlite", "customers", "orders")
 	for label, query := range map[string]dal.StructuredQuery{
 		"constants and arrays": selectQuery(fromTree(rootRef("customers")).NewQuery().WhereField("a", dal.In, []string{"x", "y"}).WhereField("b", dal.Equal, 1)),
@@ -591,6 +593,36 @@ func TestSourceGuardAcceptsEveryShapeTheNameWalkAccepts(t *testing.T) {
 		if err := db.checkRelationalNames(query); err != nil {
 			t.Errorf("%s (names): %v", label, err)
 		}
+	}
+}
+
+// TestSourceGuardCountsANestedJoinTreeOneLevelPerNesting: the name walk checks
+// a derived source in a nested join tree at the depth of its query, and the
+// guard adds a level for each nesting of the tree, so it is never laxer than the
+// name walk. A derived chain that both accept as the source of a plain query is
+// accepted by the name walk and refused by the guard when two nested join trees
+// hold it.
+func TestSourceGuardCountsANestedJoinTreeOneLevelPerNesting(t *testing.T) {
+	db, _ := writeGuardOpen(t, "sqlite", "customers", "orders")
+	chain := srcGuardInner("customers")
+	for i := 0; i < maxQueryTreeDepth-2; i++ {
+		chain = selectQuery(fromTree(dal.NewQuerySource(chain, "d")).NewQuery())
+	}
+	derived := dal.NewQuerySource(chain, "x")
+	plain := selectQuery(fromTree(derived).NewQuery())
+	nested := selectQuery(fromTree(rootRef("customers"), dal.NewJoinedFrom(
+		fromTree(rootRef("orders"), dal.NewJoinedFrom(fromTree(derived), dal.JoinInner, srcGuardJoinOn("orders", "orders"))),
+		dal.JoinInner, srcGuardJoinOn("customers", "orders"))).NewQuery())
+	for label, query := range map[string]dal.StructuredQuery{"plain": plain, "nested": nested} {
+		if err := db.checkRelationalNames(query); err != nil {
+			t.Errorf("%s: the name walk: %v", label, err)
+		}
+	}
+	if err := db.guardSources(plain); err != nil {
+		t.Errorf("plain: the guard: %v", err)
+	}
+	if err := db.guardSources(nested); !errors.Is(err, errSourcesTooDeep) {
+		t.Errorf("nested: the guard: %v", err)
 	}
 }
 

@@ -294,10 +294,11 @@ func (w nameWalker) query(query dal.StructuredQuery, depth int, outer sourceScop
 				if err := w.field(excluded); err != nil {
 					return err
 				}
-				// DALgo reads an exclude as a case-insensitive mask where * and ?
-				// stand for characters, not as the name of a field.
+				// DALgo reads an exclude that holds * as a case-insensitive mask, not as the
+				// name of a field. ? has no meaning to DALgo at present and is refused with
+				// it, so that it stays free to mean one.
 				if strings.ContainsAny(excluded, "*?") {
-					return fmt.Errorf("%w: a wildcard exclude names a field and takes no mask (* or ?)", ErrInvalidDTQL)
+					return fmt.Errorf("%w: a wildcard exclude names one field: it holds no * (a mask) and no ? (reserved)", ErrInvalidDTQL)
 				}
 			}
 		}
