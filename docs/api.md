@@ -129,8 +129,10 @@ each by its canonical name and only when the storage driver reports it, so a tab
 that the manifest does not declare, and a table named with the quote characters of the quoted
 spelling of a declared SQLite key, are not listed, and every name listed is one the query routes
 accept. A declared name is matched with the reported one exactly, except on `postgres`, which
-stores a name lower-cased and reports it so: there a declared name that has an upper-case letter
-(`Customers`) is listed under its declared spelling when its lower-cased form is reported. On
+stores a name lower-cased and reports it so, and on `sqlite`, which finds a table whatever the
+case of the ASCII letters of its name: there a declared name that has an upper-case letter
+(`Customers`) is listed under its declared spelling when its ASCII lower-cased form is reported
+(`customers`). On `mysql` the match stays exact. On
 `ingitdb` and `firestore` the list is what the driver reports. On `postgres` the driver reports
 views as well as tables, so a declared collection that is a view is listed, and the foreign keys
 shown for a table include those of a table with uuid, json or array columns.
@@ -243,7 +245,10 @@ by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
   protected operation's change path; `delete`, a transform and `serverTimestamp` included) is
   `400 bad_request`, whatever else the request holds, and nothing is written: `PATCH` of
   `/records/{key...}`, an `update` op of `/batch`, the protected `PATCH` and the inspection of
-  an update alike. A field whose name merely contains `id` is not the key column. `ingitdb` and
+  an update alike. A field whose name merely contains `id` is not the key column. A write
+  whose `data` names the key column in a case other than `id` (`ID`) is `400 bad_request` too
+  (`PUT`, `POST`, batch `set`/`insert`, and the protected operations), as every spelling is the
+  one column; a manifest that declares a field named so does not open. `ingitdb` and
   `firestore` keep the key outside the record's fields and are unchanged.
 - **Later segments of a `fieldPath`** are map keys. On the SQL engines they must pass the same
   rule. On `ingitdb` and `firestore` they are data and never reach SQL (Sneat's linkage writes
@@ -273,6 +278,12 @@ by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
   multi-operation inspection the undeclared operation is redacted as a hidden one is, and the
   facts given for the other operations of the request do not depend on which of the two it is.
   While a policy layer cannot be used, a sample is refused alike whatever collection it names.
+  A sample asks the policies about its query before it checks the collections the query names,
+  so what the policies answer (a denial, or a result they cannot decide) is the same whichever
+  collection the query names. The routes check an operation in one order: its field names, then
+  whether the protected session supports it (an execution class other than `dtql`, or an action
+  or change it cannot carry: `422 authorization_unsupported`), and its table last, so that
+  answer is the same for every table.
   `/query` and `/dtql` answer `403 ACCESS_DENIED` with the generic message (see
   [DTQL](#dtql)). These routes give the coordinator the collection as written, which is why they
   take the canonical name only.

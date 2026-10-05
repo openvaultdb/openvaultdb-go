@@ -2,7 +2,9 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
+
 	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/dalgo/dal"
 )
@@ -81,10 +83,18 @@ func (d *Database) SelectAccessSample(ctx context.Context, query dal.StructuredQ
 	// be used refuses the sample whichever collection it names, with the refusal
 	// the secured database gives (access.PolicyProviderError), so the refusal does
 	// not tell a collection the database does not declare from one it does.
+	bounded := boundedDTQL{sampleQuery{StructuredQuery: query, count: n, order: order}}
 	var policies []access.Policy
 	if d.HasAccessPolicies() {
 		if policies, err = d.samplePolicies(ctx, requester); err != nil {
 			return nil, order, &access.PolicyProviderError{Err: err}
+		}
+		// The policies decide the query before the source check does, with the
+		// check the secured database makes and no driver behind it, so a refusal
+		// the policies give is the same whichever collection the query names,
+		// declared or not: the source check only decides for a query they admit.
+		if err = admitSample(ctx, bounded, policies); err != nil {
+			return nil, order, err
 		}
 	}
 	// The order is the same whichever collections the query names, so it is
@@ -95,15 +105,50 @@ func (d *Database) SelectAccessSample(ctx context.Context, query dal.StructuredQ
 	}
 	readDB := d.db
 	if d.HasAccessPolicies() {
-		readDB, err = access.SecureDB(readDB, access.WithDatabasePolicyProvider(func(context.Context) ([]access.Policy, error) {
-			return policies, nil
-		}))
+		readDB, err = secureWithPolicies(readDB, policies)
 		if err != nil {
 			return nil, order, err
 		}
 	}
-	records, err := d.executeDalQueryOn(ctx, readDB, boundedDTQL{sampleQuery{StructuredQuery: query, count: n, order: order}}, collection, false)
+	records, err := d.executeDalQueryOn(ctx, readDB, bounded, collection, false)
 	return records, order, err
+}
+
+// errSampleAdmitted is what the stand-in for the driver (admitOnlyDB) answers a
+// query that the policies admitted.
+var errSampleAdmitted = errors.New("query admitted by the policies")
+
+// admitOnlyDB stands in for the driver when the policies alone are asked about a
+// query: a query that reaches it was admitted, and it reads nothing. Every other
+// method panics (nil embedded DB), as the secured database never calls one for a
+// query.
+type admitOnlyDB struct{ dal.DB }
+
+func (admitOnlyDB) ExecuteQueryToRecordsReader(context.Context, dal.Query) (dal.RecordsReader, error) {
+	return nil, errSampleAdmitted
+}
+
+// secureWithPolicies is db behind the access layer, deciding by the given
+// policies, the snapshot a sample reads under.
+func secureWithPolicies(db dal.DB, policies []access.Policy) (dal.DB, error) {
+	return access.SecureDB(db, access.WithDatabasePolicyProvider(func(context.Context) ([]access.Policy, error) {
+		return policies, nil
+	}))
+}
+
+// admitSample asks the policies whether they admit query, as the secured
+// database does when it runs it, and returns the refusal when they do not: a
+// denial with its decisions, or any other error the access layer raises before
+// it reaches the driver. It returns nil for a query they admit and reads nothing.
+func admitSample(ctx context.Context, query dal.Query, policies []access.Policy) error {
+	admit, err := secureWithPolicies(admitOnlyDB{}, policies)
+	if err == nil {
+		_, err = admit.ExecuteQueryToRecordsReader(ctx, query)
+	}
+	if errors.Is(err, errSampleAdmitted) {
+		return nil
+	}
+	return err
 }
 
 // samplePolicies returns the policies a sample reads under: those of every

@@ -72,9 +72,11 @@ type Database struct {
 	// the live manifest afterwards.
 	documentEngine bool
 
-	// foldsIdentifiers records, when the database opens, whether its adapter
-	// stores a name lower-cased and reports it so (PostgreSQL does), so a name the
-	// driver reports is compared with a declared one without regard to case.
+	// foldsIdentifiers records, when the database opens, whether the engine
+	// resolves a collection name without regard to the case of ASCII letters
+	// (PostgreSQL stores a name lower-cased and reports it so, and SQLite finds a
+	// table whatever the case of its name), so a name the driver reports is
+	// compared with a declared one with the ASCII letters folded.
 	foldsIdentifiers bool
 
 	// afterWrite, when set, runs after each successfully applied write batch
@@ -135,8 +137,11 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 	if err != nil {
 		return nil, err
 	}
+	if err = checkFieldNames(m); err != nil {
+		return nil, err
+	}
 	d := &Database{Manifest: m, db: db, modes: supportedModes, policyController: controller,
-		names: names, documentEngine: documentEngines[m.Storage.Engine], foldsIdentifiers: m.Storage.Engine == "postgres"}
+		names: names, documentEngine: documentEngines[m.Storage.Engine], foldsIdentifiers: foldingEngines[m.Storage.Engine]}
 	// Retain the raw driver's Close: protected/secured wrappers installed
 	// below replace d.db but share the driver's underlying handle.
 	if closer, ok := db.(io.Closer); ok {
@@ -344,13 +349,25 @@ func (d *Database) Collections(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
+// foldingEngines lists the engines that resolve a collection name without regard
+// to the case of ASCII letters (see Database.foldsIdentifiers). MySQL is not one:
+// whether it folds depends on the server's lower_case_table_names.
+var foldingEngines = map[string]bool{"postgres": true, "sqlite": true}
+
 // reportedName is name as the driver of the database reports it (see
-// foldsIdentifiers).
+// foldsIdentifiers): the ASCII letters of a name are lower-cased, and any other
+// character stays as it is.
 func (d *Database) reportedName(name string) string {
-	if d.foldsIdentifiers {
-		return strings.ToLower(name)
+	if !d.foldsIdentifiers {
+		return name
 	}
-	return name
+	folded := []byte(name)
+	for i, c := range folded {
+		if 'A' <= c && c <= 'Z' {
+			folded[i] = c + 'a' - 'A'
+		}
+	}
+	return string(folded)
 }
 
 // CollectionForeignKeys returns foreign keys discovered by the storage

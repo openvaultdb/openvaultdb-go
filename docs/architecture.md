@@ -208,7 +208,9 @@ either. ovdb does not depend on the adapter for either:
   and Firestore only a non-blank segment without control characters
   (Sneat's linkage writes `id@spaceID` keys there). On the SQL engines an update
   that names the record's key column (`id`, in any spelling of its case) is
-  `400 bad_request` too (`core.ErrKeyUpdate`).
+  `400 bad_request` too (`core.ErrKeyUpdate`), and so is a write body whose keys
+  name it in a case other than `id` (`core.ErrKeyColumnCase`); a manifest that
+  declares a field so named does not open (`core.ErrFieldNamesConflict`).
 - **Empty writes**, on the SQL engines. An `update` with no operation, and a
   `set` that names no field but `id` for a record that exists, leave the adapter
   nothing to put in a statement and are `400 bad_request` before the write.

@@ -240,9 +240,9 @@ func redactPoint(result *az.Result, id string) {
 // inspectAccess answers an inspection of operations on single records. An
 // operation on a table the database does not declare is answered as one on a
 // declared table the policy hides: 200, redacted, with nothing that tells the two
-// apart, and the adapter is never asked about it. Its field names are checked
-// first, as they are for a declared table, so a refusal for them is the same for
-// both.
+// apart, and the adapter is never asked about it. Its field names and its
+// support by the protected session are checked first (guardOperation), as they
+// are for a declared table, so a refusal for them is the same for both.
 func (s *Server) inspectAccess(w http.ResponseWriter, r *http.Request, db *core.Database, request api.Request, owners []core.PolicyLayer, requester access.Principal) {
 	coordinator := db.Coordinator()
 	if coordinator == nil {
@@ -252,18 +252,14 @@ func (s *Server) inspectAccess(w http.ResponseWriter, r *http.Request, db *core.
 	ops := make([]access.ProtectedOperation, 0, len(request.Operations))
 	hidden := map[string]bool{}
 	for _, op := range request.Operations {
-		if err := guardOperationFields(db, op); err != nil {
-			s.refuseOperation(w, r, az.ModeInspect, op, err)
-			return
-		}
-		internal, err := protectedOperation(op)
-		if err != nil {
-			writeError(w, 422, "authorization_unsupported", "operation cannot be inspected")
-			return
-		}
-		if db.GuardCanonicalCollection(op.Resource.Table) != nil {
+		internal, err := guardOperation(db, op)
+		if errors.Is(err, core.ErrNotFound) {
 			hidden[op.ID] = true
 			continue
+		}
+		if err != nil {
+			s.refuseOperation(w, r, az.ModeInspect, op, err)
+			return
 		}
 		ops = append(ops, internal)
 	}
@@ -336,13 +332,9 @@ func (s *Server) handleProtectedUpdate(w http.ResponseWriter, r *http.Request, d
 		writeError(w, 400, "bad_request", "operation and request path must identify the same update")
 		return
 	}
-	if err = guardOperation(db, op); err != nil {
-		s.refuseOperation(w, r, az.ModeExecution, op, err)
-		return
-	}
-	internal, err := protectedOperation(op)
+	internal, err := guardOperation(db, op)
 	if err != nil {
-		writeError(w, 422, "authorization_unsupported", "unsupported mutation")
+		s.refuseOperation(w, r, az.ModeExecution, op, err)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -439,13 +431,9 @@ func (s *Server) handleAccessEvidence(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, db.ID(), auth.CapRecordsRead, op.Resource.Table) {
 		return
 	}
-	if err = guardOperation(db, op); err != nil {
-		s.refuseOperation(w, r, az.ModeInspect, op, err)
-		return
-	}
-	internal, err := protectedOperation(op)
+	internal, err := guardOperation(db, op)
 	if err != nil {
-		writeError(w, 400, "bad_request", "invalid evidence fields")
+		s.refuseOperation(w, r, az.ModeInspect, op, err)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)

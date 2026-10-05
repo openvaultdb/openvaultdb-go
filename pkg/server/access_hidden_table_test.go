@@ -34,6 +34,14 @@ const hiddenTableGrantedToken = "ovdb_test_hidden_table_granted"
 // token granted every collection a case below names, in the spelling it names.
 func hiddenTableServer(t *testing.T, extra ...server.Option) (*httptest.Server, sqlNamesFixture) {
 	t.Helper()
+	return hiddenTableServerInRealm(t, "", extra...)
+}
+
+// hiddenTableServerInRealm is hiddenTableServer with the owner ACL bound to a
+// principal realm (none when realm is empty). A caller whose principal has no
+// subject is not in a realm, so the policy cannot decide any request of it.
+func hiddenTableServerInRealm(t *testing.T, realm string, extra ...server.Option) (*httptest.Server, sqlNamesFixture) {
+	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "db.yaml")
 	manifest := "database: {id: crm, schema_mode: strict}\nstorage: {engine: sqlite, path: data.sqlite}\nschemas:\n  collections:\n" +
@@ -61,7 +69,11 @@ func hiddenTableServer(t *testing.T, extra ...server.Option) (*httptest.Server, 
 	}
 	policy := strings.Replace(aclPolicy("upper", "country", "IE"), "operations: [query, get]", "operations: [query, get, update]", 1)
 	aclWriteFile(t, filepath.Join(dir, "upper.yaml"), policy)
-	aclWriteFile(t, path, manifest+"acl: {enabled: true, policies: [upper.yaml]}\n")
+	acl := "acl: {enabled: true, policies: [upper.yaml]}\n"
+	if realm != "" {
+		acl = "acl: {enabled: true, realm: " + realm + ", policies: [upper.yaml]}\n"
+	}
+	aclWriteFile(t, path, manifest+acl)
 	db, err := mount.File(path)
 	if err != nil {
 		t.Fatal(err)
@@ -251,6 +263,111 @@ func TestHiddenRecordIsAnsweredAlikeOnTheProtectedPatchAndEvidence(t *testing.T)
 					}
 					if got := strings.ReplaceAll(hidden.body, c.swap, "orders"); hidden.status != deny.status || got != deny.body {
 						t.Errorf("%s: undeclared\n  %d %s\nhidden by the policy\n  %d %s", name, hidden.status, hidden.body, deny.status, deny.body)
+					}
+				}
+			}
+		})
+	}
+	if got := file.rows(t, `"returns"`); got != "01=Quoted" {
+		t.Errorf("the table named with quotes holds %q, want 01=Quoted", got)
+	}
+}
+
+// TestSampleIsAnsweredAlikeWhenThePolicyCannotDecide: a policy bound to a
+// principal realm cannot decide any request of a caller whose principal has no
+// subject, whatever collection the request names. A sample of a table the
+// database does not declare, of the quoted spelling of a declared key and of a
+// declared table is then answered with the same status and the same whole body
+// (the result the policy gave), for the owner and for a token granted every name.
+func TestSampleIsAnsweredAlikeWhenThePolicyCannotDecide(t *testing.T) {
+	ts, _ := hiddenTableServerInRealm(t, "local")
+	sample := func(table string) string {
+		op := writeGuardProtectedOp("update", "/"+table, writeGuardProtectedSet("name"))
+		data, _ := json.Marshal(api.Request{APIVersion: az.APIVersion, Mode: az.ModeSample, DiagnosticLevel: "ordinary", Operations: []api.Operation{op},
+			Sample: &api.Sample{Limit: 1, Query: api.Query{Format: "dtql-yaml", Text: "from: {name: '" + table + "'}\n"}}})
+		return string(data)
+	}
+	for _, caller := range []struct{ name, token string }{{"owner", ownerToken}, {"granted token", hiddenTableGrantedToken}} {
+		t.Run(caller.name, func(t *testing.T) {
+			headers := map[string]string{"Content-Type": "application/json"}
+			declared := hiddenSourceAsk(t, ts, caller.token, "POST", "/v1/databases/crm/access/evaluate", sample("orders"), headers)
+			if declared.status != http.StatusOK || !strings.Contains(declared.body, `"result":"indeterminate"`) {
+				t.Fatalf("a declared table: want the policy's indeterminate result, got %d %s", declared.status, declared.body)
+			}
+			for _, c := range []struct{ what, table, swap string }{
+				{"an undeclared table", "ghost", "ghost"},
+				{"the quoted spelling of a declared key", `"returns"`, `\"returns\"`},
+				{"a declared table the caller reads", "customers", "customers"},
+			} {
+				got := hiddenSourceAsk(t, ts, caller.token, "POST", "/v1/databases/crm/access/evaluate", sample(c.table), headers)
+				if text := strings.ReplaceAll(got.body, c.swap, "orders"); got.status != declared.status || text != declared.body {
+					t.Errorf("%s:\n  %d %s\nhidden by the policy\n  %d %s", c.what, got.status, got.body, declared.status, declared.body)
+				}
+			}
+		})
+	}
+}
+
+// TestUnsupportedOperationIsRefusedAlikeForEveryTable: an operation of the
+// authorization API that the protected session does not support (an execution
+// class other than dtql) is refused before the table is looked at, so the
+// protected PATCH of /records and the inspection of /access/evaluate give the
+// same status and the same whole body for a table the database does not declare,
+// the quoted spelling of a declared key, a declared table the policy hides and a
+// declared table the caller reads, for the owner and for a token granted every
+// name.
+func TestUnsupportedOperationIsRefusedAlikeForEveryTable(t *testing.T) {
+	ts, file := hiddenTableServer(t)
+	classes := []struct {
+		name  string
+		apply func(*api.Operation)
+	}{
+		{"native_sql", func(op *api.Operation) { op.ExecutionClass = az.ExecutionNativeSQL }},
+		{"native_graphql", func(op *api.Operation) { op.ExecutionClass = az.ExecutionNativeGraphQL }},
+		{"stored_procedure", func(op *api.Operation) {
+			op.ExecutionClass = az.ExecutionStoredProcedure
+			op.Callable = &az.Callable{Namespace: "ns", Name: "proc"}
+		}},
+	}
+	routes := []struct {
+		name, method, content string
+		at                    func(table string, apply func(*api.Operation)) (path, body string)
+	}{
+		{"PATCH", "PATCH", "application/vnd.dtql.operation+json", func(table string, apply func(*api.Operation)) (string, string) {
+			op := writeGuardProtectedOp("update", "/"+table+"/01", writeGuardProtectedSet("total"))
+			apply(&op)
+			data, _ := json.Marshal(op)
+			return "/v1/databases/crm/records/" + url.PathEscape(table) + "/01", string(data)
+		}},
+		{"inspection", "POST", "application/json", func(table string, apply func(*api.Operation)) (string, string) {
+			op := writeGuardProtectedOp("get", "/"+table+"/01", nil)
+			apply(&op)
+			data, _ := json.Marshal(api.Request{APIVersion: az.APIVersion, Mode: az.ModeInspect, DiagnosticLevel: "references", Operations: []api.Operation{op}})
+			return "/v1/databases/crm/access/evaluate", string(data)
+		}},
+	}
+	tables := []struct{ what, table, swap string }{
+		{"an undeclared table", "ghost", "ghost"},
+		{"the quoted spelling of a declared key", `"returns"`, `\"returns\"`},
+		{"a declared table the caller reads", "customers", "customers"},
+	}
+	for _, caller := range []struct{ name, token string }{{"owner", ownerToken}, {"granted token", hiddenTableGrantedToken}} {
+		t.Run(caller.name, func(t *testing.T) {
+			for _, class := range classes {
+				for _, route := range routes {
+					headers := map[string]string{"Content-Type": route.content}
+					denyPath, denyBody := route.at("orders", class.apply)
+					deny := hiddenSourceAsk(t, ts, caller.token, route.method, denyPath, denyBody, headers)
+					if deny.status != http.StatusUnprocessableEntity || !strings.Contains(deny.body, `"code":"authorization_unsupported"`) {
+						t.Errorf("%s, %s, a declared table the policy hides: want 422 authorization_unsupported, got %d %s", route.name, class.name, deny.status, deny.body)
+					}
+					for _, c := range tables {
+						name := route.name + ", " + class.name + ", " + c.what
+						path, body := route.at(c.table, class.apply)
+						got := hiddenSourceAsk(t, ts, caller.token, route.method, path, body, headers)
+						if text := strings.ReplaceAll(got.body, c.swap, "orders"); got.status != deny.status || text != deny.body {
+							t.Errorf("%s:\n  %d %s\nhidden by the policy\n  %d %s", name, got.status, got.body, deny.status, deny.body)
+						}
 					}
 				}
 			}

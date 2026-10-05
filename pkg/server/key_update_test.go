@@ -73,3 +73,29 @@ func TestProtectedUpdateOfTheKeyColumnIsABadRequest(t *testing.T) {
 		})
 	}
 }
+
+// TestProtectedInsertAndSetOfTheKeyColumnInAnotherCaseIsABadRequest: the
+// inspection of an insert or a set whose data names the key column in a case
+// other than "id" is a 400 for a declared table and for one the database does not
+// declare, before the coordinator reads the table; "id" itself is left to the
+// adapter, which skips it.
+func TestProtectedInsertAndSetOfTheKeyColumnInAnotherCaseIsABadRequest(t *testing.T) {
+	f := startCanonicalNames(t)
+	for _, action := range []string{"insert", "set"} {
+		for _, table := range []string{"customers", "ghost"} {
+			t.Run(action+"/"+table, func(t *testing.T) {
+				for key, want := range map[string]int{"ID": http.StatusBadRequest, "Id": http.StatusBadRequest, "id": http.StatusOK} {
+					op := writeGuardProtectedOp(action, "/"+table+"/zz", &api.Mutation{Data: map[string]any{key: "x"}})
+					request, _ := json.Marshal(api.Request{APIVersion: az.APIVersion, Mode: az.ModeInspect, DiagnosticLevel: "references", Operations: []api.Operation{op}})
+					status, body := writeGuardRequest(t, f.ts, "POST", "/v1/databases/crm/access/evaluate", "application/json", string(request))
+					if status != want {
+						t.Errorf("data key %s: status %d, want %d: %s", key, status, want, body)
+					}
+				}
+				if got := f.file.rows(t, "customers"); got != "01=Original" {
+					t.Errorf("customers holds %q, want 01=Original", got)
+				}
+			})
+		}
+	}
+}

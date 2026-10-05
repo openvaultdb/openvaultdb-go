@@ -50,7 +50,8 @@ func (collectionsListDB) ListReferrers(context.Context, *dal.CollectionRef) ([]d
 // declared collections, by their canonical names, that the driver reports, so it
 // is the list the routes that take a collection accept; a document engine lists
 // what its driver reports. PostgreSQL stores a name it is given lower-cased and
-// reports it so: a declared name is reported when its lower-cased form is.
+// reports it so, and SQLite resolves a name without regard to the case of ASCII
+// letters: a declared name is reported when its ASCII lower-cased form is.
 func TestCollectionsListsOnlyDeclaredCanonicalNamesOnSQLEngines(t *testing.T) {
 	reported := []string{"customers", "Customers", "ghost", "Order Details", `"Order Details"`, `"customers"`}
 	for _, c := range []struct {
@@ -74,9 +75,16 @@ func TestCollectionsListsOnlyDeclaredCanonicalNamesOnSQLEngines(t *testing.T) {
 		{"postgres, a declared name with an upper-case letter", "postgres", schema.ModeStrict, []string{"Customers", "orders"}, []string{"customers", "ghost"}, []string{"Customers"}},
 		{"postgres, the same name declared in two cases", "postgres", schema.ModeStrict, []string{"Customers", "customers"}, []string{"customers"}, []string{"Customers", "customers"}},
 		{"postgres, a declared name the driver does not report", "postgres", schema.ModeStrict, []string{"Customers", "orders"}, []string{"orders"}, []string{"orders"}},
-		// Other engines match the reported name exactly.
+		// SQLite resolves a table name without regard to the case of ASCII letters,
+		// and only of those.
+		{"sqlite, a declared name with an upper-case letter", "sqlite", schema.ModeStrict, []string{"Customers"}, []string{"customers"}, []string{"Customers"}},
+		{"sqlite, a declared name reported with another case", "sqlite", schema.ModeStrict, []string{"customers"}, []string{"CUSTOMERS"}, []string{"customers"}},
+		{"sqlite, a declared name the driver does not report", "sqlite", schema.ModeStrict, []string{"Customers", "orders"}, []string{"orders"}, []string{"orders"}},
+		{"sqlite, a non-ASCII letter is not folded", "sqlite", schema.ModeStrict, []string{`"Éclair"`}, []string{"éclair"}, nil},
+		{"sqlite, a non-ASCII letter reported as declared", "sqlite", schema.ModeStrict, []string{`"Éclair"`}, []string{"Éclair"}, []string{"Éclair"}},
+		// MySQL matches the reported name exactly: whether it folds depends on the
+		// server's lower_case_table_names.
 		{"mysql, a declared name with an upper-case letter", "mysql", schema.ModeStrict, []string{"Customers"}, []string{"customers"}, nil},
-		{"sqlite, a declared name with an upper-case letter", "sqlite", schema.ModeStrict, []string{"Customers"}, []string{"customers"}, nil},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			collections := map[string]schema.Collection{}

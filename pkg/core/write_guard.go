@@ -9,6 +9,8 @@ import (
 	"unicode"
 
 	"github.com/dal-go/record"
+
+	"github.com/openvaultdb/openvaultdb-go/pkg/manifest"
 )
 
 // ErrInvalidFieldName identifies a write that carries a field name that is not
@@ -20,6 +22,19 @@ var ErrInvalidFieldName = errors.New("invalid field name")
 // changes (mapped to HTTP 400 bad_request, as ErrInvalidFieldName is). See
 // Database.ValidateUpdatePath.
 var ErrKeyUpdate = fmt.Errorf("%w: an update cannot name the record's key column", ErrInvalidFieldName)
+
+// ErrKeyColumnCase identifies a write whose data names the record's key column
+// in a case other than "id", on an engine whose adapter builds SQL: every
+// spelling is the one column, and the adapter skips only "id" when it lists the
+// columns to write (mapped to HTTP 400 bad_request, as ErrInvalidFieldName is).
+// See Database.ValidateDataKeys.
+var ErrKeyColumnCase = fmt.Errorf("%w: a field cannot be the record's key column in another case", ErrInvalidFieldName)
+
+// ErrFieldNamesConflict identifies a manifest that declares, on an engine whose
+// adapter builds SQL, a field that is the record's key column in a case other
+// than "id": it would be the key column and not a field. Opening a database
+// refuses such a manifest.
+var ErrFieldNamesConflict = errors.New("conflicting field names")
 
 // keyColumn is the primary-key column of every collection a SQL mount declares
 // (see ensureCollection): it holds the record key's ID. SQL engines compare
@@ -193,6 +208,52 @@ func validateMapKey(key string) error {
 	return nil
 }
 
+// ValidateDataKeys checks the top-level keys of the data of an insert or a set,
+// which an adapter that builds SQL writes as columns: each must be a plain name
+// (ValidateFieldNames), and on an engine that builds SQL (or one nobody
+// classified) none may be the record's key column in a case other than "id",
+// which is the same column (ErrKeyColumnCase). A document engine keeps the key
+// outside the record's fields and is not refused here. No data is fine.
+func (d *Database) ValidateDataKeys(data map[string]any) error {
+	names := slices.Sorted(maps.Keys(data))
+	if err := ValidateFieldNames(names); err != nil {
+		return err
+	}
+	if d.isDocumentEngine() {
+		return nil
+	}
+	for _, name := range names {
+		if isKeyColumnSpelling(name) {
+			return fmt.Errorf("%w (%q)", ErrKeyColumnCase, keyColumn)
+		}
+	}
+	return nil
+}
+
+// isKeyColumnSpelling reports whether name is the key column in a case other
+// than "id".
+func isKeyColumnSpelling(name string) bool {
+	return name != keyColumn && strings.EqualFold(name, keyColumn)
+}
+
+// checkFieldNames refuses a manifest that declares, on an engine that builds SQL
+// (or one nobody classified), a field that is a spelling of the key column
+// other than "id" (ErrFieldNamesConflict). The first such field in name order is
+// named. A document engine is not refused.
+func checkFieldNames(m *manifest.Manifest) error {
+	if m.Schemas == nil || documentEngines[m.Storage.Engine] {
+		return nil
+	}
+	for _, collection := range slices.Sorted(maps.Keys(m.Schemas.Collections)) {
+		for _, field := range slices.Sorted(maps.Keys(m.Schemas.Collections[collection].Fields)) {
+			if isKeyColumnSpelling(field) {
+				return fmt.Errorf("%w: collection %q declares field %q, which is a spelling of its key column %q", ErrFieldNamesConflict, collection, field, keyColumn)
+			}
+		}
+	}
+	return nil
+}
+
 // ValidateFieldNames checks every name with ValidateFieldName, in order; no
 // names is fine. The error wraps ErrInvalidFieldName.
 func ValidateFieldNames(names []string) error {
@@ -225,7 +286,9 @@ func (d *Database) validateUpdate(u UpdateOp) error {
 // guardWrite refuses a whole batch, before any adapter call (the validation
 // that follows reads the adapter by key), when any op names an undeclared
 // collection on a SQL engine (GuardKey) or carries a field name that is not
-// plain on any engine: the top-level keys of its data, the fieldName and the
+// plain on any engine: the top-level keys of its data (on an engine that builds
+// SQL, one that is the record's key column in a case other than "id" is refused
+// too: ErrKeyColumnCase, see ValidateDataKeys), the fieldName and the
 // first path segment of its updates, delete-field included, and the later
 // segments as ValidateFieldPath says; an update that names no field is refused
 // too, and on an engine that builds SQL an update with no operation at all
@@ -242,7 +305,7 @@ func (d *Database) guardWrite(ops []Op) error {
 				return fmt.Errorf("op %d (%s): %w", i, op.Op, err)
 			}
 		}
-		if err := ValidateFieldNames(slices.Sorted(maps.Keys(op.Data))); err != nil {
+		if err := d.ValidateDataKeys(op.Data); err != nil {
 			return fmt.Errorf("op %d (%s) data: %w", i, op.Op, err)
 		}
 		if op.Op == "update" && len(op.Updates) == 0 && !d.isDocumentEngine() {
@@ -258,15 +321,15 @@ func (d *Database) guardWrite(ops []Op) error {
 }
 
 // setsNoColumn reports whether data, written to a record that exists, would
-// leave a SQL adapter nothing to update: it holds no field but "id", the
-// primary-key column of every collection a SQL mount declares. It is false on a
-// document engine, which rewrites the document.
+// leave a SQL adapter nothing to update: it holds no field but the key column,
+// in any case, which is the primary-key column of every collection a SQL mount
+// declares. It is false on a document engine, which rewrites the document.
 func (d *Database) setsNoColumn(data map[string]any) bool {
 	if d.isDocumentEngine() {
 		return false
 	}
 	for name := range data {
-		if name != "id" {
+		if !strings.EqualFold(name, keyColumn) {
 			return false
 		}
 	}

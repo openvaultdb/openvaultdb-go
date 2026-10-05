@@ -34,7 +34,7 @@ func TestGuardOperationDeclaresTheCanonicalNameOfACollection(t *testing.T) {
 		return db
 	}
 	operation := func(table string) api.Operation {
-		return api.Operation{Resource: az.Resource{DatabaseID: "crm", Table: table, RowID: "1"}}
+		return api.Operation{ID: "op1", Action: "get", ExecutionClass: az.ExecutionDTQL, Resource: az.Resource{DatabaseID: "crm", Table: table, RowID: "1"}}
 	}
 	for _, c := range []struct {
 		engine, table string
@@ -47,7 +47,7 @@ func TestGuardOperationDeclaresTheCanonicalNameOfACollection(t *testing.T) {
 		{"postgres", `"Order Details"`, nil},
 		{"postgres", "Order Details", core.ErrNotFound},
 	} {
-		err := guardOperation(open(c.engine), operation(c.table))
+		_, err := guardOperation(open(c.engine), operation(c.table))
 		if c.want == nil && err != nil || c.want != nil && !errors.Is(err, c.want) {
 			t.Errorf("%s: table %q: got %v, want %v", c.engine, c.table, err, c.want)
 		}
