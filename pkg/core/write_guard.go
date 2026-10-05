@@ -9,13 +9,18 @@ import (
 	"unicode"
 
 	"github.com/dal-go/record"
-
-	"github.com/openvaultdb/openvaultdb-go/pkg/manifest"
 )
 
 // ErrInvalidFieldName identifies a write that carries a field name that is not
 // a plain name (mapped to HTTP 400 bad_request). See ValidateFieldName.
 var ErrInvalidFieldName = errors.New("invalid field name")
+
+// ErrEmptyWrite identifies a write that names nothing to change, on an engine
+// whose adapter builds SQL and cannot carry it out: an update with no operation,
+// and a set that names no field but the record's id for a record that exists
+// (mapped to HTTP 400 bad_request). A set of no field for a record that does not
+// exist inserts a record that holds only its id, and is not refused.
+var ErrEmptyWrite = errors.New("empty write")
 
 // documentEngines lists the storage engines whose adapters address records as
 // documents (a file path, a Firestore document) and never write a collection
@@ -28,19 +33,21 @@ var documentEngines = map[string]bool{
 }
 
 // isDocumentEngine reports whether the mount's adapter addresses records as
-// documents (see documentEngines). It is false for an engine nobody classified
-// and for a database without a manifest: those are held to the SQL rules.
-func (d *Database) isDocumentEngine() bool { return documentEngines[d.queryEngine()] }
+// documents (see documentEngines). The class is recorded when the database
+// opens, beside the declared set, so a later change of the live manifest's
+// engine changes no rule. It is false for an engine nobody classified and for a
+// database not built by Open: those are held to the SQL rules.
+func (d *Database) isDocumentEngine() bool { return d.documentEngine }
 
 // GuardKey refuses, before any adapter call, a key the adapter of a SQL engine
 // cannot address safely: a key with a parent, because a SQL mount has no
-// subcollections (dalgo2sql maps such a key to a recordset named
-// <leaf>_<parent> that no mount registers, and its delete statement names only
-// the leaf table, so the capability checked on the root collection would not be
-// the table written), and a collection the database does not declare (see
-// GuardCollection). Document engines address nested keys natively and are not
-// refused here. A nil key names nothing and is left to the caller. The error
-// wraps ErrNotFound (HTTP 404 not_found).
+// subcollections (dalgo2sql maps such a key to a recordset named after the whole
+// path, <leaf>_<parent>, that no mount registers and that is not the root
+// collection the capability is checked on), and a collection the database does
+// not declare (see GuardCollection). Document engines address nested keys natively, as a
+// subcollection of the parent record, so they are not refused here and the
+// capability stays scoped by the root collection. A nil key names nothing and is
+// left to the caller. The error wraps ErrNotFound (HTTP 404 not_found).
 func (d *Database) GuardKey(key *record.Key) error {
 	if key == nil {
 		return nil
@@ -57,48 +64,24 @@ func (d *Database) GuardKey(key *record.Key) error {
 // collection name into the text of key reads and writes, and
 // ValidateCollectionName is only a path-safety rule that accepts quotes,
 // spaces and semicolons, so the set of collections the mount declared when it
-// opened is the allow-list. Names match exactly, case included. Document
-// engines keep their own rule: any collection that passes
+// opened is the allow-list (see collectionNames: every spelling of a declared
+// collection is accepted and has one canonical name). Names match exactly, case
+// included. Document engines keep their own rule: any collection that passes
 // ValidateCollectionName. The error wraps ErrNotFound.
 func (d *Database) GuardCollection(name string) error {
 	if d.isDocumentEngine() {
 		return nil
 	}
-	if _, ok := d.declared[name]; ok {
+	if _, ok := d.names.canonical[name]; ok {
 		return nil
 	}
 	return fmt.Errorf("%w: collection %q is not declared by this database", ErrNotFound, name)
 }
 
-// declaredCollections is the allow-list of a mount, fixed when the database
-// opens: every key of the manifest's schemas, and on SQLite the public name of
-// a key that is a quoted SQL identifier ("Order Details" with the quotes), the
-// name the mount registers with the driver for it too. It is built from the
-// manifest as the mount saw it, not read from the live manifest afterwards:
-// an embedder may rename the manifest's keys once mounted (openvaultdb/cloud
-// publishes the public names and rewrites key reads to the quoted ones), and
-// the name the driver was given must stay declared.
-func declaredCollections(m *manifest.Manifest) map[string]struct{} {
-	if m.Schemas == nil {
-		return nil
-	}
-	declared := make(map[string]struct{}, len(m.Schemas.Collections))
-	for name := range m.Schemas.Collections {
-		declared[name] = struct{}{}
-		if m.Storage.Engine != "sqlite" {
-			continue
-		}
-		if logical, ok := SQLiteLogicalName(name); ok {
-			declared[logical] = struct{}{}
-		}
-	}
-	return declared
-}
-
 // SQLiteLogicalName returns the public identifier inside a SQL-quoted schema
 // key of a SQLite manifest, where a doubled quote stands for one literal quote.
-// It is the one definition the guard (declaredCollections) and the mount (the
-// recordsets it registers with the driver) share.
+// It is the one definition the declared set (newCollectionNames) and the mount
+// (the recordsets it registers with the driver) share.
 func SQLiteLogicalName(name string) (string, bool) {
 	if len(name) < 2 || name[0] != '"' || name[len(name)-1] != '"' {
 		return "", false
@@ -126,9 +109,10 @@ func SQLiteLogicalName(name string) (string, bool) {
 // a SQL engine (or one nobody classified) they are held to the same rule, to
 // fail closed; on a document engine they never reach SQL and are data
 // (Sneat's linkage writes ["related", ext, collection, "id@spaceID"]), so only
-// a segment that is empty, blank or carries a control character is refused (an
-// empty one panics in update.ByFieldPath inside the transaction). An empty
-// path is refused. The error wraps ErrInvalidFieldName.
+// a segment that is blank (empty, or only white space) or carries a control
+// character is refused: update.ByFieldPath panics on a blank segment inside the
+// transaction. A path with no segment at all is refused too. The error wraps
+// ErrInvalidFieldName.
 func (d *Database) ValidateFieldPath(path []string) error {
 	if len(path) == 0 {
 		return fmt.Errorf("%w: field path is empty", ErrInvalidFieldName)
@@ -194,10 +178,12 @@ func (d *Database) validateUpdate(u UpdateOp) error {
 // plain on any engine: the top-level keys of its data, the fieldName and the
 // first path segment of its updates, delete-field included, and the later
 // segments as ValidateFieldPath says; an update that names no field is refused
-// too (it used to reach the adapter for a key read and then fail as a 500). An
-// op's collection is checked before its fields, so a request for a collection
-// the database does not declare is a 404 whatever its body carries. An op without
-// a key carries nothing to the adapter; the validation that follows refuses it.
+// too, and on an engine that builds SQL an update with no operation at all
+// (ErrEmptyWrite). Ops are checked in order, and an op's collection before its fields. So
+// within one op a collection the database does not declare is a 404 whatever its
+// body carries, and in a batch the first op that fails decides the refusal,
+// whichever rule it breaks. An op without a key carries nothing to the adapter;
+// the validation that follows refuses it.
 func (d *Database) guardWrite(ops []Op) error {
 	for i, op := range ops {
 		if op.Key != nil {
@@ -208,6 +194,9 @@ func (d *Database) guardWrite(ops []Op) error {
 		if err := ValidateFieldNames(slices.Sorted(maps.Keys(op.Data))); err != nil {
 			return fmt.Errorf("op %d (%s) data: %w", i, op.Op, err)
 		}
+		if op.Op == "update" && len(op.Updates) == 0 && !d.isDocumentEngine() {
+			return fmt.Errorf("op %d (update): %w: the update carries no operation", i, ErrEmptyWrite)
+		}
 		for j, u := range op.Updates {
 			if err := d.validateUpdate(u); err != nil {
 				return fmt.Errorf("op %d (%s) update %d: %w", i, op.Op, j, err)
@@ -215,4 +204,20 @@ func (d *Database) guardWrite(ops []Op) error {
 		}
 	}
 	return nil
+}
+
+// setsNoColumn reports whether data, written to a record that exists, would
+// leave a SQL adapter nothing to update: it holds no field but "id", the
+// primary-key column of every collection a SQL mount declares. It is false on a
+// document engine, which rewrites the document.
+func (d *Database) setsNoColumn(data map[string]any) bool {
+	if d.isDocumentEngine() {
+		return false
+	}
+	for name := range data {
+		if name != "id" {
+			return false
+		}
+	}
+	return true
 }

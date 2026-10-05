@@ -61,10 +61,16 @@ type Database struct {
 	coordinator      *access.EnforcementCoordinator
 	cat              *inferred.Catalogue // nil in strict mode
 
-	// declared is the collections the mount declared when it opened, the
+	// names is the collections the mount declared when it opened, the
 	// allow-list of key reads and writes on an engine whose adapter builds SQL
-	// (see GuardCollection). A Database not built by Open declares nothing.
-	declared map[string]struct{}
+	// (see GuardCollection), and the one name the adapter is given for each (see
+	// collectionNames). A Database not built by Open declares nothing.
+	names collectionNames
+
+	// documentEngine records, when the database opens, whether its adapter
+	// addresses records as documents (see documentEngines). It is not read from
+	// the live manifest afterwards.
+	documentEngine bool
 
 	// afterWrite, when set, runs after each successfully applied write batch
 	// (e.g. git push for inGitDB-backed databases). A returned error is
@@ -120,7 +126,12 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 	if !supported {
 		return nil, &ModeCompatibilityError{Engine: m.Storage.Engine, Requested: mode, Supported: supportedModes}
 	}
-	d := &Database{Manifest: m, db: db, modes: supportedModes, policyController: controller, declared: declaredCollections(m)}
+	names, err := newCollectionNames(m)
+	if err != nil {
+		return nil, err
+	}
+	d := &Database{Manifest: m, db: db, modes: supportedModes, policyController: controller,
+		names: names, documentEngine: documentEngines[m.Storage.Engine]}
 	// Retain the raw driver's Close: protected/secured wrappers installed
 	// below replace d.db but share the driver's underlying handle.
 	if closer, ok := db.(io.Closer); ok {
@@ -145,7 +156,10 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 		}
 		sort.Strings(names)
 		for _, name := range names {
-			if err := d.ensureCollection(ctx, name, m.Schemas.Collections[name].Fields); err != nil {
+			// The table is provisioned under the name the adapter is given for the
+			// collection, not under a spelling that carries quote characters.
+			canonical, _ := d.CanonicalCollection(name)
+			if err := d.ensureCollection(ctx, canonical, m.Schemas.Collections[name].Fields); err != nil {
 				return nil, err
 			}
 		}
@@ -217,13 +231,14 @@ func (d *Database) InferredSnapshot() *inferred.Snapshot {
 
 // Get returns record data or ErrNotFound. A collection the database does not
 // declare is ErrNotFound on an engine whose adapter builds SQL, without an
-// adapter call (GuardKey).
+// adapter call (GuardKey). The adapter is given the collection's canonical name
+// (CanonicalCollection), whichever spelling the key carries.
 func (d *Database) Get(ctx context.Context, key *record.Key) (map[string]any, error) {
 	if err := d.GuardKey(key); err != nil {
 		return nil, err
 	}
 	data := map[string]any{}
-	rec := record.NewRecordWithData(key, data)
+	rec := record.NewRecordWithData(d.adapterKey(key), data)
 	if err := d.db.Get(ctx, rec); err != nil {
 		if record.IsNotFound(err) {
 			return nil, fmt.Errorf("%w: %s", ErrNotFound, key.String())
@@ -241,7 +256,7 @@ func (d *Database) Get(ctx context.Context, key *record.Key) (map[string]any, er
 // coerced back to bools. Document engines (inGitDB) round-trip natively and
 // are unaffected.
 func (d *Database) coerceToSchema(collection string, data map[string]any) map[string]any {
-	col := d.Manifest.Schemas.Collection(collection)
+	col := d.schemaCollection(collection)
 	if col == nil || data == nil {
 		return data
 	}
@@ -275,12 +290,13 @@ func (d *Database) coerceToSchema(collection string, data map[string]any) map[st
 }
 
 // Exists reports whether the record exists. Like Get, it refuses an undeclared
-// collection on a SQL engine before the adapter is called.
+// collection on a SQL engine before the adapter is called, and gives the adapter
+// the collection's canonical name.
 func (d *Database) Exists(ctx context.Context, key *record.Key) (bool, error) {
 	if err := d.GuardKey(key); err != nil {
 		return false, err
 	}
-	return d.db.Exists(ctx, key)
+	return d.db.Exists(ctx, d.adapterKey(key))
 }
 
 // Collections lists collections known to the driver.
@@ -381,6 +397,9 @@ func (d *Database) Apply(ctx context.Context, ops []Op, message string) (int, er
 	if err := d.guardWrite(ops); err != nil {
 		return 0, err
 	}
+	// From here on every key carries its collection's canonical name, the only
+	// form the adapter is given.
+	ops = d.adapterOps(ops)
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -482,7 +501,8 @@ func (d *Database) Apply(ctx context.Context, ops []Op, message string) (int, er
 func (d *Database) SetAfterWrite(fn func(ctx context.Context) error) { d.afterWrite = fn }
 
 type stagedState struct {
-	data map[string]any // nil when absent/deleted
+	data   map[string]any // nil when absent/deleted, or written with no data
+	exists bool           // the record is in the store, or an earlier op of the batch wrote it
 }
 
 // validateOps simulates the batch against current store state to reject it
@@ -505,6 +525,7 @@ func (d *Database) validateOps(ctx context.Context, ops []Op) error {
 		switch {
 		case err == nil:
 			st.data = data
+			st.exists = true
 		case errors.Is(err, ErrNotFound):
 		default:
 			return nil, err
@@ -524,21 +545,31 @@ func (d *Database) validateOps(ctx context.Context, ops []Op) error {
 		leafByKey[op.Key.String()] = op.Key.Collection()
 		switch op.Op {
 		case "set":
+			if st.exists && d.setsNoColumn(op.Data) {
+				return fmt.Errorf("op %d (set %s): %w: the record exists and the write names no field but its id", i, op.Key.String(), ErrEmptyWrite)
+			}
 			st.data = deepCopy(op.Data)
+			st.exists = true
 		case "insert":
-			if st.data != nil {
+			if st.exists {
 				return fmt.Errorf("%w: %s", ErrAlreadyExists, op.Key.String())
 			}
 			st.data = deepCopy(op.Data)
+			st.exists = true
 		case "update":
-			if st.data == nil {
+			if !st.exists {
 				return fmt.Errorf("%w: %s", ErrUpdateOfMissingRecord, op.Key.String())
+			}
+			if st.data == nil {
+				// An earlier op of the batch wrote the record with no data.
+				st.data = map[string]any{}
 			}
 			if err = applyUpdates(st.data, op.Updates, now); err != nil {
 				return fmt.Errorf("op %d (update %s): %w", i, op.Key.String(), err)
 			}
 		case "delete":
 			st.data = nil
+			st.exists = false
 		default:
 			return fmt.Errorf("op %d: unknown op %q", i, op.Op)
 		}
@@ -550,7 +581,7 @@ func (d *Database) validateOps(ctx context.Context, ops []Op) error {
 				continue
 			}
 			leaf := leafByKey[ks]
-			if err := schema.ValidateRecord(mode, leaf, d.Manifest.Schemas.Collection(leaf), st.data); err != nil {
+			if err := schema.ValidateRecord(mode, leaf, d.schemaCollection(leaf), st.data); err != nil {
 				return err
 			}
 		}
