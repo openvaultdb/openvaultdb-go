@@ -28,7 +28,7 @@ func (s *Server) handleRead(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_key", err.Error())
 		return
 	}
-	if !s.authorize(w, r, db.ID(), auth.CapRecordsRead, core.RootCollection(key)) {
+	if !s.authorizeKey(w, r, db, auth.CapRecordsRead, core.RootCollection(key)) {
 		return
 	}
 	s.readRecord(w, r, db, key)
@@ -85,10 +85,20 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		action = auth.CapRecordsDelete
 	}
-	if action != "" && !s.authorize(w, r, db.ID(), action, collection) {
-		return
+	if action != "" {
+		// The protected update hands the coordinator the collection as written;
+		// every other route reaches the adapter through the key.
+		var allowed bool
+		if isProtectedUpdate(r) {
+			allowed = s.authorize(w, r, db.ID(), action, collection)
+		} else {
+			allowed = s.authorizeKey(w, r, db, action, collection)
+		}
+		if !allowed {
+			return
+		}
 	}
-	if db.Coordinator() != nil && (r.Method == http.MethodPut || r.Method == http.MethodPost || r.Method == http.MethodDelete || r.Method == http.MethodPatch && strings.Split(r.Header.Get("Content-Type"), ";")[0] != "application/vnd.dtql.operation+json") {
+	if db.Coordinator() != nil && (r.Method == http.MethodPut || r.Method == http.MethodPost || r.Method == http.MethodDelete || r.Method == http.MethodPatch && !isProtectedUpdate(r)) {
 		writeError(w, 422, "authorization_unsupported", "this mount requires normalized protected operations")
 		return
 	}
@@ -126,7 +136,7 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(okStatus)
 	case http.MethodPatch:
-		if strings.Split(r.Header.Get("Content-Type"), ";")[0] == "application/vnd.dtql.operation+json" {
+		if isProtectedUpdate(r) {
 			s.handleProtectedUpdate(w, r, db, key)
 			return
 		}
@@ -155,6 +165,12 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "bad_request", "method not allowed: "+r.Method)
 	}
+}
+
+// isProtectedUpdate reports whether r is a PATCH of a protected operation (the
+// authorization API's update), not the update list of the plain records route.
+func isProtectedUpdate(r *http.Request) bool {
+	return r.Method == http.MethodPatch && strings.Split(r.Header.Get("Content-Type"), ";")[0] == "application/vnd.dtql.operation+json"
 }
 
 func (s *Server) readRecord(w http.ResponseWriter, r *http.Request, db *core.Database, key *record.Key) {
@@ -208,7 +224,7 @@ func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 		if body.Ops[i].Op == "delete" {
 			action = auth.CapRecordsDelete
 		}
-		if !s.authorize(w, r, db.ID(), action, core.RootCollection(body.Ops[i].Key)) {
+		if !s.authorizeKey(w, r, db, action, core.RootCollection(body.Ops[i].Key)) {
 			return
 		}
 	}

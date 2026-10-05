@@ -39,8 +39,11 @@ func openSQLite(path string, m *manifest.Manifest) (dal.DB, []schema.Mode, error
 			recordset := dalgo2sql.NewRecordset(name, dalgo2sql.Table, []dal.FieldRef{dal.Field("id")})
 			recordsets[name] = recordset
 			if logicalName, ok := core.SQLiteLogicalName(name); ok {
-				// Quoted schema keys preserve the driver's storage identifier. Queries
-				// use the public name, so register that lookup too for query identity.
+				// A quoted schema key is the SQL-quoted identifier of its table. The
+				// public name inside the quotes is the collection's canonical name
+				// (core.Database.CanonicalCollection): key reads and writes and
+				// provisioning are given it, and queries name it, so register that
+				// lookup too.
 				if _, exists := recordsets[logicalName]; !exists {
 					recordsets[logicalName] = recordset
 				}
