@@ -29,10 +29,17 @@ import (
 // does not rely on it: it settles the database of every source the classifier
 // found (the root, joins at any depth, derived sources, subqueries), refuses a
 // document that strays outside the endpoint, checks the caller's capability on
-// every database and collection, and only then leases the databases, refuses the
-// paging headers and the engines the server does not join, checks that the
-// collections are declared and runs. Nothing is gated or read for a request that
-// fails a check before it.
+// every database and collection, and only then leases the databases, checks that
+// the collections of a database without access policies are declared, refuses the
+// paging headers and the engines the server does not join, and runs. Nothing is
+// gated or read for a request that fails a check before it.
+//
+// A database with access policies is not asked which collections it declares
+// before the read. Its refusal of a collection it does not declare is the answer
+// of its policy to a collection it does not allow (a 403 ACCESS_DENIED with the
+// same body), and it is given where the policy gives it: at the read, by the
+// executor, so that no answer of the handler tells a declared collection from an
+// undeclared one (hideUndeclared).
 
 // joinExecuteFunc is the signature of joinexec.Execute: the seam the handler
 // runs a relational document through.
@@ -99,6 +106,20 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	if !ok {
 		return
 	}
+	// A collection that a database on an engine that builds SQL does not declare is
+	// not read, whatever the grant says, and neither is one the document spells
+	// another way than its canonical name. The executor reads one source at a time,
+	// so without this check a document that names one would reach the adapter for
+	// the sources before it. It comes before the refusal of the paging headers and
+	// of an engine, as it does on the other routes: a collection that is not there
+	// is a 404 whatever else is wrong with the request. A database with access
+	// policies is left out: it says nothing about what it declares (hideUndeclared).
+	for _, target := range targets {
+		if db := databases[target.database]; !db.HasAccessPolicies() && !readableCollection(db, target.collection) {
+			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("collection not found: %q in database %q", clipName(target.collection), clipName(target.database)))
+			return
+		}
+	}
 	for _, header := range pagingHeaders {
 		if r.Header.Get(header) != "" {
 			writeError(w, http.StatusUnprocessableEntity, "snapshot_unsupported", "a joined result is returned whole: the paging headers are not supported on a relational query")
@@ -108,20 +129,6 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	if err := s.checkRelationalEngines(databases, order); err != nil {
 		s.writeRelationalError(w, r, err)
 		return
-	}
-	// A collection that a database on an engine that builds SQL does not declare is
-	// not read, whatever the grant says, and neither is one the document spells
-	// another way than its canonical name. The executor reads one source at a time,
-	// so without this check a document that names one would reach the adapter for
-	// the sources before it. The check comes after every refusal that does not depend
-	// on the collection, so that a database with access policies answers a request
-	// for an undeclared collection exactly as it answers one for a declared
-	// collection that its policy does not allow.
-	for _, target := range targets {
-		if db := databases[target.database]; !readableCollection(db, target.collection) {
-			s.refuseUnreadableCollection(w, r, db, target)
-			return
-		}
 	}
 	defaultDatabase := ""
 	if endpoint != nil {
@@ -138,7 +145,7 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	}
 	result, err := s.joinExecute(r.Context(), query, joinProfile(profile), defaultDatabase, leasedRegistry(databases), allowed, limits, opts...)
 	if err != nil {
-		s.writeRelationalError(w, r, err)
+		s.writeRelationalError(w, r, hideUndeclared(databases, err))
 		return
 	}
 	facts := make([]cacheFacts, 0, len(order))
@@ -174,17 +181,23 @@ func readableCollection(db *core.Database, collection string) bool {
 	return !declared || canonical == collection
 }
 
-// refuseUnreadableCollection answers a collection readableCollection refused. A
-// database with access policies answers as it answers a collection its policy does
-// not allow (a 403 with the same body), so that the answer says nothing about which
-// collections the database declares; any other database says the collection is not
-// declared.
-func (s *Server) refuseUnreadableCollection(w http.ResponseWriter, r *http.Request, db *core.Database, target relationalTarget) {
-	if db.HasAccessPolicies() {
-		s.writeMappedError(w, r, access.ErrAccessDenied)
-		return
+// hideUndeclared returns the error a failed relational request is answered with.
+// A read that a database with access policies refused because the collection is
+// not one it declares (an error of that database's source that wraps
+// core.ErrNotFound) is answered as the read of a collection its policy denies, the
+// same 403 ACCESS_DENIED with the same body, so that the answer says nothing about
+// which collections the database declares. Any other error, and the error of a
+// database without access policies, is returned as it is.
+func hideUndeclared(databases map[string]*core.Database, err error) error {
+	var source *joinexec.SourceError
+	if !errors.As(err, &source) {
+		return err
 	}
-	writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("collection not found: %q in database %q", clipName(target.collection), clipName(target.database)))
+	db, leased := databases[source.Database]
+	if !leased {
+		return err
+	}
+	return hiddenAsDenied(db, err)
 }
 
 // relationalResponse is the body of a relational answer: rows without keys, the
@@ -404,7 +417,7 @@ func (s *Server) writeRelationalError(w http.ResponseWriter, r *http.Request, er
 			writeError(w, http.StatusBadRequest, "invalid_dtql", fmt.Sprintf("the database has no column %q", clipName(column)))
 			return
 		}
-		s.writeMappedError(w, r, err)
+		s.writeMappedError(w, r, clippedError{err})
 	}
 }
 
@@ -425,14 +438,23 @@ var joinPlanRefusals = map[string]bool{
 // does not evaluate; the rest of it is the operator the document wrote.
 const joinPlanOperatorRefusal = "unsupported operator "
 
+// joinPlanTypeRefusal matches the whole message of DALgo's join when it meets an
+// expression or a condition of a type it does not evaluate (a parameter that no
+// binder replaced, for one): the text after the words is the name of a Go type,
+// never a word of the request. A message that goes on after the type, or that
+// carries the words as the cause of a failed read ("cannot scan c: unsupported
+// expression ..."), is not this refusal.
+var joinPlanTypeRefusal = regexp.MustCompile(`^unsupported (?:expression|condition) \S+$`)
+
 // isRefusedJoin reports whether err is a shape error of the document, which the
 // caller made and can change: every category of DALgo's join errors but join_plan,
-// and the join_plan refusals of the document (joinPlanRefusals).
+// and the join_plan refusals of the document (joinPlanRefusals, an operator the
+// join does not evaluate, a type of expression or condition it does not evaluate).
 func isRefusedJoin(err *dal.JoinValidationError) bool {
 	if err.Category != "join_plan" {
 		return true
 	}
-	return joinPlanRefusals[err.Message] || strings.HasPrefix(err.Message, joinPlanOperatorRefusal)
+	return joinPlanRefusals[err.Message] || strings.HasPrefix(err.Message, joinPlanOperatorRefusal) || joinPlanTypeRefusal.MatchString(err.Message)
 }
 
 // leafError returns the innermost error of err's chain: the error the source

@@ -1,10 +1,15 @@
 package server_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -233,11 +238,76 @@ func TestAnUndeclaredCollectionOfAProtectedDatabaseIsAnsweredAsADenial(t *testin
 		if ok.status != http.StatusOK || len(ok.rows(t)) != 4 {
 			t.Fatalf("status %d: %s", ok.status, ok.raw)
 		}
-		missing := relHTTPDo(t, host.URL, http.MethodPost, "/v1/dtql", ownerToken, "from: {database: crm, name: ghost}\n", nil)
-		if missing.status != http.StatusForbidden || missing.errorField("code") != "ACCESS_DENIED" {
-			t.Fatalf("status %d: %s", missing.status, missing.raw)
+		for name, doc := range map[string]string{
+			"as the root source": "from: {database: crm, name: ghost}\n",
+			// The executor loads the fields of the joined source before it reads a row.
+			"in a join":                       "from: {database: crm, name: orders, alias: o, joins: [{from: {database: crm, name: ghost, alias: g}, on: [{left: {field: customer_id, source: o}, op: '==', right: {field: id, source: g}}]}]}\ncolumns: [{field: id, source: o}]\n",
+			"in a subquery that is evaluated": "from: {database: crm, name: orders}\nwhere: {exists: {query: {from: {database: crm, name: ghost}}}}\n",
+		} {
+			missing := relHTTPDo(t, host.URL, http.MethodPost, "/v1/dtql", ownerToken, doc, nil)
+			if missing.status != http.StatusForbidden || missing.errorField("code") != "ACCESS_DENIED" || strings.Contains(missing.raw, "ghost") {
+				t.Fatalf("%s: status %d: %s", name, missing.status, missing.raw)
+			}
 		}
 	})
+}
+
+// relRevElapsed matches the time a request took, the one part of a successful
+// answer that differs between two runs of the same request.
+var relRevElapsed = regexp.MustCompile(`"elapsedMs":\d+`)
+
+// A database with access policies answers the shapes of a document that do not
+// reach a policy decision exactly as it answers them for a collection it does not
+// declare: the answer comes where a policy denial would, at the read, and no
+// answer before the read tells a declared collection from an undeclared one. The
+// three shapes: a document refused for its columns before anything is read, a
+// document refused for a field name only the classifier accepts, and a subquery
+// that is never evaluated because the condition before it is false. Each is sent
+// with a declared collection and with an undeclared one in the place the document
+// reads, for a principal the policy gives nothing and for one that may read.
+func TestAProtectedDatabaseAnswersADeclaredAndAnUndeclaredCollectionAlike(t *testing.T) {
+	const (
+		repeated = "columns: [{field: id}, {field: name, as: id}]\n"
+		spaced   = "columns: [{field: 'zip code'}]\n"
+		never    = "from: {database: crm, name: orders}\nwhere: {and: [{op: '==', left: {field: id}, right: {value: none}}, {exists: {query: {from: {database: crm, name: %s}}}}]}\n"
+	)
+	root := func(name, tail string) string { return "from: {database: crm, name: " + name + "}\n" + tail }
+	for _, role := range []struct {
+		name string
+		// never is the status of the subquery that is never evaluated: a principal
+		// the policy gives nothing is denied the collection the document reads first.
+		never int
+	}{{"nobody", http.StatusForbidden}, {"reader", http.StatusOK}} {
+		host := relRevProtectedServer(t, role.name)
+		for _, endpoint := range []struct{ name, path string }{
+			{"per-database endpoint", "/v1/databases/crm/dtql"},
+			{"/v1/dtql", "/v1/dtql"},
+		} {
+			for _, tc := range []struct {
+				name              string
+				declared, missing string
+				status            int
+			}{
+				{"two columns of one output name", root("customers", repeated), root("ghost", repeated), http.StatusBadRequest},
+				{"a field name only the classifier accepts", root("customers", spaced), root("ghost", spaced), http.StatusBadRequest},
+				{"a subquery behind a false condition", fmt.Sprintf(never, "customers"), fmt.Sprintf(never, "ghost"), role.never},
+			} {
+				t.Run(role.name+", "+endpoint.name+", "+tc.name, func(t *testing.T) {
+					declared := relHTTPDo(t, host.URL, http.MethodPost, endpoint.path, ownerToken, tc.declared, nil)
+					missing := relHTTPDo(t, host.URL, http.MethodPost, endpoint.path, ownerToken, tc.missing, nil)
+					if declared.status != tc.status || missing.status != tc.status {
+						t.Fatalf("declared collection: %d %s\nundeclared collection: %d %s\nwant %d for both", declared.status, declared.raw, missing.status, missing.raw, tc.status)
+					}
+					if got, want := relRevElapsed.ReplaceAllString(missing.raw, `"elapsedMs":0`), relRevElapsed.ReplaceAllString(declared.raw, `"elapsedMs":0`); got != want {
+						t.Fatalf("declared collection: %s\nundeclared collection: %s\nwant one answer for both", declared.raw, missing.raw)
+					}
+					if strings.Contains(missing.raw, "ghost") {
+						t.Fatalf("the answer repeats the name: %s", missing.raw)
+					}
+				})
+			}
+		}
+	}
 }
 
 // A database without access policies keeps saying which collection it does not
@@ -388,6 +458,80 @@ func TestAnUnknownColumnAndACorrelatedSubqueryOverHTTP(t *testing.T) {
 		refused := relHTTPPost(t, smallHost.URL, "/v1/dtql", "", doc)
 		if refused.status != http.StatusUnprocessableEntity || refused.errorField("code") != "query_budget_exceeded" {
 			t.Fatalf("status %d: %s", refused.status, refused.raw)
+		}
+	})
+}
+
+// A document that still holds a parameter when it reaches the executor, which a
+// YAML body does (only a JSON body binds parameters), is a mistake of the caller:
+// a 400 that logs nothing, on the route DALgo's streaming join takes (no ORDER BY)
+// and on the other, in the document and inside a derived source or a subquery. The
+// same document sent as JSON, with the parameter bound, is answered.
+func TestAParameterNoBinderReplacedIsARefusalOverHTTP(t *testing.T) {
+	var logs bytes.Buffer
+	service := server.New("test", map[string]*core.Database{"chinook": relHTTPChinook(t, ""), "countries": relHTTPCountries(t, "")},
+		server.WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
+	defer service.CloseSnapshots()
+	host := httptest.NewServer(service.Handler())
+	defer host.Close()
+	const join = `from:
+  database: chinook
+  name: Customer
+  alias: c
+  joins:
+    - type: inner
+      from: {database: countries, name: Country, alias: k}
+      on:
+        - {left: {field: country, source: c}, op: '==', right: {field: code, source: k}}
+`
+	const (
+		where   = "where: {op: '==', left: {field: name, source: c}, right: {param: n}}\n"
+		order   = "orderBy:\n  - {field: name, source: c}\n"
+		columns = "columns:\n  - {field: name, source: c, as: customer}\n  - {field: name, source: k, as: country}\n"
+		derived = `from:
+  query:
+    as: d
+    from:
+      database: chinook
+      name: Customer
+      alias: c
+      joins:
+        - type: inner
+          from: {database: countries, name: Country, alias: k}
+          on:
+            - {left: {field: country, source: c}, op: '==', right: {field: code, source: k}}
+    where: {op: '==', left: {field: name, source: c}, right: {param: n}}
+    columns:
+      - {field: name, source: c, as: customer}
+columns:
+  - {field: customer, source: d}
+`
+		subquery = join + "where:\n  exists:\n    query:\n      from: {database: chinook, name: Invoice, alias: i}\n      where: {op: '==', left: {field: total, source: i}, right: {param: n}}\n" + columns
+	)
+	for _, tc := range []struct{ name, doc string }{
+		{"a join without ORDER BY", join + where + columns},
+		{"a join with ORDER BY", join + where + order + columns},
+		{"a derived source", derived},
+		{"a subquery", subquery},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := relHTTPPost(t, host.URL, "/v1/dtql", "", tc.doc)
+			if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || !strings.Contains(resp.errorField("message"), `"n"`) {
+				t.Fatalf("status %d, want a 400 invalid_dtql that names the parameter: %s", resp.status, resp.raw)
+			}
+			if logs.Len() != 0 {
+				t.Fatalf("a mistake of the caller was logged: %s", logs.String())
+			}
+		})
+	}
+	t.Run("the same join, with the parameter bound by a JSON body", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{"query": join + where + order + columns, "parameters": map[string]any{"n": "Ada"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp := relHTTPDo(t, host.URL, http.MethodPost, "/v1/dtql", "", string(body), map[string]string{"Content-Type": "application/json"})
+		if resp.status != http.StatusOK {
+			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
 	})
 }

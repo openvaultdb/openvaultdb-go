@@ -224,8 +224,10 @@ func withClock(now func() time.Time) Option {
 // parameters, the result names of scalar subqueries and collections) by the
 // strict rules of pkg/core, the arithmetic operators and aggregate names by the
 // classifier's lists, refuses a query whose columns carry one output name twice
-// (the later column would replace the earlier one in a row), and refuses a
-// document whose conditions and expressions nest more than 64 levels. A field name must pass the strict rule
+// (the later column would replace the earlier one in a row), refuses a document
+// that still holds a parameter (a parameter is bound before a document runs, and
+// DALgo's join evaluates none), and refuses a document whose conditions and
+// expressions nest more than 64 levels. A field name must pass the strict rule
 // (core.ValidateFieldName) whatever the route and the engine. The classifier of
 // pkg/core applies a wider quoted-name rule to the field names of a relational
 // document, so a name such as "zip code" classifies and Execute then refuses it

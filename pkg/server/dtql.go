@@ -25,10 +25,15 @@ import (
 const crossDatabaseDTQLPath = "/v1/dtql"
 
 // handleDTQL authenticates a bounded DTQL query and executes it through the
-// mounted database's secured DALgo handle. A document of the single-collection
-// profile takes the path it always took; a relational document (a join, a
-// grouping, an alias, a subquery, a source that names its database) is answered
-// by serveRelationalDTQL.
+// mounted database's secured DALgo handle. A document the single-collection
+// validator accepts takes the path it always took, with every answer it always
+// gave: that includes a document of one root collection whose only relational
+// feature is a subquery, which the classifier calls relational and the
+// single-collection path has answered (or refused, on a mount with access
+// policies or an engine that cannot run it) since before the classifier. Only a
+// document the validator refuses and the classifier accepts (a join, a grouping, an
+// alias, a source that names its database, a null test) is answered by
+// serveRelationalDTQL. The classifier's own refusals apply to both.
 func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	db := s.db(w, r)
@@ -47,11 +52,16 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 		s.writeMappedError(w, r, clippedError{err})
 		return
 	}
+	collection := ""
 	if profile.Kind == core.ProfileRelational {
-		s.serveRelationalDTQL(w, r, db, query, profile)
-		return
+		var singleCollection bool
+		if collection, singleCollection = singleCollectionRoot(doc); !singleCollection {
+			s.serveRelationalDTQL(w, r, db, query, profile)
+			return
+		}
+	} else {
+		collection = profile.Sources[0].Collection
 	}
-	collection := profile.Sources[0].Collection
 	if !s.authorize(w, r, db.ID(), auth.CapRecordsRead, collection) {
 		return
 	}
@@ -131,6 +141,15 @@ type clippedError struct{ err error }
 
 func (e clippedError) Error() string { return clipText(e.err.Error(), maxRefusalText) }
 func (e clippedError) Unwrap() error { return e.err }
+
+// singleCollectionRoot reports whether the single-collection validator accepts doc,
+// and the one root collection it reads. It is the test that keeps a document the
+// single-collection path has always served on that path whatever the classifier
+// calls it.
+func singleCollectionRoot(doc []byte) (string, bool) {
+	_, collection, err := core.ParseDTQL(doc)
+	return collection, err == nil
+}
 
 // classifyDTQLDocument deserialises a document and classifies it. The error of
 // a document that is not DTQL, or that the classifier refuses, wraps

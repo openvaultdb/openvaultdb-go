@@ -279,8 +279,18 @@ func TestRelationalHandlerMapsEveryErrorOfTheExecutor(t *testing.T) {
 		{name: "a join that could not load the fields of a source", err: &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: "cannot load fields for c: disk I/O error"}, status: 500, code: "internal", logged: true, excludes: []string{"disk I/O"}},
 		{name: "a join that could not load the fields of a wildcard", err: &dal.JoinValidationError{Category: "join_plan", Path: "columns", Message: "cannot load wildcard fields: disk I/O error"}, status: 500, code: "internal", logged: true, excludes: []string{"disk I/O"}},
 		{name: "a join whose output could not be encoded", err: &dal.JoinValidationError{Category: "join_plan", Path: "columns", Message: "output is not JSON serializable: unsupported value"}, status: 500, code: "internal", logged: true, excludes: []string{"unsupported value"}},
-		{name: "a join whose scan failed with a text that looks like a refusal", err: &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: "unsupported expression dal.X"}, status: 500, code: "internal", logged: true},
+		{name: "a join with an expression of a type it does not evaluate", err: &dal.JoinValidationError{Category: "join_plan", Path: "where", Message: "unsupported expression dal.Param"}, status: 400, code: "invalid_dtql", contains: []string{"dal.Param"}},
+		{name: "a join with a condition of a type it does not evaluate", err: &dal.JoinValidationError{Category: "join_plan", Path: "where", Message: "unsupported condition dal.IsNullCondition"}, status: 400, code: "invalid_dtql", contains: []string{"dal.IsNullCondition"}},
+		{name: "a join with an expression of a type it does not evaluate, wrapped", err: fmt.Errorf("joining: %w", &dal.JoinValidationError{Category: "join_plan", Path: "where", Message: "unsupported expression dal.Param"}), status: 400, code: "invalid_dtql"},
+		{name: "a join whose scan failed with the cause of a type refusal", err: &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: "cannot scan c: unsupported expression dal.Param"}, status: 500, code: "internal", logged: true, excludes: []string{"dal.Param"}},
+		{name: "a join whose failure begins like a type refusal and goes on", err: &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: "unsupported expression dal.Param in disk I/O error"}, status: 500, code: "internal", logged: true, excludes: []string{"disk I/O"}},
+		{name: "a join whose failure begins like a type refusal and names no type", err: &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: "unsupported expression "}, status: 500, code: "internal", logged: true},
 		{name: "structured queries unsupported on an engine", err: &joinexec.SourceError{Database: "alpha", Collection: "orders", Err: &core.QueryUnsupportedError{Engine: "postgres"}}, status: 501, code: "query_unsupported"},
+		{name: "a source of a long name that the database does not declare", err: &joinexec.SourceError{Database: "alpha", Collection: long, Err: fmt.Errorf("%w: collection %q is not declared by this database", core.ErrNotFound, long)}, status: 404, code: "not_found"},
+		{name: "a source of a long name on an engine that cannot be queried", err: &joinexec.SourceError{Database: "alpha", Collection: long, Err: &core.QueryUnsupportedError{Engine: long}}, status: 501, code: "query_unsupported"},
+		{name: "a source of a long name that the document spells wrongly", err: &joinexec.SourceError{Database: long, Collection: long, Err: fmt.Errorf("%w: %s", core.ErrInvalidDTQL, long)}, status: 400, code: "invalid_dtql"},
+		{name: "a source with access policies asked for more than one source", err: &joinexec.SourceError{Database: "alpha", Collection: "orders", Err: core.ErrProtectedSingleSource}, status: 422, code: "authorization_unsupported", contains: []string{"one source at a time"}},
+		{name: "a source with access policies asked for more than one source, wrapped", err: fmt.Errorf("reading: %w", core.ErrProtectedSingleSource), status: 422, code: "authorization_unsupported"},
 		{name: "an error nothing knows", err: errors.New("disk exploded"), status: 500, code: "internal", logged: true, excludes: []string{"disk exploded"}},
 		{name: "a source that fails", err: &joinexec.SourceError{Database: "alpha", Collection: "orders", Err: errors.New("disk exploded")}, status: 500, code: "internal", logged: true, excludes: []string{"disk exploded"}},
 		{name: "a truncated read", err: joinexec.ErrReadTruncated, status: 500, code: "internal", logged: true},
@@ -555,11 +565,14 @@ func TestLeaseRelationalDatabasesHoldsOneLeasePerDatabase(t *testing.T) {
 }
 
 // A collection that a database on an engine that builds SQL does not declare is
-// a 404 before the executor is called, whatever the grant says. The check follows
-// the refusals that do not depend on the collection (paging headers, engines); a
-// document engine takes any collection.
+// a 404 before the executor is called, whatever the grant says. The check comes
+// before the refusals that do not depend on the collection (paging headers,
+// engines), as it does on the other routes, so a collection that is not there is
+// a 404 whatever else is wrong with the request; a document engine takes any
+// collection.
 func TestRelationalHandlerRefusesAnUndeclaredCollectionBeforeTheExecutor(t *testing.T) {
 	ghost := "from: {database: alpha, name: ghost}\n"
+	orders := "from: {database: alpha, name: orders}\n"
 	for _, tc := range []struct {
 		name    string
 		engine  string
@@ -569,9 +582,13 @@ func TestRelationalHandlerRefusesAnUndeclaredCollectionBeforeTheExecutor(t *test
 		code    string
 	}{
 		{"sqlite", "sqlite", ghost, nil, 404, "not_found"},
-		{"postgres, whose engine is refused first", "postgres", ghost, nil, 501, "query_unsupported"},
-		{"mysql, whose engine is refused first", "mysql", ghost, nil, 501, "query_unsupported"},
-		{"with a paging header, which is refused first", "sqlite", ghost, map[string]string{"OVDB-Page-Size": "10"}, 422, "snapshot_unsupported"},
+		{"postgres, where the collection is checked before the engine", "postgres", ghost, nil, 404, "not_found"},
+		{"mysql, where the collection is checked before the engine", "mysql", ghost, nil, 404, "not_found"},
+		{"postgres, a declared collection, whose engine is refused", "postgres", orders, nil, 501, "query_unsupported"},
+		{"mysql, a declared collection, whose engine is refused", "mysql", orders, nil, 501, "query_unsupported"},
+		{"with a paging header, where the collection is checked before the header", "sqlite", ghost, map[string]string{"OVDB-Page-Size": "10"}, 404, "not_found"},
+		{"with a paging header, a declared collection, whose header is refused", "sqlite", orders, map[string]string{"OVDB-Page-Size": "10"}, 422, "snapshot_unsupported"},
+		{"named by a subquery, with a paging header", "sqlite", "from: {database: alpha, name: orders}\nwhere: {exists: {query: {from: {database: alpha, name: ghost}}}}\n", map[string]string{"OVDB-Page-Size": "10"}, 404, "not_found"},
 		{"named by a subquery", "sqlite", "from: {database: alpha, name: orders}\nwhere: {exists: {query: {from: {database: alpha, name: ghost}}}}\n", nil, 404, "not_found"},
 		{"a spelling of a declared collection that is not its canonical name", "sqlite", "from: {database: alpha, name: '\"orders\"'}\n", nil, 404, "not_found"},
 		{"a declared collection is read", "sqlite", "from: {database: alpha, name: orders}\n", nil, 200, ""},
@@ -601,6 +618,29 @@ func TestRelationalHandlerRefusesAnUndeclaredCollectionBeforeTheExecutor(t *test
 			t.Fatalf("status %d, %d bytes", resp.status, len(resp.raw))
 		}
 	})
+}
+
+// hideUndeclared changes the answer only for a database with access policies. The
+// policy case runs over HTTP (TestAnUndeclaredCollectionOfAProtectedDatabase...); here
+// are the errors it leaves as they are.
+func TestHideUndeclaredLeavesEveryOtherErrorAsItIs(t *testing.T) {
+	missing := fmt.Errorf("%w: collection %q is not declared by this database", core.ErrNotFound, "ghost")
+	databases := map[string]*core.Database{"alpha": relFakeMount("alpha", "sqlite", "")}
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"an error of no source", missing},
+		{"a source of a database without access policies", &joinexec.SourceError{Database: "alpha", Collection: "ghost", Err: missing}},
+		{"a source of a database the request did not lease", &joinexec.SourceError{Database: "zeta", Collection: "ghost", Err: missing}},
+		{"a failed read of a database without access policies", &joinexec.SourceError{Database: "alpha", Collection: "orders", Err: errors.New("disk exploded")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hideUndeclared(databases, tc.err); got != tc.err {
+				t.Fatalf("hideUndeclared = %v, want the error as it was", got)
+			}
+		})
+	}
 }
 
 // A database that is named, granted and not mounted is a 404, and nothing runs.

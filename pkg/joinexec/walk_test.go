@@ -303,6 +303,40 @@ func TestInspectDoesNotCountSiblingsAsNesting(t *testing.T) {
 	}
 }
 
+// A parameter is bound before a document runs (a JSON body binds its parameters;
+// a YAML body binds none), and DALgo's join evaluates no parameter, so one that
+// reaches the executor is refused in the walk, wherever it sits, whatever the
+// route the document would take.
+func TestInspectRefusesAParameterNothingBound(t *testing.T) {
+	param := dal.NewComparison(dal.NewFieldRef("", "id"), dal.Equal, dal.Param{Name: "n"})
+	a, b := exRef("", "a", "a"), exRef("", "b", "b")
+	inner := dal.From(b).NewQuery().Where(param).SelectIntoRecord(nil)
+	for _, tc := range []struct {
+		name  string
+		query dal.StructuredQuery
+	}{
+		{"in WHERE", exWithWhere(param)},
+		{"in an arithmetic expression", exWithColumn(dal.Binary(dal.NewFieldRef("", "x"), dal.Add, dal.Param{Name: "n"}))},
+		{"in HAVING", dal.From(a).NewQuery().GroupBy(dal.NewFieldRef("", "x")).Having(param).SelectIntoRecord(nil)},
+		{"in a join condition", dal.From(a).Join(dal.NewJoinedSource(b, dal.JoinInner, dal.NewComparison(dal.NewFieldRef("a", "k"), dal.Equal, dal.Param{Name: "n"}))).NewQuery().SelectIntoRecord(nil)},
+		{"in a subquery", exWithWhere(dal.NewExistsCondition(inner))},
+		{"in a derived source", dal.From(dal.NewQuerySource(inner, "d")).NewQuery().SelectIntoRecord(nil)},
+		{"in an aggregate", exWithColumn(dal.NewAggregate("sum", false, dal.Param{Name: "n"}))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := inspect(tc.query)
+			if !errors.Is(err, ErrInvalidDocument) || !strings.Contains(err.Error(), `parameter "n" is not bound`) {
+				t.Fatalf("err = %v, want ErrInvalidDocument naming the parameter", err)
+			}
+		})
+	}
+	// A name of any length is clipped.
+	_, err := inspect(exWithWhere(dal.NewComparison(dal.NewFieldRef("", "id"), dal.Equal, dal.Param{Name: strings.Repeat("p", 1<<16)})))
+	if !errors.Is(err, ErrInvalidDocument) || len(err.Error()) > 512 {
+		t.Fatalf("err = %v (%d bytes)", err, len(err.Error()))
+	}
+}
+
 func TestInspectChecksEveryNameTheDocumentCarries(t *testing.T) {
 	a := exRef("", "a", "a")
 	for _, tc := range []struct {
@@ -337,11 +371,11 @@ func TestInspectChecksEveryNameTheDocumentCarries(t *testing.T) {
 	}
 	// The names a document may carry are accepted: nested and key fields, an
 	// alias or collection as qualifier (even a collection whose name is not an
-	// identifier), a wildcard with exclusions, parameters and constants.
+	// identifier), a wildcard with exclusions and constants.
 	spaced := exRef("", "Order Details", "")
 	ok := dal.From(a).Join(dal.NewJoinedSource(spaced, dal.JoinInner, dal.NewComparison(dal.NewFieldRef("a", "k"), dal.Equal, dal.NewFieldRef("Order Details", "k")))).NewQuery().
 		Where(dal.NewGroupCondition(dal.And,
-			dal.NewComparison(dal.NewFieldRef("a", "address.city"), dal.Equal, dal.Param{Name: "city"}),
+			dal.NewComparison(dal.NewFieldRef("a", "address.city"), dal.Equal, dal.Constant{Value: "Dublin"}),
 			dal.NewIsNotNullCondition(dal.NewFieldRef("a", "x")),
 		)).
 		SelectColumns(

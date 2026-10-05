@@ -184,7 +184,11 @@ func TestAccessSampleReadsOfAnotherCollectionAreAuthorizedPerCollection(t *testi
 // parser accepts but whose sources cannot be listed (a chain of derived sources
 // inside two nested join trees, past the depth the source walk allows) is
 // refused with 400 invalid_dtql before anything is read, for a token that is not
-// the owner's. The owner's request is not checked per collection.
+// the owner's. The classifier refuses the same document for every caller, the
+// owner's included, before the capability check is reached: it bounds the
+// subqueries of a document at four levels and its sources at eight, which keeps
+// any document it accepts within the depth the source walk lists, so no caller is
+// left for whom the walk alone refuses.
 func TestDTQLDocumentWhoseSourcesCannotBeListedIsRefusedForAScopedToken(t *testing.T) {
 	derived := "{name: customers}"
 	for i := 0; i < 14; i++ {
@@ -201,7 +205,9 @@ func TestDTQLDocumentWhoseSourcesCannotBeListedIsRefusedForAScopedToken(t *testi
 	if status != http.StatusBadRequest || detail["code"] != "invalid_dtql" || fake.queries != 0 {
 		t.Fatalf("scoped token: %d %v (%d reads)", status, body, fake.queries)
 	}
-	if status, body = call(ownerToken); status == http.StatusBadRequest || fake.queries == 0 {
+	status, body = call(ownerToken)
+	detail, _ = body["error"].(map[string]any)
+	if status != http.StatusBadRequest || detail["code"] != "invalid_dtql" || fake.queries != 0 {
 		t.Fatalf("owner: %d %v (%d reads)", status, body, fake.queries)
 	}
 }

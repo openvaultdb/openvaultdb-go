@@ -20,7 +20,7 @@ import (
 // The name check compared with the walk is the one the classifier runs on a
 // relational document, validateRelationalNames (ClassifyDTQL calls it). A
 // document the two answer differently is listed with the named difference that
-// says why; there are three, and every other document gets the same answer from
+// says why; there are four, and every other document gets the same answer from
 // both.
 
 // The differences between the walk and the classifier's name check. A row of the
@@ -42,6 +42,13 @@ const (
 	// of the classifier does not compare the output names of a query's columns, so
 	// the document classifies and does not run.
 	differenceOutputNames = "output names: the walk refuses a query that selects one output name twice, the classifier's name check does not compare them"
+	// differenceParameters: the walk refuses a parameter, wherever it sits: a
+	// parameter is bound before a document runs (a JSON body binds its parameters,
+	// a YAML body binds none) and DALgo's join evaluates none, so one that reaches
+	// the executor was never bound. The classifier takes a parameter of a valid name
+	// as an operand, as the single-collection profile does, so the document
+	// classifies and does not run.
+	differenceParameters = "parameters: the walk refuses a parameter nothing bound, the classifier takes one of a valid name as an operand"
 )
 
 // driftRegistry is never asked: the authorise function below denies everything.
@@ -298,7 +305,8 @@ func TestJoinexecWalkAndCoreAgreeOnNames(t *testing.T) {
 		{"a wildcard beside a field", driftWith(root("a", ""), nil, dal.Column{Wildcard: &dal.WildcardProjection{Source: "a"}}, driftColumn("a", "id")), true, true, ""},
 
 		// Parameters.
-		{"plain parameter", driftWith(root("a", ""), where(dal.NewComparison(dal.NewFieldRef("", "id"), dal.Equal, dal.Param{Name: "city"}))), true, true, ""},
+		{"plain parameter", driftWith(root("a", ""), where(dal.NewComparison(dal.NewFieldRef("", "id"), dal.Equal, dal.Param{Name: "city"}))), true, false, differenceParameters},
+		{"parameter in a subquery", driftWith(root("a", ""), where(dal.NewExistsCondition(driftWith(root("b", ""), where(dal.NewComparison(dal.NewFieldRef("", "id"), dal.Equal, dal.Param{Name: "city"}))))), driftColumn("", "id")), true, false, differenceParameters},
 		{"parameter with a space", driftWith(root("a", ""), where(dal.NewComparison(dal.NewFieldRef("", "id"), dal.Equal, dal.Param{Name: "bad name"}))), false, false, ""},
 
 		// Collection names.
@@ -347,7 +355,7 @@ func TestJoinexecWalkAndCoreAgreeOnNames(t *testing.T) {
 				t.Fatalf("a document the two answer differently names the difference, and only that one: classifier=%v walk=%v difference=%q", tc.classifier, tc.walk, tc.difference)
 			}
 			if tc.difference != "" {
-				if tc.difference != differenceFieldNames && tc.difference != differenceQualifierScope && tc.difference != differenceOutputNames {
+				if tc.difference != differenceFieldNames && tc.difference != differenceQualifierScope && tc.difference != differenceOutputNames && tc.difference != differenceParameters {
 					t.Fatalf("%q is not a named difference", tc.difference)
 				}
 				seen[tc.difference] = true
@@ -361,7 +369,7 @@ func TestJoinexecWalkAndCoreAgreeOnNames(t *testing.T) {
 		})
 	}
 	// A difference no row exercises would be listed and untested.
-	for _, difference := range []string{differenceFieldNames, differenceQualifierScope, differenceOutputNames} {
+	for _, difference := range []string{differenceFieldNames, differenceQualifierScope, differenceOutputNames, differenceParameters} {
 		if !seen[difference] {
 			t.Errorf("no row of the table exercises the difference %q", difference)
 		}

@@ -417,7 +417,11 @@ func (w *walker) expressionNode(expression dal.Expression, path string, depth in
 		if !dal.ValidParamName(value.Name) {
 			return refuse(path, "parameter name %q is not valid", clip(value.Name))
 		}
-		return nil
+		// A parameter is bound before a document runs (a JSON body binds its
+		// parameters, a YAML body binds none), and DALgo's join evaluates no
+		// parameter: it answers one as a refusal that depends on the route and on
+		// where the parameter sits. One that reaches this point was never bound.
+		return refuse(path, "parameter %q is not bound: bind it in a JSON body or give the value", clip(value.Name))
 	case dal.StarExpression:
 		return nil
 	case dal.BinaryExpression:
