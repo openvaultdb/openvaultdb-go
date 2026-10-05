@@ -186,7 +186,7 @@ without being repeated. A manifest that the YAML decoder cannot read is reported
 the line and the kind of each mistake, by the fixed message of the YAML scanner or
 parser, or by one fixed sentence (a manifest with no document in it is reported as empty),
 and never by the text of the document. A manifest that the decoder cannot decode is
-reported in the same way, and does not stop the process. Use `sslmode=require` (or stronger) for non-local servers; the
+reported in the same way, never by a panic. Use `sslmode=require` (or stronger) for non-local servers; the
 DSN, and thus the password, is visible to anything that can read the ovdb
 process environment. ovdb opens exactly one connection pool per mounted
 Postgres database. Record *values* travel as statement parameters. The
@@ -206,9 +206,36 @@ top-level keys, an update's `fieldName` and the first segment of its
 its own: it is a path-safety rule and accepts quotes, spaces and semicolons.
 A write that names nothing to change (an update with no operation, a set of no
 field for a record that exists) is refused with 400 `bad_request` as well.
-Structured queries (`/query`, `/dtql`) are not available on this engine: they
-answer 501 `query_unsupported` until a reviewed query compiler lands, so the
-statements the adapter builds for them are never run.
+Structured queries (`/query`, `/dtql`) are available on this engine only in
+preview: the environment of the server must hold `OVDB_PREVIEW_POSTGRES_QUERIES=1`
+when the mount opens (read once; any other value, or none, leaves the mount
+answering 501 `query_unsupported` as before, and no statement is sent to the
+server for a query). With the switch on, the adapter compiles a query with its
+typed PostgreSQL dialect: every value is a bound parameter and every name is
+quoted, and ovdb still refuses, before the adapter, a field name outside the
+plain-name rule, a collection the manifest does not declare, a field that no
+column of a declared collection of a strict mount has (a name that a column of the
+query carries as its alias is read as the alias only in HAVING and ORDER BY,
+outside an aggregate, as the compiler reads it), a source qualifier that no source
+of the query has, and a source alias longer than the 63 bytes of a name in
+PostgreSQL (400 `invalid_dtql`, nothing logged). The mount states
+that names are folded to lower case. What the adapter says on this path never
+reaches a response or a log: `dal.ErrNotSupported` and an unknown dialect are
+422 `query_unsupported` with a fixed message; a value or a name the server
+refuses by a SQLSTATE read by type (class 22, 42883, 42804, 42703, 42P18, which a
+caller's mistake can cause) is a 400 `invalid_dtql` with a fixed message and
+nothing logged, so no caller can fill the log with them; a refusal that DALgo
+itself raises above the adapter, in its planner or in the join it evaluates when
+the adapter declines one, keeps its type, rebuilt from its category, path and
+message, so a bound of that join is a 422 `query_budget_exceeded` and a document
+it cannot run a 400 (a message that reports a read that failed is not kept); and
+any other failure of the server, a read transaction that cannot begin or commit
+and the field list of a collection included, is a 500 whose log line names the
+step and the collection and holds no text of the driver. A join of the mount's
+own database reaches the adapter without the database its sources name, which
+the source guard has checked is the mount's own. Access control on a PostgreSQL
+mount stays refused when the manifest is mounted. The switch is removed after
+the security review of the whole path. MySQL has no dialect and stays refused.
 
 
 ## CORS (2026-07-09)

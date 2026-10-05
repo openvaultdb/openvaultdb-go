@@ -188,9 +188,13 @@ func TestDalgoJoinBoundIsMappedToBudgetError(t *testing.T) {
 	}
 }
 
-func TestDalgoFlattensLeafErrorsSoGuardMustRecordThem(t *testing.T) {
-	// This is the reason Guard exists beyond the leaf: DALgo wraps a leaf's
-	// error as text, so the typed error is lost unless the guard remembers it.
+func TestGuardRecordsALeafErrorWhateverShapeDalgoGivesIt(t *testing.T) {
+	// This is the reason Guard exists beyond the leaf: the answer is the typed
+	// error the guard remembers, not what DALgo's own error says of it. Before
+	// dalgo v0.89.6 DALgo wrapped a leaf's error as text, and the typed error was
+	// lost unless the guard remembered it; now the chain reaches it, and a request
+	// that recorded a failure still never ends well (a reader that ends with an
+	// error wrapping io.EOF is read by DALgo as the end of a stream).
 	exec := &fakeExecutor{rows: map[string][]record.Record{"A": makeRows("A", 3, "x")}}
 	guard := NewGuard(func(database, collection string) bool { return database != "one" }, Limits{})
 	src := newSource("one", exec)
@@ -210,7 +214,7 @@ func TestDalgoFlattensLeafErrorsSoGuardMustRecordThem(t *testing.T) {
 func TestDalgoAggregationGroupLimitIsMapped(t *testing.T) {
 	// A flat unordered join feeding GROUP BY on a fact column streams the fact
 	// side, so the group count (one per fact row here) hits DALgo's own bound.
-	const groups = 100001
+	const groups = MaxInMemoryGroups + 1
 	guard := NewGuard(allowAll, Limits{MaxSourceRows: groups + 10, MaxSourceBytes: 1 << 30})
 	aRows := make([]record.Record, groups)
 	for i := range aRows {
@@ -229,9 +233,12 @@ func TestDalgoAggregationGroupLimitIsMapped(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected DALgo to refuse more than 100,000 groups")
 	}
+	// The limit is the one DALgo's message states (the engine ran to its own
+	// bound), and the figure the server advertises is MaxInMemoryGroups: they are
+	// one number, so a change of the constant alone fails here.
 	budget := mustBudget(t, guard.Classify(err, RouteInMemory))
-	if budget.Name != BudgetAggregationGroups || budget.Limit != 100000 {
-		t.Fatalf("budget = %+v (dalgo error: %v)", budget, err)
+	if budget.Name != BudgetAggregationGroups || budget.Limit != MaxInMemoryGroups {
+		t.Fatalf("budget = %+v, want the limit MaxInMemoryGroups = %d (dalgo error: %v)", budget, MaxInMemoryGroups, err)
 	}
 }
 
@@ -330,10 +337,12 @@ func runOrdered(t *testing.T, resolve dal.DatabaseResolver) error {
 }
 
 func TestDalgoSourceErrorsSurviveClassify(t *testing.T) {
-	// DALgo rewraps a source's error with %v into a join validation error, so
-	// the guard must remember the source's own error and Classify must return
-	// it with its chain intact: a policy denial stays a denial, a deadline stays
-	// a deadline and a backend failure is not a bad query.
+	// DALgo reports a source's failed scan as a join validation error whose
+	// message carries the source's text and, since v0.89.6, whose chain reaches
+	// the source's error. The answer does not rest on that chain alone: the guard
+	// remembers the source's own error and Classify returns it, so a policy denial
+	// stays a denial, a deadline stays a deadline and a backend failure is not a
+	// bad query, and the answer is not DALgo's wrapper.
 	denied := fmt.Errorf("%w: policy p, rule r", access.ErrAccessDenied)
 	for name, cause := range map[string]error{
 		"access denied":     denied,
@@ -351,8 +360,8 @@ func TestDalgoSourceErrorsSurviveClassify(t *testing.T) {
 				configure(a)
 				err := runOrdered(t, joinFixtureWith(t, guard, a, b))
 				var flattened *dal.JoinValidationError
-				if !errors.As(err, &flattened) || errors.Is(err, cause) {
-					t.Fatalf("DALgo is expected to flatten the cause, got %T: %v", err, err)
+				if !errors.As(err, &flattened) || !errors.Is(err, cause) {
+					t.Fatalf("DALgo is expected to report the failed scan as a join validation error whose chain reaches the cause, got %T: %v", err, err)
 				}
 				got := guard.Classify(err, RouteInMemory)
 				if !errors.Is(got, cause) {
@@ -566,9 +575,10 @@ func TestDalgoOrderedJoinReadsABareEOFAsTheEnd(t *testing.T) {
 	}
 }
 
-// TestDalgoSourceCloseErrorSurvivesClassify: DALgo flattens the error of a scan
-// reader's Close into a join_plan message ("close scan a: ..."), which drops the
-// chain. The leaf records it, so Classify returns the source's own error.
+// TestDalgoSourceCloseErrorSurvivesClassify: DALgo reports the error of a scan
+// reader's Close as a join_plan diagnostic ("close scan a: ...") whose chain
+// reaches the close error. The leaf records it, so Classify returns the source's
+// own error, not DALgo's wrapper.
 func TestDalgoSourceCloseErrorSurvivesClassify(t *testing.T) {
 	guard := NewGuard(allowAll, Limits{})
 	inner := &fakeExecutor{rows: map[string][]record.Record{"A": keyedRows("A", 3, func(i int) any { return i })}}
@@ -582,8 +592,8 @@ func TestDalgoSourceCloseErrorSurvivesClassify(t *testing.T) {
 	}
 	err := runOrdered(t, resolve)
 	var flattened *dal.JoinValidationError
-	if !errors.As(err, &flattened) || errors.Is(err, errCloseFailed) {
-		t.Fatalf("DALgo is expected to flatten the close error, got %T: %v", err, err)
+	if !errors.As(err, &flattened) || !errors.Is(err, errCloseFailed) {
+		t.Fatalf("DALgo is expected to report the close error as a join validation error whose chain reaches it, got %T: %v", err, err)
 	}
 	got := guard.Classify(err, RouteInMemory)
 	if se := mustSourceError(t, got); !errors.Is(got, errCloseFailed) || se.Database != "one" || se.Collection != "A" {

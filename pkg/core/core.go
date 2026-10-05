@@ -79,6 +79,12 @@ type Database struct {
 	// compared with a declared one with the ASCII letters folded.
 	foldsIdentifiers bool
 
+	// previewPostgres records, when the database opens, whether the environment of
+	// the server turned on the preview of structured queries on PostgreSQL mounts
+	// (see PreviewPostgresQueriesEnv). It is not read from the environment
+	// afterwards.
+	previewPostgres bool
+
 	// afterWrite, when set, runs after each successfully applied write batch
 	// (e.g. git push for inGitDB-backed databases). A returned error is
 	// reported to the client, but the batch itself is already applied.
@@ -141,7 +147,8 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 		return nil, err
 	}
 	d := &Database{Manifest: m, db: db, modes: supportedModes, policyController: controller,
-		names: names, documentEngine: documentEngines[m.Storage.Engine], foldsIdentifiers: foldingEngines[m.Storage.Engine]}
+		names: names, documentEngine: documentEngines[m.Storage.Engine], foldsIdentifiers: foldingEngines[m.Storage.Engine],
+		previewPostgres: previewPostgresQueries()}
 	// Retain the raw driver's Close: protected/secured wrappers installed
 	// below replace d.db but share the driver's underlying handle.
 	if closer, ok := db.(io.Closer); ok {
@@ -499,6 +506,16 @@ func (d *Database) Apply(ctx context.Context, ops []Op, message string) (int, er
 			case "set":
 				rec := record.NewRecordWithData(dk, op.Data)
 				rec.SetError(nil)
+				if d.setsNoColumn(op.Data) {
+					// The adapter of a SQL engine refuses a set that has no column to
+					// write. validateOps refused such a set for a record that exists, so
+					// the record is not there (the write lock is held): the write is the
+					// insert of a record that holds only its id.
+					if err = tx.Insert(ctx, rec); err != nil {
+						return fmt.Errorf("failed to set %s: %w", clipKey(op.Key), err)
+					}
+					continue
+				}
 				if err = tx.Set(ctx, rec); err != nil {
 					return fmt.Errorf("failed to set %s: %w", clipKey(op.Key), err)
 				}

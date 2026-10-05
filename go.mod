@@ -6,13 +6,13 @@ toolchain go1.27.0
 
 require (
 	cloud.google.com/go/firestore v1.24.0
-	github.com/dal-go/dalgo v0.89.4
+	github.com/dal-go/dalgo v0.89.6
 	github.com/dal-go/dalgo2firestore v0.10.3
 	github.com/dal-go/dalgo2mysql v0.2.2
-	github.com/dal-go/dalgo2postgres v0.3.2
+	github.com/dal-go/dalgo2postgres v0.4.1
 	github.com/dal-go/record v0.1.4
-	github.com/ingitdb/dalgo2ingitdb v0.6.1
-	github.com/ingitdb/ingitdb-go/ingitdb v0.6.0
+	github.com/ingitdb/dalgo2ingitdb v0.6.2
+	github.com/ingitdb/ingitdb-go/ingitdb v0.7.4
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.60.1
 )
@@ -75,7 +75,7 @@ require (
 	github.com/RoaringBitmap/roaring/v2 v2.29.0 // indirect
 	github.com/bits-and-blooms/bitset v1.24.6 // indirect
 	github.com/dal-go/dalgo2openvaultdb v0.3.2-0.20260909113030-cacd422564fc
-	github.com/dal-go/dalgo2sql v0.23.0
+	github.com/dal-go/dalgo2sql v0.26.6
 	github.com/dal-go/dalgo2sqlite v0.2.3
 	github.com/gofrs/flock v0.13.0
 	github.com/ingitdb/dalgo2ingitdb4github v0.2.3

@@ -64,11 +64,19 @@ var errSourcesTooDeep = fmt.Errorf("%w: query nesting is too deep", ErrInvalidDT
 // validating the names and before the engine guard, so an undeclared source is
 // a 404 whatever the engine can query. Document engines (ingitdb, firestore)
 // are not walked: they keep the collection rule of ValidateCollectionName.
+//
+// Once every source is declared, a mount that reaches a database server has the
+// fields and qualifiers of the query checked against what its tables hold
+// (guardFields), so that a name the tables do not have is a refusal and not a failure
+// of the server.
 func (d *Database) guardSources(query dal.StructuredQuery) error {
 	if d.isDocumentEngine() {
 		return nil
 	}
-	return sourceGuard{visit: d.checkSourceCollection}.query(query, 0)
+	if err := (sourceGuard{visit: d.checkSourceCollection}).query(query, 0); err != nil {
+		return err
+	}
+	return d.guardFields(query)
 }
 
 // guardProtectedSources refuses, before any adapter call and before any

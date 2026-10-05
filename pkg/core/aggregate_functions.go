@@ -1,8 +1,13 @@
 package core
 
 import (
+	"fmt"
+	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/dal-go/dalgo/dal"
+	"github.com/dal-go/dalgo/dtql"
 )
 
 // profileAggregateFunctions is the one list of aggregate functions of the
@@ -22,9 +27,25 @@ var profileAggregateFunctions = []string{"count", "sum", "avg", "min", "max"}
 func AggregateFunctions() []string { return slices.Clone(profileAggregateFunctions) }
 
 // IsAggregateFunction reports whether name is an aggregate function of the
-// relational profile, in any letter case.
+// relational profile, in any ASCII letter case. A name with a byte of 0x80 or above
+// is none: the case of such a name is not folded (see foldAggregateName), so that
+// this predicate and the walk of pkg/joinexec, which repeats it, read one rule.
 func IsAggregateFunction(name string) bool {
-	return slices.Contains(profileAggregateFunctions, strings.ToLower(name))
+	folded, ok := foldAggregateName(name)
+	return ok && slices.Contains(profileAggregateFunctions, folded)
+}
+
+// foldAggregateName lower-cases name, which must be ASCII. Go's folding of case
+// does not agree with itself outside ASCII (it lowers U+0130 to i and raises U+0131
+// to I), and the two walks of an aggregate name fold in opposite directions, so a
+// name with a byte of 0x80 or above is refused rather than folded, in both.
+func foldAggregateName(name string) (string, bool) {
+	for i := 0; i < len(name); i++ {
+		if name[i] >= 0x80 {
+			return "", false
+		}
+	}
+	return strings.ToLower(name), true
 }
 
 // aggregateFunctionsText is the list as a refusal writes it.
@@ -35,9 +56,31 @@ var aggregateFunctionsText = strings.Join(profileAggregateFunctions, ", ")
 // DALgo knows and the profile leaves out, so that no text of the caller's is
 // repeated.
 func unsupportedAggregateText(name string) string {
-	switch lower := strings.ToLower(name); lower {
+	switch lower, _ := foldAggregateName(name); lower {
 	case "first", "last":
 		return lower + " is not in the relational profile: the aggregate functions are " + aggregateFunctionsText
 	}
 	return "an aggregate function must be one of " + aggregateFunctionsText
+}
+
+// deserializerAggregateRefusal matches the text of DALgo's refusal of an aggregate
+// function it does not know, which quotes the caller's text: unsupported aggregate
+// "NAME". DALgo raises it while it deserializes a document, wherever an aggregate
+// stands (a column, HAVING, ORDER BY), before the classifier looks at it.
+var deserializerAggregateRefusal = regexp.MustCompile(`unsupported aggregate "(?:[^"\\]|\\.)*"`)
+
+// DeserializeDTQL deserializes a DTQL document with DALgo and says what is wrong
+// with one it refuses: the error wraps ErrInvalidDTQL (HTTP 400 invalid_dtql). The
+// refusal of an aggregate function DALgo does not know is a message built here
+// that lists the functions of the profile and repeats none of the caller's text;
+// every other refusal carries DALgo's own message.
+func DeserializeDTQL(doc []byte) (dal.StructuredQuery, error) {
+	query, err := dtql.Deserialize(doc)
+	if err != nil {
+		if deserializerAggregateRefusal.MatchString(err.Error()) {
+			return nil, fmt.Errorf("%w: %s", ErrInvalidDTQL, unsupportedAggregateText(""))
+		}
+		return nil, fmt.Errorf("%w: %v", ErrInvalidDTQL, err)
+	}
+	return query, nil
 }

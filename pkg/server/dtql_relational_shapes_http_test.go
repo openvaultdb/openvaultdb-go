@@ -54,7 +54,10 @@ var relShapeEndpoints = []struct {
 }
 
 // A join that selects no unaliased column named like the registered key of its
-// collections is answered, whichever way the database or the executor reads it.
+// collections is answered, and it runs in the database: the SQL adapter keys a join by
+// a qualified column of its base source (before dalgo2sql v0.26.5 it appended an
+// unqualified helper column, which the SQLite compiler refused, and the document was
+// read again in memory).
 func TestAJoinThatSelectsNoUnaliasedKeyColumnIsAnsweredOverHTTP(t *testing.T) {
 	service := server.New("test", map[string]*core.Database{"chinook": relHTTPChinook(t, ""), "countries": relHTTPCountries(t, "")})
 	defer service.CloseSnapshots()
@@ -108,8 +111,10 @@ func TestAJoinThatSelectsNoUnaliasedKeyColumnIsAnsweredOverHTTP(t *testing.T) {
 				if len(rows) != tc.rows || !reflect.DeepEqual(rows[0], tc.first) {
 					t.Fatalf("rows = %v, want %d rows starting with %v", rows, tc.rows, tc.first)
 				}
-				if route := resp.execution(t)["route"]; route != "database" && route != "in-memory" {
-					t.Fatalf("execution = %v", resp.execution(t))
+				// dalgo2sql keys a join by a qualified column of its base source, so the SQLite
+				// compiler takes every one of these documents and none is read again in memory.
+				if route := resp.execution(t)["route"]; route != "database" {
+					t.Fatalf("execution = %v, want the route database", resp.execution(t))
 				}
 			})
 		}

@@ -458,6 +458,16 @@ func TestInspectRefusesAnArithmeticOperatorOutsideTheFourAndAnUnknownAggregate(t
 			t.Fatalf("aggregate %q: %v", name, err)
 		}
 	}
+	// A name with a byte of 0x80 or above is refused, as the classifier refuses it: the
+	// two fold the case of a name in opposite directions (Go raises U+0131 to I and
+	// lowers U+0130 to i), so neither folds it. DALgo has folded ſum and mın to SUM
+	// and MIN when it built the aggregate, so those two are the names of the profile
+	// here; MİN keeps its U+0130 through that folding.
+	for _, name := range []string{"MİN", "mi\u0307n", "COUNT\u00a0", "ｍａｘ"} {
+		if _, err := inspect(exWithColumn(dal.NewAggregate(name, false, field))); !errors.Is(err, ErrInvalidDocument) || !strings.Contains(err.Error(), "aggregate function") {
+			t.Fatalf("aggregate %q: %v", name, err)
+		}
+	}
 	// first and last are not in the profile: the walk refuses them as the classifier does.
 	for _, name := range []string{"FIRST", "LAST", "first", "Last"} {
 		if _, err := inspect(exWithColumn(dal.NewAggregate(name, false, field))); !errors.Is(err, ErrInvalidDocument) || !strings.Contains(err.Error(), "aggregate function") {

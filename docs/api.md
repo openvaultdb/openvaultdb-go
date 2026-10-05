@@ -28,7 +28,12 @@ small: just enough for DALgo-backed Sneat CRUD validation. Versioned under `/v1`
   - `500 internal` — unexpected server/engine error (details are logged server-side, not returned)
   - `501 not_supported` — operation not in MVP
   - `501 query_unsupported` — a structured query (`/query`, `/dtql`) on a storage engine not yet
-    cleared for queries: a `postgres` or `mysql` mount. Key reads and writes keep working there
+    cleared for queries: a `mysql` mount, and a `postgres` mount that opened while the preview
+    switch was off (see [Structured queries on a PostgreSQL mount](#structured-queries-on-a-postgresql-mount-preview)).
+    Key reads and writes keep working there
+  - `422 query_unsupported` — the adapter of the storage engine reports that it cannot run the
+    query (a condition, an aggregation or a join it cannot compile). The message is fixed and
+    repeats nothing of the adapter's text
 
 ## Authentication (optional, `ovdb serve --auth`)
 
@@ -291,11 +296,13 @@ by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
   an operation", with the method, the route path and the names of the collections; it does not
   state a cause). A refusal is answered that way only while the request is still alive: when the
   request was canceled or ran past its deadline, the answer is `503 authorization_unavailable`
-  and nothing is logged. A protected `PATCH` whose request was canceled or ran past its
-  deadline is answered `503 authorization_unavailable` at every later point as well (while the
-  update is executed, for instance), never `422 validation_failed`. An inspection that holds more evidence than one protected
-  session accepts is assessed one operation at a time and answered as it would be if the session
-  accepted it.
+  and nothing is logged. A protected `PATCH` whose request was canceled or ran past its deadline
+  after the assessment (while the update is executed, for instance) is answered
+  `503 authorization_unavailable` instead of `422 validation_failed`, `403 access_denied` or
+  `409 data_revision_conflict`; a record the caller may not see is still answered
+  `404 resource_unavailable`. An inspection that holds more evidence than one protected session
+  accepts is assessed one operation at a time and answered as it would be if the session accepted
+  it.
   While a policy layer cannot be used, a sample is refused alike whatever collection it names.
   A sample asks the policies about its query before it checks the collections the query names,
   so what the policies answer (a denial, or a result they cannot decide) is the same whichever
@@ -391,11 +398,78 @@ Result keys are full key paths from the database root: a query with `"parent":"l
 on `items` returns `lists/to-buy/items/x` (not `items/x`), usable as-is with `/records`.
 With a `parent`, the read capability is checked on the parent's root collection (`lists`).
 
-Structured queries run on `sqlite`, `ingitdb` and `firestore` mounts only. On a `postgres` or
-`mysql` mount `/query` and `/dtql` answer `501 query_unsupported` (the message names the engine),
-and the database's metadata advertises `query: false` and `dtql: false`, until the reviewed query
-compiler for those engines lands. Key reads and writes are unaffected, subject to
-[Names the server accepts](#names-the-server-accepts).
+Structured queries run on `sqlite`, `ingitdb` and `firestore` mounts, and on a `postgres` mount
+while the preview switch is on (below). On a `mysql` mount, and on a `postgres` mount that opened
+with the switch off, `/query` and `/dtql` answer `501 query_unsupported` (the message names the
+engine), and the database's metadata advertises `query: false` and `dtql: false`. Key reads and
+writes are unaffected, subject to [Names the server accepts](#names-the-server-accepts).
+
+#### Structured queries on a PostgreSQL mount (preview)
+
+A `postgres` mount answers `/query`, `/dtql` and the relational documents of `/v1/dtql` only when
+the environment of the server holds `OVDB_PREVIEW_POSTGRES_QUERIES=1` (exactly the value `1`). The
+mount reads it once, when it opens: a change of the environment later changes nothing for an open
+mount. Without it the mount answers as it did before the preview existed, with the `501` above. The
+switch is temporary and is removed after the security review of the whole path; a server that does
+not set it never runs a structured query on PostgreSQL.
+
+What the preview rests on. The PostgreSQL adapter compiles a query with its typed dialect: every
+value travels as a bound parameter and every name is quoted, so no text a caller writes becomes SQL.
+Names are held to the plain-name rule of the engine (letters, digits, underscore and hyphen), a
+collection the manifest does not declare is `404 not_found`, and the mount folds names to lower case,
+as the adapter's own DDL does. Access control is not offered on a `postgres` mount: a manifest that
+turns it on fails to mount. Records of a query carry the key they were written under.
+
+What a client sees. Where the adapter can run a document (filters, order, limit, grouping,
+aggregates and joins of one database) it runs on the server, as one statement, and the answer
+reports `execution.route: "database"`. A document of `/v1/dtql` names the database of every source,
+and the adapter does not write a join whose sources name one as a single statement, so the server
+hands the mount a join of its own database without those names; nothing else of the document
+changes. A document with a subquery, and a join across databases, runs in the engine of this
+server, and its source bounds apply. A join the adapter cannot write as one statement (two columns
+of types it cannot equate, a wildcard it has no form for) is not refused: DALgo reads each table
+whole, with no filter, in the transaction of the mount and joins the rows itself, under bounds of
+its own (10,000 rows and 16 MiB of the tables together), and the answer still reports
+`execution.route: "database"`. What DALgo refuses there is answered as it is on every engine: a
+bound is `422 query_budget_exceeded` and names it, and a document it cannot run (a field or an alias
+that is wrong, an alias used twice) is `400 invalid_dtql`. A document the adapter cannot compile
+otherwise is `422 query_unsupported` with the message `the storage engine cannot run this query`.
+
+What the tables of the mount do not hold is the caller's mistake, and it is a refusal, never a
+failure of the server: a `postgres` mount is strict, so the check always applies. A field that no
+column of a declared collection has, and a qualifier that no source of the query has, are `400
+invalid_dtql`, refused before the driver is reached. A strict mount holds the key column `id` and
+the fields its manifest declares, each under the name the server folds it to, so a dotted name is no
+column; a source is named by its alias, or by its collection when it has none. A column of the
+select list may carry an alias, and a name that is only that alias is read as the alias in `having`
+and in `orderBy`, outside the argument of an aggregate and in the spelling the column wrote it;
+anywhere else (a column, `where`, `groupBy`, an aggregate's argument) it is a name no column has,
+and is refused like any other. A source alias longer than 63 bytes, the most PostgreSQL holds in a
+name, is `400 invalid_dtql` as well, and the message gives the limit and not the alias. A value that
+the server cannot read as the type of its column (a word compared with an integer field, a number or
+a boolean compared with a text field) is `400 invalid_dtql` too: the server refuses it with a
+SQLSTATE of class 22, or 42883, 42804, 42703 or 42P18, which is read from the error by type and
+never from its text. The message of that answer is fixed (`a value or a name of the query does not
+fit the field it is used with`), it repeats nothing of the request or of the server, and nothing is
+logged. A SQLite mount answers some of these requests with an empty result.
+
+A failure of the database server of any other kind is `500 internal`, and the log line says only
+which step failed: no text of the driver or of the server, which can repeat a value of the request
+or name the connection, reaches an answer or a log. That holds for a read transaction that cannot
+begin or commit and for the field list of a collection, as it does for a query.
+
+A field declared with capitals (`FirstName`) is held by PostgreSQL in lower case. A route that reads
+one collection finds it by the declared spelling and by the lower-case one, and answers a record
+under the declared name. A document that runs in the database as one statement, a join of one
+database included, finds it by either spelling too, and labels the column as the document wrote it.
+A join across databases, and a join that DALgo reads table by table (above), run in the engine of
+this server over the names the database holds, which are lower case: such a document writes
+`firstname`, and the declared spelling is `400 invalid_dtql` there (a SQLite mount reads the
+declared spelling and refuses the lower-case one).
+
+A `postgres` mount takes part in a relational document only when `postgres` is in the join engines
+of the query limits (`joinEngines`), which the operator sets; the discovery document lists it, and
+advertises `query`, `dtql`, `joins` and `aggregation` for such a mount, only while the switch is on.
 
 Supported `op`: `==`, `<`, `<=`, `>`, `>=`, `in`, `array-contains`, `array-contains-any`.
 Queries translate 1:1 to `dal.StructuredQuery` and execute on the DALgo driver's own
@@ -653,13 +727,15 @@ server does, from the configuration it runs with:
 - `joinEngines`: the storage engines whose databases may take part in a relational document. An
   engine is listed when the operator's list names it, the server clears it for structured queries
   and it is not the GitHub-backed inGitDB engine, which no list enables. A database on a listed
-  engine advertises `joins: true` unless it has access policies.
+  engine advertises `joins: true` unless it has access policies or is a GitHub-backed inGitDB
+  mount (which shows `engine: ingitdb`, a listed engine).
 
 Each database in the list (listed when auth is off) and the metadata of a database
 (`GET /v1/databases/{db}`, the way to read it when auth is on) carry two booleans, `joins` and
 `aggregation`, in the `capabilities` map beside `read`, `query`, `dtql` and `write`. They are true
 when a relational document that names the database is not refused for the database itself: its
-engine is in `joinEngines`, and it has no access policies. The value comes from the check the
+engine is in `joinEngines`, it has no access policies and it is not a GitHub-backed inGitDB
+mount. The value comes from the check the
 relational handler applies to the request, so a client that reads `joins: true` is not refused by
 the database it names.
 
@@ -1189,11 +1265,16 @@ other document is evaluated by DALgo above a plain read of each source, and the 
 as they are written.
 
 What the mount's executor decides is the order of the records it sorts. It places a record that
-lacks a numeric ordering field after every number when the order is ascending (and first when it is
-descending), where SQLite and DALgo, which sort every other document, place it first when the order
-is ascending. So the same document can come back in another order, and with a `limit` with other
-rows, from a document that is handed whole and from one that is not (the per-database endpoint, for
-one). That comparator belongs to the document engine, and this server does not change it.
+lacks the ordering field by its own comparator, for a value of any type. For a numeric field the
+record comes after every number when the order is ascending (and first when it is descending). For
+a text field the record is compared as the text `<nil>`: ascending, it comes after every value that
+starts with a digit or with a punctuation mark that sorts before `<` (ISO dates and postal codes,
+for instance) and before every value that starts with a letter; descending, the other way round.
+SQLite and DALgo, which sort every other document, place a record that lacks the field first when
+the order is ascending (and last when it is descending), whatever the type. So the same document
+can come back in another order, and with a `limit` with other rows, from a document that is handed
+whole and from one that is not (the per-database endpoint, for one). That comparator belongs to the
+document engine, and this server does not change it.
 
 **A field without its `source`.** A document that reads several sources and names a field without
 its source is accepted only when every source of that query has a known field list and exactly
@@ -1264,8 +1345,8 @@ the source's own field wins over a column that is called so.
 
 - The alias of a column that selects a field of a source is that field. The answer is sorted by
   it, on every route and on both endpoints, the way a SQLite database sorts it when it runs the
-  whole document (except for the place of a record that lacks a numeric field in a document that is
-  handed whole to an inGitDB mount, above).
+  whole document (except for the place of a record that lacks the field, of any type, in a document
+  that is handed whole to an inGitDB mount, above).
 - The alias of a column that is an expression (arithmetic, a function) is refused when the document
   is not run whole by a SQL database: order by the fields of the expression.
 - A name that is neither an alias nor a field of any source that supplies a field list is a
@@ -1279,18 +1360,22 @@ the source's own field wins over a column that is called so.
   Where the one source supplies no field list nothing can say whether the name is the field or the
   alias (SQLite reads the alias when its table has no such column), and the name is a
   `400 invalid_dtql` that says to qualify the field with its source. A name that no column carries
-  is left to the mount, as above.
+  is left to the mount, as above, and so is the name of a column that selects the field of the same
+  name (`{field: x, as: x}`), which is that field read either way.
 - A `source` that names no source of the query, in `orderBy` and in every other clause, is a
   `400 invalid_dtql` (`query_scope at orderBy[0].source: unknown alias "zzz"`) on both endpoints, for
   a document that is handed whole to a mount too. The source of a query around a subquery is one the
   subquery may name. The qualifier of a source that has an alias is the alias, and the name of its
-  collection only when it has none.
+  collection only when it has none. (A document of one source that a SQLite database runs whole, the
+  database route, is refused by its adapter instead: `422 authorization_unsupported`, on both
+  endpoints.)
 - The key pseudo-field `$id` of the document engines is sorted by only in a document of one source
   that is handed whole to its mount. Wherever DALgo evaluates the document (the per-database
   endpoint, a join, a subquery or derived source, a null test, a scan clause, and an ordering
   expression beside it) DALgo does not know the key: over a source with a field list it would refuse
-  it, and over one with none it would read it as a null and sort by nothing. An `orderBy` of `$id` in
-  such a document is a `400 invalid_dtql` that says to order by a field.
+  it, and over one with none it would read it as a null and sort by nothing. An `orderBy` of `$id`,
+  or of the alias of a column that selects `$id`, in such a document is a `400 invalid_dtql` that
+  says to order by a field.
 - An ordering expression that is not a plain field (arithmetic) is applied on every route: a
   document of one source that would be handed whole to a mount is evaluated by DALgo instead, so
   that it is sorted. (The SQLite adapter compiles no such ordering of a document of one source,
@@ -1467,9 +1552,16 @@ columns:
 - The server joins only the databases mounted on it: `externalSources` is false. Window functions
   are not supported. A condition that the storage engine cannot run is `422 query_unsupported`.
 - Only the engines in `joinEngines` take part. A GitHub-backed inGitDB mount never does.
-- The profile has five aggregate functions (`count`, `sum`, `avg`, `min`, `max`), in any letter
-  case. `first` and `last` are not in the profile: a document that uses either, in any position, is
-  `400 invalid_dtql` before anything is read, and the message names the function.
+- The profile has five aggregate functions (`count`, `sum`, `avg`, `min`, `max`), in any ASCII
+  letter case. DALgo raises the case of a name before it reads it, so two spellings with a letter
+  that is not ASCII are read as a function of the profile and answered: `ſum` (U+017F) is `sum`
+  and `mın` (U+0131) is `min`. Any other name with a byte of 0x80 or above is refused. `first` and
+  `last` are not in the profile: a document that uses either, in any position, is
+  `400 invalid_dtql` before anything is read. Where the classifier refuses it the message names the
+  function; where DALgo's parser refuses it first (`first` in `groupBy`, or inside another
+  aggregate) the message is DALgo's. An aggregate function that DALgo does not know is refused in
+  every position with one built message that lists the functions of the profile and repeats none of
+  the text of the document.
 - On the in-memory route a join holds at most 10,000 rows and 16 MiB, and a grouping at most
   100,000 groups (`maxInMemoryJoinRows`, `maxInMemoryJoinBytes` and `maxGroups` of `limits`). Beyond that the answer is `422 query_budget_exceeded`, and `error.budget` names
   the bound.
@@ -1487,8 +1579,8 @@ columns:
 | `422` | `join_engine_unsupported` | The engine of a database is not in `joinEngines`. |
 | `422` | `snapshot_unsupported` | A paging header was sent. |
 | `422` | `query_budget_exceeded` | A bound of the request was reached. `error.budget` names it (`name`, `limit`, `route`, and `path` where it applies) and `error.hint` says what to change. |
-| `422` | `query_unsupported` | The storage engine cannot run a condition of the document. |
-| `501` | `query_unsupported` | The storage engine is not cleared for structured queries (`postgres`, `mysql`, an unknown engine), whatever `joinEngines` says. |
+| `422` | `query_unsupported` | The storage engine cannot run a condition of the document, or the adapter reports that it cannot run the document (a fixed message). |
+| `501` | `query_unsupported` | The storage engine is not cleared for structured queries (`mysql`, a `postgres` mount that opened with the preview switch off, an unknown engine), whatever the operator's list of join engines says. |
 | `503` | `query_capacity` | No slot of the concurrency gate freed within the server's queue wait; `Retry-After: 1`. |
 | `504` | `query_timeout` | The query ran longer than `timeoutMs`. |
 | `500` | `internal` | A fault of the server, logged and not described. |

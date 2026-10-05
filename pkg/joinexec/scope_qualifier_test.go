@@ -207,6 +207,10 @@ func TestAnAliasInsideOrderByArithmeticIsLeftAloneWhenTheDocumentIsNotAmbiguous(
 		"no column carries the name":  {sqAliased(field, plus(dal.NewFieldRef("", "zz"))), nil},
 		"the name is qualified":       {sqAliased(field, plus(dal.NewFieldRef("a", "T"))), nil},
 		"the column carries no alias": {sqAliased(dal.Column{Expression: dal.NewFieldRef("a", "x")}, plus(dal.NewFieldRef("", "x"))), nil},
+		// A column named as the field it selects is that field under its own name: both readings
+		// of the name are one, so nothing is ambiguous.
+		"the column selects the field of the same name, qualified":   {sqAliased(dal.Column{Expression: dal.NewFieldRef("a", "x"), Alias: "x"}, plus(dal.NewFieldRef("", "x"))), nil},
+		"the column selects the field of the same name, unqualified": {sqAliased(dal.Column{Expression: dal.NewFieldRef("", "x"), Alias: "x"}, plus(dal.NewFieldRef("", "x"))), nil},
 		"the source supplies its list and carries the name": {sqAliased(field, plus(dal.NewFieldRef("", "T"))),
 			map[string][]string{"A": {"T", "x"}}},
 		"the name is the whole of the expression, which is the alias of a field": {sqAliased(field, dal.NewFieldRef("", "T")), nil},
@@ -234,8 +238,18 @@ func TestTheKeyIsRefusedInOrderByWhereDALgoEvaluatesTheDocument(t *testing.T) {
 		query dal.StructuredQuery
 		path  string
 	}{
-		"the key":                  {sqAliased(sqNamed, key), "orderBy[0]"},
-		"the key, qualified":       {sqAliased(sqNamed, qualifiedKey), "orderBy[0]"},
+		"the key":            {sqAliased(sqNamed, key), "orderBy[0]"},
+		"the key, qualified": {sqAliased(sqNamed, qualifiedKey), "orderBy[0]"},
+		// An alias that stands for the key is replaced by the key before DALgo sees the
+		// document, which reads it as a null: it is refused as the key itself is.
+		"an alias of the key":              {sqAliased(dal.Column{Expression: dal.NewFieldRef("a", "$id"), Alias: "k"}, dal.NewFieldRef("", "k")), "orderBy[0]"},
+		"an alias of the key, unqualified": {sqAliased(dal.Column{Expression: dal.NewFieldRef("", "$id"), Alias: "k"}, dal.NewFieldRef("", "k")), "orderBy[0]"},
+		"an alias of the key beside an ordering by arithmetic": {srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
+			return b.OrderBy(dal.Ascending(dal.NewFieldRef("", "k")), dal.Ascending(dal.Binary(dal.NewFieldRef("a", "x"), dal.Multiply, srOne))).
+				SelectColumns(dal.Column{Expression: dal.NewFieldRef("a", "$id"), Alias: "k"})
+		}), "orderBy[0]"},
+		"an alias of the key in a derived source": {dal.From(dal.NewQuerySource(sqAliased(dal.Column{Expression: dal.NewFieldRef("a", "$id"), Alias: "k"}, dal.NewFieldRef("", "k")), "d")).NewQuery().
+			SelectColumns(dal.Column{Expression: dal.NewFieldRef("d", "k")}), "from.query.orderBy[0]"},
 		"an operand of arithmetic": {sqAliased(sqNamed, dal.Binary(key, dal.Add, srOne)), "orderBy[0].left"},
 		"beside an ordering by arithmetic": {srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
 			return b.OrderBy(dal.Ascending(key), dal.Ascending(dal.Binary(dal.NewFieldRef("a", "x"), dal.Multiply, srOne))).SelectColumns(sqNamed)
@@ -269,6 +283,11 @@ func TestTheKeyIsRefusedInOrderByWhereDALgoEvaluatesTheDocument(t *testing.T) {
 		query := sqAliased(sqNamed, qualifiedKey)
 		if err := checkScopes(context.Background(), query, supplier.fields, keyOrderedByTheMount); err != nil {
 			t.Fatalf("checkScopes: %v", err)
+		}
+		// So does it for an alias of the key, which is replaced by the key first.
+		aliased := sqAliased(dal.Column{Expression: dal.NewFieldRef("a", "$id"), Alias: "k"}, dal.NewFieldRef("", "k"))
+		if err := checkScopes(context.Background(), aliased, supplier.fields, keyOrderedByTheMount); err != nil {
+			t.Fatalf("an alias of the key: %v", err)
 		}
 		// A nested query is always evaluated by DALgo, whatever the root is handed.
 		inner := dal.From(exRef("", "C", "c")).NewQuery().Where(dal.NewExistsCondition(sqAliased(sqNamed, key))).SelectColumns(dal.Column{Expression: dal.NewFieldRef("c", "k")})

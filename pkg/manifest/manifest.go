@@ -287,9 +287,9 @@ var unmarshalYAML = yaml.Unmarshal
 var errDecoderPanic = errors.New("the YAML decoder panicked")
 
 // decodeYAML runs one decode of the manifest and turns a panic of the decoder into
-// an error. The decoder panics, instead of returning an error, for a mapping that
-// holds a merge key and a key it cannot hash, so a manifest it cannot decode is
-// reported and never crashes the process.
+// an error, so a manifest the decoder cannot decode is reported and never crashes
+// the process. The decoder panics, instead of returning an error, for a mapping that
+// holds a merge key and a key it cannot hash.
 func decodeYAML(decode func() error) (err error) {
 	defer func() {
 		if recover() != nil {

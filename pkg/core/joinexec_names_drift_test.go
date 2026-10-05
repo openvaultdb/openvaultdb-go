@@ -579,6 +579,45 @@ func TestJoinexecWalkAndCoreAgreeOnTheAggregateFunctions(t *testing.T) {
 	}
 }
 
+// A name with a byte of 0x80 or above is no aggregate function, in either place.
+// The two folded the case of a name differently (core lowered it, the walk raised
+// it), and the two foldings do not agree outside ASCII: Go lowers U+0130 to i, so
+// core took MİN for min and the walk, which raises it to MİN, refused it. One rule
+// now: only a name of ASCII bytes is folded, and any other is refused, by both.
+// DALgo folds the case of a name when it builds the aggregate (strings.ToUpper,
+// which raises U+017F to S and U+0131 to I), so a document that spells sum as ſum
+// or min as mın reaches both walks as SUM and MIN and is accepted by both: what the
+// test pins is that the two give one answer for every spelling, and that the
+// predicate itself, asked for the raw spelling, is false for each.
+func TestJoinexecWalkAndCoreAgreeOnAnAggregateNameWithANonASCIIByte(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		accepted bool // by the document, after DALgo has folded the name
+	}{
+		{"MİN", false},
+		{"mi\u0307n", false},
+		{"cOunt\u00a0", false},
+		{"ｍａｘ", false},
+		{"avg\u0307", false},
+		{"ſum", true},
+		{"ſUM", true},
+		{"mın", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if IsAggregateFunction(c.name) {
+				t.Errorf("IsAggregateFunction(%q) is true: a name with a byte of 0x80 or above is refused", c.name)
+			}
+			query := driftWith(dal.NewRootCollectionRef("a", ""), nil, driftAggregate(c.name))
+			if got := validateRelationalNames(query) == nil; got != c.accepted {
+				t.Errorf("the name check of the classifier accepts the aggregate %q = %v, want %v", c.name, got, c.accepted)
+			}
+			if got := driftWalkAccepts(t, query); got != c.accepted {
+				t.Errorf("the walk of pkg/joinexec accepts the aggregate %q = %v, want %v", c.name, got, c.accepted)
+			}
+		})
+	}
+}
+
 // The walk allows 16 levels of subquery and join nesting together (maxWalkDepth
 // in pkg/joinexec) and the classifier admits five query levels (the outermost
 // and relationalMaxSubqueryDepth below it) and relationalMaxSources collection

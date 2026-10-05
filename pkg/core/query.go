@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/dal-go/dalgo/dal"
-	"github.com/dal-go/dalgo/dtql"
 	"github.com/dal-go/record"
 )
 
@@ -167,9 +166,9 @@ var ErrInvalidDTQL = errors.New("invalid or unsupported DTQL query")
 // quotedNameEngines); the Database that runs the query checks them again with
 // the rule of its own engine, before any adapter is reached.
 func ParseDTQL(doc []byte) (dal.StructuredQuery, string, error) {
-	query, err := dtql.Deserialize(doc)
+	query, err := DeserializeDTQL(doc)
 	if err != nil {
-		return nil, "", fmt.Errorf("%w: %v", ErrInvalidDTQL, err)
+		return nil, "", err
 	}
 	collection, err := validateDTQL(query)
 	return query, collection, err
@@ -272,7 +271,7 @@ func (d *Database) StreamDTQLSnapshot(ctx context.Context, query dal.StructuredQ
 	defer d.mu.Unlock()
 	reader, err := d.db.ExecuteQueryToRecordsReader(ctx, snapshotDTQL{boundedDTQL{query}})
 	if err != nil {
-		return fmt.Errorf("failed to query collection %q: %w", clipName(collection), err)
+		return d.queryError(fmt.Sprintf("failed to query collection %q", clipName(collection)), err)
 	}
 	defer func() { _ = reader.Close() }()
 	for {
@@ -284,7 +283,7 @@ func (d *Database) StreamDTQLSnapshot(ctx context.Context, query dal.StructuredQ
 			return nil
 		}
 		if nextErr != nil {
-			return fmt.Errorf("failed reading query results for %q: %w", clipName(collection), nextErr)
+			return d.queryError(fmt.Sprintf("failed reading query results for %q", clipName(collection)), nextErr)
 		}
 		out := Record{Key: rec.Key()}
 		data, _ := rec.Data().(map[string]any)
@@ -332,7 +331,7 @@ func (d *Database) executeDalQueryOn(ctx context.Context, db dal.DB, query dal.S
 	}
 	reader, err := db.ExecuteQueryToRecordsReader(ctx, query)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query collection %q: %w", clipName(collection), err)
+		return nil, d.queryError(fmt.Sprintf("failed to query collection %q", clipName(collection)), err)
 	}
 	defer func() { _ = reader.Close() }()
 	var records []Record
@@ -348,7 +347,7 @@ func (d *Database) executeDalQueryOn(ctx context.Context, db dal.DB, query dal.S
 			return records, nil
 		}
 		if nextErr != nil {
-			return nil, fmt.Errorf("failed reading query results for %q: %w", clipName(collection), nextErr)
+			return nil, d.queryError(fmt.Sprintf("failed reading query results for %q", clipName(collection)), nextErr)
 		}
 		out := Record{Key: rec.Key()}
 		data, _ := rec.Data().(map[string]any)

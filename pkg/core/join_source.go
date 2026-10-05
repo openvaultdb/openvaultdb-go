@@ -95,8 +95,12 @@ func (d *Database) Executor() dal.QueryExecutor {
 // itself. The error fn returns is returned as fn gave it: a driver that
 // replaces it (SQL drivers wrap it with a rollback error that hides it from
 // errors.Is once the context has expired) does not change what the caller sees.
-// The transaction runs under a context that is cancelled when ReadTx returns,
-// so the driver releases it on every exit, a panic in fn included.
+// A transaction that fails by itself, because it cannot begin or cannot commit, is
+// the failure of the driver and is returned as queryError builds it, so that on an
+// engine reached through a connection string none of the driver's text (which can
+// name the user, the database and the host of the connection) reaches a log. The
+// transaction runs under a context that is cancelled when ReadTx returns, so the
+// driver releases it on every exit, a panic in fn included.
 func (d *Database) ReadTx(ctx context.Context, fn func(dal.QueryExecutor) error) error {
 	if err := d.guardQuery(); err != nil {
 		return err
@@ -114,7 +118,10 @@ func (d *Database) ReadTx(ctx context.Context, fn func(dal.QueryExecutor) error)
 	if fnErr != nil {
 		return fnErr
 	}
-	return err
+	if err != nil {
+		return d.queryError("failed to run the read transaction", err)
+	}
+	return nil
 }
 
 // guardedQueryExecutor offers only the query surface of an executor (and its
@@ -165,18 +172,39 @@ func singleSourceRead(query dal.StructuredQuery) bool {
 	return ok && ref.ScanLimit() == 0 && len(ref.ScanOrders()) == 0
 }
 
+// handed is the query the adapter is given, once guardStructured has passed it. On an engine
+// reached through a connection string a join does not carry the database its sources name
+// (see withoutDatabaseNames); any other query, and any other engine, is handed on as it is.
+func (g guardedQueryExecutor) handed(query dal.Query) dal.Query {
+	if structured, ok := query.(dal.StructuredQuery); ok && serverEngines[g.db.queryEngine()] {
+		return withoutDatabaseNames(structured)
+	}
+	return query
+}
+
 func (g guardedQueryExecutor) ExecuteQueryToRecordsReader(ctx context.Context, query dal.Query) (dal.RecordsReader, error) {
 	if err := g.guardStructured(query); err != nil {
 		return nil, err
 	}
-	return g.executor.ExecuteQueryToRecordsReader(ctx, query)
+	reader, err := g.executor.ExecuteQueryToRecordsReader(ctx, g.handed(query))
+	if err != nil {
+		return nil, g.db.queryError("failed to query", err)
+	}
+	if serverEngines[g.db.queryEngine()] {
+		return builtReader{RecordsReader: reader, db: g.db}, nil
+	}
+	return reader, nil
 }
 
 func (g guardedQueryExecutor) ExecuteQueryToRecordsetReader(ctx context.Context, query dal.Query, options ...recordset.Option) (dal.RecordsetReader, error) {
 	if err := g.guardStructured(query); err != nil {
 		return nil, err
 	}
-	return g.executor.ExecuteQueryToRecordsetReader(ctx, query, options...)
+	reader, err := g.executor.ExecuteQueryToRecordsetReader(ctx, g.handed(query), options...)
+	if err != nil {
+		return nil, g.db.queryError("failed to query", err)
+	}
+	return reader, nil
 }
 
 // JoinFields supplies the fields of a declared collection to the join engine, in
@@ -196,6 +224,11 @@ func (g guardedQueryExecutor) ExecuteQueryToRecordsetReader(ctx context.Context,
 // supplied", exactly as for an executor that is not a JoinFieldsProvider: the
 // engine then refuses a wildcard of that source and cannot tell which source
 // carries an unqualified field.
+//
+// A driver that fails to supply the fields is answered as a failed query is
+// (queryError): on an engine reached through a connection string the error is a
+// built one, because the driver's text names the nearest table the database has or
+// the connection it failed on, and it would reach a log.
 func (g guardedQueryExecutor) JoinFields(ctx context.Context, source dal.RecordsetSource) ([]string, error) {
 	if g.db.HasAccessPolicies() {
 		return nil, nil
@@ -207,7 +240,11 @@ func (g guardedQueryExecutor) JoinFields(ctx context.Context, source dal.Records
 		return nil, err
 	}
 	if provider, ok := g.executor.(dal.JoinFieldsProvider); ok {
-		return provider.JoinFields(ctx, source)
+		fields, err := provider.JoinFields(ctx, source)
+		if err != nil {
+			err = g.db.queryError("failed to load the fields of the collection", err)
+		}
+		return fields, err
 	}
 	return g.db.declaredJoinFields(source), nil
 }

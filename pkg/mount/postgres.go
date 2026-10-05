@@ -55,10 +55,17 @@ func openPostgresWith(m *manifest.Manifest, open postgresOpener) (dal.DB, []sche
 			recordsets[name] = dalgo2sql.NewRecordset(name, dalgo2sql.Table, []dal.FieldRef{dal.Field("id")})
 		}
 	}
+	// The mount states how names are matched and written, in the options the adapter
+	// is given: lower-cased inside quotes, which is what the adapter's own DDL
+	// stores and what it does when nothing is said. It is stated so that a later
+	// change of the adapter's default cannot flip a mount. No structured-query
+	// dialect is set: the adapter forces the typed PostgreSQL dialect, which binds
+	// every value and quotes every name, and refuses a compiler of the mount's own.
 	db, err := open(dsn, dal.NewSchema(nil, nil),
 		dalgo2sql.DbOptions{
-			Recordsets:  recordsets,
-			Placeholder: dalgo2sql.PlaceholderDollar,
+			Recordsets:     recordsets,
+			Placeholder:    dalgo2sql.PlaceholderDollar,
+			IdentifierCase: dalgo2sql.IdentifierCaseFoldLower,
 		})
 	if err != nil {
 		return nil, nil, postgresOpenError(envVar, err)
