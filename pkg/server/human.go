@@ -105,7 +105,12 @@ func (s *Server) humanDatabases(r *http.Request, includeProviderReferences bool,
 					fields = append(fields, humanField{Name: fieldName, Type: string(field.Type), Required: field.Required})
 				}
 				sort.Slice(fields, func(i, j int) bool { return fields[i].Name < fields[j].Name })
-				queryJSON, err := json.Marshal(core.Query{Collection: name, Limit: 50})
+				// /query takes the canonical name of a collection only.
+				queryName := name
+				if canonical, declared := db.CanonicalCollection(name); declared {
+					queryName = canonical
+				}
+				queryJSON, err := json.Marshal(core.Query{Collection: queryName, Limit: 50})
 				if err != nil {
 					return nil, fmt.Errorf("collection %q query link: %w", name, err)
 				}

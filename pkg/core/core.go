@@ -299,7 +299,14 @@ func (d *Database) Exists(ctx context.Context, key *record.Key) (bool, error) {
 	return d.db.Exists(ctx, d.adapterKey(key))
 }
 
-// Collections lists collections known to the driver.
+// Collections lists the collections of the database, sorted. A document engine
+// lists the collections its driver knows. On an engine whose adapter builds SQL
+// the list holds the declared collections only, by their canonical names: a name
+// the driver reports is kept only when the database declares it under exactly
+// that name (CanonicalCollection), so a table of the file that the manifest does
+// not declare, and a table named with the quote characters of the quoted
+// spelling of a declared key, are not listed. Every name listed is one the
+// routes that take a collection accept.
 func (d *Database) Collections(ctx context.Context) ([]string, error) {
 	reader, ok := dal.As[dbschema.SchemaReader](d.db)
 	if !ok {
@@ -311,7 +318,9 @@ func (d *Database) Collections(ctx context.Context) ([]string, error) {
 	}
 	names := make([]string, 0, len(refs))
 	for _, ref := range refs {
-		names = append(names, ref.Name())
+		if d.GuardCanonicalCollection(ref.Name()) == nil {
+			names = append(names, ref.Name())
+		}
 	}
 	sort.Strings(names)
 	return names, nil
@@ -501,8 +510,8 @@ func (d *Database) Apply(ctx context.Context, ops []Op, message string) (int, er
 func (d *Database) SetAfterWrite(fn func(ctx context.Context) error) { d.afterWrite = fn }
 
 type stagedState struct {
-	data   map[string]any // nil when absent/deleted, or written with no data
-	exists bool           // the record is in the store, or an earlier op of the batch wrote it
+	data   map[string]any // nil when absent or deleted, or written with no data
+	exists bool           // the record is in the store, or an earlier op of the batch wrote it, and no later op deleted it
 }
 
 // validateOps simulates the batch against current store state to reject it
@@ -577,11 +586,17 @@ func (d *Database) validateOps(ctx context.Context, ops []Op) error {
 
 	if mode != schema.ModeSchemaless {
 		for ks, st := range stage {
-			if st.data == nil {
+			if !st.exists {
 				continue
 			}
+			// A record written with no data is a record with no fields, validated
+			// as one: only a record the batch leaves absent is not validated.
+			data := st.data
+			if data == nil {
+				data = map[string]any{}
+			}
 			leaf := leafByKey[ks]
-			if err := schema.ValidateRecord(mode, leaf, d.schemaCollection(leaf), st.data); err != nil {
+			if err := schema.ValidateRecord(mode, leaf, d.schemaCollection(leaf), data); err != nil {
 				return err
 			}
 		}

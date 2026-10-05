@@ -12,11 +12,12 @@ import (
 	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 )
 
-// TestGuardOperationDeclaresEverySpellingOfACollection: guardOperation asks the
-// database which collections it declares, so a table written as the quoted SQL
-// identifier of a SQLite manifest key and as its public name is the same
-// declared table, and a name that is neither is not.
-func TestGuardOperationDeclaresEverySpellingOfACollection(t *testing.T) {
+// TestGuardOperationDeclaresTheCanonicalNameOfACollection: guardOperation asks
+// the database which collections it declares and takes the canonical name only.
+// The public name of a SQLite manifest key that is a quoted SQL identifier is a
+// declared table; the quoted spelling, which names the table whose name carries
+// the quote characters, and a name that is neither are not.
+func TestGuardOperationDeclaresTheCanonicalNameOfACollection(t *testing.T) {
 	open := func(engine string) *core.Database {
 		t.Helper()
 		m := &manifest.Manifest{
@@ -40,7 +41,7 @@ func TestGuardOperationDeclaresEverySpellingOfACollection(t *testing.T) {
 		want          error
 	}{
 		{"sqlite", "Order Details", nil},
-		{"sqlite", `"Order Details"`, nil},
+		{"sqlite", `"Order Details"`, core.ErrNotFound},
 		{"sqlite", "Order", core.ErrNotFound},
 		{"sqlite", `Order Details"`, core.ErrNotFound},
 		{"postgres", `"Order Details"`, nil},

@@ -112,6 +112,24 @@ var srcGuardSingleEntries = map[string]func(*Database, dal.StructuredQuery) erro
 	},
 }
 
+// srcGuardSampleRefusal is the refusal SelectAccessSample gives before it looks
+// at the sources of a query, or "" when there is none. It computes the order it
+// reports before the source check, so that the order it returns with the refusal
+// of a source is the same whichever collections the query names: an engine it
+// cannot order (every engine but sqlite and ingitdb) and an order it cannot take
+// (a subquery in the order by) are refused first, with their own text.
+func srcGuardSampleRefusal(entry, engine, name string) string {
+	switch {
+	case entry != "SelectAccessSample":
+		return ""
+	case engine != "sqlite":
+		return "sample ordering unsupported"
+	case name == "scalar in order by":
+		return "sample requires field ordering"
+	}
+	return ""
+}
+
 func srcGuardJoinOpen(t *testing.T, engine string, declared ...string) (*Database, *joinSrcRecorder) {
 	t.Helper()
 	calls := &joinSrcRecorder{}
@@ -188,7 +206,14 @@ func TestUndeclaredSourceRefusedBeforeAdapterOnSQLEngines(t *testing.T) {
 			}
 			if tc.single {
 				for entry, run := range srcGuardSingleEntries {
-					check(entry, run(db, tc.query))
+					err := run(db, tc.query)
+					if want := srcGuardSampleRefusal(entry, engine, tc.name); want != "" {
+						if err == nil || err.Error() != want {
+							t.Errorf("%s/%s/%s: want %q, got %v", engine, tc.name, entry, want, err)
+						}
+						continue
+					}
+					check(entry, err)
 				}
 			}
 			if fake.reached() != 0 {

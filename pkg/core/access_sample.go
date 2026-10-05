@@ -45,9 +45,6 @@ func (d *Database) SelectAccessSample(ctx context.Context, query dal.StructuredQ
 	if err = d.guardProtectedSources(query); err != nil {
 		return nil, nil, err
 	}
-	if err = d.guardSources(query); err != nil {
-		return nil, nil, err
-	}
 	if n < 1 || n > 100 || query.Offset() != 0 {
 		return nil, nil, fmt.Errorf("unsupported sample bounds")
 	}
@@ -78,6 +75,12 @@ func (d *Database) SelectAccessSample(ctx context.Context, query dal.StructuredQ
 	}
 	if len(order) > 32 {
 		return nil, nil, fmt.Errorf("sample order too large")
+	}
+	// The order is the same whichever collections the query names, so it is
+	// returned with the refusal of a source: what the caller is told of the order
+	// does not tell a collection the database does not declare from one it does.
+	if err = d.guardSources(query); err != nil {
+		return nil, order, err
 	}
 	readDB := d.db
 	if d.HasAccessPolicies() {

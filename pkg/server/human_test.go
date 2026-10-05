@@ -115,6 +115,46 @@ func TestHumanQueryLinkEncodesCollectionNameAsJSON(t *testing.T) {
 	}
 }
 
+// TestHumanQueryLinkNamesTheCanonicalCollection: /query takes the canonical name
+// of a collection only, so the link of a collection that a SQLite manifest keys by
+// its quoted SQL identifier names the public name, which is the name the route
+// accepts, and a plain key is its own canonical name.
+func TestHumanQueryLinkNamesTheCanonicalCollection(t *testing.T) {
+	m := &manifest.Manifest{
+		Database: manifest.Database{ID: "db", SchemaMode: schema.ModeStrict},
+		Storage:  manifest.Storage{Engine: "sqlite"},
+		Schemas: &schema.Schemas{Collections: map[string]schema.Collection{
+			`"Order Details"`: {Fields: map[string]schema.Field{"name": {Type: schema.TypeString}}},
+			"Orders":          {Fields: map[string]schema.Field{"name": {Type: schema.TypeString}}},
+		}},
+	}
+	db, err := core.Open(m, guardOperationDB{}, []schema.Mode{schema.ModeStrict}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New("test", map[string]*core.Database{"db": db})
+	t.Cleanup(s.CloseSnapshots)
+	databases, err := s.humanDatabases(httptest.NewRequest(http.MethodGet, "http://localhost/ovdb/dbs/db", nil), false, "db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked := map[string]string{}
+	for _, collection := range databases[0].Collections {
+		queryURL, err := url.Parse(collection.QueryURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var query core.Query
+		if err := json.Unmarshal([]byte(queryURL.Query().Get("q")), &query); err != nil {
+			t.Fatal(err)
+		}
+		linked[collection.Name] = query.Collection
+	}
+	if want := map[string]string{`"Order Details"`: "Order Details", "Orders": "Orders"}; len(linked) != len(want) || linked[`"Order Details"`] != want[`"Order Details"`] || linked["Orders"] != want["Orders"] {
+		t.Errorf("the links query %v, want %v", linked, want)
+	}
+}
+
 // TestHumanQueryLinkOnlyWhenTheGuardAllowsQueries: a mount the guard refuses
 // structured queries on must not link to /query from its collection page.
 func TestHumanQueryLinkOnlyWhenTheGuardAllowsQueries(t *testing.T) {

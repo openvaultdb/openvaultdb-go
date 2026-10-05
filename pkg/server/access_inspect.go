@@ -61,7 +61,11 @@ func protectedOperation(op api.Operation) (access.ProtectedOperation, error) {
 
 // projectInspection uses the same pinned assessment as execution. Metadata is
 // taken from that assessment, never reloaded while a policy lease is held.
-func (s *Server) projectInspection(r *http.Request, db *core.Database, request api.Request, owners []core.PolicyLayer, assessment access.Assessment, readable map[string]bool) az.Result {
+// hidden holds the ids of operations on a table the database does not declare
+// (see inspectAccess): no layer decides them, and they are redacted whatever the
+// caller may inspect, which is how an operation on a declared table the policy
+// hides is answered for a caller who may not inspect protected rows.
+func (s *Server) projectInspection(r *http.Request, db *core.Database, request api.Request, owners []core.PolicyLayer, assessment access.Assessment, readable, hidden map[string]bool) az.Result {
 	// Data visibility requires both owner ACLs and the actual token's data
 	// capability; write-only or policy-admin credentials do not imply reads.
 	if s.authCfg != nil {
@@ -83,6 +87,9 @@ func (s *Server) projectInspection(r *http.Request, db *core.Database, request a
 			layer.ACLState = "enabled"
 		}
 		for i, op := range request.Operations {
+			if hidden[op.ID] {
+				continue
+			}
 			outcome := az.OutcomeAllow
 			matched := !owner.Enabled
 			for _, pa := range assessment.Policies {
@@ -150,6 +157,9 @@ func (s *Server) projectInspection(r *http.Request, db *core.Database, request a
 				}
 			}
 		}
+		if hidden[op.ID] {
+			details = false
+		}
 		// A successful write may be authorized without read permission. A dry run
 		// does not get that exception: it cannot disclose a hidden row's existence.
 		if !details && (request.Mode != az.ModeExecution || result.Operations[i].Result != az.OutcomeAllow) {
@@ -209,24 +219,39 @@ func redactPoint(result *az.Result, id string) {
 	result.Coverage.Unevaluated = append(remaining, az.Unevaluated{OperationID: id, Reason: "evidence_not_authorized"})
 }
 
+// inspectAccess answers an inspection of operations on single records. An
+// operation on a table the database does not declare is answered as one on a
+// declared table the policy hides: 200, redacted, with nothing that tells the two
+// apart, and the adapter is never asked about it. Its field names are checked
+// first, as they are for a declared table, so a refusal for them is the same for
+// both.
 func (s *Server) inspectAccess(w http.ResponseWriter, r *http.Request, db *core.Database, request api.Request, owners []core.PolicyLayer, requester access.Principal) {
 	coordinator := db.Coordinator()
 	if coordinator == nil {
 		writeError(w, 422, "authorization_unsupported", "protected inspection unavailable")
 		return
 	}
-	ops := make([]access.ProtectedOperation, len(request.Operations))
-	for i, op := range request.Operations {
-		if err := guardOperation(db, op); err != nil {
+	ops := make([]access.ProtectedOperation, 0, len(request.Operations))
+	hidden := map[string]bool{}
+	for _, op := range request.Operations {
+		if err := guardOperationFields(db, op); err != nil {
 			s.refuseOperation(w, r, az.ModeInspect, op, err)
 			return
 		}
-		var err error
-		ops[i], err = protectedOperation(op)
+		internal, err := protectedOperation(op)
 		if err != nil {
 			writeError(w, 422, "authorization_unsupported", "operation cannot be inspected")
 			return
 		}
+		if db.GuardCanonicalCollection(op.Resource.Table) != nil {
+			hidden[op.ID] = true
+			continue
+		}
+		ops = append(ops, internal)
+	}
+	if len(ops) == 0 {
+		writeAuthorization(w, 200, s.projectInspection(r, db, request, owners, access.Assessment{}, map[string]bool{}, hidden))
+		return
 	}
 	var result az.Result
 	err := coordinator.WithinInspection(r.Context(), ops, func(session access.InspectionSession) error {
@@ -238,7 +263,7 @@ func (s *Server) inspectAccess(w http.ResponseWriter, r *http.Request, db *core.
 		if err != nil {
 			return err
 		}
-		result = s.projectInspection(r, db, request, owners, assessment, visible)
+		result = s.projectInspection(r, db, request, owners, assessment, visible, hidden)
 		if admissionErr != nil {
 			// Never publish an allow after failed admission. A hidden or
 			// missing point retains the same generic dry-run denial.
@@ -320,7 +345,7 @@ func (s *Server) handleProtectedUpdate(w http.ResponseWriter, r *http.Request, d
 		if err != nil {
 			return err
 		}
-		result = s.projectInspection(r, db, request, owners, assessment, visible)
+		result = s.projectInspection(r, db, request, owners, assessment, visible, nil)
 		if admissionErr != nil {
 			return admissionErr
 		}

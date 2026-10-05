@@ -72,14 +72,18 @@ func (d *Database) guardSources(query dal.StructuredQuery) error {
 }
 
 // guardProtectedSources refuses, before any adapter call and before any
-// collection name is looked at, a structured query that reads more than its
-// root collection on a database with access policies (ErrProtectedSingleSource).
-// DALgo's access layer authorises the base and first-level join sources only,
-// so such a database serves one plain collection per query (singleSourceRead).
-// The decision depends on the shape of the query alone, so the answer is the
-// same whichever collections the query names, declared or not. It is the first
-// source check of the entry points that take one query of the single-collection
-// profile: ExecuteDTQLQuery, StreamDTQLSnapshot and SelectAccessSample.
+// collection name is looked at, a structured query that is not a plain read of
+// one collection on a database with access policies (ErrProtectedSingleSource):
+// one with a join, a derived source, a subquery anywhere, a scan bound, or a
+// source that is not a plain collection (singleSourceRead). DALgo's access layer
+// authorises the base and first-level join sources of a query and not what is
+// nested deeper, and this profile does not authorise part of a query, so such a
+// database serves one plain collection per query. The decision depends on the
+// shape of the query alone, so the answer is the same whichever collections the
+// query names, declared or not. It is the first source check of the entry points
+// that take one query of the single-collection profile (ExecuteDTQLQuery,
+// StreamDTQLSnapshot and SelectAccessSample) and of the join source's executor
+// (guardStructured, after the names are checked).
 func (d *Database) guardProtectedSources(query dal.StructuredQuery) error {
 	if d.HasAccessPolicies() && !singleSourceRead(query) {
 		return ErrProtectedSingleSource
@@ -242,10 +246,7 @@ func (d *Database) checkSourceCollection(ref dal.CollectionRef) error {
 	if named := ref.Database(); named != "" && (d.Manifest == nil || named != d.Manifest.Database.ID) {
 		return fmt.Errorf("%w: collection %q of database %q is not declared by this database", ErrNotFound, clipName(ref.Name()), clipName(named))
 	}
-	if canonical, declared := d.CanonicalCollection(ref.Name()); !declared || canonical != ref.Name() {
-		return errUndeclared(ref.Name())
-	}
-	return nil
+	return d.GuardCanonicalCollection(ref.Name())
 }
 
 // errUndeclared is the refusal of a collection the database does not declare,

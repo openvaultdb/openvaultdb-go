@@ -9,7 +9,7 @@ require (
 	github.com/dal-go/dalgo v0.89.4
 	github.com/dal-go/dalgo2firestore v0.10.3
 	github.com/dal-go/dalgo2mysql v0.2.2
-	github.com/dal-go/dalgo2postgres v0.3.0
+	github.com/dal-go/dalgo2postgres v0.3.2
 	github.com/dal-go/record v0.1.4
 	github.com/ingitdb/dalgo2ingitdb v0.6.1
 	github.com/ingitdb/ingitdb-go/ingitdb v0.6.0
