@@ -68,7 +68,10 @@ type Profile struct {
 // The relational rules are checked for every document, single-collection ones
 // included, over the whole query tree and the subqueries in it. A document that
 // ParseDTQL accepts is therefore refused here when it carries a money
-// configuration, the one such shape: a schema-qualified root, a scan root and a
+// configuration, and, when it has a subquery in its WHERE (which ParseDTQL
+// accepts), when that subquery nests deeper than the subquery cap, brings the
+// query past the source cap, puts scan bounds on a nested source or carries a
+// money configuration itself. A schema-qualified root, a scan root and a
 // database on the root are refused by ParseDTQL as well. Names are checked next,
 // with the query guard's rules (see validateRelationalNames), so a name that
 // ParseDTQL refuses is not an accepted relational document either.

@@ -46,12 +46,17 @@ func (f *guardFakeDB) Get(_ context.Context, rec record.Record) error {
 	return nil
 }
 
+// guardServer serves a fake-backed database that declares the collection
+// customers, the one the tests of this file query.
 func guardServer(t *testing.T, engine string) (*httptest.Server, *guardFakeDB) {
 	t.Helper()
 	fake := &guardFakeDB{}
 	m := &manifest.Manifest{
 		Database: manifest.Database{ID: "guarded", SchemaMode: schema.ModeStrict},
 		Storage:  manifest.Storage{Engine: engine},
+		Schemas: &schema.Schemas{Collections: map[string]schema.Collection{
+			"customers": {Fields: map[string]schema.Field{"name": {Type: schema.TypeString}}},
+		}},
 	}
 	db, err := core.Open(m, fake, []schema.Mode{schema.ModeStrict}, "")
 	if err != nil {
@@ -145,6 +150,61 @@ func TestKeyReadsStillWorkOnPostgresAndMySQL(t *testing.T) {
 	}
 }
 
+// TestQueriesOfAnUndeclaredCollectionAreNotFoundOnSQLEngines: on an engine that
+// builds SQL, /query and /dtql read declared collections only, as /records
+// does. The answer is the 404 not_found of an undeclared key read, on every
+// route, for the root collection and for one a subquery names, and no adapter
+// call is made; ingitdb and firestore keep their own rule and reach the adapter.
+func TestQueriesOfAnUndeclaredCollectionAreNotFoundOnSQLEngines(t *testing.T) {
+	wire := `{"collection":"ghost"}`
+	dtql := "from: {name: ghost}\n"
+	subquery := "from: {name: customers}\nwhere: {exists: {query: {from: {name: ghost}}}}\n"
+	calls := []guardCall{
+		{name: "query GET", method: "GET", path: base + "/query?q=" + url.QueryEscape(wire)},
+		{name: "query POST", method: "POST", path: base + "/query", body: wire},
+		{name: "query keysOnly", method: "POST", path: base + "/query", body: `{"collection":"ghost","keysOnly":true}`},
+		{name: "query with a parent", method: "POST", path: base + "/query", body: `{"collection":"customers","parent":"customers/c1"}`},
+		{name: "dtql GET", method: "GET", path: base + "/dtql?q=" + url.QueryEscape(dtql)},
+		{name: "dtql POST", method: "POST", path: base + "/dtql", body: dtql},
+		{name: "dtql snapshot page", method: "POST", path: base + "/dtql", body: dtql, headers: map[string]string{"OVDB-Page-Size": "10"}},
+		{name: "dtql subquery GET", method: "GET", path: base + "/dtql?q=" + url.QueryEscape(subquery)},
+		{name: "dtql subquery POST", method: "POST", path: base + "/dtql", body: subquery},
+		{name: "dtql subquery snapshot page", method: "POST", path: base + "/dtql", body: subquery, headers: map[string]string{"OVDB-Page-Size": "10"}},
+	}
+	for _, engine := range []string{"sqlite", "postgres", "mysql"} {
+		t.Run(engine, func(t *testing.T) {
+			ts, fake := guardServer(t, engine)
+			for _, call := range calls {
+				status, body := send(t, ts, call)
+				detail, _ := body["error"].(map[string]any)
+				if status != http.StatusNotFound || detail["code"] != "not_found" {
+					t.Errorf("%s: status %d body %v", call.name, status, body)
+				}
+			}
+			if fake.queries != 0 {
+				t.Fatalf("adapter query path called %d times", fake.queries)
+			}
+		})
+	}
+	for _, engine := range []string{"ingitdb", "firestore"} {
+		t.Run(engine, func(t *testing.T) {
+			ts, fake := guardServer(t, engine)
+			reached := 0
+			for _, call := range calls {
+				before := fake.queries
+				status, body := send(t, ts, call)
+				if status == http.StatusNotFound {
+					t.Errorf("%s: status %d body %v", call.name, status, body)
+				}
+				reached += fake.queries - before
+			}
+			if reached == 0 {
+				t.Fatal("the adapter was never reached")
+			}
+		})
+	}
+}
+
 func mustJSON(t *testing.T, v any) []byte {
 	t.Helper()
 	out, err := json.Marshal(v)
@@ -186,11 +246,11 @@ func TestUnsafeFieldNamesRefusedOnEveryEngine(t *testing.T) {
 	// statement.
 	always := []string{`na"me`, "name;", "na'me", "na`me", `na\me`}
 	// Refused under the strict rule only: spaces, comment markers, punctuation.
-	// sqlite and ingitdb quote names and take them (see below); postgres and
-	// mysql keep the strict rule.
-	strictOnly := []string{"na me", "na--me", "na/*me", "name#"}
+	// sqlite and ingitdb quote names and take them (see below); firestore,
+	// postgres and mysql keep the strict rule.
+	strictOnly := []string{"na me", "na--me", "na/*me", "name#", "a~b", "a*b", "a/b", "a[b]"}
 	quoting := map[string]bool{"sqlite": true, "ingitdb": true}
-	for _, engine := range []string{"sqlite", "ingitdb", "postgres", "mysql"} {
+	for _, engine := range []string{"sqlite", "ingitdb", "firestore", "postgres", "mysql"} {
 		t.Run(engine, func(t *testing.T) {
 			ts, fake := guardServer(t, engine)
 			names := append([]string(nil), always...)

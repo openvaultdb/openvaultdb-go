@@ -16,6 +16,7 @@ import (
 	"sync"
 
 	"github.com/dal-go/dalgo/access"
+	"github.com/dal-go/dalgo/dal"
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 	"github.com/openvaultdb/openvaultdb-go/pkg/joinexec"
@@ -409,6 +410,28 @@ func (s *Server) enforce(w http.ResponseWriter, r *http.Request, databaseID, act
 	writeError(w, http.StatusForbidden, "forbidden",
 		"token does not grant "+action+" on database "+databaseID)
 	return false
+}
+
+// authorizeQueryReads enforces the read capability for every collection a DTQL
+// query reads. The capability a route checks for the collection it names covers
+// that collection only, and a document of one collection can read others in a
+// subquery. Always true for the owner token and when auth is disabled. Writes
+// the response when a collection is not granted or the query cannot be listed.
+func (s *Server) authorizeQueryReads(w http.ResponseWriter, r *http.Request, db *core.Database, query dal.StructuredQuery) bool {
+	if s.isOwner(r) {
+		return true
+	}
+	collections, err := core.QueryCollections(query)
+	if err != nil {
+		s.writeMappedError(w, r, err)
+		return false
+	}
+	for _, collection := range collections {
+		if !s.authorize(w, r, db.ID(), auth.CapRecordsRead, collection) {
+			return false
+		}
+	}
+	return true
 }
 
 // isOwner reports whether the request is made with the owner token (or auth

@@ -11,6 +11,7 @@ import (
 	"os"
 	"regexp"
 	"time"
+	"unicode/utf8"
 
 	"github.com/dal-go/dalgo/access"
 	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
@@ -190,6 +191,25 @@ func (o *InGitDBOptions) PushBranch() string {
 
 var dbIDRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 
+// maxEchoedIDLen bounds how much of a database id an error message repeats: the
+// id of a request or a manifest is checked here, and what fails the check can
+// be as large as its source.
+const maxEchoedIDLen = 256
+
+// clipID returns id as it may appear in an error message: whole when it is at
+// most maxEchoedIDLen bytes, otherwise cut at a character boundary and followed
+// by its length.
+func clipID(id string) string {
+	if len(id) <= maxEchoedIDLen {
+		return id
+	}
+	cut := maxEchoedIDLen
+	for cut > 0 && !utf8.RuneStart(id[cut]) {
+		cut--
+	}
+	return fmt.Sprintf("%s...(%d bytes)", id[:cut], len(id))
+}
+
 // ValidateID checks a database id against the manifest id constraint
 // (also used by the server when creating databases at runtime).
 func ValidateID(id string) error {
@@ -197,7 +217,7 @@ func ValidateID(id string) error {
 		return fmt.Errorf("database id is required")
 	}
 	if !dbIDRe.MatchString(id) {
-		return fmt.Errorf("database id %q is invalid: must match %s", id, dbIDRe.String())
+		return fmt.Errorf("database id %q is invalid: must match %s", clipID(id), dbIDRe.String())
 	}
 	return nil
 }
@@ -258,7 +278,7 @@ func (m *Manifest) Validate() error {
 		return fmt.Errorf("database.id is required")
 	}
 	if !dbIDRe.MatchString(m.Database.ID) {
-		return fmt.Errorf("database.id %q is invalid: must match %s", m.Database.ID, dbIDRe.String())
+		return fmt.Errorf("database.id %q is invalid: must match %s", clipID(m.Database.ID), dbIDRe.String())
 	}
 	if err := m.Database.SchemaMode.Validate(); err != nil {
 		return fmt.Errorf("database: %w", err)

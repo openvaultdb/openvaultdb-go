@@ -55,12 +55,16 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, db.ID(), auth.CapRecordsRead, collection) {
 		return
 	}
+	if !s.authorizeQueryReads(w, r, db, query) {
+		return
+	}
 	if r.Header.Get("OVDB-Page-Size") != "" || r.Header.Get("OVDB-Page-Token") != "" || r.Header.Get("OVDB-Page-Close") != "" {
 		s.handlePagedDTQL(w, r, db, query, doc)
 		return
 	}
 	records, err := db.ExecuteDTQLQuery(r.Context(), query)
 	if err != nil {
+		err = hiddenAsDenied(db, err)
 		if errors.Is(err, access.ErrAccessDenied) {
 			op := api.Operation{ID: "q1", Action: "query", Resource: az.Resource{DatabaseID: db.ID(), Path: "/" + collection, Table: collection}, ExecutionClass: az.ExecutionDTQL, Query: &api.Query{Format: "dtql-yaml", Text: string(doc)}}
 			s.writeQueryAuthorizationError(w, r, db, op, err)
