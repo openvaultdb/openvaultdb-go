@@ -108,6 +108,29 @@ func TestAPostgresNameOver63BytesIsA400BeforeAnyStatementOnEveryRoute(t *testing
 	})
 }
 
+// The human page of a collection takes a name from the request too. A mount cannot declare
+// a name over 63 bytes, so for such a name the page is the one of a collection the database
+// does not declare: a 404, and no statement is sent. A declared collection has its page.
+func TestTheHumanPageOfAPostgresCollectionOver63BytesIsA404AndSendsNoStatement(t *testing.T) {
+	long := strings.Repeat("n", 64)
+	driver := &namesDriver{previewPGDriver: &previewPGDriver{}}
+	host, logs := previewPGServerWith(t, driver)
+	before := driver.statements()
+	resp := relFakeDo(t, host, http.MethodGet, "/ovdb/dbs/pg/collections/"+long, "", "", nil)
+	if resp.status != http.StatusNotFound {
+		t.Fatalf("status %d, want 404: %.200s", resp.status, resp.raw)
+	}
+	if got := driver.statements(); got != before {
+		t.Errorf("%d statements reached the driver for the page of a name over 63 bytes", got-before)
+	}
+	if logs.Len() != 0 {
+		t.Errorf("a mistake of the caller was logged: %s", logs)
+	}
+	if strings.Contains(resp.raw, long) {
+		t.Errorf("the page repeats the name")
+	}
+}
+
 // listedDriver is a PostgreSQL driver that supplies the field list of each collection the
 // way the adapter reads it from the catalog (one statement each time, which fieldLists
 // counts), and records the text of every query handed to it.
@@ -192,15 +215,21 @@ func TestAPostgresFieldNameOver63BytesInADocumentTheServerEvaluatesItselfIsNever
 		})
 	}
 	// The control: a name of a field the list holds is answered, and the observation sees the
-	// queries handed to the driver, so that "never in a statement" says something.
+	// queries handed to the driver, so that "never in a statement" says something. The
+	// routed control carries a field in its where and its order.
 	t.Run("the control, a field the list holds", func(t *testing.T) {
 		driver := &listedDriver{previewPGDriver: &previewPGDriver{}}
 		host, _ := previewPGServerWith(t, driver)
-		resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", previewPGRoutes[3].body+"where: {op: '==', left: {field: customer_id, source: o}, right: {value: x}}\n", nil)
+		resp := relFakeDo(t, host, http.MethodPost, "/v1/databases/pg/dtql", "",
+			"from: {name: orders}\nwhere: {op: '==', left: {field: customer_id}, right: {value: x}}\norderBy: [{field: customer_id}]\n", nil)
 		driver.mu.Lock()
 		defer driver.mu.Unlock()
 		if resp.status != http.StatusOK || len(driver.queries) == 0 || !strings.Contains(driver.queries[0], "orders") {
 			t.Fatalf("status %d: %s, queries %v", resp.status, resp.raw, driver.queries)
+		}
+		last := driver.queries[len(driver.queries)-1]
+		if !strings.Contains(last, "customer_id") {
+			t.Errorf("the text of a handed query does not show the field of its where and order: %s", last)
 		}
 	})
 }

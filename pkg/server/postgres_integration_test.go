@@ -24,9 +24,10 @@ import (
 
 // The proof of the PostgreSQL mount against a real server. Every test here needs
 // a PostgreSQL server and skips without one: the CI job .github/workflows/
-// postgres-integration.yml starts a postgres:17 container, sets
-// OVDB_TEST_POSTGRES_DSN (a postgres:// URL) and fails when one of these tests is
-// skipped or does not report PASS. The helpers of this file all start with pgIT so
+// postgres-integration.yml starts a postgres container on each of two versions (17
+// and 18), sets OVDB_TEST_POSTGRES_DSN (a postgres:// URL) and OVDB_TEST_POSTGRES_MAJOR
+// (the version of the leg), and fails when one of these tests is skipped or does not
+// report PASS. The helpers of this file all start with pgIT so
 // they cannot clash with the others of the package.
 //
 // What the mount holds is the preview of queries (core.PreviewPostgresQueriesEnv):
@@ -1194,8 +1195,15 @@ func TestPostgresIntegration_NamesOver63BytesAreA400AndNoStatementIsSent(t *test
 		{"a document with a subquery", "from: {database: pg, name: customers, alias: c}\n" +
 			"where: {exists: {query: {from: {database: pg, name: orders, alias: o}, where: {op: '==', left: {field: " + long + ", source: o}, right: {value: x}}}}}\n"},
 	} {
-		if resp := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", c.doc, nil); resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" {
+		resp := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", c.doc, nil)
+		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" {
 			t.Errorf("%s, a field of 64 bytes: status %d, want 400 invalid_dtql: %s", c.name, resp.status, resp.raw)
+			continue
+		}
+		// The status and the code are the database route's too; what tells this answer from
+		// that one is that it does not give the limit.
+		if strings.Contains(resp.errorField("message"), "63 bytes") {
+			t.Errorf("%s, a field of 64 bytes: the message gives the limit, which the database route's does and this one does not: %s", c.name, resp.raw)
 		}
 	}
 
@@ -1206,6 +1214,86 @@ func TestPostgresIntegration_NamesOver63BytesAreA400AndNoStatementIsSent(t *test
 	}
 	if n := pgITStatementsSince(t, admin, "ovdb-it-names", at); n == 0 {
 		t.Error("the server reports no statement for a write that was answered: the observation does not see statements")
+	}
+	pgITCanary(t, admin)
+}
+
+// TestPostgresIntegration_ManifestNamesAreCheckedBeforeProvisioning: a declared
+// collection or field the adapter cannot keep is refused while loading the
+// manifest, before a session opens or an earlier collection is created. Both a
+// 64-byte name and a name outside the adapter's identifier rule are covered.
+// A manifest with collection and field names of exactly 63 bytes mounts and
+// answers a write and read through the server.
+func TestPostgresIntegration_ManifestNamesAreCheckedBeforeProvisioning(t *testing.T) {
+	admin := pgITAdmin(t)
+	const application = "ovdb-it-manifest-names"
+	u, err := url.Parse(os.Getenv(pgITDSNEnv))
+	if err != nil {
+		t.Fatalf("%s is not a URL: %v", pgITDSNEnv, err)
+	}
+	q := u.Query()
+	q.Set("application_name", application)
+	u.RawQuery = q.Encode()
+	t.Setenv(pgITMountDSNEnv, u.String())
+	manifestText := func(collection, field string) string {
+		return fmt.Sprintf("database: {id: pg, schema_mode: strict}\nstorage: {engine: postgres, postgres: {dsn_env: %s}}\nschemas:\n  collections:\n    customers: {fields: {name: {type: string}}}\n    %q: {fields: {%q: {type: string}}}\n", pgITMountDSNEnv, collection, field)
+	}
+	load := func(t *testing.T, collection, field string) (*core.Database, error) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "db.yaml")
+		if err := os.WriteFile(path, []byte(manifestText(collection, field)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return mount.File(path)
+	}
+	long := strings.Repeat("n", 64)
+	for _, tc := range []struct{ name, collection, field string }{
+		{"collection of 64 bytes", long, "f"},
+		{"field of 64 bytes", "orders", long},
+		{"collection outside identifier rule", "order details", "f"},
+		{"field outside identifier rule", "orders", "a-b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			at := pgITNow(t, admin)
+			db, err := load(t, tc.collection, tc.field)
+			if db != nil {
+				_ = db.Close()
+			}
+			if err == nil || !strings.Contains(err.Error(), "cannot be mounted on PostgreSQL") || !strings.Contains(err.Error(), "schemas.collections") {
+				t.Fatalf("mount = %v, want a manifest entry and the name rule", err)
+			}
+			if n := pgITSessions(t, admin, application); n != 0 {
+				t.Errorf("%d sessions opened for a refused manifest", n)
+			}
+			if n := pgITStatementsSince(t, admin, application, at); n != 0 {
+				t.Errorf("%d sessions started a statement for a refused manifest", n)
+			}
+			var table sql.NullString
+			if err := admin.QueryRow("SELECT to_regclass('customers')::text").Scan(&table); err != nil || table.Valid {
+				t.Errorf("an earlier collection was created: %q (%v)", table.String, err)
+			}
+		})
+	}
+
+	atLimit := strings.Repeat("n", 63)
+	fieldAtLimit := strings.Repeat("f", 63)
+	t.Cleanup(func() { _, _ = admin.Exec("DROP TABLE IF EXISTS " + atLimit + " CASCADE") })
+	at := pgITNow(t, admin)
+	db, err := load(t, atLimit, fieldAtLimit)
+	if err != nil {
+		t.Fatalf("mount at the 63-byte limit: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if n := pgITStatementsSince(t, admin, application, at); n == 0 {
+		t.Error("the server reports no provisioning statement for the accepted manifest")
+	}
+	base := pgITServe(t, map[string]*core.Database{"pg": db})
+	path := "/v1/databases/pg/records/" + atLimit + "/k1"
+	if resp := relHTTPDo(t, base, http.MethodPut, path, "", `{"data":{"`+fieldAtLimit+`":"accepted"}}`, nil); resp.status != http.StatusNoContent {
+		t.Fatalf("PUT at the 63-byte limit: status %d: %s", resp.status, resp.raw)
+	}
+	if resp := relHTTPDo(t, base, http.MethodGet, path, "", "", nil); resp.status != http.StatusOK || !strings.Contains(resp.raw, `"`+fieldAtLimit+`":"accepted"`) {
+		t.Fatalf("GET at the 63-byte limit: status %d: %s", resp.status, resp.raw)
 	}
 	pgITCanary(t, admin)
 }

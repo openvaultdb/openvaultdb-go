@@ -221,14 +221,20 @@ by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
   collection name, a field name and a primary-key name alike. It refuses any other before it
   sends a statement. The field-name rule below is wider than this, so on those two engines a
   field name that a request carries can pass it and still be refused by the adapter: `500
-  internal`, and a `HEAD` answers `404`. A `postgres` or `mysql` manifest that
-  declares a collection or field name outside that rule does not open: provisioning the declared
-  collections refuses the name, so the mount fails when the database opens and no request is
-  served for it. Quoting on those two engines follows the task that gives the two mounts a
-  reviewed dialect (OV-01).
+  internal`, and a `HEAD` answers `404`. A `postgres` manifest that declares a collection or field
+  name outside that rule, or over 63 bytes (below), is refused when the manifest is loaded, before
+  the environment is read and before any connection is made, so no table is created for the
+  collections before it: the error is one sentence that names the entry and the rule
+  (`schemas.collections.orders.fields: field "a-b" cannot be mounted on PostgreSQL: a name holds
+  only ASCII letters, digits and underscores and does not start with a digit`). A `mysql` manifest
+  that declares such a name does not open: provisioning the declared collections refuses the name,
+  so the mount fails when the database opens and no request is served for it. Quoting on those
+  two engines follows the task that gives the two mounts a reviewed dialect (OV-01).
 - **Names over 63 bytes on a `postgres` mount.** PostgreSQL keeps 63 bytes of a name and cuts the
   rest without saying so, so a name of 64 bytes or more would address the table or the column
-  named by its first 63. Every route refuses a collection that long **before any statement is
+  named by its first 63. A manifest cannot declare such a name (see above), so every name of 64
+  bytes or more reaches the server in a request. Every route that takes a name from the request (a
+  key, a write, a query, a document) refuses a collection that long **before any statement is
   sent**, and the message gives the limit and not the name: a collection (of a key, of a query, of a
   source of a document) is `400 invalid_key`, the same status and code as every collection name
   outside the name rule, and it is checked before the question whether the database declares the
@@ -242,8 +248,11 @@ by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
   PostgreSQL source from the catalog first, and a name that no column has is an unknown field
   (`400 invalid_dtql`, a message that does not give the limit), or a null inside a scalar subquery
   of one source (see "Fields that no source has"). The name is never written into a statement on
-  any route. A name of exactly 63 bytes is accepted. `HEAD` of a key answers `400`, with
-  no body. No other engine has this limit.
+  any route. The human page of a collection (`GET /ovdb/dbs/{db}/collections/{collection}`) takes a
+  name from the request too: for a name the database does not declare, one of 64 bytes or more
+  included, it answers `404` and sends no statement. A name of exactly 63 bytes is accepted, in a
+  manifest and in a request. `HEAD` of a key answers `400`, with no body. No other engine has this
+  limit.
 - **Access policies and spellings.** The access-policy layer sees the collection under the name
   the adapter is given. On `sqlite`, for a key read or write, that is the public name whichever
   spelling the caller sent, so a policy path names the public name; a policy path written with
@@ -532,7 +541,8 @@ declared spelling and refuses the lower-case one). That holds for a field named 
 `exists` as it does in a join: the field list of the source of that query is read before anything
 is, and a field it does not carry is refused, never answered with no rows. A scalar subquery of one
 source is not looked at (see "Fields that no source has"): the declared spelling in its `where` or
-its columns is read as a null, a `200`, on a PostgreSQL mount as on any other.
+its columns is read as a null there, a `200`: a field that its source does not have reads as a null
+in such a subquery on every engine.
 
 A `postgres` mount takes part in a relational document only when `postgres` is in the join engines
 of the query limits (`joinEngines`), which the operator sets; the discovery document lists it, and
@@ -1405,8 +1415,9 @@ inGitDB mount is the `500` above.)
 **Fields that no source has.** A field of the query itself that no source of a document that DALgo
 evaluates has is a `400 invalid_dtql` (`... is unavailable`, or `unknown field` in `orderBy`), as on
 the database route. A field that no source has, in the `where`, `groupBy`, `having` or `orderBy` of an
-`exists` test whose one source supplies a field list, is a `400 invalid_dtql` (`unknown field ... the
-source does not carry it`); a column the `exists` query selects is not looked at, as it does not
+`exists` test whose one source supplies a field list, is a `400 invalid_dtql` (`unknown field ...`,
+ending `the source does not carry it`, or, for an unqualified field, `no source of the query carries
+it`); a column the `exists` query selects is not looked at, as it does not
 change whether it finds a row. Inside a scalar
 subquery of one source (no join, grouping, ordering, offset or aggregate) a field that no source has
 is read as a null, in its `where` and in its columns alike: DALgo evaluates such a subquery row by

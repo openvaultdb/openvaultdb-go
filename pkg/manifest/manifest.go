@@ -97,7 +97,10 @@ type FirestoreOptions struct {
 
 // PostgresOptions configures the PostgreSQL engine. The connection string
 // (which carries credentials) is NEVER stored in the manifest: DSNEnv names
-// the environment variable that holds it.
+// the environment variable that holds it. A manifest of the postgres engine
+// declares only collection and field names that are plain identifiers (ASCII
+// letters, digits and underscores, not starting with a digit) of at most 63
+// bytes, or it is refused when it is loaded (see CheckPostgresNames).
 type PostgresOptions struct {
 	// DSNEnv is the name of the environment variable holding the Postgres DSN
 	// (default "OVDB_POSTGRES_DSN"); the DSN is e.g.
@@ -393,7 +396,10 @@ func parseError(err error) error {
 
 // Validate checks the manifest for structural correctness. It does NOT check
 // engine/schema-mode compatibility — that is engine capability knowledge and
-// is enforced when the database is opened (see pkg/core).
+// is enforced when the database is opened (see pkg/core). The names a
+// PostgreSQL database cannot keep whole are the one engine fact it does check
+// (see CheckPostgresNames): a manifest that declares one is refused here,
+// before any connection is made.
 func (m *Manifest) Validate() error {
 	if m.ACLStore != nil {
 		if m.ACL == nil || !m.ACL.Enabled || m.ACLStore.Path == "" || len(m.ACL.Policies) > 0 {
@@ -482,6 +488,9 @@ func (m *Manifest) Validate() error {
 	}
 	if err := m.Schemas.Validate(); err != nil {
 		return fmt.Errorf("schemas: %w", err)
+	}
+	if err := m.CheckPostgresNames(); err != nil {
+		return err
 	}
 	if m.Database.SchemaMode == schema.ModeStrict {
 		if m.Schemas == nil || len(m.Schemas.Collections) == 0 {
