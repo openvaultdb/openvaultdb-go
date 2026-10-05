@@ -189,7 +189,7 @@ implementation commits and evidence. Publication is a separate final task.
 | Predicate | Structured comparisons, IN, AND/OR | Bound values; field operands; scalar IN members | In-memory structured evaluation |
 | Ordering | Named fields | Quoted field identifiers | In-memory field ordering |
 | Pagination | Default/max limit 1000; offset max 10000 | Bound LIMIT/OFFSET after WHERE | Policy filtering before ordering/pagination |
-| Unsupported endpoint features | Joins, aliases, grouping, functions, cursors, native query text | Unsupported structured sources/expressions fail before execution | Broader legacy adapter features do not expand the HTTP profile |
+| Unsupported on a database with access policies | Joins, aliases, grouping, subqueries and sources that name their database (a relational document: `422 authorization_unsupported`), functions, cursors, native query text | Unsupported structured sources/expressions fail before execution | Broader legacy adapter features do not expand the HTTP profile |
 | Cancellation | Context deadline 10 seconds | database/sql context propagation | Cooperative checks between read/evaluation phases |
 
 All caller projection, filter and ordering fields must be authorized, including

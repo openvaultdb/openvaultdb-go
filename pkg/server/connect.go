@@ -82,7 +82,8 @@ func (s *Server) validateConnect(v url.Values) (consentView, string) {
 }
 
 // handleWellKnown implements GET /.well-known/openvaultdb: discovery of the
-// protocol version and, when auth is enabled, the connect endpoints.
+// protocol version, the query profile and, when auth is enabled, the connect
+// endpoints or, when it is not, the mounted databases.
 func (s *Server) handleWellKnown(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	doc := map[string]any{
@@ -90,6 +91,7 @@ func (s *Server) handleWellKnown(w http.ResponseWriter, r *http.Request) {
 		"protocol":    "openvaultdb/0.1",
 		"version":     s.version,
 		"authEnabled": s.authCfg != nil,
+		"query":       s.queryProfile(),
 	}
 	if s.authCfg != nil {
 		doc["authorizeEndpoint"] = "/authorize"
@@ -100,11 +102,14 @@ func (s *Server) handleWellKnown(w http.ResponseWriter, r *http.Request) {
 		for _, id := range s.databaseIDs() {
 			db := s.getDB(id)
 			canQuery := db != nil && db.CanQuery()
+			joins := db != nil && s.advertisesJoins(db)
 			databases = append(databases, map[string]any{
 				"id":           id,
 				"url":          origin + humanDatabasePath(id),
 				"apiUrl":       origin + "/v1/databases/" + url.PathEscape(id),
 				"capabilities": map[string]bool{"read": true, "query": canQuery, "dtql": canQuery, "write": !s.readOnly},
+				"joins":        joins,
+				"aggregation":  joins,
 			})
 		}
 		doc["databases"] = databases
