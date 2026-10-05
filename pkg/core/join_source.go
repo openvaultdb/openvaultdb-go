@@ -119,7 +119,7 @@ func (d *Database) ReadTx(ctx context.Context, fn func(dal.QueryExecutor) error)
 		return fnErr
 	}
 	if err != nil {
-		return d.queryError("failed to run the read transaction", err)
+		return d.queryError(ctx, "failed to run the read transaction", err)
 	}
 	return nil
 }
@@ -188,10 +188,10 @@ func (g guardedQueryExecutor) ExecuteQueryToRecordsReader(ctx context.Context, q
 	}
 	reader, err := g.executor.ExecuteQueryToRecordsReader(ctx, g.handed(query))
 	if err != nil {
-		return nil, g.db.queryError("failed to query", err)
+		return nil, g.db.queryError(ctx, "failed to query", err)
 	}
 	if serverEngines[g.db.queryEngine()] {
-		return builtReader{RecordsReader: reader, db: g.db}, nil
+		return builtReader{RecordsReader: reader, db: g.db, ctx: ctx}, nil
 	}
 	return reader, nil
 }
@@ -202,7 +202,7 @@ func (g guardedQueryExecutor) ExecuteQueryToRecordsetReader(ctx context.Context,
 	}
 	reader, err := g.executor.ExecuteQueryToRecordsetReader(ctx, g.handed(query), options...)
 	if err != nil {
-		return nil, g.db.queryError("failed to query", err)
+		return nil, g.db.queryError(ctx, "failed to query", err)
 	}
 	return reader, nil
 }
@@ -242,7 +242,7 @@ func (g guardedQueryExecutor) JoinFields(ctx context.Context, source dal.Records
 	if provider, ok := g.executor.(dal.JoinFieldsProvider); ok {
 		fields, err := provider.JoinFields(ctx, source)
 		if err != nil {
-			err = g.db.queryError("failed to load the fields of the collection", err)
+			err = g.db.queryError(ctx, "failed to load the fields of the collection", err)
 		}
 		return fields, err
 	}

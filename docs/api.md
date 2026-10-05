@@ -25,6 +25,10 @@ small: just enough for DALgo-backed Sneat CRUD validation. Versioned under `/v1`
     nothing to change and an update that names the record's key column (see
     [Names the server accepts](#names-the-server-accepts))
   - `403 read_only` — server-wide read-only mode rejected a mutation
+  - `503 database_unavailable` — the database server of a `postgres` mount cannot be reached
+    (a connection that cannot be made, or that failed while the request ran): the same status,
+    code and message (`the database of this mount cannot be reached`) on every route that reads or
+    writes the mount, whatever the failure; see [A mount whose database cannot be reached](#structured-queries-on-a-postgresql-mount-preview)
   - `500 internal` — unexpected server/engine error (details are logged server-side, not returned)
   - `501 not_supported` — operation not in MVP
   - `501 query_unsupported` — a structured query (`/query`, `/dtql`) on a storage engine not yet
@@ -453,10 +457,26 @@ never from its text. The message of that answer is fixed (`a value or a name of 
 fit the field it is used with`), it repeats nothing of the request or of the server, and nothing is
 logged. A SQLite mount answers some of these requests with an empty result.
 
-A failure of the database server of any other kind is `500 internal`, and the log line says only
+A failure of the database server of any other kind (not one of those above, and not a connection
+that cannot be reached, which is described next) is `500 internal`, and the log line says only
 which step failed: no text of the driver or of the server, which can repeat a value of the request
 or name the connection, reaches an answer or a log. That holds for a read transaction that cannot
 begin or commit and for the field list of a collection, as it does for a query.
+
+**A mount whose database cannot be reached.** When the adapter reports that the connection to
+the database server cannot be made, or that it failed while the request ran (a refused or reset connection, a timeout of the connection, a failed
+TLS handshake, a server that rejects the connection, a connection string that cannot be read), the
+answer is `503 database_unavailable` with the message `the database of this mount cannot be reached`.
+It is the same status, code and message for every such failure and on every route that reads or
+writes the mount: a key read (`/records`, `/read`, `HEAD` too, which has no body), a write or a
+batch, the metadata of the database, `/query`, `/dtql` and a relational document of `/v1/dtql`. The
+answer holds nothing of the connection: not the connection string, the host, the port, the user,
+the password, the database name, the kind of failure or a driver's text. The server logs one `ERROR`
+line, `database unreachable`, with the method, the path, the ID of the mount (`database`) and the
+adapter's own fixed sentence for the failure (`reason`, for example `dalgo2postgres: the server could
+not be reached`, or with the SQLSTATE code of a server that answered); nothing of the connection
+string is in it either. A request that was canceled, or that ran past its deadline, is not this
+failure: it keeps its own answer (`504 query_timeout` on a relational document).
 
 A field declared with capitals (`FirstName`) is held by PostgreSQL in lower case. A route that reads
 one collection finds it by the declared spelling and by the lower-case one, and answers a record
@@ -1583,6 +1603,7 @@ columns:
 | `501` | `query_unsupported` | The storage engine is not cleared for structured queries (`mysql`, a `postgres` mount that opened with the preview switch off, an unknown engine), whatever the operator's list of join engines says. |
 | `503` | `query_capacity` | No slot of the concurrency gate freed within the server's queue wait; `Retry-After: 1`. |
 | `504` | `query_timeout` | The query ran longer than `timeoutMs`. |
+| `503` | `database_unavailable` | The database server of a `postgres` mount cannot be reached; see [A mount whose database cannot be reached](#structured-queries-on-a-postgresql-mount-preview). |
 | `500` | `internal` | A fault of the server, logged and not described. |
 
 <!-- doc-example method=POST path=/v1/dtql status=400 -->

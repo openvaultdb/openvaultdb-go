@@ -12,6 +12,14 @@ import (
 	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 )
 
+// codeDatabaseUnavailable and messageDatabaseUnavailable are the error code and the
+// message of a request that a mount's database server could not answer because it
+// could not be reached (core.ErrDatabaseUnreachable).
+const (
+	codeDatabaseUnavailable    = "database_unavailable"
+	messageDatabaseUnavailable = "the database of this mount cannot be reached"
+)
+
 type errorBody struct {
 	Error errorDetail `json:"error"`
 }
@@ -29,10 +37,17 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 
 // writeMappedError converts core/engine/schema errors into the API error
 // shapes documented in docs/api.md. It reports whether err was unrecognised
-// and answered as a generic 500, so callers can log it.
+// and answered as a generic 500, so callers can log it. A mount whose database
+// cannot be reached is answered 503 and is not a 500, so it is not reported: the
+// caller that logs it is Server.writeMappedError (logUnreachable).
 func writeMappedError(w http.ResponseWriter, err error) (internal bool) {
 	var validationErr *schema.ValidationError
 	switch {
+	case errors.Is(err, core.ErrDatabaseUnreachable):
+		// The database server of the mount cannot be reached: one status and one code
+		// whatever the failure, and one fixed message. Nothing of the connection (the
+		// host, the port, the user, the password, a driver's text) is in it.
+		writeError(w, http.StatusServiceUnavailable, codeDatabaseUnavailable, messageDatabaseUnavailable)
 	case errors.Is(err, access.ErrAccessDenied):
 		// Do not reflect evaluator text: it may contain private predicate values,
 		// policy paths, or protected row facts.
@@ -101,7 +116,26 @@ func hiddenAsDenied(db *core.Database, err error) error {
 func (s *Server) writeMappedError(w http.ResponseWriter, r *http.Request, err error) {
 	if writeMappedError(w, err) {
 		s.logInternal(r, err)
+		return
 	}
+	s.logUnreachable(r, err)
+}
+
+// logUnreachable records, when err says a mount's database server cannot be reached,
+// which mount it was and the adapter's fixed sentence for the failure. It holds only
+// the method, the route path, the ID of the mount and that sentence: nothing of the
+// connection string and nothing of the driver's own text is in the error, so none is
+// in the line.
+func (s *Server) logUnreachable(r *http.Request, err error) {
+	var unreachable *core.UnreachableError
+	if !errors.As(err, &unreachable) {
+		return
+	}
+	s.logger.ErrorContext(r.Context(), "database unreachable",
+		slog.String("method", r.Method),
+		slog.String("path", r.URL.Path),
+		slog.String("database", unreachable.Database),
+		slog.String("reason", unreachable.Reason))
 }
 
 // writeInternalError answers 500 with message and logs err.

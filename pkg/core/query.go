@@ -271,7 +271,7 @@ func (d *Database) StreamDTQLSnapshot(ctx context.Context, query dal.StructuredQ
 	defer d.mu.Unlock()
 	reader, err := d.db.ExecuteQueryToRecordsReader(ctx, snapshotDTQL{boundedDTQL{query}})
 	if err != nil {
-		return d.queryError(fmt.Sprintf("failed to query collection %q", clipName(collection)), err)
+		return d.queryError(ctx, fmt.Sprintf("failed to query collection %q", clipName(collection)), err)
 	}
 	defer func() { _ = reader.Close() }()
 	for {
@@ -283,7 +283,7 @@ func (d *Database) StreamDTQLSnapshot(ctx context.Context, query dal.StructuredQ
 			return nil
 		}
 		if nextErr != nil {
-			return d.queryError(fmt.Sprintf("failed reading query results for %q", clipName(collection)), nextErr)
+			return d.queryError(ctx, fmt.Sprintf("failed reading query results for %q", clipName(collection)), nextErr)
 		}
 		out := Record{Key: rec.Key()}
 		data, _ := rec.Data().(map[string]any)
@@ -331,7 +331,7 @@ func (d *Database) executeDalQueryOn(ctx context.Context, db dal.DB, query dal.S
 	}
 	reader, err := db.ExecuteQueryToRecordsReader(ctx, query)
 	if err != nil {
-		return nil, d.queryError(fmt.Sprintf("failed to query collection %q", clipName(collection)), err)
+		return nil, d.queryError(ctx, fmt.Sprintf("failed to query collection %q", clipName(collection)), err)
 	}
 	defer func() { _ = reader.Close() }()
 	var records []Record
@@ -347,7 +347,7 @@ func (d *Database) executeDalQueryOn(ctx context.Context, db dal.DB, query dal.S
 			return records, nil
 		}
 		if nextErr != nil {
-			return nil, d.queryError(fmt.Sprintf("failed reading query results for %q", clipName(collection)), nextErr)
+			return nil, d.queryError(ctx, fmt.Sprintf("failed reading query results for %q", clipName(collection)), nextErr)
 		}
 		out := Record{Key: rec.Key()}
 		data, _ := rec.Data().(map[string]any)

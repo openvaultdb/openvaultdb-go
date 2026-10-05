@@ -3,6 +3,7 @@ package server
 import (
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -213,6 +214,11 @@ func (s *Server) writeHuman(w http.ResponseWriter, r *http.Request, status int, 
 func (s *Server) humanDatabasesOrError(w http.ResponseWriter, r *http.Request, includeProviderReferences bool, requestedID string) ([]humanDB, bool) {
 	databases, err := s.humanDatabases(r, includeProviderReferences, requestedID)
 	if err != nil {
+		if errors.Is(err, core.ErrDatabaseUnreachable) {
+			s.logUnreachable(r, err)
+			http.Error(w, "Database metadata unavailable", http.StatusServiceUnavailable)
+			return nil, false
+		}
 		http.Error(w, "Database metadata unavailable", http.StatusInternalServerError)
 		return nil, false
 	}
