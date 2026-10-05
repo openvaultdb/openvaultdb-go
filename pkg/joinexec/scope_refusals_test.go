@@ -63,6 +63,9 @@ func TestAColumnFieldThatAnEarlierColumnCarriesAsItsAliasIsRefusedInAQueryThatAg
 		"the earlier column selects a qualified field under that name": {scJoin(func(b dal.IQueryBuilder) dal.StructuredQuery {
 			return b.GroupBy(scX, dal.NewFieldRef("b", "x")).SelectColumns(dal.Column{Expression: dal.NewFieldRef("b", "x")}, later)
 		}), "columns[1]"},
+		"the earlier column is a field qualified by another source than the only one": {srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
+			return b.GroupBy(scX, dal.NewFieldRef("outer", "x")).SelectColumns(dal.Column{Expression: dal.NewFieldRef("outer", "x")}, later)
+		}), "columns[1]"},
 		"the earlier column is an unqualified field under another alias": {srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
 			return b.GroupBy(scX, dal.NewFieldRef("", "y")).SelectColumns(dal.Column{Expression: dal.NewFieldRef("", "y"), Alias: "x"}, later)
 		}), "columns[1]"},
@@ -99,6 +102,17 @@ func TestAColumnFieldIsLeftAloneWhenNoEarlierColumnCarriesItAsItsAlias(t *testin
 		"the earlier column is the same field under its own name": srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
 			return b.GroupBy(scX).SelectColumns(dal.Column{Expression: scX, Alias: "x"}, dal.Column{Expression: scX, Alias: "t"}, dal.CountAs(dal.Star(), "n"))
 		}),
+		"the earlier column is the same field, qualified by the only source": srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
+			return b.GroupBy(qualified).SelectColumns(dal.Column{Expression: qualified}, dal.Column{Expression: scX, Alias: "t"}, dal.CountAs(dal.Star(), "n"))
+		}),
+		"the earlier column is the same field, qualified by the only source, under its own name": srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
+			return b.GroupBy(qualified).SelectColumns(dal.Column{Expression: qualified, Alias: "x"}, dal.Column{Expression: scX, Alias: "t"}, dal.CountAs(dal.Star(), "n"))
+		}),
+		"the earlier column is the same field, qualified by the collection of a source with no alias": func() dal.StructuredQuery {
+			field := dal.NewFieldRef("A", "x")
+			return dal.From(exRef("", "A", "")).NewQuery().GroupBy(field).
+				SelectColumns(dal.Column{Expression: field}, dal.Column{Expression: scX, Alias: "t"}, dal.CountAs(dal.Star(), "n"))
+		}(),
 		"the later column names its source": srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
 			return b.GroupBy(qualified).SelectColumns(srCount, dal.Column{Expression: qualified, Alias: "t"})
 		}),
@@ -285,9 +299,6 @@ func TestAnOrderByNameThatIsTheAliasOfAFieldIsNotLookedAtAndAnAliasOfAnExpressio
 		"the alias of an unqualified field, in a query of two sources": {scJoin(func(b dal.IQueryBuilder) dal.StructuredQuery {
 			return b.OrderBy(dal.Descending(label)).SelectColumns(aliased(dal.NewFieldRef("", "only_a")))
 		}), map[string][]string{"A": {"id", "only_a"}, "B": {"id"}}, ""},
-		"an alias in arithmetic": {srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
-			return b.OrderBy(dal.Ascending(dal.Binary(label, dal.Add, srOne))).SelectColumns(aliased(dal.NewFieldRef("a", "x")))
-		}), map[string][]string{"A": {"id", "x"}}, ""},
 		"the alias of an expression": {srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
 			return b.OrderBy(dal.Ascending(label)).SelectColumns(aliased(dal.Binary(dal.NewFieldRef("a", "x"), dal.Multiply, srOne)))
 		}), map[string][]string{"A": {"id", "x"}}, "orderBy[0]"},
@@ -297,9 +308,6 @@ func TestAnOrderByNameThatIsTheAliasOfAFieldIsNotLookedAtAndAnAliasOfAnExpressio
 		"the alias of a constant": {srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
 			return b.OrderBy(dal.Ascending(label)).SelectColumns(aliased(srOne))
 		}), map[string][]string{"A": {"id", "x"}}, "orderBy[0]"},
-		"the alias of an expression, in arithmetic": {srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
-			return b.OrderBy(dal.Ascending(dal.Binary(srOne, dal.Add, label))).SelectColumns(aliased(srOne))
-		}), map[string][]string{"A": {"id", "x"}}, "orderBy[0].right"},
 		"the result name of a scalar subquery": {srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
 			inner := dal.From(exRef("", "C", "c")).NewQuery().SelectColumns(dal.Column{Expression: dal.NewFieldRef("c", "k")})
 			return b.OrderBy(dal.Ascending(label)).SelectColumns(dal.Column{Expression: dal.NewQueryExpression(inner, "label")})
@@ -339,6 +347,55 @@ func TestAnOrderByNameThatIsTheAliasOfAFieldIsNotLookedAtAndAnAliasOfAnExpressio
 	}
 }
 
+// A name inside the arithmetic of an ORDER BY is a field of a source, as a SQL database
+// reads it: only an ORDER BY expression that is the bare name reads the alias of a column
+// (SQLite: `select a as b from t order by b` sorts by the alias, `order by b*1` by the
+// table's own b). So inside arithmetic the alias of a field does not hide a field of the
+// source that has the name, and the alias of an expression is not refused for what it is: the
+// name is looked at as a field of a source like any other.
+func TestAnAliasInsideOrderByArithmeticIsLookedAtAsAFieldOfASource(t *testing.T) {
+	label := dal.NewFieldRef("", "label")
+	plusOne := func(left dal.Expression) dal.Expression { return dal.Binary(left, dal.Add, srOne) }
+	onField := func(order dal.Expression) dal.StructuredQuery {
+		return srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
+			return b.OrderBy(dal.Ascending(order)).SelectColumns(dal.Column{Expression: dal.NewFieldRef("a", "x"), Alias: "label"})
+		})
+	}
+	onExpression := func(order dal.Expression) dal.StructuredQuery {
+		return srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
+			return b.OrderBy(dal.Ascending(order)).SelectColumns(dal.Column{Expression: srOne, Alias: "label"})
+		})
+	}
+	for name, tc := range map[string]struct {
+		query dal.StructuredQuery
+		lists map[string][]string
+		path  string // "" is no refusal
+	}{
+		"the alias of a field, which the source carries as a field too": {onField(plusOne(label)), map[string][]string{"A": {"id", "x", "label"}}, ""},
+		"the alias of an expression, which the source carries as a field too": {onExpression(dal.Binary(srOne, dal.Add, label)),
+			map[string][]string{"A": {"id", "label"}}, ""},
+		"the alias of a field, which the source does not carry": {onField(plusOne(label)), map[string][]string{"A": {"id", "x"}}, "orderBy[0].left"},
+		"the alias of an expression, which the source does not carry": {onExpression(dal.Binary(srOne, dal.Add, label)),
+			map[string][]string{"A": {"id", "x"}}, "orderBy[0].right"},
+		"the alias of a field, where no list says it is unknown": {onField(plusOne(label)), nil, ""},
+		"the bare alias of a field is still the column":          {onField(label), map[string][]string{"A": {"id", "x"}}, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := checkScopes(context.Background(), tc.query, (&scSupplier{lists: tc.lists}).fields)
+			if tc.path == "" {
+				if err != nil {
+					t.Fatalf("checkScopes: %v", err)
+				}
+				return
+			}
+			scope := scAsScope2(t, err, "shape")
+			if scope.Path != tc.path || !strings.Contains(scope.Message, `unknown field "label"`) || !strings.Contains(scope.Message, "alias") {
+				t.Fatalf("got %+v, want an unknown field label at %s that says what an alias is for", scope, tc.path)
+			}
+		})
+	}
+}
+
 // The name of an ORDER BY that no source of the query carries, and that no column
 // carries as its alias, is refused before anything is read: not ignored, as a mount that
 // is handed the document whole ignores a field it does not know.
@@ -361,6 +418,21 @@ func TestAnOrderByNameNoSourceCarriesIsRefusedWhenEverySourceSuppliesAList(t *te
 		"two sources": {scJoin(func(b dal.IQueryBuilder) dal.StructuredQuery {
 			return b.OrderBy(dal.Ascending(unknown)).SelectColumns(dal.Column{Expression: dal.NewFieldRef("a", "id")})
 		}), "orderBy[0]", []string{"A", "B"}},
+		"a qualified name": {srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
+			return b.OrderBy(dal.Ascending(dal.NewFieldRef("a", "nope"))).SelectColumns(dal.Column{Expression: dal.NewFieldRef("a", "x")})
+		}), "orderBy[0]", []string{"A"}},
+		"a qualified name of the second source, which is the only one asked": {scJoin(func(b dal.IQueryBuilder) dal.StructuredQuery {
+			return b.OrderBy(dal.Ascending(dal.NewFieldRef("b", "nope"))).SelectColumns(dal.Column{Expression: dal.NewFieldRef("a", "id")})
+		}), "orderBy[0]", []string{"B"}},
+		"a qualified operand of arithmetic": {srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
+			return b.OrderBy(dal.Ascending(dal.Binary(srOne, dal.Add, dal.NewFieldRef("a", "nope")))).SelectColumns(dal.Column{Expression: dal.NewFieldRef("a", "x")})
+		}), "orderBy[0].right", []string{"A"}},
+		"a source with no alias is qualified by its collection": {
+			dal.From(exRef("", "A", "")).NewQuery().OrderBy(dal.Ascending(dal.NewFieldRef("A", "nope"))).SelectColumns(dal.Column{Expression: dal.NewFieldRef("A", "x")}),
+			"orderBy[0]", []string{"A"}},
+		"an unqualified name that follows a qualified one that is known": {srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
+			return b.OrderBy(dal.Ascending(dal.NewFieldRef("a", "x")), dal.Ascending(unknown)).SelectColumns(dal.Column{Expression: dal.NewFieldRef("a", "x")})
+		}), "orderBy[1]", []string{"A"}},
 		"a query nested in a clause": {func() dal.StructuredQuery {
 			inner := srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
 				return b.OrderBy(dal.Ascending(unknown)).SelectColumns(dal.Column{Expression: dal.NewFieldRef("a", "x")})
@@ -405,8 +477,28 @@ func TestAnOrderByNameIsLeftAloneWhenASourceCarriesItOrNoListCanSayItIsUnknown(t
 				return b.SelectColumns(dal.Column{Expression: dal.NewFieldRef("a", "x")})
 			}), "d")).NewQuery().OrderBy(dal.Ascending(dal.NewFieldRef("", "nope"))).SelectColumns(dal.Column{Expression: dal.NewFieldRef("d", "x")}),
 			map[string][]string{"A": {"x"}}, nil},
-		"a name the source qualifies": {srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
+		"a qualified name that the source carries": {srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
+			return b.OrderBy(dal.Ascending(dal.NewFieldRef("a", "x"))).SelectColumns(dal.Column{Expression: dal.NewFieldRef("a", "x")})
+		}), map[string][]string{"A": {"x"}}, []string{"A"}},
+		"the key pseudo-field, qualified": {srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
+			return b.OrderBy(dal.Ascending(dal.NewFieldRef("a", "$id"))).SelectColumns(dal.Column{Expression: dal.NewFieldRef("a", "x")})
+		}), map[string][]string{"A": {"x"}}, nil},
+		"a qualified name of a source that supplies no list, which the mount decides": {srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
 			return b.OrderBy(dal.Ascending(dal.NewFieldRef("a", "nope"))).SelectColumns(dal.Column{Expression: dal.NewFieldRef("a", "x")})
+		}), nil, []string{"A"}},
+		"a qualified name of a derived source, which supplies no list": {
+			dal.From(dal.NewQuerySource(srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
+				return b.SelectColumns(dal.Column{Expression: dal.NewFieldRef("a", "x")})
+			}), "d")).NewQuery().OrderBy(dal.Ascending(dal.NewFieldRef("d", "nope"))).SelectColumns(dal.Column{Expression: dal.NewFieldRef("d", "x")}),
+			map[string][]string{"A": {"x"}}, nil},
+		"a qualified name of a query outside the one that orders, which DALgo binds to its source": {func() dal.StructuredQuery {
+			inner := srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
+				return b.OrderBy(dal.Ascending(dal.NewFieldRef("c", "nope"))).SelectColumns(dal.Column{Expression: dal.NewFieldRef("a", "x")})
+			})
+			return dal.From(exRef("", "C", "c")).NewQuery().Where(dal.NewExistsCondition(inner)).SelectColumns(dal.Column{Expression: dal.NewFieldRef("c", "k")})
+		}(), map[string][]string{"A": {"x"}, "C": {"k"}}, nil},
+		"a qualified name of a query that aggregates, which DALgo checks itself": {srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
+			return b.GroupBy(dal.NewFieldRef("a", "x")).OrderBy(dal.Ascending(dal.NewFieldRef("a", "nope"))).SelectColumns(dal.Column{Expression: dal.NewFieldRef("a", "x")}, dal.CountAs(dal.Star(), "n"))
 		}), map[string][]string{"A": {"x"}}, nil},
 		"a name of the clause WHERE, which is not ordered by": {srSingle(func(b dal.IQueryBuilder) dal.StructuredQuery {
 			return b.Where(dal.NewComparison(dal.NewFieldRef("", "nope"), dal.Equal, srOne)).SelectColumns(dal.Column{Expression: dal.NewFieldRef("a", "x")})
@@ -487,6 +579,36 @@ func TestADocumentHandedWholeToAMountIsSortedByTheFieldOfAnAliasOrRefused(t *tes
 		field, ok := order[0].Expression().(dal.FieldRef)
 		if len(order) != 1 || !ok || field.Source() != "a" || field.Name() != "name" || !order[0].Descending() {
 			t.Fatalf("the mount was asked to order by %v", order)
+		}
+	})
+	t.Run("an ordering that is not a field is sorted by DALgo: the mount is asked for a plain read", func(t *testing.T) {
+		// A mount's executor skips an ordering that is not a field, and answers in the order
+		// it reads the records: the document is not handed to it whole.
+		for name, tc := range map[string]struct {
+			order []dal.OrderExpression
+			want  []any
+		}{
+			"arithmetic": {[]dal.OrderExpression{dal.Ascending(dal.Binary(dal.NewFieldRef("a", "k"), dal.Multiply, dal.NewConstant(-1)))}, []any{"a3", "a2", "a1"}},
+			"arithmetic after a plain field": {[]dal.OrderExpression{dal.Ascending(dal.NewFieldRef("a", "name")),
+				dal.Ascending(dal.Binary(dal.NewFieldRef("", "k"), dal.Multiply, dal.NewConstant(-1)))}, []any{"a1", "a2", "a3"}},
+		} {
+			res, mount, err := run(handed(func(b dal.IQueryBuilder) dal.StructuredQuery {
+				return b.OrderBy(tc.order...).SelectColumns(dal.Column{Expression: dal.NewFieldRef("a", "name")})
+			}))
+			if err != nil {
+				t.Fatalf("%s: Execute: %v", name, err)
+			}
+			seen := mount.exec.seen()
+			if len(seen) != 1 || len(seen[0].(dal.StructuredQuery).OrderBy()) != 0 {
+				t.Fatalf("%s: the mount was asked %v, want one read with no ordering", name, seen)
+			}
+			var names []any
+			for _, rec := range res.Records {
+				names = append(names, rec.Data().(map[string]any)["name"])
+			}
+			if !reflect.DeepEqual(names, tc.want) {
+				t.Fatalf("%s: names = %v, want %v", name, names, tc.want)
+			}
 		}
 	})
 	t.Run("a name no source carries is refused and nothing is read", func(t *testing.T) {
@@ -579,12 +701,6 @@ func TestTheOrderByAliasOfAFieldIsReplacedByTheFieldWhereverTheQueryStands(t *te
 			t.Fatalf("orders by %s", got)
 		}
 	})
-	t.Run("arithmetic over the alias", func(t *testing.T) {
-		q := dal.From(exRef("", "A", "a")).NewQuery().OrderBy(dal.Ascending(dal.Binary(label, dal.Add, srOne))).SelectColumns(labelled)
-		if got := orderOf(resolveAliases(q)); got != dal.Binary(name, dal.Add, srOne).String()+" asc" {
-			t.Fatalf("orders by %s", got)
-		}
-	})
 	t.Run("a derived source, an EXISTS test and a scalar subquery", func(t *testing.T) {
 		derived := dal.From(dal.NewQuerySource(inner(), "d")).NewQuery().SelectColumns(dal.Column{Expression: dal.NewFieldRef("d", "label")})
 		got := resolveAliases(derived)
@@ -607,9 +723,12 @@ func TestTheOrderByAliasOfAFieldIsReplacedByTheFieldWhereverTheQueryStands(t *te
 		for name, q := range map[string]dal.StructuredQuery{
 			"a qualified name":              dal.From(exRef("", "A", "a")).NewQuery().OrderBy(dal.Ascending(dal.NewFieldRef("a", "label"))).SelectColumns(labelled),
 			"a name that no column carries": dal.From(exRef("", "A", "a")).NewQuery().OrderBy(dal.Ascending(dal.NewFieldRef("", "k"))).SelectColumns(labelled),
-			"the alias of an expression":    dal.From(exRef("", "A", "a")).NewQuery().OrderBy(dal.Ascending(label)).SelectColumns(dal.Column{Expression: srOne, Alias: "label"}),
-			"a column without an alias":     dal.From(exRef("", "A", "a")).NewQuery().OrderBy(dal.Ascending(dal.NewFieldRef("", "name"))).SelectColumns(dal.Column{Expression: dal.NewFieldRef("", "name")}),
-			"a wildcard":                    dal.From(exRef("", "A", "a")).NewQuery().OrderBy(dal.Ascending(label)).SelectColumns(dal.Column{Wildcard: &dal.WildcardProjection{Source: "a"}}),
+			// A SQL database reads the alias only as the whole of the expression: inside
+			// arithmetic the name is the field of the source that has it.
+			"arithmetic over the alias":  dal.From(exRef("", "A", "a")).NewQuery().OrderBy(dal.Ascending(dal.Binary(label, dal.Add, srOne))).SelectColumns(labelled),
+			"the alias of an expression": dal.From(exRef("", "A", "a")).NewQuery().OrderBy(dal.Ascending(label)).SelectColumns(dal.Column{Expression: srOne, Alias: "label"}),
+			"a column without an alias":  dal.From(exRef("", "A", "a")).NewQuery().OrderBy(dal.Ascending(dal.NewFieldRef("", "name"))).SelectColumns(dal.Column{Expression: dal.NewFieldRef("", "name")}),
+			"a wildcard":                 dal.From(exRef("", "A", "a")).NewQuery().OrderBy(dal.Ascending(label)).SelectColumns(dal.Column{Wildcard: &dal.WildcardProjection{Source: "a"}}),
 		} {
 			if got := resolveAliases(q); !reflect.DeepEqual(got, q) {
 				t.Fatalf("%s: the query was rebuilt: %v", name, got)

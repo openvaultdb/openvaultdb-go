@@ -146,8 +146,10 @@ func TestTheDecisionIsLeftToDALgoWhenEverySourceSuppliesAFieldListAndOnlyOneCarr
 func TestOnlyAnUnqualifiedFieldOfAQueryOfSeveralSourcesIsLookedAt(t *testing.T) {
 	qualified := dal.NewFieldRef("a", "x")
 	for name, query := range map[string]dal.StructuredQuery{
+		// A field of an ORDER BY that names its source is looked at in the list of that source
+		// (see scope_refusals_test.go), so it is not one of these.
 		"fields that a source qualifies": scJoin(func(b dal.IQueryBuilder) dal.StructuredQuery {
-			return b.Where(dal.NewComparison(qualified, dal.Equal, dal.NewConstant(1))).OrderBy(dal.Ascending(qualified)).SelectColumns(dal.Column{Expression: qualified})
+			return b.Where(dal.NewComparison(qualified, dal.Equal, dal.NewConstant(1))).SelectColumns(dal.Column{Expression: qualified})
 		}),
 		"the alias of a column in ORDER BY of an aggregating query": scJoin(func(b dal.IQueryBuilder) dal.StructuredQuery {
 			return b.GroupBy(qualified).OrderBy(dal.Descending(dal.NewFieldRef("", "n"))).SelectColumns(dal.CountAs(dal.Star(), "n"))
@@ -368,6 +370,16 @@ func TestADerivedSourceSuppliesNoFieldList(t *testing.T) {
 
 func TestAFailureToSupplyAFieldListIsReturnedAsItIs(t *testing.T) {
 	q := scJoin(func(b dal.IQueryBuilder) dal.StructuredQuery { return b.SelectColumns(dal.Column{Expression: scX}) })
+	supplier := &scSupplier{lists: map[string][]string{"A": {"x"}}, errs: map[string]error{"B": errExBoom}}
+	if err := checkScopes(context.Background(), q, supplier.fields); err != errExBoom {
+		t.Fatalf("got %v, want the failure of the supplier itself", err)
+	}
+}
+
+func TestAFailureToSupplyTheFieldListOfAQualifiedOrderByNameIsReturnedAsItIs(t *testing.T) {
+	q := scJoin(func(b dal.IQueryBuilder) dal.StructuredQuery {
+		return b.OrderBy(dal.Ascending(dal.NewFieldRef("b", "x"))).SelectColumns(dal.Column{Expression: dal.NewFieldRef("a", "id")})
+	})
 	supplier := &scSupplier{lists: map[string][]string{"A": {"x"}}, errs: map[string]error{"B": errExBoom}}
 	if err := checkScopes(context.Background(), q, supplier.fields); err != errExBoom {
 		t.Fatalf("got %v, want the failure of the supplier itself", err)

@@ -83,9 +83,16 @@ import (
 // of a source. When every source of the query supplies its list and none carries the name,
 // it is refused as an unknown field, one source or several, before anything is read: an
 // executor handed the document whole (an inGitDB mount) ignores a field it does not know,
-// and answers the document unsorted. A source that supplies no list (a partial or
-// schemaless database, a database with access policies, a derived source) cannot say a
-// name is unknown, and the name is left to the mount.
+// and answers the document unsorted. A field that names its source (c.nope) is looked at in
+// the list of that source alone, and refused when that list does not carry it. A source
+// that supplies no list (a partial or schemaless database, a database with access policies,
+// a derived source) cannot say a name is unknown, and the name is left to the mount.
+//
+// A column's alias is read as the column only where it is the whole ORDER BY expression, as
+// a SQL database reads it: inside arithmetic (b*1) a name is a field of a source, and the
+// source that carries a field of that name wins over a column that is called so. The
+// alias of a column that is not a field is not refused there for what it is: it is a name
+// that a source carries or does not.
 
 // fieldSupplier answers the field list of a source, the way the executors DALgo
 // reads through do (dal.JoinFieldsProvider): nil when the source has no list.
@@ -113,17 +120,25 @@ const (
 // with. No list of fields carries it, and the mount that is handed the document sorts by it.
 const keyField = "$id"
 
-// scopeRef is an unqualified field of a clause, with where it stands.
+// scopeRef is a field of a clause, with where it stands.
 type scopeRef struct {
 	name string
 	path string
 	kind readKind
+	// qualifier is the source the field names, of a field that names one.
+	qualifier string
+	// inExpression is true for a name inside the arithmetic of an ORDER BY, where the alias
+	// of a column is not read as the column.
+	inExpression bool
 }
 
 // scopeLevel is one query of the document.
 type scopeLevel struct {
 	sources []dal.RecordsetSource
 	refs    []scopeRef
+	// qualified are the fields of an ORDER BY of a query that does not aggregate that name
+	// their source, which the list of that source alone says are known or not.
+	qualified []scopeRef
 	// refusals are the refusals that no field list is needed for, in document order.
 	refusals []*dal.QueryValidationError
 	// ordered is true when a ref is a field of an ORDER BY, which is looked at even for a
@@ -136,7 +151,8 @@ type scopeLevel struct {
 // refused for a field that a source of that query supplies no field list for, that two of
 // the lists carry, that DALgo's aggregation or its streaming plan would read from the first
 // source when only another carries it, and (ORDER BY) that none carries. A query of one
-// source is refused for an ORDER BY name its list does not carry. A name that stands for
+// source is refused for an ORDER BY name its list does not carry, as is a field of an ORDER BY
+// that names its source and whose list does not carry it. A name that stands for
 // a column where DALgo or a mount would read a field of a source is refused whatever the
 // sources supply (see the comment at the top of this file). The refusal is a scope error
 // (*dal.QueryValidationError), which the server answers as a 400 invalid_dtql, and nothing
@@ -158,15 +174,25 @@ func checkScopes(ctx context.Context, query dal.StructuredQuery, fields fieldSup
 }
 
 // check refuses the first field of the level that the lists of its sources show is
-// not bound to a source. A query of one source is looked at for its ORDER BY names only.
+// not bound to a source: an unqualified field first, and then a field of an ORDER BY that
+// names a source its list does not carry. A query of one source is looked at for its
+// ORDER BY names only.
 func (l *scopeLevel) check(ctx context.Context, fields fieldSupplier) error {
+	lists := &levelLists{ctx: ctx, fields: fields, sources: l.sources, answers: map[int]listAnswer{}}
+	if err := l.checkUnqualified(lists); err != nil {
+		return err
+	}
+	return l.checkQualified(lists)
+}
+
+func (l *scopeLevel) checkUnqualified(lists *levelLists) error {
 	several := len(l.sources) >= 2
 	if len(l.refs) == 0 || !several && !l.ordered {
 		return nil
 	}
-	var lists [][]string
-	for _, source := range l.sources {
-		list, supplied, err := suppliedFields(ctx, source, fields)
+	var all [][]string
+	for i := range l.sources {
+		list, supplied, err := lists.of(i)
 		if err != nil {
 			return err
 		}
@@ -183,17 +209,80 @@ func (l *scopeLevel) check(ctx context.Context, fields fieldSupplier) error {
 					clip(first.name)),
 			}
 		}
-		lists = append(lists, list)
+		all = append(all, list)
 	}
 	for _, ref := range l.refs {
 		if !several && ref.kind != readOrdered {
 			continue
 		}
-		if err := ref.check(lists); err != nil {
+		if err := ref.check(all); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// checkQualified refuses the first field of an ORDER BY that names a source whose list does
+// not carry it. The source is the one whose alias, or collection with no alias, the field
+// names; a name that is no source of the level belongs to a query around it, and is left to
+// DALgo. The key pseudo-field is not refused.
+func (l *scopeLevel) checkQualified(lists *levelLists) error {
+	for _, ref := range l.qualified {
+		if ref.name == keyField {
+			continue
+		}
+		i := slices.IndexFunc(l.sources, func(source dal.RecordsetSource) bool { return sourceAlias(source) == ref.qualifier })
+		if i < 0 {
+			continue
+		}
+		list, supplied, err := lists.of(i)
+		if err != nil {
+			return err
+		}
+		if supplied && !slices.Contains(list, ref.name) {
+			return &dal.QueryValidationError{
+				Category: "shape",
+				Path:     ref.path,
+				Message:  fmt.Sprintf("unknown field %q in ORDER BY: the source %s does not carry it", clip(ref.name), clip(ref.qualifier)),
+			}
+		}
+	}
+	return nil
+}
+
+// levelLists asks the sources of a level for their field lists, once each.
+type levelLists struct {
+	ctx     context.Context
+	fields  fieldSupplier
+	sources []dal.RecordsetSource
+	answers map[int]listAnswer
+}
+
+type listAnswer struct {
+	list     []string
+	supplied bool
+}
+
+// of returns the list of the source at i and whether it supplies one.
+func (s *levelLists) of(i int) ([]string, bool, error) {
+	if answer, asked := s.answers[i]; asked {
+		return answer.list, answer.supplied, nil
+	}
+	list, supplied, err := suppliedFields(s.ctx, s.sources[i], s.fields)
+	if err != nil {
+		return nil, false, err
+	}
+	s.answers[i] = listAnswer{list, supplied}
+	return list, supplied, nil
+}
+
+// sourceAlias is the name a field qualifies a source by: its alias, or its own name when
+// it has none, as DALgo names it.
+func sourceAlias(source dal.RecordsetSource) string {
+	if source.Alias() != "" {
+		return source.Alias()
+	}
+	return source.Name()
 }
 
 // check refuses the field when the lists say DALgo cannot read it from the source it
@@ -218,10 +307,14 @@ func (r scopeRef) check(lists [][]string) error {
 				clip(r.name), where),
 		}
 	case count == 0 && r.kind == readOrdered && r.name != keyField:
+		alias := "no column has it as its alias"
+		if r.inExpression {
+			alias = "the alias of a column is read only where it is the whole ORDER BY expression, not inside arithmetic"
+		}
 		return &dal.QueryValidationError{
 			Category: "shape",
 			Path:     r.path,
-			Message:  fmt.Sprintf("unknown field %q in ORDER BY: no source of the query carries it, and no column has it as its alias", clip(r.name)),
+			Message:  fmt.Sprintf("unknown field %q in ORDER BY: no source of the query carries it, and %s", clip(r.name), alias),
 		}
 	}
 	return nil
@@ -295,16 +388,21 @@ func (w *scopeWalk) query(query dal.StructuredQuery, path string) {
 	for i, column := range columns {
 		flow.expression(column.Expression, fmt.Sprintf("%scolumns[%d]", path, i))
 		if aggregated {
-			flow.earlier[outputName(column)] = !isOwnName(column)
+			flow.earlier[outputName(column)] = !flow.isOwnName(column)
 		}
 	}
 }
 
-// isOwnName reports whether the column is an unqualified field that is named as itself,
-// by its alias or by none: what a later reference to the name reads is the same field.
-func isOwnName(column dal.Column) bool {
+// isOwnName reports whether the column is a field that is named as itself, by its alias or
+// by none: what a later unqualified reference to the name reads is the same field. The
+// field is unqualified, or it names the one source of the query, which an unqualified
+// field of that name is read from too.
+func (f *scopeFlow) isOwnName(column dal.Column) bool {
 	field, ok := column.Expression.(dal.FieldRef)
-	return ok && field.Source() == "" && field.Name() == outputName(column)
+	if !ok || field.Name() != outputName(column) {
+		return false
+	}
+	return field.Source() == "" || len(f.level.sources) == 1 && field.Source() == sourceAlias(f.level.sources[0])
 }
 
 // columnNames says what a name stands for when a column of a select list carries it.
@@ -359,6 +457,9 @@ type scopeFlow struct {
 	// columns before the one in hand that DALgo's aggregation reads a field of that name
 	// as: true for every name but one that is the same field. It is nil otherwise.
 	earlier map[string]bool
+	// inExpression is true while the operands of arithmetic are walked: the alias of a column
+	// is read as the column only where it is the whole expression of an ORDER BY.
+	inExpression bool
 }
 
 // refuse adds a refusal that needs no field list to the level.
@@ -414,10 +515,15 @@ func (f *scopeFlow) expression(expression dal.Expression, path string) {
 	case dal.FieldRef:
 		if value.Source() == "" {
 			f.field(value.Name(), path)
+		} else if f.kind == readOrdered {
+			f.level.qualified = append(f.level.qualified, scopeRef{name: value.Name(), path: path, kind: readOrdered, qualifier: value.Source()})
 		}
 	case dal.BinaryExpression:
+		inside := f.inExpression
+		f.inExpression = true
 		f.expression(value.Left, path+".left")
 		f.expression(value.Right, path+".right")
+		f.inExpression = inside
 	case dal.AggregateFunc:
 		// An argument is read per row, from a source: an alias is not a field there, and
 		// neither is the name of an earlier column.
@@ -438,20 +544,22 @@ func (f *scopeFlow) field(name, path string) {
 	if _, alias := f.aliases[name]; alias {
 		return
 	}
-	if _, alias := f.names.fields[name]; alias {
-		// resolveAliases replaces it by the field its column selects, which is looked at
-		// in the column.
-		return
-	}
-	if f.names.computed[name] {
-		f.refuse("scope", path, "cannot order by %s, the alias of a column that is not a field, when the document is not run whole by a SQL database: order by the fields of its expression", clip(name))
-		return
+	if !f.inExpression {
+		if _, alias := f.names.fields[name]; alias {
+			// resolveAliases replaces it by the field its column selects, which is looked at
+			// in the column.
+			return
+		}
+		if f.names.computed[name] {
+			f.refuse("scope", path, "cannot order by %s, the alias of a column that is not a field, when the document is not run whole by a SQL database: order by the fields of its expression", clip(name))
+			return
+		}
 	}
 	if f.earlier[name] {
 		f.refuse("scope", path, "the unqualified field %s is also the name of an earlier column of a query that aggregates, and would be read as that column: rename the alias or qualify the field with its source", clip(name))
 		return
 	}
-	f.level.refs = append(f.level.refs, scopeRef{name: name, path: path, kind: f.kind})
+	f.level.refs = append(f.level.refs, scopeRef{name: name, path: path, kind: f.kind, inExpression: f.inExpression})
 	if f.kind == readOrdered {
 		f.level.ordered = true
 	}

@@ -512,13 +512,15 @@ func (r *run) database(ctx context.Context, query dal.StructuredQuery, source So
 // inMemory runs the document above guarded leaves. DALgo's federated executor
 // runs a document whose sources all name their database and that has no
 // subquery, one leaf per database: it keeps the streaming join, and a plain
-// one-source document (no null test, aggregation or scan clause) is handed to
-// the mount whole, with its WHERE, ORDER BY and LIMIT. DALgo reads a one-source
-// document with GROUP BY, HAVING, an aggregate, or a scan clause beside a WHERE,
-// ORDER BY or offset, with a plain scan of the collection and evaluates it above
-// the leaf. The federated executor cannot read a derived source (it asks every
-// FROM node for a database), and a one-source document with a null test would
-// be handed whole to an engine that cannot compile it, so every other document
+// one-source document (no null test, ordering expression, aggregation or scan
+// clause) is handed to the mount whole, with its WHERE, ORDER BY and LIMIT. DALgo
+// reads a one-source document with GROUP BY, HAVING, an aggregate, or a scan
+// clause beside a WHERE, ORDER BY or offset, with a plain scan of the collection
+// and evaluates it above the leaf. The federated executor cannot read a derived
+// source (it asks every FROM node for a database), a one-source document with a null test would
+// be handed whole to an engine that cannot compile it, and one that orders by
+// arithmetic would be handed to an executor that skips the ordering and
+// answers in the order it reads the records, so every other document
 // runs through DALgo's recursive executor over a router that picks the leaf of
 // each source's database. A join with a null test stays with the federated
 // executor: it reads plain collections and evaluates the test above them.
@@ -551,13 +553,28 @@ func (r *run) inMemory(ctx context.Context, query dal.StructuredQuery, doc docum
 		return nil, r.guard.Classify(err, RouteInMemory)
 	}
 	query = resolveAliases(query)
-	handedWhole := doc.hasNull && len(doc.sources) == 1
+	// A document of one source that a mount could not evaluate whole is read as a plain scan
+	// and evaluated above it: one with a null test (a SQL adapter cannot compile it), and one
+	// that orders by an expression that is not a field (an executor skips it, and answers in
+	// the order it reads the records).
+	handedWhole := len(doc.sources) == 1 && (doc.hasNull || ordersByExpression(query))
 	if qualified && !doc.hasSubquery && !handedWhole {
 		reader, err = dal.ExecuteFederatedQueryWithOptions(ctx, query, r.resolve, dal.FederatedQueryOptions{})
 	} else {
 		reader, err = dal.ExecuteRecursiveQuery(ctx, router, query)
 	}
 	return r.collect(ctx, reader, err, RouteInMemory)
+}
+
+// ordersByExpression reports whether an ordering of query is not a plain field: arithmetic,
+// which an executor that is handed the document whole does not apply.
+func ordersByExpression(query dal.StructuredQuery) bool {
+	for _, order := range query.OrderBy() {
+		if _, plain := order.Expression().(dal.FieldRef); !plain {
+			return true
+		}
+	}
+	return false
 }
 
 // collect is the only place a result is read: it drains reader through

@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -60,6 +61,20 @@ func TestAColumnFieldThatAnEarlierColumnCarriesAsItsAliasIsRefusedOverHTTP(t *te
 			})
 		})
 	}
+
+	t.Run("an earlier column that is the same field, qualified by the only source, is not a refusal", func(t *testing.T) {
+		// What the later column reads as the earlier one is the field it says.
+		doc := oneSource + relIntFieldsAnyCustomer + "groupBy: [{field: CustomerId, source: i}, {field: CustomerId}]\norderBy: [{field: CustomerId, source: i}]\n" +
+			"columns:\n  - {field: CustomerId, source: i}\n  - {field: CustomerId, as: Customer}\n" +
+			"  - {aggregate: {function: count, args: [{star: true}]}, as: Invoices}\n"
+		relIntFieldsEachRoute(t, base, doc, func(t *testing.T, resp relHTTPResponse) {
+			relIntRowsAre(t, resp, []map[string]any{
+				{"CustomerId": float64(1), "Customer": float64(1), "Invoices": float64(2)},
+				{"CustomerId": float64(2), "Customer": float64(2), "Invoices": float64(1)},
+				{"CustomerId": float64(3), "Customer": float64(3), "Invoices": float64(1)},
+			})
+		})
+	})
 
 	t.Run("renamed, the same document is answered with the field", func(t *testing.T) {
 		doc := oneSource + relIntFieldsAnyCustomer + "groupBy: [{field: CustomerId}]\norderBy: [{field: Customer}]\n" +
@@ -178,6 +193,26 @@ func TestOrderByANameNoSourceCarriesIsRefusedBeforeAnythingIsRead(t *testing.T) 
 			relIntRefusalsRefused(t, relHTTPPost(t, base, tc.path, "", tc.doc), "shape at orderBy[0]: ", `unknown field "nope"`)
 		}
 	})
+	t.Run("a name the source of its qualifier does not carry is refused the same way", func(t *testing.T) {
+		// The mount's executor reads the name of the field and finds nothing, so a name that
+		// was qualified was ignored too: the answer was a 200 in the order the records were read.
+		const qualified = "from: {name: Customer, alias: c}\norderBy: [{field: nope, source: c}]\ncolumns: [{field: FirstName, source: c}]\n"
+		relIntFieldsEachRoute(t, base, qualified, func(t *testing.T, resp relHTTPResponse) {
+			if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || resp.body["records"] != nil {
+				t.Fatalf("status %d, want a 400 invalid_dtql: %s", resp.status, resp.raw)
+			}
+		})
+		for _, tc := range []struct{ path, doc string }{
+			{"/v1/databases/gitdb/dtql", qualified},
+			{"/v1/dtql", strings.Replace(qualified, "from: {name: Customer", "from: {database: gitdb, name: Customer", 1)},
+		} {
+			relIntRefusalsRefused(t, relHTTPPost(t, base, tc.path, "", tc.doc), "shape at orderBy[0]: ", `unknown field "nope"`)
+		}
+		t.Run("the key, which no list carries, is not refused", func(t *testing.T) {
+			resp := relHTTPPost(t, base, "/v1/dtql", "", "from: {database: gitdb, name: Customer, alias: c}\norderBy: [{field: $id, source: c, desc: true}]\ncolumns: [{field: FirstName, source: c}]\n")
+			relIntRowsAre(t, resp, []map[string]any{{"FirstName": "Cy"}, {"FirstName": "Bea"}, {"FirstName": "Ada"}})
+		})
+	})
 	t.Run("the key of a strict inGitDB mount is not a field its manifest declares", func(t *testing.T) {
 		// The mount's executor reads no key from the data of a record, so ordering by id
 		// left the answer in the order the records were read.
@@ -189,6 +224,66 @@ func TestOrderByANameNoSourceCarriesIsRefusedBeforeAnythingIsRead(t *testing.T) 
 			relIntRefusalsRefused(t, resp, "shape at orderBy[0]: ", `unknown field "nope"`)
 		})
 	})
+}
+
+// A name inside the arithmetic of an ORDER BY is a field of a source, as a SQL database
+// reads it: only an ORDER BY expression that is the bare name reads a column's alias (SQLite
+// sorts `select a as b ... order by b` by the alias and `order by b*1` by the table's own b).
+// Here the column that selects InvoiceId is called Total, which the invoices carry too: the
+// answer is sorted by the invoice's Total, with the one that has none last, as it was before
+// the alias was replaced inside arithmetic.
+func TestAnAliasInsideOrderByArithmeticDoesNotHideTheFieldOfTheSource(t *testing.T) {
+	base := relIntFieldsServer(t)
+	const doc = "from: {name: Invoice, alias: i}\n" + relIntFieldsAnyCustomer +
+		"orderBy: [{binary: {op: '+', left: {field: Total}, right: {value: 0}}, desc: true}]\n" +
+		"columns: [{field: InvoiceId, source: i, as: Total}]\n"
+	relIntFieldsEachRoute(t, base, doc, func(t *testing.T, resp relHTTPResponse) {
+		relIntRowsAre(t, resp, []map[string]any{{"Total": float64(12)}, {"Total": float64(10)}, {"Total": float64(13)}, {"Total": float64(11)}})
+	})
+}
+
+// An ORDER BY expression that is not a plain field (arithmetic) is sorted on a document of
+// one source that names its database too: the executor of an inGitDB mount that is handed
+// such a document whole skips an ordering that is not a field, and answered in the order the
+// records were read, with a 200. (The SQLite adapter compiles no computed ordering of a
+// document of one source, and answers that one with a 422 of its own, which this change does
+// not touch; in memory, with a test that puts the document there, it is sorted.)
+func TestOrderByArithmeticSortsADocumentOfOneSourceOnEveryRouteAndEndpoint(t *testing.T) {
+	base := relIntFieldsServer(t)
+	ids := func(ids ...float64) []map[string]any {
+		rows := make([]map[string]any, len(ids))
+		for i, id := range ids {
+			rows[i] = map[string]any{"InvoiceId": id}
+		}
+		return rows
+	}
+	for name, tc := range map[string]struct {
+		order string
+		want  []map[string]any
+	}{
+		"the source is qualified": {"{binary: {op: '*', left: {field: InvoiceId, source: i}, right: {value: -1}}}", ids(13, 12, 11, 10)},
+		"the field is not":        {"{binary: {op: '*', left: {field: InvoiceId}, right: {value: -1}}}", ids(13, 12, 11, 10)},
+		"beside a plain field": {"{field: CustomerId, source: i}, {binary: {op: '*', left: {field: InvoiceId, source: i}, right: {value: -1}}}",
+			ids(11, 10, 12, 13)},
+	} {
+		doc := "from: {name: Invoice, alias: i}\n%sorderBy: [" + tc.order + "]\ncolumns: [{field: InvoiceId, source: i}]\n"
+		t.Run(name, func(t *testing.T) {
+			for _, endpoint := range []struct{ name, path, database string }{
+				{"per-database endpoint", "/v1/databases/gitdb/dtql", ""},
+				{"/v1/dtql, which hands the mount the document whole", "/v1/dtql", "gitdb"},
+			} {
+				t.Run("the inGitDB mount, "+endpoint.name, func(t *testing.T) {
+					resp := relHTTPPost(t, base, endpoint.path, "", string(relIntRewrite(t, []byte(fmt.Sprintf(doc, "")), endpoint.database)))
+					relIntRowsAre(t, resp, tc.want)
+				})
+			}
+			t.Run("in memory, on both engines and both endpoints", func(t *testing.T) {
+				relIntFieldsEachRoute(t, base, fmt.Sprintf(doc, relIntFieldsAnyCustomer), func(t *testing.T, resp relHTTPResponse) {
+					relIntRowsAre(t, resp, tc.want)
+				})
+			})
+		})
+	}
 }
 
 // A source that supplies no field list (a partial or schemaless database) cannot say a

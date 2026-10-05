@@ -36,9 +36,12 @@ import (
 // that field here too, at every level of the document, so the answer is sorted the way the
 // database sorts it, by the field the column selects, and no executor (DALgo, or the one of
 // a mount that is handed the document whole) is given a name it reads as another field or
-// does not know. The alias of a column that is not a field has nothing to be replaced by:
-// checkScopes refuses it. Nothing here runs on the database route, where the SQL database
-// reads the alias itself.
+// does not know. Only an ORDER BY expression that is the bare name is the column: inside
+// arithmetic the database reads a field of a source (order by b*1 is the table's own b, not
+// the alias), so a name there is left alone, for checkScopes to look at as the field it is.
+// The alias of a column that is not a field has nothing to be replaced by: checkScopes
+// refuses it. Nothing here runs on the database route, where the SQL database reads the
+// alias itself.
 //
 // Nor is a name replaced when the replacement would be read as another column. DALgo's
 // aggregation reads an unqualified field of an expression first as the column of the select
@@ -140,7 +143,13 @@ func resolveQuery(query dal.StructuredQuery) (dal.StructuredQuery, bool) {
 	} else if fields := namesOfColumns(columns).fields; len(fields) > 0 {
 		var orderAliasChanged bool
 		orderBy, orderAliasChanged = mapEach(orderBy, func(order dal.OrderExpression) (dal.OrderExpression, bool) {
-			expression, changed := replaceInExpression(order.Expression(), fields)
+			// Only the bare name is the column: inside arithmetic a SQL database reads a field
+			// of a source (order by b*1 is not order by b), and so does this.
+			field, bare := order.Expression().(dal.FieldRef)
+			if !bare {
+				return order, false
+			}
+			expression, changed := replaceInExpression(field, fields)
 			return reorder(order, expression), changed
 		})
 		orderChanged = orderChanged || orderAliasChanged

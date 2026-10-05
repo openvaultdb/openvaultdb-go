@@ -127,6 +127,14 @@ type sqliteMount struct {
 
 // RunReadwriteTransaction is the driver's. A write that waits for a lock past the deadline
 // of its request ends with the deadline's error (see overDeadline).
+//
+// That holds for a mount with no access policies. core.New puts the database that
+// ConfigureProtectedAccess returns in the place of a mount that has them, so the writes of such
+// a mount do not pass through this method: they wait for the lock all the same (it is the same
+// handle, opened with the busy timeout), and what a write that waited past its deadline reports
+// there is the driver's own, which may be the lock error. The database it returns is not
+// wrapped here: the driver's protected database offers more than dal.DB (a write session),
+// which a wrapper that embeds dal.DB would hide from the code that looks for it.
 func (s *sqliteMount) RunReadwriteTransaction(ctx context.Context, f dal.RWTxWorker, options ...dal.TransactionOption) error {
 	return overDeadline(ctx, s.Database.RunReadwriteTransaction(ctx, f, options...))
 }

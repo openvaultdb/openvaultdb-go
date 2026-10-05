@@ -1174,10 +1174,19 @@ never answered with the value of another field, or in an order that ignores part
 document.
 
 **Field lists.** A SQLite database knows the columns of its tables, the key column `id` among
-them. A strict inGitDB database knows the fields its manifest declares (not `id`). A partial or
-schemaless database, a database with access policies and a subquery used as a source supply no
-list. A source that supplies no list cannot be checked by the rules below: a name it is asked for
-is left to its mount.
+them. A strict inGitDB database knows the fields its manifest declares (not `id`), except for a
+collection that declares a field of type `object` or `any`, or no field at all: such a collection
+supplies no list either. A partial or schemaless database, a database with access policies and a
+subquery used as a source supply no list. A source that supplies no list cannot be checked by the
+rules below: a name it is asked for is left to its mount.
+
+**What the mount is handed whole.** A document of one source that names its database, with no
+subquery, null test, aggregate, scan clause or ordering expression that is not a plain field, is
+handed to its mount whole, and the mount's own executor reads it. On a document engine (inGitDB)
+that executor reads a field the source does not have as a null (in a column or in `where`: the
+answer is `200`, not the `400` below), and does not support a wildcard (the answer is `500`). Every
+other document is evaluated by DALgo above a plain read of each source, and the rules below hold
+as they are written.
 
 **A field without its `source`.** A document that reads several sources and names a field without
 its source is accepted only when every source of that query has a known field list and exactly
@@ -1191,7 +1200,9 @@ In a query that aggregates (it has a `groupBy`, a `having` or an aggregate), a b
 `groupBy`, `having`, `orderBy` or the columns must be a field of the first source of the query. A
 name that a later source carries is refused, with a message that says to qualify it, even when
 that source is the only one that carries it. A name that a column of the select list carries as its
-alias is that column in `having` and `orderBy`, and is not refused. In the columns, an unqualified
+alias is that column in `having` and `orderBy`, and is not refused, unless the expression of that
+column names another column of the select list (it would be read as that column, and the name is
+refused as unavailable). In the columns, an unqualified
 field that an earlier column carries as its alias (or selects under that name) would be read as
 that column and not as the field, so it is refused too: rename the alias, or qualify the field.
 
@@ -1225,20 +1236,24 @@ columns:
 }
 ```
 
-**Wildcards.** A wildcard of a source in a document that runs in memory stands for the columns of
+**Wildcards.** A wildcard of a source in a document that DALgo evaluates stands for the columns of
 its table (SQLite, `id` included) or the declared fields (strict inGitDB), minus the names it
 excludes; on the database route the SQL database expands it as before. A wildcard of a source that
 supplies no field list is `400 invalid_dtql` (`join_plan at ...: wildcard expansion requires
 ordered schema metadata`), inside a derived source too, where the path names the derived source
-(`from.query.columns[0]`).
+(`from.query.columns[0]`). (A wildcard in a document of one source that is handed whole to an
+inGitDB mount is the `500` above.)
 
-**Fields that no source has.** A field of the query itself that no source of an in-memory document
-has is a `400 invalid_dtql` (`... is unavailable`, or `unknown field` in `orderBy`), as on the
-database route. A field that no source has, inside an `exists` test or a scalar subquery, is read
-as a null (an unknown name in the `orderBy` of such a query is refused like any other).
+**Fields that no source has.** A field of the query itself that no source of a document that DALgo
+evaluates has is a `400 invalid_dtql` (`... is unavailable`, or `unknown field` in `orderBy`), as on
+the database route. A field that no source has, inside an `exists` test or a scalar subquery, is read
+as a null (an unknown name in the `orderBy` of such a query is refused like any other). In a
+document handed whole to an inGitDB mount only the `orderBy` is checked.
 
 **Ordering.** In a query that does not aggregate, a name in `orderBy` is a field of a source, or
-the alias of a column of the select list:
+the alias of a column of the select list. The alias is the column only where it is the whole of the
+ordering expression, as in SQLite: inside arithmetic (`b * 1`) a name is a field of a source, and
+the source's own field wins over a column that is called so.
 
 - The alias of a column that selects a field of a source is that field. The answer is sorted by
   it, on every route and on both endpoints, the way a SQLite database sorts it when it runs the
@@ -1247,9 +1262,14 @@ the alias of a column of the select list:
   is not run whole by a SQL database: order by the fields of the expression.
 - A name that is neither an alias nor a field of any source that supplies a field list is a
   `400 invalid_dtql` (`unknown field`) before anything is read, for a document of one source as for
-  several, and whether or not the document is handed whole to a mount. A source that supplies no
-  field list (see above) cannot be checked, and the name is left to its mount. The key
+  several, and whether or not the document is handed whole to a mount. So is a field that names its
+  source (`{field: nope, source: c}`) when the list of that source does not carry it. A source that
+  supplies no field list (see above) cannot be checked, and the name is left to its mount. The key
   pseudo-field `$id` of the document engines is not refused.
+- An ordering expression that is not a plain field (arithmetic) is applied on every route: a
+  document of one source that would be handed whole to a mount is evaluated by DALgo instead, so
+  that it is sorted. (The SQLite adapter compiles no such ordering of a document of one source,
+  which stays a `422 authorization_unsupported` on the database route.)
 
 <!-- doc-example method=POST path=/v1/dtql status=200 -->
 ```yaml
