@@ -583,6 +583,12 @@ func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
 		"collections":  collections,
 		"capabilities": map[string]bool{"read": true, "query": canQuery, "dtql": canQuery, "write": !s.readOnly, "joins": joins, "aggregation": joins},
 	}
+	if db.Manifest.Schemas != nil {
+		// Keep declared field metadata additive to the legacy collection-name list.
+		// In particular, exact decimal descriptors must be discoverable without
+		// guessing types from sample rows.
+		metadata["schemas"] = db.Manifest.Schemas
+	}
 	if canQuery {
 		// A mount the guard refuses structured queries on advertises no query
 		// endpoint or format either.

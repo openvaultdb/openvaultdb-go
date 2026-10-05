@@ -141,6 +141,46 @@ func TestStructuredQueryReachesQueryableEngines(t *testing.T) {
 	}
 }
 
+func TestInGitDBMembershipFiltersRefusedBeforeAdapter(t *testing.T) {
+	ctx := context.Background()
+	for _, engine := range []string{"ingitdb", "sqlite"} {
+		t.Run(engine, func(t *testing.T) {
+			db, fake := openEngine(t, engine)
+			query := dal.From(rootRef("customers")).NewQuery().
+				WhereField("name", dal.In, []string{"Alice", "Bob"}).SelectIntoRecordset()
+
+			if engine == "ingitdb" {
+				for label, run := range map[string]func() error{
+					"wire query": func() error {
+						_, err := db.Execute(ctx, Query{Collection: "customers", Where: []Filter{{Field: "name", Op: "in", Value: []string{"Alice", "Bob"}}}})
+						return err
+					},
+					"DTQL query": func() error {
+						_, err := db.ExecuteDTQLQuery(ctx, query)
+						return err
+					},
+					"snapshot": func() error {
+						return db.StreamDTQLSnapshot(ctx, query, func(Record) error { return nil })
+					},
+				} {
+					if err := run(); !errors.Is(err, ErrQueryNotRunnable) {
+						t.Errorf("%s error = %v, want ErrQueryNotRunnable", label, err)
+					}
+				}
+				if fake.queries != 0 {
+					t.Fatalf("adapter query path called %d times for refused IN queries", fake.queries)
+				}
+				return
+			}
+
+			_, err := db.Execute(ctx, Query{Collection: "customers", Where: []Filter{{Field: "name", Op: "in", Value: []string{"Alice", "Bob"}}}})
+			if !errors.Is(err, errFakeReached) || fake.queries != 1 {
+				t.Fatalf("SQLite membership query: err=%v adapter calls=%d, want supported query to reach adapter", err, fake.queries)
+			}
+		})
+	}
+}
+
 func TestQueryUnsupportedErrorIsNotInvalidQuery(t *testing.T) {
 	err := error(&QueryUnsupportedError{Engine: "postgres"})
 	if errors.Is(err, ErrInvalidQuery) || errors.Is(err, ErrInvalidDTQL) {

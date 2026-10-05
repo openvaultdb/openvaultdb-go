@@ -22,6 +22,7 @@ import (
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 	"github.com/openvaultdb/openvaultdb-go/pkg/mount"
+	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 	"github.com/openvaultdb/openvaultdb-go/pkg/server"
 	_ "modernc.org/sqlite"
 )
@@ -66,6 +67,223 @@ func relHTTPMount(t *testing.T, id, extraManifest string, collections map[string
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
+}
+
+func TestDatabaseMetadataPublishesDeclaredExactDecimalSchema(t *testing.T) {
+	db := relHTTPMount(t, "exact", "", map[string][]string{"Amounts": {"id", "amount"}},
+		`CREATE TABLE "Amounts" (id TEXT PRIMARY KEY, amount DECIMAL_TEXT(30,4))`,
+		`INSERT INTO "Amounts" VALUES ('one', '12345678901234567890.1200')`,
+		`INSERT INTO "Amounts" VALUES ('null', NULL)`,
+	)
+	collection := db.Manifest.Schemas.Collections["Amounts"]
+	collection.Fields["amount"] = schema.Field{Type: schema.TypeDecimal, Decimal: &schema.Decimal{Precision: 30, Scale: 4, Storage: "text"}}
+	db.Manifest.Schemas.Collections["Amounts"] = collection
+
+	service := server.New("test", map[string]*core.Database{"exact": db})
+	t.Cleanup(service.CloseSnapshots)
+	response := httptest.NewRecorder()
+	service.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/databases/exact", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET database metadata: %d %s", response.Code, response.Body.String())
+	}
+	var metadata map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&metadata); err != nil {
+		t.Fatal(err)
+	}
+	schemas := metadata["schemas"].(map[string]any)
+	collections := schemas["collections"].(map[string]any)
+	fields := collections["Amounts"].(map[string]any)["fields"].(map[string]any)
+	amount := fields["amount"].(map[string]any)
+	decimal := amount["decimal"].(map[string]any)
+	if amount["type"] != "decimal" || decimal["precision"] != float64(30) || decimal["scale"] != float64(4) || decimal["storage"] != "text" {
+		t.Fatalf("declared decimal metadata = %v", amount)
+	}
+
+	query := httptest.NewRecorder()
+	service.Handler().ServeHTTP(query, httptest.NewRequest(http.MethodPost, "/v1/databases/exact/dtql", strings.NewReader("from: {name: Amounts}\norderBy: [{field: id}]\n")))
+	if query.Code != http.StatusOK {
+		t.Fatalf("POST decimal query: %d %s", query.Code, query.Body.String())
+	}
+	var result struct {
+		Records []struct {
+			Data map[string]any `json:"data"`
+		} `json:"records"`
+	}
+	if err := json.NewDecoder(query.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Records) != 2 {
+		t.Fatalf("decimal query returned %d rows, want 2", len(result.Records))
+	}
+	if got := result.Records[1].Data["amount"]; got != "12345678901234567890.1200" {
+		t.Fatalf("exact decimal JSON value = %#v (%T), want original string lexeme", got, got)
+	}
+	if got, ok := result.Records[0].Data["amount"]; !ok || got != nil {
+		t.Fatalf("nullable decimal JSON value = %#v (present=%v), want null", got, ok)
+	}
+}
+
+func TestExactDecimalMoneyAggregatesOverHTTP(t *testing.T) {
+	db := relHTTPMount(t, "exact", "", map[string][]string{"Amounts": {"id", "amount", "quantity"}},
+		`CREATE TABLE "Amounts" (id TEXT PRIMARY KEY, amount DECIMAL_TEXT(30,4), quantity INTEGER)`,
+		`INSERT INTO "Amounts" VALUES ('a', '9007199254740993.1200', 2), ('b', '0.0001', 3), ('c', '-0.0001', 4), ('null', NULL, NULL)`,
+	)
+	collection := db.Manifest.Schemas.Collections["Amounts"]
+	collection.Fields["amount"] = schema.Field{Type: schema.TypeDecimal, Decimal: &schema.Decimal{Precision: 30, Scale: 4, Storage: "text"}}
+	db.Manifest.Schemas.Collections["Amounts"] = collection
+	service := server.New("test", map[string]*core.Database{"exact": db})
+	t.Cleanup(service.CloseSnapshots)
+	host := httptest.NewServer(service.Handler())
+	defer host.Close()
+	query := `from: {name: Amounts, alias: a}
+money: {minorUnitScale: 4, divisionScale: 4, rounding: halfEven}
+columns:
+  - {aggregate: {function: sum, args: [{field: amount, source: a}]}, as: total}
+  - {aggregate: {function: avg, args: [{field: amount, source: a}]}, as: average}
+  - {aggregate: {function: sum, args: [{binary: {op: '*', left: {field: amount, source: a}, right: {field: quantity, source: a}}}]}, as: extended_total}
+`
+	resp := relHTTPPost(t, host.URL, "/v1/databases/exact/dtql", "", query)
+	if resp.status != http.StatusOK {
+		t.Fatalf("exact aggregate query: status %d: %s", resp.status, resp.raw)
+	}
+	rows := resp.rows(t)
+	if len(rows) != 1 {
+		t.Fatalf("exact aggregate query returned %d rows, want 1: %s", len(rows), resp.raw)
+	}
+	for field, want := range map[string]string{
+		"total":          "9007199254740993.12",
+		"average":        "3002399751580331.04",
+		"extended_total": "18014398509481986.2399",
+	} {
+		got, ok := rows[0][field].(string)
+		if !ok || got != want {
+			t.Errorf("%s = %#v (%T), want exact string %q", field, rows[0][field], rows[0][field], want)
+		}
+	}
+	invalidConfig := strings.Replace(query, "minorUnitScale: 4", "minorUnitScale: 19", 1)
+	invalid := relHTTPPost(t, host.URL, "/v1/databases/exact/dtql", "", invalidConfig)
+	if invalid.status != http.StatusBadRequest || invalid.errorField("code") != "invalid_dtql" {
+		t.Fatalf("invalid Money config: status %d, want 400 invalid_dtql: %s", invalid.status, invalid.raw)
+	}
+}
+
+func TestExactDecimalMoneyComparisonUsesDecimalValues(t *testing.T) {
+	db := relHTTPMount(t, "exact", "", map[string][]string{"Amounts": {"id", "amount"}},
+		`CREATE TABLE "Amounts" (id TEXT PRIMARY KEY, amount DECIMAL_TEXT(30,4))`,
+		`INSERT INTO "Amounts" VALUES ('two', '2.0000'), ('ten', '10.0000'), ('negative', '-1.0000')`,
+	)
+	collection := db.Manifest.Schemas.Collections["Amounts"]
+	collection.Fields["amount"] = schema.Field{Type: schema.TypeDecimal, Decimal: &schema.Decimal{Precision: 30, Scale: 4, Storage: "text"}}
+	db.Manifest.Schemas.Collections["Amounts"] = collection
+	service := server.New("test", map[string]*core.Database{"exact": db})
+	t.Cleanup(service.CloseSnapshots)
+	host := httptest.NewServer(service.Handler())
+	defer host.Close()
+	query := `from: {name: Amounts, alias: a}
+where: {op: '>', left: {field: amount, source: a}, right: {value: "2.5000"}}
+money: {minorUnitScale: 4, divisionScale: 4, rounding: halfEven}
+columns: [{aggregate: {function: sum, args: [{field: amount, source: a}]}, as: total}]
+having: {op: '>', left: {aggregate: {function: sum, args: [{field: amount, source: a}] }}, right: {value: "2.5000"}}
+`
+	resp := relHTTPPost(t, host.URL, "/v1/databases/exact/dtql", "", query)
+	if resp.status != http.StatusOK {
+		t.Fatalf("exact comparison query: status %d: %s", resp.status, resp.raw)
+	}
+	rows := resp.rows(t)
+	if len(rows) != 1 || rows[0]["total"] != "10" {
+		t.Fatalf("exact numeric WHERE/HAVING result = %#v, want one row total 10.0000", rows)
+	}
+	floatLiteral := strings.Replace(query, `right: {value: "2.5000"}`, `right: {value: 9007199254740992.5}`, 1)
+	refused := relHTTPPost(t, host.URL, "/v1/databases/exact/dtql", "", floatLiteral)
+	if refused.status != http.StatusBadRequest || refused.errorField("code") != "invalid_dtql" {
+		t.Fatalf("binary float in exact Money comparison: status %d, want 400 invalid_dtql: %s", refused.status, refused.raw)
+	}
+}
+
+func TestExactDecimalMoneyFlatJoinOnUnqualifiedDatabase(t *testing.T) {
+	db := relHTTPMount(t, "exact", "", map[string][]string{
+		"Amounts": {"id", "tag_id", "amount"},
+		"Tags":    {"id", "label"},
+	},
+		`CREATE TABLE "Amounts" (id TEXT PRIMARY KEY, tag_id TEXT, amount DECIMAL_TEXT(30,4))`,
+		`CREATE TABLE "Tags" (id TEXT PRIMARY KEY, label TEXT)`,
+		`INSERT INTO "Amounts" VALUES ('a', 't1', '9007199254740993.1200'), ('b', 't1', '0.0001'), ('c', 't2', '500.0000')`,
+		`INSERT INTO "Tags" VALUES ('t1', 'included'), ('t2', 'excluded')`,
+	)
+	collection := db.Manifest.Schemas.Collections["Amounts"]
+	collection.Fields["amount"] = schema.Field{Type: schema.TypeDecimal, Decimal: &schema.Decimal{Precision: 30, Scale: 4, Storage: "text"}}
+	db.Manifest.Schemas.Collections["Amounts"] = collection
+	service := server.New("test", map[string]*core.Database{"exact": db})
+	t.Cleanup(service.CloseSnapshots)
+	host := httptest.NewServer(service.Handler())
+	defer host.Close()
+	query := `from:
+  name: Amounts
+  alias: a
+  joins:
+    - type: inner
+      from: {name: Tags, alias: t}
+      on: [{left: {field: tag_id, source: a}, op: '==', right: {field: id, source: t}}]
+where: {op: '==', left: {field: label, source: t}, right: {value: included}}
+money: {minorUnitScale: 4, divisionScale: 4, rounding: halfEven}
+columns: [{aggregate: {function: sum, args: [{field: amount, source: a}]}, as: total}]
+`
+	resp := relHTTPPost(t, host.URL, "/v1/databases/exact/dtql", "", query)
+	if resp.status != http.StatusOK {
+		t.Fatalf("exact aggregate over an unqualified flat join: status %d: %s", resp.status, resp.raw)
+	}
+	rows := resp.rows(t)
+	if len(rows) != 1 || rows[0]["total"] != "9007199254740993.1201" {
+		t.Fatalf("exact joined aggregate = %#v, want one exact string total", rows)
+	}
+	for name, unsupported := range map[string]string{
+		"non-equality condition": strings.Replace(query, "op: '=='", "op: '>'", 1),
+		"nested-loop-first hint": strings.Replace(query, "type: inner", "type: inner\n      hints: {algorithms: [nestedLoop, hash]}", 1),
+	} {
+		refused := relHTTPPost(t, host.URL, "/v1/databases/exact/dtql", "", unsupported)
+		if refused.status != http.StatusBadRequest || refused.errorField("code") != "invalid_dtql" {
+			t.Errorf("%s Money join: status %d, want 400 invalid_dtql: %s", name, refused.status, refused.raw)
+		}
+	}
+}
+
+func TestExactDecimalMoneyArithmeticErrorsAreClientErrors(t *testing.T) {
+	t.Run("division by zero", func(t *testing.T) {
+		db := relHTTPMount(t, "exact", "", map[string][]string{"Amounts": {"id", "amount"}},
+			`CREATE TABLE "Amounts" (id TEXT PRIMARY KEY, amount DECIMAL_TEXT(20,0))`,
+			`INSERT INTO "Amounts" VALUES ('a', '10')`,
+		)
+		service := server.New("test", map[string]*core.Database{"exact": db})
+		t.Cleanup(service.CloseSnapshots)
+		host := httptest.NewServer(service.Handler())
+		defer host.Close()
+		query := `from: {name: Amounts, alias: a}
+money: {minorUnitScale: 0, divisionScale: 2, rounding: halfEven}
+columns: [{aggregate: {function: sum, args: [{binary: {op: '/', left: {field: amount, source: a}, right: {value: 0}}}]}, as: total}]
+`
+		resp := relHTTPPost(t, host.URL, "/v1/databases/exact/dtql", "", query)
+		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" {
+			t.Fatalf("division by zero: status %d, want 400 invalid_dtql: %s", resp.status, resp.raw)
+		}
+	})
+	t.Run("precision overflow", func(t *testing.T) {
+		db := relHTTPMount(t, "exact", "", map[string][]string{"Amounts": {"id", "amount"}},
+			`CREATE TABLE "Amounts" (id TEXT PRIMARY KEY, amount DECIMAL_TEXT(38,0))`,
+			`INSERT INTO "Amounts" VALUES ('a', '10000000000000000000000000000000000000')`,
+		)
+		service := server.New("test", map[string]*core.Database{"exact": db})
+		t.Cleanup(service.CloseSnapshots)
+		host := httptest.NewServer(service.Handler())
+		defer host.Close()
+		query := `from: {name: Amounts, alias: a}
+money: {minorUnitScale: 0, divisionScale: 0, rounding: halfEven}
+columns: [{aggregate: {function: sum, args: [{binary: {op: '*', left: {field: amount, source: a}, right: {value: 10}}}]}, as: total}]
+`
+		resp := relHTTPPost(t, host.URL, "/v1/databases/exact/dtql", "", query)
+		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" {
+			t.Fatalf("precision overflow: status %d, want 400 invalid_dtql: %s", resp.status, resp.raw)
+		}
+	})
 }
 
 // relHTTPChinook is the database the joins run in: customers and their invoices.
@@ -240,6 +458,47 @@ func relHTTPNames(rows []map[string]any, field string) []any {
 		out[i] = row[field]
 	}
 	return out
+}
+
+func TestInFilterIsSupportedBySQLiteAndRefusedByInGitDB(t *testing.T) {
+	set := relIntSet{
+		tables: map[string][]string{"items": {"id", "name"}},
+		rows: map[string][]map[string]any{"items": {
+			{"id": json.Number("1"), "name": "Alpha"},
+			{"id": json.Number("2"), "name": "Beta"},
+			{"id": json.Number("3"), "name": "Gamma"},
+		}},
+	}
+	sqliteDB := relIntMountSQLite(t, "sqlite", "", set)
+	gitDB := relIntMountInGitDB(t, "gitdb", "", set)
+	host := relIntServe(t, map[string]*core.Database{"sqlite": sqliteDB, "gitdb": gitDB})
+	doc := `from: {name: items}
+where:
+  op: In
+  left: {field: name}
+  right: {values: [Alpha, Gamma]}
+orderBy: [{field: id}]
+columns: [{field: name}]
+`
+
+	t.Run("SQLite evaluates the filter", func(t *testing.T) {
+		resp := relHTTPPost(t, host, "/v1/databases/sqlite/dtql", "", doc)
+		if resp.status != http.StatusOK {
+			t.Fatalf("status %d %s: %s", resp.status, resp.errorField("code"), resp.raw)
+		}
+		if got := relHTTPNames(resp.rows(t), "name"); !reflect.DeepEqual(got, []any{"Alpha", "Gamma"}) {
+			t.Fatalf("names = %v, want [Alpha Gamma]", got)
+		}
+	})
+	t.Run("inGitDB refuses before returning rows", func(t *testing.T) {
+		resp := relHTTPPost(t, host, "/v1/databases/gitdb/dtql", "", doc)
+		if resp.status != http.StatusUnprocessableEntity || resp.errorField("code") != "query_unsupported" {
+			t.Fatalf("status %d %s: %s, want 422 query_unsupported", resp.status, resp.errorField("code"), resp.raw)
+		}
+		if records, exists := resp.body["records"]; exists {
+			t.Fatalf("unsupported membership query returned records: %v", records)
+		}
+	})
 }
 
 func TestRelationalDTQLOverHTTPAcceptance(t *testing.T) {
@@ -436,16 +695,16 @@ func TestRelationalDTQLOverHTTPAcceptance(t *testing.T) {
 	})
 	t.Run("/v1/dtql needs a database on every source", func(t *testing.T) {
 		for name, doc := range map[string]string{
-			"no database":        "from: {name: Customer}\n",
-			"join without one":   strings.Replace(relHTTPCustomerRegions, "database: countries, ", "", 1),
-			"invalid id":         "from: {database: 'a b', name: Customer}\n",
-			"schema":             "from: {database: chinook, schema: main, name: Customer}\n",
-			"scan":               "from: {database: chinook, name: Customer, scan: {limit: 5, orderBy: [{field: id}]}}\n",
-			"cursor":             "from: {database: chinook, name: Customer}\nstartFrom: x\n",
-			"money":              "from: {database: chinook, name: Customer}\nmoney: {minorUnitScale: 2, divisionScale: 2, rounding: halfEven}\n",
-			"limit too large":    "from: {database: chinook, name: Customer}\nlimit: 1001\n",
-			"offset too large":   "from: {database: chinook, name: Customer}\noffset: 10001\n",
-			"a document of YAML": "- not a document\n",
+			"no database":         "from: {name: Customer}\n",
+			"join without one":    strings.Replace(relHTTPCustomerRegions, "database: countries, ", "", 1),
+			"invalid id":          "from: {database: 'a b', name: Customer}\n",
+			"schema":              "from: {database: chinook, schema: main, name: Customer}\n",
+			"scan":                "from: {database: chinook, name: Customer, scan: {limit: 5, orderBy: [{field: id}]}}\n",
+			"cursor":              "from: {database: chinook, name: Customer}\nstartFrom: x\n",
+			"money with subquery": "from: {database: chinook, name: Customer}\nwhere: {exists: {query: {from: {database: chinook, name: Invoice}}}}\nmoney: {minorUnitScale: 2, divisionScale: 2, rounding: halfEven}\n",
+			"limit too large":     "from: {database: chinook, name: Customer}\nlimit: 1001\n",
+			"offset too large":    "from: {database: chinook, name: Customer}\noffset: 10001\n",
+			"a document of YAML":  "- not a document\n",
 		} {
 			resp := relHTTPPost(t, host.URL, "/v1/dtql", "", doc)
 			if resp.status != http.StatusBadRequest {
@@ -472,7 +731,7 @@ func TestRelationalDTQLOverHTTPAcceptance(t *testing.T) {
 
 // On the existing per-database path a root source may carry the engine's default
 // schema, which is treated as carrying none; any other schema, a scan and a
-// money configuration are refused.
+// subquery in exact money mode are refused.
 func TestSingleCollectionDocumentAndTheDefaultSchemaOverHTTP(t *testing.T) {
 	chinook := relHTTPChinook(t, "")
 	service := server.New("test", map[string]*core.Database{"chinook": chinook})
@@ -503,7 +762,6 @@ func TestSingleCollectionDocumentAndTheDefaultSchemaOverHTTP(t *testing.T) {
 		"the default schema in capitals": "from: {schema: MAIN, name: Customer}\n",
 		"two schemas":                    "from: {schema: main, name: Customer, schema: other}\n",
 		"a scan":                         "from: {name: Customer, scan: {limit: 5, orderBy: [{field: id}]}}\n",
-		"money":                          "from: {name: Customer}\nmoney: {minorUnitScale: 2, divisionScale: 2, rounding: halfEven}\n",
 		"a cursor":                       "from: {name: Customer}\nstartFrom: x\n",
 		"a limit above 1000":             "from: {name: Customer}\nlimit: 1001\n",
 		"a database of another mount":    "from: {database: other, name: Customer}\n",
@@ -837,13 +1095,15 @@ func TestRelationalDTQLOnAPolicyProtectedMountIsRefusedBeforeItsDriver(t *testin
 			"orderBy: [{field: id, source: o}]\ncolumns: [{field: id, source: o, as: order_id}, {field: name, source: c, as: customer}]\n"
 		count = "from: {%[1]sname: orders, alias: o, joins: [{from: {%[1]sname: customers, alias: c}, on: [{left: {field: customer_id, source: o}, op: '==', right: {field: id, source: c}}]}]}\n" +
 			"columns: [{aggregate: {function: count, args: [{star: true}]}, as: n}]\n"
-		subquery = "from: {%[1]sname: orders}\nwhere: {exists: {query: {from: {%[1]sname: customers}}}}\n"
+		moneySum   = "from: {%[1]sname: customers}\ncolumns: [{aggregate: {function: sum, args: [{field: country}]}, as: total}]\nmoney: {minorUnitScale: 2, divisionScale: 2, rounding: halfEven}\n"
+		moneyWhere = "from: {%[1]sname: customers}\nwhere: {op: '==', left: {field: name}, right: {value: Ada}}\ncolumns: [{aggregate: {function: sum, args: [{field: id}]}, as: total}]\nmoney: {minorUnitScale: 2, divisionScale: 2, rounding: halfEven}\n"
+		subquery   = "from: {%[1]sname: orders}\nwhere: {exists: {query: {from: {%[1]sname: customers}}}}\n"
 	)
 	for _, endpoint := range []struct{ name, path, database string }{
 		{"per-database endpoint", "/v1/databases/crm/dtql", ""},
 		{"/v1/dtql", "/v1/dtql", "database: crm, "},
 	} {
-		for shape, format := range map[string]string{"a join": join, "a grouped count": count, "a subquery": subquery} {
+		for shape, format := range map[string]string{"a join": join, "a grouped count": count, "a subquery": subquery, "money aggregate on a policy-governed field": moneySum, "money aggregate after a policy-governed filter": moneyWhere} {
 			t.Run(endpoint.name+", "+shape, func(t *testing.T) {
 				resp := relHTTPPost(t, host.URL, endpoint.path, ownerToken, fmt.Sprintf(format, endpoint.database))
 				if resp.status != http.StatusUnprocessableEntity || resp.errorField("code") != "authorization_unsupported" || resp.body["records"] != nil {
@@ -902,14 +1162,15 @@ func TestClassifierRefusalsOfADocumentTheSingleCollectionValidatorAcceptsAreClie
 	for _, tc := range []struct {
 		name, doc, reason string
 	}{
-		{"money", "from: {name: Customer}\nmoney: {minorUnitScale: 2, divisionScale: 2, rounding: halfEven}\n", "money"},
+		{"money with a subquery", "from: {name: Customer}\nwhere: {exists: {query: {from: {name: Invoice}}}}\nmoney: {minorUnitScale: 2, divisionScale: 2, rounding: halfEven}\n", "money-subquery"},
+		{"money without aggregation", "from: {name: Customer}\nmoney: {minorUnitScale: 2, divisionScale: 2, rounding: halfEven}\n", "money-aggregate"},
 		{"subqueries nested five deep", nested(5, "Customer"), "subqueries nest at most"},
 		{"a scan bound on a nested source", "from: {name: Customer}\nwhere:\n  exists:\n    query:\n      from: {name: Invoice, scan: {limit: 3, orderBy: [{field: id}]}}\n", "scan"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// The premise: the validator of the single-collection path accepts the
-			// document, so before the classifier it ran (money) or failed closed at
-			// the adapter (the subquery shapes).
+			// document, so before the classifier it ran or failed closed at the
+			// adapter. These documents must now be refused as client errors.
 			if _, _, err := core.ParseDTQL([]byte(tc.doc)); err != nil {
 				t.Fatalf("ParseDTQL refuses the document, so it is not the case under test: %v", err)
 			}

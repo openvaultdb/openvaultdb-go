@@ -80,6 +80,7 @@ func TestFieldTypeValidate(t *testing.T) {
 	}{
 		{name: "string", ft: schema.TypeString, wantErr: false},
 		{name: "number", ft: schema.TypeNumber, wantErr: false},
+		{name: "decimal", ft: schema.TypeDecimal, wantErr: false},
 		{name: "integer", ft: schema.TypeInteger, wantErr: false},
 		{name: "boolean", ft: schema.TypeBoolean, wantErr: false},
 		{name: "object", ft: schema.TypeObject, wantErr: false},
@@ -102,6 +103,69 @@ func TestFieldTypeValidate(t *testing.T) {
 				t.Fatalf("expected nil error but got: %v", err)
 			}
 		})
+	}
+}
+
+func TestDecimalFieldRequiresExactTextAndHonorsPrecisionScale(t *testing.T) {
+	field := schema.Field{Type: schema.TypeDecimal, Decimal: &schema.Decimal{Precision: 8, Scale: 4, Storage: "text"}}
+	collection := &schema.Collection{Fields: map[string]schema.Field{"amount": field}}
+	for _, value := range []string{"123.45", "123.4500", "-0.0001", "000012.3400", "+123.45", ".5", "1."} {
+		if err := schema.ValidateRecord(schema.ModeStrict, "orders", collection, map[string]any{"amount": value}); err != nil {
+			t.Errorf("accepted decimal text %q: %v", value, err)
+		}
+	}
+	for _, value := range []any{"123.45000", "123456.0000", "1e2", 1.25} {
+		if err := schema.ValidateRecord(schema.ModeStrict, "orders", collection, map[string]any{"amount": value}); err == nil {
+			t.Errorf("accepted invalid/non-text decimal %#v", value)
+		}
+	}
+}
+
+func TestDecimalPrecisionScaleBoundaries(t *testing.T) {
+	validate := func(precision, scale int, value string) bool {
+		field := schema.Field{Type: schema.TypeDecimal, Decimal: &schema.Decimal{Precision: precision, Scale: scale, Storage: "text"}}
+		return schema.ValidateRecord(schema.ModeStrict, "amounts", &schema.Collection{Fields: map[string]schema.Field{"amount": field}}, map[string]any{"amount": value}) == nil
+	}
+	for _, value := range []string{"0.12", "0.00", ".12", "+.12", "-0.12"} {
+		if !validate(2, 2, value) {
+			t.Errorf("decimal(2,2) rejected %q", value)
+		}
+	}
+	for _, value := range []string{"1", "1.00", "0.001"} {
+		if validate(2, 2, value) {
+			t.Errorf("decimal(2,2) accepted %q", value)
+		}
+	}
+	for _, value := range []string{"123456", "123456.78"} {
+		if !validate(8, 2, value) {
+			t.Errorf("decimal(8,2) rejected %q", value)
+		}
+	}
+	for _, value := range []string{"1234567.8", "1234567.00"} {
+		if validate(8, 2, value) {
+			t.Errorf("decimal(8,2) accepted %q", value)
+		}
+	}
+	for _, value := range []string{"1.", "0", "+1"} {
+		if !validate(3, 0, value) {
+			t.Errorf("decimal(3,0) rejected %q", value)
+		}
+	}
+	if validate(3, 0, "1.0") {
+		t.Error("decimal(3,0) accepted a fractional digit")
+	}
+}
+
+func TestDecimalFieldMetadataMustBeCompleteAndConsistent(t *testing.T) {
+	for _, field := range []schema.Field{
+		{Type: schema.TypeDecimal},
+		{Type: schema.TypeDecimal, Decimal: &schema.Decimal{Precision: 5, Scale: 6, Storage: "text"}},
+		{Type: schema.TypeDecimal, Decimal: &schema.Decimal{Precision: 5, Scale: 2, Storage: "real"}},
+		{Type: schema.TypeString, Decimal: &schema.Decimal{Precision: 5, Scale: 2, Storage: "text"}},
+	} {
+		if err := (&schema.Schemas{Collections: map[string]schema.Collection{"orders": {Fields: map[string]schema.Field{"amount": field}}}}).Validate(); err == nil {
+			t.Errorf("accepted inconsistent decimal metadata: %+v", field)
+		}
 	}
 }
 

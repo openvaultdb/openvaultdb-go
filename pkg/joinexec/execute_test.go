@@ -15,6 +15,36 @@ import (
 	"github.com/dal-go/record"
 )
 
+func TestMoneyErrorMappingPreservesRecordedSourceFailures(t *testing.T) {
+	sourceErr := errors.New("money division by zero from source transport")
+	guard := NewGuard(allowAll, Limits{})
+	_ = guard.fail(sourceErr)
+	run := &run{guard: guard, money: true}
+	if got := run.classify(errors.New("money division by zero"), RouteInMemory); got != sourceErr {
+		t.Fatalf("classified source failure = %v, want recorded error %v", got, sourceErr)
+	}
+}
+
+func TestMoneyEvaluationErrorRecognitionIsNarrow(t *testing.T) {
+	for _, err := range []error{
+		errors.New("money division by zero"),
+		errors.New("money result exceeds 38 significant digits"),
+		errors.New("money division result: money result exceeds 38 fractional digits"),
+	} {
+		if !isMoneyEvaluationError(err) {
+			t.Errorf("money evaluation error was not recognized: %v", err)
+		}
+	}
+	for _, err := range []error{
+		errors.New("failed to query source: connection reset"),
+		errors.New("moneyish field is unavailable"),
+	} {
+		if isMoneyEvaluationError(err) {
+			t.Errorf("unrelated error was recognized as money evaluation: %v", err)
+		}
+	}
+}
+
 // exAsRows flattens records into their data with every number as a float64
 // (the generic join engine normalises numbers), sorted by aid so that the
 // streaming join's order does not matter.

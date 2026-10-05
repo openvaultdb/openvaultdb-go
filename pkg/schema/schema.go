@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 )
 
 // Mode is the schema mode of a logical database.
@@ -45,6 +46,7 @@ type FieldType string
 const (
 	TypeString  FieldType = "string"
 	TypeNumber  FieldType = "number"
+	TypeDecimal FieldType = "decimal"
 	TypeInteger FieldType = "integer"
 	TypeBoolean FieldType = "boolean"
 	TypeObject  FieldType = "object"
@@ -55,7 +57,7 @@ const (
 // Validate returns an error if t is not a known field type.
 func (t FieldType) Validate() error {
 	switch t {
-	case TypeString, TypeNumber, TypeInteger, TypeBoolean, TypeObject, TypeArray, TypeAny:
+	case TypeString, TypeNumber, TypeDecimal, TypeInteger, TypeBoolean, TypeObject, TypeArray, TypeAny:
 		return nil
 	default:
 		return fmt.Errorf("unknown field type %q", string(t))
@@ -66,6 +68,31 @@ func (t FieldType) Validate() error {
 type Field struct {
 	Type     FieldType `yaml:"type" json:"type"`
 	Required bool      `yaml:"required,omitempty" json:"required,omitempty"`
+	Decimal  *Decimal  `yaml:"decimal,omitempty" json:"decimal,omitempty"`
+}
+
+// Decimal describes an exact decimal value transported and stored as text.
+type Decimal struct {
+	Precision int    `yaml:"precision" json:"precision"`
+	Scale     int    `yaml:"scale" json:"scale"`
+	Storage   string `yaml:"storage" json:"storage"`
+}
+
+func (f Field) Validate() error {
+	if err := f.Type.Validate(); err != nil {
+		return err
+	}
+	if f.Type == TypeDecimal {
+		if f.Decimal == nil {
+			return fmt.Errorf("decimal fields require decimal precision, scale and storage metadata")
+		}
+		if f.Decimal.Precision < 1 || f.Decimal.Precision > 1000 || f.Decimal.Scale < 0 || f.Decimal.Scale > f.Decimal.Precision || f.Decimal.Storage != "text" {
+			return fmt.Errorf("decimal metadata requires precision 1..1000, scale 0..precision, and storage text")
+		}
+	} else if f.Decimal != nil {
+		return fmt.Errorf("decimal metadata is only valid for decimal fields")
+	}
+	return nil
 }
 
 // Collection declares the schema of one collection.
@@ -113,7 +140,7 @@ func (s *Schemas) Validate() error {
 			if fieldName == "" {
 				return fmt.Errorf("collection %q has a field with an empty name", colName)
 			}
-			if err := f.Type.Validate(); err != nil {
+			if err := f.Validate(); err != nil {
 				return fmt.Errorf("collection %q field %q: %w", colName, fieldName, err)
 			}
 		}
@@ -191,7 +218,7 @@ func validateFields(collection string, col *Collection, data map[string]any, rej
 			}
 			continue
 		}
-		if !valueMatchesType(v, f.Type) {
+		if !valueMatchesField(v, f) {
 			return &ValidationError{Collection: collection, Field: name,
 				Message: fmt.Sprintf("expected type %s, got %T", f.Type, v)}
 		}
@@ -210,6 +237,52 @@ func validateFields(collection string, col *Collection, data map[string]any, rej
 		}
 	}
 	return nil
+}
+
+func valueMatchesField(v any, f Field) bool {
+	if f.Type != TypeDecimal {
+		return valueMatchesType(v, f.Type)
+	}
+	text, ok := v.(string)
+	if !ok || f.Decimal == nil {
+		return false
+	}
+	return validDecimalText(text, f.Decimal.Precision, f.Decimal.Scale)
+}
+
+func validDecimalText(value string, precision, scale int) bool {
+	if value == "" || strings.TrimSpace(value) != value {
+		return false
+	}
+	signless := value
+	if signless[0] == '-' || signless[0] == '+' {
+		signless = signless[1:]
+	}
+	parts := strings.Split(signless, ".")
+	if len(parts) > 2 || (parts[0] == "" && (len(parts) == 1 || parts[1] == "")) || (len(parts) == 2 && len(parts[1]) > scale) {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	integerDigits := strings.TrimLeft(parts[0], "0")
+	if integerDigits == "" {
+		integerDigits = "0"
+	}
+	integerCapacity := precision - scale
+	// decimal(p,p) still stores values below one (including fractional-only
+	// lexemes) but cannot store a nonzero integer part.
+	if integerDigits != "0" && len(integerDigits) > integerCapacity {
+		return false
+	}
+	return true
 }
 
 func valueMatchesType(v any, t FieldType) bool {

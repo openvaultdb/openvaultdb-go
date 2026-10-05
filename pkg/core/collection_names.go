@@ -66,7 +66,7 @@ func newCollectionNames(m *manifest.Manifest) (collectionNames, error) {
 		}
 		if first, ok := declaredBy[canonical]; !ok {
 			declaredBy[canonical] = key
-		} else if !maps.Equal(m.Schemas.Collections[first].Fields, m.Schemas.Collections[key].Fields) {
+		} else if !maps.EqualFunc(m.Schemas.Collections[first].Fields, m.Schemas.Collections[key].Fields, equalSchemaField) {
 			return collectionNames{}, fmt.Errorf("%w: %q and %q are one table (%q) and declare different fields", ErrCollectionNamesConflict, first, key, canonical)
 		}
 		for _, spelling := range []string{canonical, key} {
@@ -80,6 +80,16 @@ func newCollectionNames(m *manifest.Manifest) (collectionNames, error) {
 		}
 	}
 	return names, nil
+}
+
+func equalSchemaField(a, b schema.Field) bool {
+	if a.Type != b.Type || a.Required != b.Required {
+		return false
+	}
+	if a.Decimal == nil || b.Decimal == nil {
+		return a.Decimal == nil && b.Decimal == nil
+	}
+	return *a.Decimal == *b.Decimal
 }
 
 // CanonicalCollection returns the name the adapter is given for a collection a
