@@ -911,6 +911,29 @@ func TestPostgresIntegration_MixedCaseFieldNames(t *testing.T) {
 			t.Fatalf("status %d, want 400 invalid_dtql: %s", resp.status, resp.raw)
 		}
 	})
+	// A document with a subquery runs in the engine of this server, over the field list the
+	// adapter reads from the catalog, which is lower case, as a join across databases does:
+	// the folded spelling answers and the declared one is a 400. The subquery is the
+	// part of the document that names the field.
+	subquery := func(spelling string) string {
+		return "from: {database: pg, name: people, alias: p}\n" +
+			"where:\n  exists:\n    query:\n      from: {database: pg, name: people, alias: x}\n" +
+			"      where: {op: '==', left: {field: " + spelling + ", source: x}, right: {value: Ada}}\n" +
+			"orderBy:\n  - {field: id, source: p}\ncolumns:\n  - {field: id, source: p}\n"
+	}
+	t.Run("a document with a subquery, the folded spelling", func(t *testing.T) {
+		resp := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", subquery("firstname"), nil)
+		relIntRowsAre(t, resp, []map[string]any{{"id": "c1"}, {"id": "c2"}})
+		if route := pgITRoute(resp); route != "in-memory" {
+			t.Errorf("route = %q, want in-memory: a document with a subquery runs in the engine of the server", route)
+		}
+	})
+	t.Run("a document with a subquery, the declared spelling", func(t *testing.T) {
+		resp := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", subquery("FirstName"), nil)
+		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" {
+			t.Fatalf("status %d, want 400 invalid_dtql: %s", resp.status, resp.raw)
+		}
+	})
 	pgITCanary(t, admin)
 }
 

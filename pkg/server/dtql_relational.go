@@ -481,7 +481,7 @@ func (s *Server) writeRelationalError(w http.ResponseWriter, r *http.Request, er
 			Code:    "query_budget_exceeded",
 			Message: fmt.Sprintf("the query exceeds the %s limit of a request", clipName(budget.Name)),
 			Budget:  &budgetDetail{Name: clipName(budget.Name), Limit: budget.Limit, Route: clipName(budget.Route), Path: clipName(budget.Path)},
-			Hint:    budgetHint(budget.Name),
+			Hint:    budgetHintOn(budget.Name, budget.Route),
 		}})
 	case errors.As(err, &denied):
 		writeError(w, http.StatusForbidden, "forbidden", fmt.Sprintf("token does not grant %s on collection %q of database %q",
@@ -592,6 +592,32 @@ var budgetHints = map[string]string{
 
 // genericBudgetHint is the hint of a bound that budgetHints does not list.
 const genericBudgetHint = "The query is larger than one request may run. Add a filter, select fewer columns, or read less."
+
+// databaseRouteJoinBudgets are the bounds of a join that DALgo evaluates itself.
+// On the database route that happens only for a join the adapter could not write as one
+// statement, and DALgo then reads each table whole, with no filter, so the hints of these
+// bounds that tell the caller to filter a source cannot help there.
+var databaseRouteJoinBudgets = map[string]bool{
+	joinexec.BudgetJoinRows:                 true,
+	joinexec.BudgetJoinResultRows:           true,
+	joinexec.BudgetJoinFetchedRows:          true,
+	joinexec.BudgetJoinRetainedBytes:        true,
+	joinexec.BudgetJoinScan:                 true,
+	joinexec.BudgetJoinCandidateEvaluations: true,
+}
+
+// databaseRouteJoinHint is the hint of a bound of those on the database route.
+const databaseRouteJoinHint = "The database could not run this join as one statement, so the server read each table whole, with no filter, and joined the rows itself: a filter cannot narrow that read. Join columns of the same type, name the columns instead of a wildcard, or join a smaller table."
+
+// budgetHintOn is the hint of a bound on the route it was reached on: the hint of the
+// bound (budgetHint), except for a bound of the in-memory join on the database route,
+// where it would tell the caller to filter a read that no filter reaches.
+func budgetHintOn(name, route string) string {
+	if route == joinexec.RouteDatabase && databaseRouteJoinBudgets[name] {
+		return databaseRouteJoinHint
+	}
+	return budgetHint(name)
+}
 
 func budgetHint(name string) string {
 	if hint, ok := budgetHints[name]; ok {

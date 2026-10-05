@@ -189,6 +189,11 @@ func TestWhatDalgoRefusesInAJoinThePostgresAdapterDeclinesIsARefusalAndNotAFailu
 		if budget["name"] != joinexec.BudgetJoinScan || budget["route"] != joinexec.RouteDatabase {
 			t.Errorf("budget = %v, want the scan bound of the database route", budget)
 		}
+		// Each table is read whole there, with no filter, so the hint does not tell the
+		// caller to filter.
+		if hint, _ := resp.errorDetail()["hint"].(string); hint != databaseRouteJoinHint || strings.Contains(hint, "Add a filter") {
+			t.Errorf("hint = %q, want the hint of the database route", hint)
+		}
 		if logs.Len() != 0 {
 			t.Errorf("a refusal the caller can act on was logged: %s", logs)
 		}
@@ -209,12 +214,23 @@ func TestWhatDalgoRefusesInAJoinThePostgresAdapterDeclinesIsARefusalAndNotAFailu
 			t.Errorf("a refusal the caller can act on was logged: %s", logs)
 		}
 	})
-	t.Run("an alias used twice", func(t *testing.T) {
-		host, logs := previewPGServerWith(t, dal.NewDB(&pgJoinBackend{}))
+	// An alias used twice never reaches the mount: the DTQL parser refuses the document (join_scope: duplicate alias)
+	// before any database is looked at, on any engine. The row pins that, and not the
+	// hand-off of a join to the adapter (the core test builds that query directly): the
+	// message is the parser's and the adapter is not reached.
+	t.Run("an alias used twice is refused by the parser", func(t *testing.T) {
+		backend := &pgJoinBackend{}
+		host, logs := previewPGServerWith(t, dal.NewDB(backend))
 		body := strings.Replace(previewPGSameDatabaseJoin, "alias: c", "alias: o", 1) + "columns:\n  - {field: id, source: o}\n"
 		resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", body, nil)
 		if resp.status != http.StatusBadRequest || resp.code() != "invalid_dtql" {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
+		}
+		if message, _ := resp.errorDetail()["message"].(string); !strings.Contains(message, `duplicate alias "o"`) {
+			t.Errorf("message = %q, want the parser's refusal of the alias", message)
+		}
+		if reads := backend.reads(); len(reads) != 0 {
+			t.Errorf("the adapter was reached %d times by a document the parser refuses", len(reads))
 		}
 		if logs.Len() != 0 {
 			t.Errorf("a refusal the caller can act on was logged: %s", logs)

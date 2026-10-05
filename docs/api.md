@@ -446,7 +446,9 @@ of types it cannot equate, a wildcard it has no form for) is not refused: DALgo 
 whole, with no filter, in the transaction of the mount and joins the rows itself, under bounds of
 its own (10,000 rows and 16 MiB of the tables together), and the answer still reports
 `execution.route: "database"`. What DALgo refuses there is answered as it is on every engine: a
-bound is `422 query_budget_exceeded` and names it, and a document it cannot run (a field or an alias
+bound is `422 query_budget_exceeded` and names it (its `hint` follows the route: it does not tell
+the caller to filter, because no filter reaches a read of a whole table, and says to join columns
+of the same type, to name the columns or to join a smaller table), and a document it cannot run (a field or an alias
 that is wrong, an alias used twice) is `400 invalid_dtql`. A document the adapter cannot compile
 otherwise is `422 query_unsupported` with the message `the storage engine cannot run this query`.
 
@@ -493,8 +495,9 @@ A field declared with capitals (`FirstName`) is held by PostgreSQL in lower case
 one collection finds it by the declared spelling and by the lower-case one, and answers a record
 under the declared name. A document that runs in the database as one statement, a join of one
 database included, finds it by either spelling too, and labels the column as the document wrote it.
-A join across databases, and a join that DALgo reads table by table (above), run in the engine of
-this server over the names the database holds, which are lower case: such a document writes
+A document with a subquery, a join across databases, and a join that DALgo reads table by table
+(above), run in the engine of this server over the names the database holds, which are lower case
+(the field list is the one the adapter reads from the catalog): such a document writes
 `firstname`, and the declared spelling is `400 invalid_dtql` there (a SQLite mount reads the
 declared spelling and refuses the lower-case one).
 
