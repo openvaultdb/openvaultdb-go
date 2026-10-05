@@ -92,7 +92,7 @@ type Profile struct {
 // The relational rules are checked for every document, single-collection ones
 // included, over the whole query tree and the subqueries in it. A document that
 // ParseDTQL accepts is therefore refused here when it carries a money
-// configuration, and, when it has a subquery in its WHERE (which ParseDTQL
+// configuration with a subquery, and, when it has a subquery in its WHERE (which ParseDTQL
 // accepts), when that subquery nests deeper than the subquery cap, brings the
 // query past the source cap, puts scan bounds on a nested source or carries a
 // money configuration itself. A schema-qualified root, a scan root and a
@@ -105,7 +105,7 @@ type Profile struct {
 // inside conditions but does not refuse a subquery there, so a subquery in
 // WHERE would otherwise hide a second source). Every other query is relational.
 func ClassifyDTQL(query dal.StructuredQuery) (Profile, error) {
-	walk := &profileWalk{}
+	walk := &profileWalk{money: hasMoneyConfig(query)}
 	if err := walk.query(query, 0); err != nil {
 		return Profile{}, err
 	}
@@ -113,7 +113,18 @@ func ClassifyDTQL(query dal.StructuredQuery) (Profile, error) {
 		return Profile{}, err
 	}
 	hasSubquery := dal.HasSubquery(query)
-	if !hasSubquery && len(walk.sources) == 1 && walk.sources[0].Database == "" {
+	if hasMoneyConfig(query) {
+		if hasSubquery {
+			return Profile{}, walk.refuse("money-subquery", "money mode does not support subqueries")
+		}
+		if !dal.HasAggregation(query) {
+			return Profile{}, walk.refuse("money-aggregate", "money mode requires an aggregate query")
+		}
+		if reason := unsupportedMoneyJoinShape(query.From()); reason != "" {
+			return Profile{}, walk.refuse("money-join-shape", reason)
+		}
+	}
+	if !hasSubquery && !hasMoneyConfig(query) && len(walk.sources) == 1 && walk.sources[0].Database == "" {
 		if collection, err := validateDTQL(query); err == nil {
 			return Profile{
 				Kind:    ProfileSingleCollection,
@@ -127,6 +138,64 @@ func ClassifyDTQL(query dal.StructuredQuery) (Profile, error) {
 		HasSubquery:    hasSubquery,
 		HasAggregation: dal.HasAggregation(query),
 	}, nil
+}
+
+// unsupportedMoneyJoinShape keeps exact money execution within the streaming
+// aggregate plan's zero-join or single flat-join shapes.
+func unsupportedMoneyJoinShape(from dal.FromSource) string {
+	if from == nil || from.Base() == nil {
+		return "money mode requires a root collection"
+	}
+	joins := from.Joins()
+	if len(joins) > 1 {
+		return "money mode supports at most one flat join"
+	}
+	if len(joins) == 0 {
+		return ""
+	}
+	child := joins[0].From()
+	if child == nil {
+		child = dal.From(joins[0].RecordsetSource)
+	}
+	if child == nil || child.Base() == nil || len(child.Joins()) > 0 {
+		return "money mode does not support nested joins"
+	}
+	join := joins[0]
+	if join.JoinType() != dal.JoinInner && join.JoinType() != dal.JoinLeft {
+		return "money mode supports only flat inner or left hash joins"
+	}
+	for _, algorithm := range join.Algorithms() {
+		switch algorithm {
+		case dal.JoinAlgorithmHash:
+			goto hashSelected
+		case dal.JoinAlgorithmNestedLoop:
+			return "money mode requires a hash-eligible join"
+		}
+	}
+
+hashSelected:
+	rootAlias := from.Base().Alias()
+	if rootAlias == "" {
+		rootAlias = from.Base().Name()
+	}
+	childAlias := child.Base().Alias()
+	if childAlias == "" {
+		childAlias = child.Base().Name()
+	}
+	for _, condition := range join.On() {
+		comparison, ok := condition.(dal.Comparison)
+		if !ok || comparison.Operator != dal.Equal {
+			continue
+		}
+		left, leftOK := comparison.Left.(dal.FieldRef)
+		right, rightOK := comparison.Right.(dal.FieldRef)
+		if leftOK && rightOK &&
+			((left.Source() == rootAlias && right.Source() == childAlias) ||
+				(left.Source() == childAlias && right.Source() == rootAlias)) {
+			return ""
+		}
+	}
+	return "money mode requires an equality join between root and joined fields"
 }
 
 // pathSegment is one step of a DTQL path: a key, with the index of the array
@@ -147,6 +216,7 @@ type pathSegment struct {
 type profileWalk struct {
 	sources []ProfileSource
 	path    []pathSegment
+	money   bool
 	// nest is the number of conditions and expressions currently being walked
 	// above this point.
 	nest int
@@ -213,7 +283,13 @@ func (w *profileWalk) query(query dal.StructuredQuery, depth int) error {
 		return w.refuse("cursor", "cursors are not supported")
 	}
 	if configured, ok := query.(interface{ Money() *dal.MoneyConfig }); ok && configured.Money() != nil {
-		return w.refuse("money", "money arithmetic is not supported")
+		money := configured.Money()
+		if depth != 0 {
+			return w.refuse("money", "money configuration is supported only on the outer query")
+		}
+		if money.MinorUnitScale < 0 || money.MinorUnitScale > 18 || money.DivisionScale < 0 || money.DivisionScale > 18 || money.Rounding != "halfEven" {
+			return w.refuse("money", "minorUnitScale and divisionScale must be 0..18 and rounding must be halfEven")
+		}
 	}
 	// The caps bound the answer, so they apply to the outermost query only; a
 	// negative number is refused at every level.
@@ -272,6 +348,11 @@ func (w *profileWalk) query(query dal.StructuredQuery, depth int) error {
 		w.pop()
 	}
 	return nil
+}
+
+func hasMoneyConfig(query dal.StructuredQuery) bool {
+	configured, ok := query.(interface{ Money() *dal.MoneyConfig })
+	return ok && configured.Money() != nil
 }
 
 // from checks a relation tree: its base source, then each join's relation
@@ -446,7 +527,15 @@ func (w *profileWalk) expression(expression dal.Expression, depth int) error {
 
 func (w *profileWalk) expressionNode(expression dal.Expression, depth int) error {
 	switch value := expression.(type) {
-	case dal.FieldRef, dal.Constant, dal.Param, dal.Array:
+	case dal.FieldRef, dal.Param, dal.Array:
+		return nil
+	case dal.Constant:
+		if w.money {
+			switch value.Value.(type) {
+			case float32, float64:
+				return w.refuse("money-number", "money mode does not accept binary floating-point values; use a decimal string or integer")
+			}
+		}
 		return nil
 	case dal.StarExpression:
 		return nil

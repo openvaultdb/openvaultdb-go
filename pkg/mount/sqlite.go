@@ -37,6 +37,11 @@ import (
 // What it gets is its own deadline and not a lock error (see overDeadline).
 var busyTimeout = 5 * time.Second
 
+// Register decimal SQL functions before any mount opens its first SQLite
+// handle. The SQLite driver installs connection hooks globally, so the second
+// read-only schema handle and later sandbox handles receive the same functions.
+var sqliteDecimalRegistrationErr = dalgo2sql.RegisterSQLiteDecimalFunctions()
+
 // overDeadline is err, reported as the end of the request when the request has ended
 // and err is the engine giving up on a lock: a wait that outlasts the deadline of the
 // request is the deadline's error (errors.Is context.DeadlineExceeded, or Canceled), with
@@ -67,6 +72,9 @@ func sqliteWaitDSN(path string, wait time.Duration) string {
 // the "id" primary-key column and top-level map fields into columns, so each
 // declared collection gets a Recordset naming that PK.
 func openSQLite(path string, m *manifest.Manifest) (dal.DB, []schema.Mode, error) {
+	if sqliteDecimalRegistrationErr != nil {
+		return nil, nil, fmt.Errorf("register SQLite exact-decimal functions: %w", sqliteDecimalRegistrationErr)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, nil, fmt.Errorf("failed to create SQLite directory for %s: %w", path, err)
 	}

@@ -229,6 +229,9 @@ type nameWalker struct {
 	// variant refuses both, because its adapters name no other database and
 	// implement no null test.
 	relational bool
+	// refuseMembership marks engines whose query adapter cannot evaluate DALgo's
+	// In and NotIn comparisons. It is set only by the mounted engine's guard.
+	refuseMembership bool
 }
 
 // validateDTQLFields applies the single-collection variant of the name walk
@@ -263,7 +266,23 @@ func validateRelationalNamesFor(query dal.StructuredQuery, names fieldRule) erro
 // read, so an engine outside quotedNameEngines is held to the strict rule even
 // when an operator lists it as a join engine.
 func (d *Database) checkRelationalNames(query dal.StructuredQuery) error {
-	return validateRelationalNamesFor(query, d.fieldRule())
+	return (nameWalker{
+		names:            d.fieldRule(),
+		relational:       true,
+		refuseMembership: d.queryEngine() == "ingitdb",
+	}).query(query, 0, nil)
+}
+
+// guardQueryConditions refuses membership comparisons an engine cannot run,
+// before the query reaches its adapter. Single-collection DTQL has already been
+// shape-validated; wire queries use this narrower walk so parent collection
+// reads retain their existing source rules.
+func (d *Database) guardQueryConditions(query dal.StructuredQuery) error {
+	if d.queryEngine() != "ingitdb" || query == nil {
+		return nil
+	}
+	w := nameWalker{names: d.fieldRule(), relational: true, refuseMembership: true}
+	return w.condition(query.Where(), 0, nil)
 }
 
 func (w nameWalker) query(query dal.StructuredQuery, depth int, outer sourceScope) error {
@@ -458,6 +477,9 @@ func (w nameWalker) condition(condition dal.Condition, depth int, scope sourceSc
 	case nil:
 		return nil
 	case dal.Comparison:
+		if w.refuseMembership && dal.IsGroupOperator(c.Operator) {
+			return ErrQueryNotRunnable
+		}
 		if err := w.expression(c.Left, depth+1, scope); err != nil {
 			return err
 		}

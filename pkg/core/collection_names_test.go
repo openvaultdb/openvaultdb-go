@@ -178,6 +178,8 @@ func TestOpenRefusesACollectionNameThatIsAmbiguous(t *testing.T) {
 		{"one table declared twice with different fields", "sqlite", map[string]map[string]schema.Field{"Orders": string1, `"Orders"`: string2}, true},
 		{"one table declared twice, a field required in one", "sqlite", map[string]map[string]schema.Field{"Orders": string1, `"Orders"`: required}, true},
 		{"one table declared twice with the same fields", "sqlite", map[string]map[string]schema.Field{"Orders": string1, `"Orders"`: string1}, false},
+		{"same decimal descriptors from separate pointers", "sqlite", map[string]map[string]schema.Field{"Amounts": {"amount": {Type: schema.TypeDecimal, Decimal: &schema.Decimal{Precision: 30, Scale: 4, Storage: "text"}}}, `"Amounts"`: {"amount": {Type: schema.TypeDecimal, Decimal: &schema.Decimal{Precision: 30, Scale: 4, Storage: "text"}}}}, false},
+		{"different decimal descriptors", "sqlite", map[string]map[string]schema.Field{"Amounts": {"amount": {Type: schema.TypeDecimal, Decimal: &schema.Decimal{Precision: 30, Scale: 4, Storage: "text"}}}, `"Amounts"`: {"amount": {Type: schema.TypeDecimal, Decimal: &schema.Decimal{Precision: 30, Scale: 5, Storage: "text"}}}}, true},
 		{"one table declared twice with no fields", "sqlite", map[string]map[string]schema.Field{"Orders": nil, `"Orders"`: {}}, false},
 		{"tables that share no spelling", "sqlite", map[string]map[string]schema.Field{`"x"`: string1, `"y"`: string2, "z": string1}, false},
 		{"a key that is not an identifier", "sqlite", map[string]map[string]schema.Field{`"a"b"`: string1, `a"b`: string2}, false},
