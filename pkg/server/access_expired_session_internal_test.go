@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -113,11 +114,10 @@ func TestInspectProtectedAnswersARefusalAsHiddenOnlyWhileTheRequestIsAlive(t *te
 		ids        []string
 		refusing   []string
 		wantHidden []string
-		wantLogged []string
 	}{
-		{"one operation", []string{"a"}, nil, []string{"a"}, []string{"t"}},
-		{"several operations refused together", []string{"a", "b"}, nil, []string{"a", "b"}, []string{"t"}},
-		{"several operations of which one is refused alone", []string{"a", "b"}, []string{"a"}, []string{"a"}, []string{"t"}},
+		{"one operation", []string{"a"}, nil, []string{"a"}},
+		{"several operations refused together", []string{"a", "b"}, nil, []string{"a", "b"}},
+		{"several operations of which one is refused alone", []string{"a", "b"}, []string{"a"}, []string{"a"}},
 	} {
 		t.Run(c.name+" with a live context", func(t *testing.T) {
 			s, logs := loggedServer()
@@ -180,6 +180,36 @@ func TestInspectProtectedAnswersARefusalAsHiddenOnlyWhileTheRequestIsAlive(t *te
 				t.Errorf("logged %s", logs.String())
 			}
 		})
+	}
+}
+
+// TestInspectProtectedAnswers503WhenTheRequestRunsOutAfterAnOperationWasRefusedAlone:
+// the operations a and b are refused together and each alone while the request is
+// alive, and the request runs out in the session of b alone. The inspection fails
+// with the failure of the context and returns no collection, so no warning is
+// logged for a request that is answered 503.
+func TestInspectProtectedAnswers503WhenTheRequestRunsOutAfterAnOperationWasRefusedAlone(t *testing.T) {
+	var denied error = &access.DeniedError{Decision: access.Decision{Code: access.CodeEnforcementUnsupported}}
+	s, logs := loggedServer()
+	db := mustInspectionDatabase(t)
+	request, ops := protectedReads(t, "a", "b")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	coordinator := &scriptedInspector{answer: func(call int, _ []access.ProtectedOperation, _ func(access.InspectionSession) error) error {
+		if call == 2 {
+			// Call 0 holds both operations and call 1 holds a alone: b alone is the third.
+			cancel()
+		}
+		return denied
+	}}
+	hidden := map[string]bool{}
+	_, err := s.inspectProtected(requestWithContext(ctx, "POST", "/v1/databases/crm/access/evaluate", ""), db, coordinator, request, nil, access.Principal{}, ops, hidden)
+	assertUnavailable(t, err)
+	if want := [][]string{{"a", "b"}, {"a"}, {"b"}}; !reflect.DeepEqual(coordinator.calls, want) {
+		t.Errorf("sessions %v, want %v", coordinator.calls, want)
+	}
+	if logs.Len() != 0 {
+		t.Errorf("logged %s", logs.String())
 	}
 }
 
@@ -254,6 +284,69 @@ func TestProtectedUpdateAnswersARefusalAsHiddenOnlyWhileTheRequestIsAlive(t *tes
 			t.Errorf("got %d %s, logged %s", w.Code, w.Body.String(), logs.String())
 		}
 	})
+}
+
+// scriptedExecution is an execution session that allows the update of op1 and
+// answers the questions the protected update asks of it; any other method is the nil
+// embedded session's.
+type scriptedExecution struct {
+	access.ExecutionSession
+	onExecute func() error
+}
+
+func (scriptedExecution) Assess(context.Context) (access.Assessment, error) {
+	return access.Assessment{Outcome: access.AssessmentAllow, Complete: true, Policies: []access.PolicyAssessment{{OperationID: "op1", Decision: access.Decision{Allowed: true}}}}, nil
+}
+
+func (scriptedExecution) ReadVisibilityFor(context.Context, access.Principal) (map[string]bool, error) {
+	return map[string]bool{"op1": true}, nil
+}
+
+func (s scriptedExecution) Execute(context.Context) (access.Assessment, error) {
+	return access.Assessment{}, s.onExecute()
+}
+
+// TestProtectedUpdateAnswers503WhenTheRequestRunsOutAfterTheAssessment: a protected
+// PATCH of a record the caller reads, whose request is canceled or runs past its
+// deadline while the update is executed, is answered 503 authorization_unavailable
+// and nothing is logged, whatever error the session reports. A failure of the
+// session while the request is alive keeps its own answer.
+func TestProtectedUpdateAnswers503WhenTheRequestRunsOutAfterTheAssessment(t *testing.T) {
+	rejected := errors.New("candidate rejected")
+	for _, c := range []struct {
+		name     string
+		cancel   bool
+		fail     error
+		wantCode int
+		wantBody string
+	}{
+		{"canceled with the error of the context", true, context.Canceled, http.StatusServiceUnavailable, `"code":"authorization_unavailable"`},
+		{"canceled with another error", true, rejected, http.StatusServiceUnavailable, `"code":"authorization_unavailable"`},
+		{"alive with an error", false, rejected, http.StatusUnprocessableEntity, `"code":"validation_failed"`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s, logs := loggedServer()
+			_, db := inspectionServerAndDatabase(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			r, key := updateRequest(ctx)
+			w := httptest.NewRecorder()
+			s.updateProtected(w, r, db, key, &scriptedExecutor{answer: func(execute func(access.ExecutionSession) error) error {
+				return execute(scriptedExecution{onExecute: func() error {
+					if c.cancel {
+						cancel()
+					}
+					return c.fail
+				}})
+			}})
+			if w.Code != c.wantCode || !strings.Contains(w.Body.String(), c.wantBody) {
+				t.Errorf("want %d %s, got %d %s", c.wantCode, c.wantBody, w.Code, w.Body.String())
+			}
+			if logs.Len() != 0 {
+				t.Errorf("logged %s", logs.String())
+			}
+		})
+	}
 }
 
 // TestEvidenceOnceAnswersARefusalAsHiddenOnlyWhileTheRequestIsAlive: the session of

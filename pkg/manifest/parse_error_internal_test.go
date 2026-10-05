@@ -77,3 +77,41 @@ func TestParseErrorOfAnyOtherDecoderErrorIsOneFixedSentence(t *testing.T) {
 		})
 	}
 }
+
+// TestDecodeYAMLTurnsAPanicIntoAnError: a decode that panics is an error, and a
+// decode that does not panic gives its own result.
+func TestDecodeYAMLTurnsAPanicIntoAnError(t *testing.T) {
+	if err := decodeYAML(func() error { panic("hash of unhashable type") }); !errors.Is(err, errDecoderPanic) {
+		t.Errorf("got %v", err)
+	}
+	own := errors.New("own")
+	if err := decodeYAML(func() error { return own }); err != own {
+		t.Errorf("got %v", err)
+	}
+	if err := decodeYAML(func() error { return nil }); err != nil {
+		t.Errorf("got %v", err)
+	}
+}
+
+// TestParseReportsAFailureOfTheSecondDecode: the second decode of a manifest, into
+// nodes, gives an error or a panic for no document today. When it does, Parse
+// reports one fixed sentence that wraps nothing.
+func TestParseReportsAFailureOfTheSecondDecode(t *testing.T) {
+	const doc = "database: {id: sqlmount, schema_mode: strict}\nstorage:\n  engine: sqlite\n  path: x\n"
+	defer func(saved func([]byte, any) error) { unmarshalYAML = saved }(unmarshalYAML)
+	for _, c := range []struct {
+		name string
+		run  func([]byte, any) error
+	}{
+		{"an error that quotes the document", func([]byte, any) error { return errors.New("yaml: cannot decode !!str `secret` as a !!int") }},
+		{"a panic", func([]byte, any) error { panic("secret") }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			unmarshalYAML = c.run
+			_, err := Parse([]byte(doc))
+			if err == nil || err.Error() != "failed to parse manifest YAML: the document could not be decoded" || errors.Unwrap(err) != nil {
+				t.Errorf("got %v", err)
+			}
+		})
+	}
+}

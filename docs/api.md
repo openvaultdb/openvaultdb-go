@@ -291,8 +291,10 @@ by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
   an operation", with the method, the route path and the names of the collections; it does not
   state a cause). A refusal is answered that way only while the request is still alive: when the
   request was canceled or ran past its deadline, the answer is `503 authorization_unavailable`
-  and nothing is logged. An inspection that holds more evidence than one protected session
-  accepts is assessed one operation at a time and answered as it would be if the session
+  and nothing is logged. A protected `PATCH` whose request was canceled or ran past its
+  deadline is answered `503 authorization_unavailable` at every later point as well (while the
+  update is executed, for instance), never `422 validation_failed`. An inspection that holds more evidence than one protected
+  session accepts is assessed one operation at a time and answered as it would be if the session
   accepted it.
   While a policy layer cannot be used, a sample is refused alike whatever collection it names.
   A sample asks the policies about its query before it checks the collections the query names,

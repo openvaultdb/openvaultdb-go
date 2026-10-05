@@ -574,6 +574,11 @@ func (s *Server) updateProtected(w http.ResponseWriter, r *http.Request, db *cor
 				// the database does not declare is (see refuseOperation), by the same
 				// function, so the two bodies are built from the same facts.
 				writeUnavailableOperation(w, az.ModeExecution, op)
+			case ctx.Err() != nil:
+				// The request was canceled or ran past its deadline after the
+				// assessment: nothing was found wrong with the candidate, so the
+				// failure is the context's, not a refusal of the candidate.
+				writeProtectedFailure(w, ctx.Err())
 			case errors.Is(err, access.ErrDataRevisionConflict):
 				writeError(w, 409, "data_revision_conflict", "record changed; reload before retrying")
 			case !errors.Is(err, access.ErrAccessDenied):

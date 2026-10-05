@@ -71,8 +71,8 @@ func TestParseErrorOfADocumentTheDecoderRefusesForAnotherReasonDoesNotRepeatIt(t
 		{"a token variable with an explicit tag", head + "  ingitdb:\n    github:\n      token_env: !!int ghp_MARKER\n"},
 		{"an anchor that is not defined", head + "  postgres:\n    dsn_env: *MARKER\n"},
 		{"a token variable that is an undefined anchor", "database: {id: sqlmount, schema_mode: strict}\nstorage:\n  engine: ingitdb\n  ingitdb:\n    github:\n      token_env: *MARKER\n"},
-		{"an anchor that holds itself", head + "  postgres: &MARKER\n    dsn_env: [*MARKER]\n"},
-		{"a key that cannot be hashed", head + "  postgres:\n    ? [pw-MARKER]\n    : x\n"},
+		{"an anchor that holds itself", head + "  <<: {path: x}\n  ? &MARKER [*MARKER]\n  : x\n"},
+		{"a key that cannot be hashed", head + "  <<: {path: x}\n  ? {a: {[pw-MARKER]: 1}}\n  : x\n"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			_, err := manifest.Parse([]byte(c.doc))
@@ -90,6 +90,77 @@ func TestParseErrorOfADocumentTheDecoderRefusesForAnotherReasonDoesNotRepeatIt(t
 				}
 			}
 			if !strings.HasPrefix(err.Error(), "failed to parse manifest YAML") {
+				t.Errorf("got %v", err)
+			}
+		})
+	}
+}
+
+// TestParseOfAnEmptyManifestSaysSo: a manifest with no document in it (nothing at
+// all, or only comments) is reported as empty, and every other error of the decoder
+// that has no line in its text is one fixed sentence.
+func TestParseOfAnEmptyManifestSaysSo(t *testing.T) {
+	for _, c := range []struct{ name, doc string }{
+		{"nothing at all", ""},
+		{"only comments", "# nothing here\n# still nothing\n"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := manifest.Parse([]byte(c.doc))
+			if err == nil || err.Error() != "failed to parse manifest YAML: the manifest is empty" {
+				t.Errorf("got %v", err)
+			}
+			if errors.Unwrap(err) != nil {
+				t.Errorf("the error wraps %v", errors.Unwrap(err))
+			}
+		})
+	}
+}
+
+// TestParseOfADocumentTheDecoderRefusesWithoutALineIsOneFixedSentence: the decoder
+// refuses these documents with a message that has no line prefix, so each is
+// answered by the fixed sentence and nothing is wrapped.
+func TestParseOfADocumentTheDecoderRefusesWithoutALineIsOneFixedSentence(t *testing.T) {
+	const head = "database: {id: sqlmount, schema_mode: strict}\nstorage:\n  engine: sqlite\n"
+	for _, c := range []struct{ name, doc string }{
+		{"a scanner error on the first line", "\tdatabase: 1\n"},
+		{"invalid UTF-8", head + "  path: \xff\xfe\n"},
+		{"a control character", head + "  path: \x01\n"},
+		{"an unknown directive", "%FOO bar\n---\n" + head},
+		{"an incompatible YAML version", "%YAML 2.0\n---\n" + head},
+		{"a merge value that is not a mapping", head + "  <<: 1\n"},
+		{"invalid base64", head + "  path: !!binary '!!!'\n"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := manifest.Parse([]byte(c.doc))
+			if err == nil || err.Error() != "failed to parse manifest YAML: the document could not be decoded" {
+				t.Fatalf("got %v", err)
+			}
+			if errors.Unwrap(err) != nil {
+				t.Errorf("the error wraps %v", errors.Unwrap(err))
+			}
+		})
+	}
+}
+
+// TestParseOfAMappingWithAMergeKeyAndAKeyThatCannotBeHashedIsAnErrorNotAPanic: the
+// YAML decoder panics for a mapping that holds a merge key and a key that is a
+// sequence or a mapping. Parse reports it, at the top level, in storage and in the
+// schemas.
+func TestParseOfAMappingWithAMergeKeyAndAKeyThatCannotBeHashedIsAnErrorNotAPanic(t *testing.T) {
+	const head = "database: {id: sqlmount, schema_mode: strict}\n"
+	for _, c := range []struct{ name, doc string }{
+		{"at the top level", head + "<<: {a: b}\n? [a]\n: x\n"},
+		{"in storage", head + "storage:\n  engine: sqlite\n  <<: {path: x}\n  ? [a]\n  : x\n"},
+		{"in the schemas", head + "schemas:\n  collections:\n    <<: {a: b}\n    ? {c: d}\n    : x\n"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("Parse panics: %v", r)
+				}
+			}()
+			_, err := manifest.Parse([]byte(c.doc))
+			if err == nil || err.Error() != "failed to parse manifest YAML: the document could not be decoded" {
 				t.Errorf("got %v", err)
 			}
 		})

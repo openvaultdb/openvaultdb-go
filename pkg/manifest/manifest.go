@@ -248,16 +248,16 @@ func Parse(b []byte) (*Manifest, error) {
 	var m Manifest
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(true)
-	if err := dec.Decode(&m); err != nil {
+	if err := decodeYAML(func() error { return dec.Decode(&m) }); err != nil {
 		return nil, parseError(err)
 	}
 	var extra any
-	if err := dec.Decode(&extra); err != io.EOF {
+	if err := decodeYAML(func() error { return dec.Decode(&extra) }); err != io.EOF {
 		return nil, fmt.Errorf("manifest must contain exactly one YAML document")
 	}
 	var document map[string]yaml.Node
-	if err := yaml.Unmarshal(b, &document); err != nil {
-		return nil, err
+	if err := decodeYAML(func() error { return unmarshalYAML(b, &document) }); err != nil {
+		return nil, parseError(err)
 	}
 	if acl, present := document["acl"]; present {
 		explicitMode := false
@@ -279,6 +279,26 @@ func Parse(b []byte) (*Manifest, error) {
 // maxParseProblems bounds how many mistakes of a manifest one parse error lists.
 const maxParseProblems = 10
 
+// unmarshalYAML decodes the manifest a second time into nodes. It is a variable so
+// a test can make that decode fail or panic, which no document does today.
+var unmarshalYAML = yaml.Unmarshal
+
+// errDecoderPanic is what decodeYAML returns for a decode that panicked.
+var errDecoderPanic = errors.New("the YAML decoder panicked")
+
+// decodeYAML runs one decode of the manifest and turns a panic of the decoder into
+// an error. The decoder panics, instead of returning an error, for a mapping that
+// holds a merge key and a key it cannot hash, so a manifest it cannot decode is
+// reported and never crashes the process.
+func decodeYAML(decode func() error) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = errDecoderPanic
+		}
+	}()
+	return decode()
+}
+
 var typeErrorLine = regexp.MustCompile(`^line [0-9]+: `)
 
 // scannerErrorText matches the text of an error of the YAML scanner or parser, which
@@ -294,8 +314,12 @@ var scannerErrorText = regexp.MustCompile(`^yaml: line [0-9]+: `)
 // wrapped as it is. Any other error of the decoder (a scalar written with a tag it
 // does not fit, an anchor that is not defined or that holds itself, a key that
 // cannot be hashed) quotes the document too, so it is replaced by one sentence that
-// wraps nothing.
+// wraps nothing, and so is a decode that panicked. A manifest with no document in it
+// is reported as empty.
 func parseError(err error) error {
+	if errors.Is(err, io.EOF) {
+		return errors.New("failed to parse manifest YAML: the manifest is empty")
+	}
 	var typeErr *yaml.TypeError
 	if !errors.As(err, &typeErr) {
 		if scannerErrorText.MatchString(err.Error()) {
