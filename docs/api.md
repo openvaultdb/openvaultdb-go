@@ -67,9 +67,12 @@ GET /.well-known/openvaultdb
        "authorizeEndpoint":"/authorize","tokenEndpoint":"/token"}
 ```
 
-Without auth, this document also lists mounted databases with their stable
-browser-openable `url` (`/ovdb/dbs/<id>`), versioned `apiUrl`, and capability
-flags. The server uses the HTTP request origin by default; `ovdb serve
+With auth on or off, the document carries a `query` block that states the query profile and its
+limits (see [Query profile and relational documents](#query-profile-and-relational-documents)).
+Without auth, it also lists mounted databases with their stable
+browser-openable `url` (`/ovdb/dbs/<id>`), versioned `apiUrl`, capability
+flags, and the `joins` and `aggregation` booleans of the query profile.
+The server uses the HTTP request origin by default; `ovdb serve
 --public-url` sets the canonical external origin behind a reverse proxy.
 Authenticated servers do not publish database names in public discovery.
 
@@ -117,7 +120,7 @@ GET /v1/databases
 → 200 {"databases":[{"id":"sneat-dev","engine":"ingitdb","schemaMode":"schemaless"}, ...]}
 
 GET /v1/databases/{db}
-→ 200 {"id":"...","engine":"...","schemaMode":"...","collections":["..."]}   // declared collections, by canonical name
+→ 200 {"id":"...","engine":"...","schemaMode":"...","collections":["..."],"joins":true,"aggregation":true}   // declared collections, by canonical name
 
 GET /v1/databases/{db}/inferred-schema
 → 200 inferred schema catalogue JSON (see pkg/inferred); 404 for strict databases
@@ -277,6 +280,16 @@ by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
   same body but for the name the caller sent, whatever the request orders by, and for a
   multi-operation inspection the undeclared operation is redacted as a hidden one is, and the
   facts given for the other operations of the request do not depend on which of the two it is.
+  A caller who may inspect protected rows is given layer detail for a record it cannot read only
+  when a policy admits the operation for the stored row to decide; for a declared table the
+  policy hides, or cannot decide anything about (a principal outside the policy's realm, a policy
+  source that is unavailable), it gets the answer an undeclared table gets. So does a declared
+  table that the protected session of the adapter cannot prepare (a SQLite table with a column
+  default, a foreign key, a trigger or a key that is not a text id, for instance): the protected
+  `PATCH` and `/access/evidence` answer `404 resource_unavailable` and an inspection the redacted
+  deny, and the server logs a warning that names the collection. An inspection that holds more
+  evidence than one protected session accepts is assessed one operation at a time and answered
+  as it would be if the session accepted it.
   While a policy layer cannot be used, a sample is refused alike whatever collection it names.
   A sample asks the policies about its query before it checks the collections the query names,
   so what the policies answer (a denial, or a result they cannot decide) is the same whichever
@@ -428,7 +441,11 @@ does not change later pages. This contract does not promise a transaction
 across different mounted databases or protect against a source's own external
 writes during its one reader traversal. A capture is capped at 1,000,000 rows,
 512 MiB on disk and 60 seconds. At most two captures/snapshots are active per
-server (1 GiB maximum disk usage). A snapshot expires five minutes after
+server (1 GiB maximum disk usage). The row, byte and slot limits are the defaults of
+`server.DefaultSnapshotLimits()`; an embedder sets them with `server.WithSnapshotLimits`, whose
+three fields must all be positive (the option panics when the server is built otherwise). On a
+memory-backed file system, where the spool counts against the instance memory, set slots times
+bytes well below the memory. A snapshot expires five minutes after
 capture, on explicit close, on database unmount, or on server shutdown; stale files from a crash
 are swept on startup. Call `Server.CloseSnapshots` after stopping HTTP serving
 and draining requests. `410 snapshot_expired` means the client must restart
@@ -448,9 +465,11 @@ expressions. Bindings are parsed as values, so their text cannot alter the
 query structure. Missing, unused, null, object, and oversized array bindings
 are rejected. Database metadata advertises `queryFormat: dtql-yaml+json`;
 raw YAML remains accepted for existing clients.
-The supported profile is a single unaliased root collection with field projection,
-filtering, ordering, and pagination. Joins, aggregation, cursors, and native queries
-are not supported by this endpoint. Limit defaults to 1000 (maximum 1000), offset
+The profile of a document of one plain collection is a single unaliased root collection with
+field projection, filtering, ordering, and pagination. A document that joins, groups, aliases or
+reads another collection in a subquery is relational and is described under
+[Query profile and relational documents](#query-profile-and-relational-documents); cursors and
+native queries are not supported. Limit defaults to 1000 (maximum 1000), offset
 is at most 10000, execution context deadline is 10 seconds, and result buffering is capped
 at 8 MiB. Rows are filtered before pagination; column restrictions also apply to
 explicit projections, caller filters, and ordering. Denial returns HTTP 403 with
@@ -469,7 +488,7 @@ declared collection the policy denies (`403 ACCESS_DENIED`, the same body), and 
 names a spelling that is not the canonical name, such as the quoted spelling of a declared
 SQLite key; a mount without access policies answers both `404 not_found`. Such a mount serves one
 plain collection per document: a document that reads more than that (a join, a derived source, a
-subquery of any kind, or a scan bound on its source) is `422 authorization_unsupported`, with a
+subquery of any kind) is `422 authorization_unsupported`, with a
 message that names no collection, whichever collections it names and before any name is looked
 at. A document of one readable collection is read as before.
 
@@ -478,6 +497,794 @@ See [local ACL setup and demonstration](layered-acl-implementation.md). Example:
 ```yaml
 from:
   name: spaces
+```
+
+### Query profile and relational documents
+
+DTQL documents are read by two endpoints. Both take the same body (a raw DTQL-YAML document, or
+`Content-Type: application/json` with `{"query": "<DTQL YAML>", "parameters": {...}}`) and the same
+GET form (`?q=` and `?parameters=`, URI at most 8 KiB, `414` beyond that).
+
+```
+POST|GET /v1/databases/{db}/dtql     the sources of the document belong to {db}
+POST|GET /v1/dtql                    the document reads one or several databases
+```
+
+A document of one plain collection (no alias, join, grouping, aggregate or subquery, and a root
+that names no database or names `{db}` itself) is answered as described under [DTQL](#dtql), with
+a key on every record. Any other document the classifier accepts is **relational**: a join, a
+`groupBy`, a `having`, an aggregate, a column alias, a null test (`isNull`, `isNotNull`), a column
+qualified with its `source`, a computed column, a subquery of any kind (a derived source, a
+scalar subquery, `exists`, a query-valued comparison), or a source that names its `database`. A
+relational document is answered as described below, on both endpoints.
+
+#### Discovery
+
+`GET /.well-known/openvaultdb` carries a `query` block, with auth on or off. It states what the
+server does, from the configuration it runs with:
+
+<!-- doc-example method=GET path=/.well-known/openvaultdb status=200 -->
+```json
+{
+  "authEnabled": false,
+  "databases": [
+    {
+      "aggregation": true,
+      "apiUrl": "http://localhost:8080/v1/databases/chinook",
+      "capabilities": {
+        "dtql": true,
+        "query": true,
+        "read": true,
+        "write": true
+      },
+      "id": "chinook",
+      "joins": true,
+      "url": "http://localhost:8080/ovdb/dbs/chinook"
+    },
+    {
+      "aggregation": true,
+      "apiUrl": "http://localhost:8080/v1/databases/countries",
+      "capabilities": {
+        "dtql": true,
+        "query": true,
+        "read": true,
+        "write": true
+      },
+      "id": "countries",
+      "joins": true,
+      "url": "http://localhost:8080/ovdb/dbs/countries"
+    },
+    {
+      "aggregation": false,
+      "apiUrl": "http://localhost:8080/v1/databases/crm",
+      "capabilities": {
+        "dtql": true,
+        "query": true,
+        "read": true,
+        "write": true
+      },
+      "id": "crm",
+      "joins": false,
+      "url": "http://localhost:8080/ovdb/dbs/crm"
+    },
+    {
+      "aggregation": false,
+      "apiUrl": "http://localhost:8080/v1/databases/events",
+      "capabilities": {
+        "dtql": true,
+        "query": true,
+        "read": true,
+        "write": true
+      },
+      "id": "events",
+      "joins": false,
+      "url": "http://localhost:8080/ovdb/dbs/events"
+    }
+  ],
+  "name": "OpenVaultDB",
+  "protocol": "openvaultdb/0.1",
+  "query": {
+    "endpoint": "/v1/dtql",
+    "features": {
+      "aggregates": [
+        "count",
+        "sum",
+        "avg",
+        "min",
+        "max"
+      ],
+      "crossDatabase": true,
+      "externalSources": false,
+      "fieldNames": "plain",
+      "groupBy": true,
+      "having": true,
+      "joins": [
+        "inner",
+        "left"
+      ],
+      "protectedDatabases": false,
+      "subqueries": true,
+      "windowFunctions": false
+    },
+    "format": "dtql-yaml+json",
+    "joinEngines": [
+      "sqlite",
+      "ingitdb"
+    ],
+    "limits": {
+      "concurrentDatabase": 4,
+      "concurrentInMemory": 2,
+      "maxResultBytes": 8388608,
+      "maxResultRows": 1000,
+      "maxSourceBytes": 67108864,
+      "maxSourceRows": 100000,
+      "queueWaitMs": 1000,
+      "timeoutMs": 10000
+    }
+  },
+  "version": "0.1.0"
+}
+```
+
+- `endpoint` and `format`: the endpoint that reads several databases and the document format.
+- `features`: `joins` lists the join types (`inner` and `left`); `aggregates` the aggregate
+  functions every route answers (`count`, `sum`, `avg`, `min`, `max`; see `first` and `last` under
+  [Launch limits](#launch-limits)); `crossDatabase` is true (one document may read several
+  mounted databases); `externalSources`, `windowFunctions` and `protectedDatabases` are false (see
+  [Launch limits](#launch-limits)); `fieldNames` is `plain`.
+- `limits`: the bounds of one request. `timeoutMs`, `maxSourceRows` and `maxSourceBytes` are the
+  server's configuration (`QueryLimits`); `queueWaitMs` is how long a query waits for a free slot
+  before it is refused with `503`, and `concurrentInMemory` and `concurrentDatabase` are the slots
+  of the two routes; `maxResultRows` and `maxResultBytes` bound the answer. The bounds of the
+  in-memory route are under [Launch limits](#launch-limits).
+- `joinEngines`: the storage engines whose databases may take part in a relational document,
+  after the server has dropped the engine of a GitHub-backed inGitDB mount, which no list enables.
+  The list is the operator's list, not a promise: an engine in it that is not cleared for
+  structured queries (`postgres`, `mysql`, an unknown engine) is still refused with `501`, and its
+  databases advertise `joins: false`.
+
+Each database in the list (listed when auth is off) and the metadata of a database
+(`GET /v1/databases/{db}`, the way to read it when auth is on) carry two booleans, `joins` and
+`aggregation`. They are true when a relational document that names the database is not refused
+for the database itself: its engine is in `joinEngines` and is cleared for structured queries, it
+is not a GitHub-backed inGitDB mount, and it has no access policies. The value comes from the
+check the relational handler applies to the request, so a client that reads `joins: true` is not
+refused by the database it names.
+
+<!-- doc-example method=GET path=/v1/databases/chinook status=200 -->
+```json
+{
+  "aggregation": true,
+  "capabilities": {
+    "dtql": true,
+    "query": true,
+    "read": true,
+    "write": true
+  },
+  "collections": [
+    "Customer",
+    "Invoice"
+  ],
+  "endpoints": {
+    "dtql": "http://localhost:8080/v1/databases/chinook/dtql"
+  },
+  "engine": "sqlite",
+  "id": "chinook",
+  "joins": true,
+  "queryFormat": "dtql-yaml+json",
+  "schemaMode": "strict"
+}
+```
+
+The metadata of a database with access policies is `422 authorization_unsupported`, so the flags
+of such a database are read from the discovery list, where they are false.
+
+#### Requests and answers
+
+On `/v1/databases/{db}/dtql` a source that names no database belongs to `{db}`, and a source that
+names another database is `400 invalid_dtql` whose message points to `/v1/dtql`. On `/v1/dtql`
+every source names its database, and one that does not is `400 invalid_dtql`.
+
+<!-- doc-example method=POST path=/v1/databases/chinook/dtql status=200 -->
+```yaml
+from:
+  name: Invoice
+  alias: i
+  joins:
+    - type: inner
+      from: {name: Customer, alias: c}
+      on:
+        - {left: {field: customer_id, source: i}, op: '==', right: {field: id, source: c}}
+orderBy:
+  - {field: id, source: i}
+columns:
+  - {field: id, source: i}
+  - {field: name, source: c, as: customer_name}
+  - {field: total, source: i, as: total}
+```
+```json
+{
+  "columns": [
+    "id",
+    "customer_name",
+    "total"
+  ],
+  "execution": {
+    "elapsedMs": 0,
+    "route": "database",
+    "rowsReturned": 5,
+    "sources": [
+      {
+        "collection": "Invoice",
+        "database": "chinook"
+      },
+      {
+        "collection": "Customer",
+        "database": "chinook"
+      }
+    ]
+  },
+  "records": [
+    {
+      "data": {
+        "customer_name": "Ada",
+        "id": "i1",
+        "total": 10
+      }
+    },
+    {
+      "data": {
+        "customer_name": "Ada",
+        "id": "i2",
+        "total": 20
+      }
+    },
+    {
+      "data": {
+        "customer_name": "Grace",
+        "id": "i3",
+        "total": 5
+      }
+    },
+    {
+      "data": {
+        "customer_name": "Edsger",
+        "id": "i4",
+        "total": 7
+      }
+    },
+    {
+      "data": {
+        "customer_name": "Edsger",
+        "id": "i5",
+        "total": 8
+      }
+    }
+  ]
+}
+```
+
+The answer is `{"records": [{"data": {...}}], "columns": [...], "execution": {...}}`:
+
+- `records` holds the rows. A relational row carries **no record key**, only `data`.
+- `columns` names the columns in the order the document selects them.
+- `execution.route` is `database` when one database ran the whole document and `in-memory` when
+  the server read each source and joined them. `rowsReturned` is the row count. `sources` lists
+  the collections read, with the rows each delivered and its read time on the `in-memory` route
+  (the fields are absent where the database ran the document). `elapsedMs` includes the wait for
+  a slot of the concurrency gate.
+
+An answer holds at most 1000 rows and 8 MiB; a larger result is refused (`422
+query_budget_exceeded`), never cut short. The paging headers of the snapshot protocol are refused
+(`422 snapshot_unsupported`): a relational answer is returned whole.
+
+A grouping and an aggregate:
+
+<!-- doc-example method=POST path=/v1/databases/chinook/dtql status=200 -->
+```yaml
+from:
+  name: Invoice
+  alias: i
+  joins:
+    - type: inner
+      from: {name: Customer, alias: c}
+      on:
+        - {left: {field: customer_id, source: i}, op: '==', right: {field: id, source: c}}
+groupBy:
+  - {field: country, source: c}
+orderBy:
+  - {field: country, source: c}
+columns:
+  - {field: country, source: c}
+  - {aggregate: {function: sum, args: [{field: total, source: i}]}, as: revenue}
+```
+```json
+{
+  "columns": [
+    "country",
+    "revenue"
+  ],
+  "execution": {
+    "elapsedMs": 0,
+    "route": "database",
+    "rowsReturned": 3,
+    "sources": [
+      {
+        "collection": "Invoice",
+        "database": "chinook"
+      },
+      {
+        "collection": "Customer",
+        "database": "chinook"
+      }
+    ]
+  },
+  "records": [
+    {
+      "data": {
+        "country": "NL",
+        "revenue": 15
+      }
+    },
+    {
+      "data": {
+        "country": "UK",
+        "revenue": 30
+      }
+    },
+    {
+      "data": {
+        "country": "US",
+        "revenue": 5
+      }
+    }
+  ]
+}
+```
+
+A left join keeps the rows of its left side that have no match:
+
+<!-- doc-example method=POST path=/v1/databases/chinook/dtql status=200 -->
+```yaml
+from:
+  name: Customer
+  alias: c
+  joins:
+    - type: left
+      from: {name: Invoice, alias: i}
+      on:
+        - {left: {field: id, source: c}, op: '==', right: {field: customer_id, source: i}}
+groupBy:
+  - {field: name, source: c}
+orderBy:
+  - {field: name, source: c}
+columns:
+  - {field: name, source: c}
+  - {aggregate: {function: count, args: [{field: id, source: i}]}, as: invoices}
+```
+```json
+{
+  "columns": [
+    "name",
+    "invoices"
+  ],
+  "execution": {
+    "elapsedMs": 0,
+    "route": "database",
+    "rowsReturned": 3,
+    "sources": [
+      {
+        "collection": "Customer",
+        "database": "chinook"
+      },
+      {
+        "collection": "Invoice",
+        "database": "chinook"
+      }
+    ]
+  },
+  "records": [
+    {
+      "data": {
+        "invoices": 2,
+        "name": "Ada"
+      }
+    },
+    {
+      "data": {
+        "invoices": 2,
+        "name": "Edsger"
+      }
+    },
+    {
+      "data": {
+        "invoices": 1,
+        "name": "Grace"
+      }
+    }
+  ]
+}
+```
+
+A subquery. The root of this document names the database of the endpoint it is posted to, which
+is read as if it named none (see [Launch rulings](#launch-rulings)):
+
+<!-- doc-example method=POST path=/v1/databases/chinook/dtql status=200 -->
+```yaml
+from:
+  database: chinook
+  name: Invoice
+  alias: i
+where:
+  exists:
+    query:
+      from: {database: chinook, name: Customer, alias: c}
+      where:
+        op: '=='
+        left: {field: id, source: c}
+        right: {field: customer_id, source: i}
+orderBy:
+  - {field: id, source: i}
+columns:
+  - {field: id, source: i}
+```
+```json
+{
+  "columns": [
+    "id"
+  ],
+  "execution": {
+    "elapsedMs": 0,
+    "route": "in-memory",
+    "rowsReturned": 5,
+    "sources": [
+      {
+        "collection": "Invoice",
+        "database": "chinook",
+        "elapsedMs": 0,
+        "rows": 5
+      },
+      {
+        "collection": "Customer",
+        "database": "chinook",
+        "elapsedMs": 0,
+        "rows": 10
+      }
+    ]
+  },
+  "records": [
+    {
+      "data": {
+        "id": "i1"
+      }
+    },
+    {
+      "data": {
+        "id": "i2"
+      }
+    },
+    {
+      "data": {
+        "id": "i3"
+      }
+    },
+    {
+      "data": {
+        "id": "i4"
+      }
+    },
+    {
+      "data": {
+        "id": "i5"
+      }
+    }
+  ]
+}
+```
+
+A derived source on the edge of a join is read again for every row on its left, and every read
+counts against the source budget (`maxSourceRows`, `maxSourceBytes`). In this document five
+invoices meet a derived source over three customers, so the customers are read fifteen times:
+
+<!-- doc-example method=POST path=/v1/databases/chinook/dtql status=200 -->
+```yaml
+from:
+  name: Invoice
+  alias: i
+  joins:
+    - type: inner
+      from:
+        query:
+          as: d
+          from: {name: Customer}
+          columns:
+            - {field: id}
+            - {field: name}
+      on:
+        - {left: {field: customer_id, source: i}, op: '==', right: {field: id, source: d}}
+orderBy:
+  - {field: id, source: i}
+columns:
+  - {field: id, source: i}
+  - {field: name, source: d}
+```
+```json
+{
+  "columns": [
+    "id",
+    "name"
+  ],
+  "execution": {
+    "elapsedMs": 0,
+    "route": "in-memory",
+    "rowsReturned": 5,
+    "sources": [
+      {
+        "collection": "Invoice",
+        "database": "chinook",
+        "elapsedMs": 0,
+        "rows": 5
+      },
+      {
+        "collection": "Customer",
+        "database": "chinook",
+        "elapsedMs": 0,
+        "rows": 15
+      }
+    ]
+  },
+  "records": [
+    {
+      "data": {
+        "id": "i1",
+        "name": "Ada"
+      }
+    },
+    {
+      "data": {
+        "id": "i2",
+        "name": "Ada"
+      }
+    },
+    {
+      "data": {
+        "id": "i3",
+        "name": "Grace"
+      }
+    },
+    {
+      "data": {
+        "id": "i4",
+        "name": "Edsger"
+      }
+    },
+    {
+      "data": {
+        "id": "i5",
+        "name": "Edsger"
+      }
+    }
+  ]
+}
+```
+
+A correlated subquery is likewise evaluated for every row of the outer query, and its reads count against the same budget.
+
+A document that reads several databases goes to `/v1/dtql`, with every source naming its database:
+
+<!-- doc-example method=POST path=/v1/dtql status=200 -->
+```yaml
+from:
+  database: chinook
+  name: Customer
+  alias: c
+  joins:
+    - type: inner
+      from: {database: countries, name: Country, alias: k}
+      on:
+        - {left: {field: country, source: c}, op: '==', right: {field: code, source: k}}
+orderBy:
+  - {field: name, source: c}
+columns:
+  - {field: name, source: c, as: customer}
+  - {field: name, source: k, as: country}
+  - {field: region, source: k}
+```
+```json
+{
+  "columns": [
+    "customer",
+    "country",
+    "region"
+  ],
+  "execution": {
+    "elapsedMs": 0,
+    "route": "in-memory",
+    "rowsReturned": 3,
+    "sources": [
+      {
+        "collection": "Customer",
+        "database": "chinook",
+        "elapsedMs": 0,
+        "rows": 3
+      },
+      {
+        "collection": "Country",
+        "database": "countries",
+        "elapsedMs": 0,
+        "rows": 3
+      }
+    ]
+  },
+  "records": [
+    {
+      "data": {
+        "country": "United Kingdom",
+        "customer": "Ada",
+        "region": "Europe"
+      }
+    },
+    {
+      "data": {
+        "country": "Netherlands",
+        "customer": "Edsger",
+        "region": "Europe"
+      }
+    },
+    {
+      "data": {
+        "country": "United States",
+        "customer": "Grace",
+        "region": "Americas"
+      }
+    }
+  ]
+}
+```
+
+The databases are the ones mounted on that server: the server hands the document to DALgo, which
+joins the sources of the mounted databases.
+
+**Consistency.** A document that one database runs (`route: database`) is one read transaction of
+that database. A document read in memory reads each source on its own, so the sources need not
+reflect the same moment: a write that lands between two reads can show in one source and not in
+the other. There is no transaction across databases, and a source's own external writes during its
+one read are not excluded (the same statement the [snapshot paging](#dtql) contract makes).
+
+#### Launch rulings
+
+Three rulings shape what a relational document does at launch.
+
+1. A relational document that names a database with access policies is refused with `422
+   authorization_unsupported` before any name is looked up, whichever collections it names. Joins,
+   grouping, aliases and subqueries over such a database come after launch; a document of one plain
+   collection is still read through the policy.
+2. On `/v1/databases/{db}/dtql` a document whose only relational feature is a subquery is
+   relational: it is answered with `columns` and `execution` and with no record keys.
+3. On `/v1/databases/{db}/dtql` a document of one source whose root names `{db}` itself is read as
+   if it named none. The ruling holds for a `database` key written plainly: a key written through a
+   YAML alias or a merge key is not recognised, and the document is answered as a relational
+   one.
+
+<!-- doc-example method=POST path=/v1/databases/crm/dtql status=422 -->
+```yaml
+from:
+  name: orders
+  alias: o
+  joins:
+    - from: {name: customers, alias: c}
+      on:
+        - {left: {field: customer_id, source: o}, op: '==', right: {field: id, source: c}}
+columns:
+  - {field: id, source: o}
+```
+```json
+{
+  "error": {
+    "code": "authorization_unsupported",
+    "message": "database \"crm\" has access policies and is read one source at a time: a relational document (a join, a grouping, an alias, a subquery or a source that names its database) is not run on it"
+  }
+}
+```
+
+#### Launch limits
+
+- A relational document holds the strict field-name rule on every engine: a field name with a
+  space, or any name outside the plain-name rule, is `400 invalid_dtql` on a relational document
+  even on SQLite, where a document of one plain collection accepts it.
+- A relational answer is not passed through the schema coercion of the single-collection path: a
+  declared boolean of a SQLite mount is `0` or `1` in a relational row and `true` or `false` in a
+  single-collection record.
+- The profile has inner and left joins only, at most 8 sources and a subquery nesting of at most 4;
+  `limit` is at most 1000 and `offset` at most 10000 on the outermost query. Other shapes are
+  `400 invalid_dtql` with the reason of the classifier.
+- The server joins only the databases mounted on it: `externalSources` is false. Window functions
+  are not supported. A condition that the storage engine cannot run is `422 query_unsupported`.
+- Only the engines in `joinEngines` take part. A GitHub-backed inGitDB mount never does.
+- `first` and `last` pass the classifier but are not in `aggregates`: they are answered only where
+  the server evaluates the document itself (a join, or several databases), and a document over one
+  SQLite database that uses either is not answered (today a `500 internal`).
+- On the in-memory route a join holds at most 10,000 rows and 16 MiB, and a grouping at most
+  100,000 groups. Beyond that the answer is `422 query_budget_exceeded`, and `error.budget` names
+  the bound.
+
+#### Statuses
+
+| Status | `error.code` | Meaning |
+| --- | --- | --- |
+| `400` | `invalid_key` | A collection name of a source outside the name rule (an empty name, a control character, a relative path component such as `..`). |
+| `400` | `invalid_dtql` | Not a DTQL document, or outside the profile; a source without a database on `/v1/dtql`; a source of another database on the per-database endpoint; a field name outside the strict rule; a column the database does not have; a shape DALgo cannot join. The message holds the reason, clipped. |
+| `400` / `414` | `bad_request` | A malformed body or GET form; a GET URI over 8 KiB is `414`. |
+| `403` | `forbidden` | With auth on, the token does not grant `records:read` on a collection of a database the document names. |
+| `404` | `not_found` | A database that is not mounted, or a collection of a database on an engine that builds SQL that the database does not declare. |
+| `422` | `authorization_unsupported` | The document names a database with access policies, or the adapter of a database without them could not compile the document (the answer is the one the adapter gives, with no further detail). |
+| `422` | `join_engine_unsupported` | The engine of a database is not in `joinEngines`. |
+| `422` | `snapshot_unsupported` | A paging header was sent. |
+| `422` | `query_budget_exceeded` | A bound of the request was reached. `error.budget` names it (`name`, `limit`, `route`, and `path` where it applies) and `error.hint` says what to change. |
+| `422` | `query_unsupported` | The storage engine cannot run a condition of the document. |
+| `501` | `query_unsupported` | The storage engine is not cleared for structured queries (`postgres`, `mysql`, an unknown engine), whatever `joinEngines` says. |
+| `503` | `query_capacity` | No slot of the concurrency gate freed within `queueWaitMs`; `Retry-After: 1`. |
+| `504` | `query_timeout` | The query ran longer than `timeoutMs`. |
+| `500` | `internal` | A fault of the server, logged and not described. |
+
+<!-- doc-example method=POST path=/v1/dtql status=400 -->
+```yaml
+from:
+  name: Customer
+```
+```json
+{
+  "error": {
+    "code": "invalid_dtql",
+    "message": "this endpoint reads several databases, so every source names its database: collection \"Customer\" does not"
+  }
+}
+```
+
+<!-- doc-example method=POST path=/v1/dtql status=400 -->
+```yaml
+from:
+  database: chinook
+  name: ".."
+```
+```json
+{
+  "error": {
+    "code": "invalid_key",
+    "message": "invalid or unsupported DTQL query: relational profile: collection-name at from: invalid key: segment \"..\" contains a relative path component"
+  }
+}
+```
+
+<!-- doc-example method=POST path=/v1/dtql status=422 -->
+```yaml
+from:
+  database: events
+  name: Event
+```
+```json
+{
+  "error": {
+    "code": "join_engine_unsupported",
+    "message": "the \"firestore\" storage engine of database \"events\" is not enabled for joins and aggregation"
+  }
+}
+```
+
+<!-- doc-example method=POST path=/v1/dtql status=422 headers=OVDB-Page-Size=10 -->
+```yaml
+from:
+  database: chinook
+  name: Customer
+  alias: c
+```
+```json
+{
+  "error": {
+    "code": "snapshot_unsupported",
+    "message": "a joined result is returned whole: the paging headers are not supported on a relational query"
+  }
+}
 ```
 
 ## Token Admin API (owner only)
@@ -633,7 +1440,8 @@ const resp = await fetch('http://localhost:6832/v1/databases/mydb/records/notes/
 
 ## Explicitly not in MVP
 
-Auth (server binds 127.0.0.1 by default), cursors/offset, projections, group-by,
+Auth (server binds 127.0.0.1 by default), cursors/offset, projections, group-by
+on `/query` (grouping and joins are in the relational DTQL documents above),
 collection-group queries, update preconditions, server-side transactions with
 read-your-writes across HTTP round-trips (driver buffers writes client-side instead),
 optimistic concurrency.

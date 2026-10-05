@@ -6,10 +6,12 @@ package manifest
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -75,9 +77,10 @@ type FirestoreOptions struct {
 // (which carries credentials) is NEVER stored in the manifest: DSNEnv names
 // the environment variable that holds it.
 type PostgresOptions struct {
-	// DSNEnv is the environment variable holding the Postgres DSN
-	// (default "OVDB_POSTGRES_DSN"), e.g.
-	// postgres://user:pass@host:5432/db?sslmode=require.
+	// DSNEnv is the name of the environment variable holding the Postgres DSN
+	// (default "OVDB_POSTGRES_DSN"); the DSN is e.g.
+	// postgres://user:pass@host:5432/db?sslmode=require. Validate accepts only a
+	// variable name (see ValidEnvVarName).
 	DSNEnv string `yaml:"dsn_env,omitempty" json:"dsnEnv,omitempty"`
 }
 
@@ -93,9 +96,10 @@ func (o *PostgresOptions) DSNEnvVar() string {
 // carries credentials) is NEVER stored in the manifest: DSNEnv names the
 // environment variable that holds it.
 type MySQLOptions struct {
-	// DSNEnv is the environment variable holding the MySQL DSN
-	// (default "OVDB_MYSQL_DSN"), in go-sql-driver form, e.g.
-	// user:pass@tcp(host:3306)/db?parseTime=true.
+	// DSNEnv is the name of the environment variable holding the MySQL DSN
+	// (default "OVDB_MYSQL_DSN"); the DSN is in go-sql-driver form, e.g.
+	// user:pass@tcp(host:3306)/db?parseTime=true. Validate accepts only a
+	// variable name (see ValidEnvVarName).
 	DSNEnv string `yaml:"dsn_env,omitempty" json:"dsnEnv,omitempty"`
 }
 
@@ -141,9 +145,10 @@ type InGitDBGitHubOptions struct {
 	Repo string `yaml:"repo" json:"repo"`
 	// Ref is the branch to read and commit to (default "main").
 	Ref string `yaml:"ref,omitempty" json:"ref,omitempty"`
-	// TokenEnv is the environment variable holding the GitHub token
+	// TokenEnv is the name of the environment variable holding the GitHub token
 	// (default "OVDB_GITHUB_TOKEN") — a PAT or app installation token with
-	// contents:write on the repo.
+	// contents:write on the repo. Validate accepts only a variable name (see
+	// ValidEnvVarName).
 	TokenEnv string `yaml:"token_env,omitempty" json:"tokenEnv,omitempty"`
 	// APIBaseURL overrides the GitHub API base (for GitHub Enterprise).
 	APIBaseURL string `yaml:"api_base_url,omitempty" json:"apiBaseURL,omitempty"`
@@ -191,6 +196,13 @@ func (o *InGitDBOptions) PushBranch() string {
 
 var dbIDRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 
+var envVarNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// ValidEnvVarName reports whether name can be the name of an environment
+// variable as a manifest writes it: an ASCII letter or an underscore followed by
+// ASCII letters, digits and underscores.
+func ValidEnvVarName(name string) bool { return envVarNameRe.MatchString(name) }
+
 // maxEchoedIDLen bounds how much of a database id an error message repeats: the
 // id of a request or a manifest is checked here, and what fails the check can
 // be as large as its source.
@@ -237,7 +249,7 @@ func Parse(b []byte) (*Manifest, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(true)
 	if err := dec.Decode(&m); err != nil {
-		return nil, fmt.Errorf("failed to parse manifest YAML: %w", err)
+		return nil, parseError(err)
 	}
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
@@ -262,6 +274,44 @@ func Parse(b []byte) (*Manifest, error) {
 		return nil, err
 	}
 	return &m, nil
+}
+
+// maxParseProblems bounds how many mistakes of a manifest one parse error lists.
+const maxParseProblems = 10
+
+var typeErrorLine = regexp.MustCompile(`^line [0-9]+: `)
+
+// parseError is the error for a manifest that the YAML decoder refused. For a
+// value of the wrong type, a field the manifest does not have and a key written
+// twice the decoder quotes the start of the value or the whole name, and a manifest
+// can hold a connection string or a token there (as the value of storage.postgres,
+// for instance). Each such mistake is therefore reported by its line and its kind,
+// never by what the line holds. Any other error of the decoder is wrapped as it is.
+func parseError(err error) error {
+	var typeErr *yaml.TypeError
+	if !errors.As(err, &typeErr) {
+		return fmt.Errorf("failed to parse manifest YAML: %w", err)
+	}
+	problems := make([]string, 0, maxParseProblems+1)
+	for i, text := range typeErr.Errors {
+		if i == maxParseProblems {
+			problems = append(problems, "and more")
+			break
+		}
+		where, rest := "", text
+		if prefix := typeErrorLine.FindString(text); prefix != "" {
+			where, rest = prefix, text[len(prefix):]
+		}
+		kind := "a value of the wrong type"
+		switch {
+		case strings.HasPrefix(rest, "field "):
+			kind = "a field the manifest does not have"
+		case strings.HasPrefix(rest, "mapping key "):
+			kind = "a key written twice"
+		}
+		problems = append(problems, where+kind)
+	}
+	return fmt.Errorf("failed to parse manifest YAML: %s", strings.Join(problems, "; "))
 }
 
 // Validate checks the manifest for structural correctness. It does NOT check
@@ -313,6 +363,13 @@ func (m *Manifest) Validate() error {
 	if m.Storage.MySQL != nil && m.Storage.Engine != "mysql" {
 		return fmt.Errorf("storage.mysql options are only valid with engine 'mysql', got %q", m.Storage.Engine)
 	}
+	// The message names the field and does not repeat the value.
+	if o := m.Storage.Postgres; o != nil && o.DSNEnv != "" && !ValidEnvVarName(o.DSNEnv) {
+		return fmt.Errorf("storage.postgres.dsn_env must be the name of an environment variable (ASCII letters, digits and underscores, not starting with a digit)")
+	}
+	if o := m.Storage.MySQL; o != nil && o.DSNEnv != "" && !ValidEnvVarName(o.DSNEnv) {
+		return fmt.Errorf("storage.mysql.dsn_env must be the name of an environment variable (ASCII letters, digits and underscores, not starting with a digit)")
+	}
 	if o := m.Storage.InGitDB; o != nil {
 		if m.Storage.Engine != "ingitdb" {
 			return fmt.Errorf("storage.ingitdb options are only valid with engine 'ingitdb', got %q", m.Storage.Engine)
@@ -325,6 +382,10 @@ func (m *Manifest) Validate() error {
 		if gh := o.GitHub; gh != nil {
 			if gh.Owner == "" || gh.Repo == "" {
 				return fmt.Errorf("storage.ingitdb.github requires both owner and repo")
+			}
+			// The message names the field and does not repeat the value.
+			if gh.TokenEnv != "" && !ValidEnvVarName(gh.TokenEnv) {
+				return fmt.Errorf("storage.ingitdb.github.token_env must be the name of an environment variable (ASCII letters, digits and underscores, not starting with a digit)")
 			}
 			if o.Push != "" {
 				return fmt.Errorf("storage.ingitdb.push does not apply to the github backend (writes commit directly)")

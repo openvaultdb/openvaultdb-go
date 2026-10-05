@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/dal-go/dalgo/access"
@@ -62,9 +64,14 @@ func protectedOperation(op api.Operation) (access.ProtectedOperation, error) {
 // projectInspection uses the same pinned assessment as execution. Metadata is
 // taken from that assessment, never reloaded while a policy lease is held.
 // hidden holds the ids of operations on a table the database does not declare
-// (see inspectAccess): no layer decides them, and they are redacted whatever the
-// caller may inspect, which is how an operation on a declared table the policy
-// hides is answered for a caller who may not inspect protected rows.
+// (see inspectAccess) or that the protected session cannot prepare: no layer
+// decides them, and they are redacted whatever the caller may inspect, which is
+// how an operation on a declared table the policy hides is answered for a caller
+// who may not inspect protected rows. A caller who may inspect protected rows is
+// given layer detail for a record it cannot read only when the policy admits the
+// operation for the stored row to decide (see admittedOperations), so a declared
+// table the policy hides, or cannot decide anything about, is answered to that
+// caller as an undeclared one is.
 func (s *Server) projectInspection(r *http.Request, db *core.Database, request api.Request, owners []core.PolicyLayer, assessment access.Assessment, readable, hidden map[string]bool) az.Result {
 	// Data visibility requires both owner ACLs and the actual token's data
 	// capability; write-only or policy-admin credentials do not imply reads.
@@ -80,6 +87,7 @@ func (s *Server) projectInspection(r *http.Request, db *core.Database, request a
 	for _, op := range request.Operations {
 		result.Operations = append(result.Operations, az.OperationResult{ID: op.ID, RequestOperationID: op.ID, Action: op.Action, Resource: op.Resource, Result: az.OutcomeAllow, RestrictionIDs: []string{}, AllOf: []string{}, ExecutionClass: op.ExecutionClass, Callable: op.Callable})
 	}
+	admitted := admittedOperations(assessment)
 	for _, owner := range owners {
 		source := s.accessSource(db, owner.Kind)
 		layer := az.Layer{LayerID: sourceLayerID(source), Source: source, ACLState: "disabled", Result: az.OutcomeAllow, Decisions: []az.LayerDecision{}}
@@ -108,7 +116,7 @@ func (s *Server) projectInspection(r *http.Request, db *core.Database, request a
 					}
 				}
 				outcome = reduceOutcome(outcome, decisionOutcome)
-				details := readable[op.ID] || s.ownerAllows(r, source, auth.CapAccessInspectProtected, op.Resource)
+				details := readable[op.ID] || admitted[op.ID] && s.ownerAllows(r, source, auth.CapAccessInspectProtected, op.Resource)
 				visible := details && request.DiagnosticLevel != "ordinary" && s.ownerAllows(r, source, auth.CapAccessDiagnostics, op.Resource) && (pa.Policy.Visibility == access.PolicyVisibilityPublic || s.ownerAllows(r, source, auth.CapPoliciesAdmin, op.Resource)) && pa.Policy.Revision != ""
 				if !visible {
 					continue
@@ -151,7 +159,7 @@ func (s *Server) projectInspection(r *http.Request, db *core.Database, request a
 	for i, op := range request.Operations {
 		details := readable[op.ID]
 		if !details {
-			details = true
+			details = admitted[op.ID]
 			for _, owner := range owners {
 				if owner.Enabled && !s.ownerAllows(r, s.accessSource(db, owner.Kind), auth.CapAccessInspectProtected, op.Resource) {
 					details = false
@@ -190,6 +198,36 @@ func undecidedOperations(assessment access.Assessment) map[string]bool {
 		}
 	}
 	return undecided
+}
+
+// admittedOperations returns the ids of the operations that the policy admits for
+// the stored row to decide: a decision of it is allowed, or is denied for a reason
+// that the row's data decides (a row condition, the image a write would leave, the
+// fields of a rule), and none refuses the operation whatever the row (no rule
+// admits the table for the action, or a rule refuses it outright). Any other
+// operation is not admitted: the policy hides the table from the caller, or every
+// decision it has is one the policy could not make (or it has none), and what the
+// policy says then does not depend on the record.
+func admittedOperations(assessment access.Assessment) map[string]bool {
+	admitted, refused := map[string]bool{}, map[string]bool{}
+	for _, pa := range assessment.Policies {
+		switch {
+		case pa.Decision.Allowed, decidedByTheRow(pa.Decision.Code):
+			admitted[pa.OperationID] = true
+		case !pa.Decision.Code.IsIndeterminate():
+			refused[pa.OperationID] = true
+		}
+	}
+	for id := range refused {
+		delete(admitted, id)
+	}
+	return admitted
+}
+
+// decidedByTheRow reports whether a denial with code is one that the stored row's
+// data decides.
+func decidedByTheRow(code access.ReasonCode) bool {
+	return code == access.CodeRowPredicateFailed || code == access.CodePostImageFailed || code == access.CodeColumnDenied
 }
 
 func redactPoint(result *az.Result, id string) {
@@ -242,7 +280,9 @@ func redactPoint(result *az.Result, id string) {
 // declared table the policy hides: 200, redacted, with nothing that tells the two
 // apart, and the adapter is never asked about it. Its field names and its
 // support by the protected session are checked first (guardOperation), as they
-// are for a declared table, so a refusal for them is the same for both.
+// are for a declared table, so a refusal for them is the same for both. An
+// operation on a declared table that the protected session cannot prepare is
+// answered the same way (see inspectProtected).
 func (s *Server) inspectAccess(w http.ResponseWriter, r *http.Request, db *core.Database, request api.Request, owners []core.PolicyLayer, requester access.Principal) {
 	coordinator := db.Coordinator()
 	if coordinator == nil {
@@ -263,40 +303,165 @@ func (s *Server) inspectAccess(w http.ResponseWriter, r *http.Request, db *core.
 		}
 		ops = append(ops, internal)
 	}
-	if len(ops) == 0 {
-		writeAuthorization(w, 200, s.projectInspection(r, db, request, owners, access.Assessment{}, map[string]bool{}, hidden))
-		return
-	}
-	var result az.Result
-	err := coordinator.WithinInspection(r.Context(), ops, func(session access.InspectionSession) error {
-		assessment, admissionErr := session.Assess(r.Context())
-		if admissionErr != nil && assessment.Outcome == "" {
-			return admissionErr
-		}
-		visible, err := session.ReadVisibilityFor(r.Context(), requester)
-		if err != nil {
-			return err
-		}
-		result = s.projectInspection(r, db, request, owners, assessment, visible, hidden)
-		if admissionErr != nil {
-			// Never publish an allow after failed admission. A hidden or
-			// missing point retains the same generic dry-run denial.
-			for _, op := range request.Operations {
-				if !visible[op.ID] {
-					redactPoint(&result, op.ID)
-				}
-			}
-			if result.Result != az.OutcomeDeny {
-				return admissionErr
-			}
-		}
-		return nil
-	})
+	result, err := s.inspectProtected(r, db, coordinator, request, owners, requester, ops, hidden)
 	if err != nil {
 		writeProtectedFailure(w, err)
 		return
 	}
 	writeAuthorization(w, 200, result)
+}
+
+// inspectionCoordinator is the part of the coordinator that an inspection uses.
+type inspectionCoordinator interface {
+	WithinInspection(ctx context.Context, operations []access.ProtectedOperation, inspect func(access.InspectionSession) error) error
+}
+
+// inspected is what the protected sessions of an inspection say of its
+// operations: the assessment, which of the records the caller may read, and the
+// error with which the sessions admitted the operations (see
+// access.InspectionSession.Assess).
+type inspected struct {
+	assessment   access.Assessment
+	visible      map[string]bool
+	admissionErr error
+}
+
+// inspectProtected assesses ops in one protected session and projects the result
+// for the whole request, adding the ids of the operations in hidden (see
+// projectInspection). A session that is refused with access.ErrAccessDenied before
+// anything is assessed could not prepare the operations it was given: one of them
+// is for a table whose shape it does not support, for instance, or together they
+// hold more evidence than it accepts. It does not say which, so the operations
+// are then assessed one by one (see inspectEach) and the answer is the one the
+// session gives when it accepts them. The refusal itself is never the answer.
+func (s *Server) inspectProtected(r *http.Request, db *core.Database, coordinator inspectionCoordinator, request api.Request, owners []core.PolicyLayer, requester access.Principal, ops []access.ProtectedOperation, hidden map[string]bool) (az.Result, error) {
+	got := inspected{visible: map[string]bool{}}
+	if len(ops) > 0 {
+		var refused bool
+		var err error
+		got, refused, err = inspectOnce(r.Context(), coordinator, ops, requester)
+		if refused {
+			var unprepared []string
+			got, unprepared, err = inspectEach(r.Context(), coordinator, ops, requester, hidden)
+			s.logUnpreparedCollections(r, unprepared)
+		}
+		if err != nil {
+			return az.Result{}, err
+		}
+	}
+	result := s.projectInspection(r, db, request, owners, got.assessment, got.visible, hidden)
+	if got.admissionErr != nil {
+		// Never publish an allow after failed admission. A hidden or
+		// missing point retains the same generic dry-run denial.
+		for _, op := range request.Operations {
+			if !got.visible[op.ID] {
+				redactPoint(&result, op.ID)
+			}
+		}
+		if result.Result != az.OutcomeDeny {
+			return az.Result{}, got.admissionErr
+		}
+	}
+	return result, nil
+}
+
+// inspectOnce assesses ops in one protected session. refused reports that the
+// session was refused with access.ErrAccessDenied before anything was assessed.
+func inspectOnce(ctx context.Context, coordinator inspectionCoordinator, ops []access.ProtectedOperation, requester access.Principal) (got inspected, refused bool, err error) {
+	assessed := false
+	err = coordinator.WithinInspection(ctx, ops, func(session access.InspectionSession) error {
+		assessed = true
+		var admissionErr error
+		got.assessment, admissionErr = session.Assess(ctx)
+		if admissionErr != nil && got.assessment.Outcome == "" {
+			return admissionErr
+		}
+		got.admissionErr = admissionErr
+		var visibleErr error
+		got.visible, visibleErr = session.ReadVisibilityFor(ctx, requester)
+		return visibleErr
+	})
+	return got, !assessed && errors.Is(err, access.ErrAccessDenied), err
+}
+
+// inspectEach assesses each of ops in a protected session of its own and puts the
+// assessments together as one session would have given them: the policy decisions
+// and restrictions in the order of ops, the outcome the worst of them, complete
+// only when all are, and the records the caller may read. An operation that its
+// own session refuses is not assessed: its id is added to hidden, which answers it
+// as an operation on a table the database does not declare, and the name of its
+// collection is returned. The admission error of the sessions is kept only when the
+// outcome is an allow, as a session keeps it (a revision conflict, which a session
+// reports after any other, last).
+func inspectEach(ctx context.Context, coordinator inspectionCoordinator, ops []access.ProtectedOperation, requester access.Principal, hidden map[string]bool) (inspected, []string, error) {
+	merged := inspected{assessment: access.Assessment{Outcome: access.AssessmentAllow, Complete: true}, visible: map[string]bool{}}
+	var unprepared []string
+	var admissionErr, conflict error
+	prepared := 0
+	for _, op := range ops {
+		got, refused, err := inspectOnce(ctx, coordinator, []access.ProtectedOperation{op}, requester)
+		if refused {
+			hidden[op.ID()] = true
+			unprepared = append(unprepared, op.Key().Collection())
+			continue
+		}
+		if err != nil {
+			return inspected{}, nil, err
+		}
+		prepared++
+		merged.assessment.Outcome = reduceAssessment(merged.assessment.Outcome, got.assessment.Outcome)
+		merged.assessment.Complete = merged.assessment.Complete && got.assessment.Complete
+		merged.assessment.Policies = append(merged.assessment.Policies, got.assessment.Policies...)
+		merged.assessment.Restrictions = append(merged.assessment.Restrictions, got.assessment.Restrictions...)
+		for id, visible := range got.visible {
+			merged.visible[id] = visible
+		}
+		switch {
+		case errors.Is(got.admissionErr, access.ErrDataRevisionConflict):
+			conflict = got.admissionErr
+		case got.admissionErr != nil:
+			admissionErr = got.admissionErr
+		}
+	}
+	if prepared == 0 {
+		merged.assessment = access.Assessment{}
+	}
+	if merged.assessment.Outcome == access.AssessmentAllow {
+		merged.admissionErr = admissionErr
+		if admissionErr == nil {
+			merged.admissionErr = conflict
+		}
+	}
+	return merged, unprepared, nil
+}
+
+// assessmentRanks orders the outcomes of an assessment from the most permissive.
+var assessmentRanks = map[access.AssessmentOutcome]int{
+	access.AssessmentAllow: 0, access.AssessmentConditional: 1, access.AssessmentIndeterminate: 2, access.AssessmentDeny: 3,
+}
+
+// reduceAssessment returns the worse of two outcomes of an assessment.
+func reduceAssessment(a, b access.AssessmentOutcome) access.AssessmentOutcome {
+	if assessmentRanks[b] > assessmentRanks[a] {
+		return b
+	}
+	return a
+}
+
+// logUnpreparedCollections tells the operator which declared collections the
+// protected session could not prepare, so that a table that is answered as one the
+// caller may not see has a cause that can be found. One record is written for a
+// request, with the method, the route path and the names of the collections, which
+// have passed guardOperation; nothing of it is in the response.
+func (s *Server) logUnpreparedCollections(r *http.Request, collections []string) {
+	if len(collections) == 0 {
+		return
+	}
+	slices.Sort(collections)
+	s.logger.WarnContext(r.Context(), "protected session cannot prepare a collection",
+		slog.String("method", r.Method),
+		slog.String("path", r.URL.Path),
+		slog.Any("collections", slices.Compact(collections)))
 }
 
 func writeProtectedFailure(w http.ResponseWriter, err error) {
@@ -385,6 +550,15 @@ func (s *Server) handleProtectedUpdate(w http.ResponseWriter, r *http.Request, d
 			default:
 				writeJSON(w, 403, errorBody{Error: errorDetail{Code: "access_denied", RequestID: result.RequestID, Authorization: &result}})
 			}
+			return
+		}
+		if errors.Is(err, access.ErrAccessDenied) {
+			// The protected session was refused before anything was assessed: it
+			// cannot prepare the operation (for a table whose shape it does not
+			// support, for instance). The answer is the one for a record the
+			// caller may not see, by the same function the evidence route uses.
+			s.logUnpreparedCollections(r, []string{op.Resource.Table})
+			writeUnavailableOperation(w, az.ModeExecution, op)
 			return
 		}
 		writeProtectedFailure(w, err)

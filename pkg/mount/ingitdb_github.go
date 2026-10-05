@@ -1,6 +1,7 @@
 package mount
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -18,7 +19,8 @@ import (
 // tree), one commit per write batch via the GitHub Git tree API. The access
 // token comes from the environment variable named by
 // storage.ingitdb.github.token_env (default OVDB_GITHUB_TOKEN); manifests
-// never carry secrets (see docs/threat-model.md).
+// never carry secrets (see docs/threat-model.md). No error names a variable
+// that the manifest gives.
 //
 // The collection layout is described by an in-memory inGitDB Definition built
 // from the manifest's declared schemas, so this backend supports strict and
@@ -27,9 +29,20 @@ import (
 func openInGitDBGitHub(m *manifest.Manifest) (dal.DB, []schema.Mode, error) {
 	gh := m.Storage.InGitDB.GitHub
 	tokenEnv := gh.TokenEnvVar()
+	if !manifest.ValidEnvVarName(tokenEnv) {
+		// A manifest that was not validated (see manifest.Manifest.Validate): the
+		// message does not repeat the value.
+		return nil, nil, errors.New("storage.ingitdb.github.token_env is not the name of an environment variable")
+	}
 	token := os.Getenv(tokenEnv)
 	if token == "" {
-		return nil, nil, fmt.Errorf("GitHub token not set: expected a contents:write token in $%s", tokenEnv)
+		// A name the manifest gives is not repeated: a token written where the name
+		// belongs is a valid name, and the message would print it.
+		where := "the variable that storage.ingitdb.github.token_env names"
+		if gh.TokenEnv == "" {
+			where = "$" + tokenEnv
+		}
+		return nil, nil, fmt.Errorf("GitHub token not set: expected a contents:write token in %s", where)
 	}
 	if m.Schemas == nil || len(m.Schemas.Collections) == 0 {
 		return nil, nil, fmt.Errorf("the inGitDB github backend requires declared schemas.collections (strict or partial mode)")

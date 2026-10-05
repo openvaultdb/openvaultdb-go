@@ -166,8 +166,10 @@ production-hosting ready — no TLS, no rate limits, no audit log):
   Grants persist with SHA-256 token hashes only (`--auth-store`, mode 0600),
   so the grants file never contains usable credentials.
 - Capabilities follow the spec taxonomy with optional collection scoping;
-  collection-scoped grants cannot use `/dtql` (target collection unknowable
-  before parsing) and cannot enumerate databases; `/v1/status` redacts the
+  a collection-scoped grant is checked against every collection a DTQL
+  document reads (the root, each join, each subquery), and the request is a
+  `403` if any is outside the grant; collection-scoped grants cannot
+  enumerate databases; `/v1/status` redacts the
   database list for non-owners.
 - Remaining gaps for hosted use: no user identity (OIDC/passkeys per spec),
   no refresh/rotation, consent page has no CSRF protection (dev-only flow),
@@ -178,7 +180,9 @@ production-hosting ready — no TLS, no rate limits, no audit log):
 
 The Postgres DSN carries credentials and is read from the environment variable
 named by `storage.postgres.dsn_env` (default `OVDB_POSTGRES_DSN`) — never from
-the manifest. Use `sslmode=require` (or stronger) for non-local servers; the
+the manifest. The manifest check accepts only a variable name there (ASCII letters,
+digits and underscores), so a connection string written in its place is refused
+without being repeated. Use `sslmode=require` (or stronger) for non-local servers; the
 DSN, and thus the password, is visible to anything that can read the ovdb
 process environment. ovdb opens exactly one connection pool per mounted
 Postgres database. Record *values* travel as statement parameters. The
@@ -241,7 +245,9 @@ called, and answers structured queries with 501 `query_unsupported`.
 
 The GitHub access token is a credential and is read from the environment
 variable named by `storage.ingitdb.github.token_env` (default
-`OVDB_GITHUB_TOKEN`), never from the manifest. Scope the token to
+`OVDB_GITHUB_TOKEN`), never from the manifest. The manifest check accepts only a variable
+name there (ASCII letters, digits and underscores), and no error repeats a name
+the manifest gives for it. Scope the token to
 `contents:write` on the single target repo (a fine-grained PAT or a GitHub App
 installation token) — a broadly-scoped classic PAT would let a compromised
 ovdb write to every repo the token can reach. Data written to the repo is
