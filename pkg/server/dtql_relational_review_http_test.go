@@ -238,6 +238,17 @@ func TestAnUndeclaredCollectionOfAProtectedDatabaseIsAnsweredAsADenial(t *testin
 		if ok.status != http.StatusOK || len(ok.rows(t)) != 4 {
 			t.Fatalf("status %d: %s", ok.status, ok.raw)
 		}
+		// A subquery that reads what the policy allows is answered in memory on
+		// /v1/dtql, every read passing the policy; the per-database endpoint keeps the
+		// 422 of the single-collection path for a document of this shape.
+		evaluated := relHTTPDo(t, host.URL, http.MethodPost, "/v1/dtql", ownerToken, "from: {database: crm, name: orders}\nwhere: {exists: {query: {from: {database: crm, name: customers}}}}\norderBy: [{field: id}]\ncolumns: [{field: id}]\n", nil)
+		if evaluated.status != http.StatusOK || len(evaluated.rows(t)) != 4 || evaluated.execution(t)["route"] != "in-memory" {
+			t.Fatalf("a subquery of what the policy allows: status %d: %s", evaluated.status, evaluated.raw)
+		}
+		perDatabase := relHTTPDo(t, host.URL, http.MethodPost, "/v1/databases/crm/dtql", ownerToken, "from: {name: orders}\nwhere: {exists: {query: {from: {name: customers}}}}\n", nil)
+		if perDatabase.status != http.StatusUnprocessableEntity || perDatabase.errorField("code") != "authorization_unsupported" {
+			t.Fatalf("the same document on the per-database endpoint: status %d: %s", perDatabase.status, perDatabase.raw)
+		}
 		for name, doc := range map[string]string{
 			"as the root source": "from: {database: crm, name: ghost}\n",
 			// The executor loads the fields of the joined source before it reads a row.
