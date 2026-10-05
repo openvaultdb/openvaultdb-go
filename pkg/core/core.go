@@ -72,6 +72,11 @@ type Database struct {
 	// the live manifest afterwards.
 	documentEngine bool
 
+	// foldsIdentifiers records, when the database opens, whether its adapter
+	// stores a name lower-cased and reports it so (PostgreSQL does), so a name the
+	// driver reports is compared with a declared one without regard to case.
+	foldsIdentifiers bool
+
 	// afterWrite, when set, runs after each successfully applied write batch
 	// (e.g. git push for inGitDB-backed databases). A returned error is
 	// reported to the client, but the batch itself is already applied.
@@ -131,7 +136,7 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 		return nil, err
 	}
 	d := &Database{Manifest: m, db: db, modes: supportedModes, policyController: controller,
-		names: names, documentEngine: documentEngines[m.Storage.Engine]}
+		names: names, documentEngine: documentEngines[m.Storage.Engine], foldsIdentifiers: m.Storage.Engine == "postgres"}
 	// Retain the raw driver's Close: protected/secured wrappers installed
 	// below replace d.db but share the driver's underlying handle.
 	if closer, ok := db.(io.Closer); ok {
@@ -301,12 +306,13 @@ func (d *Database) Exists(ctx context.Context, key *record.Key) (bool, error) {
 
 // Collections lists the collections of the database, sorted. A document engine
 // lists the collections its driver knows. On an engine whose adapter builds SQL
-// the list holds the declared collections only, by their canonical names: a name
-// the driver reports is kept only when the database declares it under exactly
-// that name (CanonicalCollection), so a table of the file that the manifest does
-// not declare, and a table named with the quote characters of the quoted
-// spelling of a declared key, are not listed. Every name listed is one the
-// routes that take a collection accept.
+// the list is made of the declared collections only, by their canonical names
+// (CanonicalCollection), each when the driver reports it: a table of the file that
+// the manifest does not declare, and a table named with the quote characters of
+// the quoted spelling of a declared key, are not listed. A declared name is
+// reported under exactly that name, except on PostgreSQL, which stores and
+// reports it lower-cased. Every name listed is one the routes that take a
+// collection accept.
 func (d *Database) Collections(ctx context.Context) ([]string, error) {
 	reader, ok := dal.As[dbschema.SchemaReader](d.db)
 	if !ok {
@@ -316,14 +322,35 @@ func (d *Database) Collections(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to list collections: %w", err)
 	}
-	names := make([]string, 0, len(refs))
-	for _, ref := range refs {
-		if d.GuardCanonicalCollection(ref.Name()) == nil {
+	var names []string
+	if d.isDocumentEngine() {
+		names = make([]string, 0, len(refs))
+		for _, ref := range refs {
 			names = append(names, ref.Name())
+		}
+	} else {
+		reported := make(map[string]bool, len(refs))
+		for _, ref := range refs {
+			reported[d.reportedName(ref.Name())] = true
+		}
+		names = make([]string, 0, len(d.names.spellings))
+		for canonical := range d.names.spellings {
+			if reported[d.reportedName(canonical)] {
+				names = append(names, canonical)
+			}
 		}
 	}
 	sort.Strings(names)
 	return names, nil
+}
+
+// reportedName is name as the driver of the database reports it (see
+// foldsIdentifiers).
+func (d *Database) reportedName(name string) string {
+	if d.foldsIdentifiers {
+		return strings.ToLower(name)
+	}
+	return name
 }
 
 // CollectionForeignKeys returns foreign keys discovered by the storage

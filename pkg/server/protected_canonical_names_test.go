@@ -69,6 +69,11 @@ type canonicalNamesFixture struct {
 	file sqlNamesFixture
 }
 
+// canonicalNamesQuotedToken holds records:read and records:write on the quoted
+// spelling of the declared collection, as the routes that give the coordinator
+// the collection as written match a grant against the spelling sent.
+const canonicalNamesQuotedToken = "ovdb_test_canonical_names_quoted"
+
 func startCanonicalNames(t *testing.T) canonicalNamesFixture {
 	t.Helper()
 	dir := t.TempDir()
@@ -100,11 +105,18 @@ func startCanonicalNames(t *testing.T) canonicalNamesFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	store, err := auth.OpenStore(filepath.Join(dir, "auth.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantToken(t, store, "crm", canonicalNamesQuotedToken,
+		auth.Capability{Action: auth.CapRecordsRead, Collection: `"customers"`},
+		auth.Capability{Action: auth.CapRecordsWrite, Collection: `"customers"`})
 	service := server.New("test", map[string]*core.Database{"crm": db},
 		server.WithPrincipalResolver(func(context.Context, *auth.Principal) (access.Principal, error) {
 			return access.Principal{Roles: []string{"reader"}}, nil
 		}),
-		server.WithAuth(&auth.Config{OwnerToken: ownerToken}),
+		server.WithAuth(&auth.Config{OwnerToken: ownerToken, Store: store}),
 		server.WithOwnerAuthorization(func(_ context.Context, _ *auth.Principal, _ az.Source, capability string, _ az.Resource) bool {
 			return capability == auth.CapAccessDiagnostics
 		}))
@@ -125,38 +137,48 @@ func (f canonicalNamesFixture) quotedTableUntouched(t *testing.T) {
 // PATCH of /records, /access/evidence and the inspection of /access/evaluate
 // take the canonical name of a collection on an engine that builds SQL. The
 // quoted spelling of a SQLite key names a different table of the file (the one
-// whose name carries the quote characters), so the owner's request under it
-// neither reads nor changes that table, though a policy binding covers the
-// quoted path. The canonical name works on the same routes.
+// whose name carries the quote characters), so a request under it neither reads
+// nor changes that table, though a policy binding covers the quoted path. The
+// rule does not look at the caller: the owner and a token granted read and write
+// on the quoted spelling get the same answer, and the table stays as it was. The
+// canonical name works on the same routes for the owner.
 func TestByKeyAuthorizationRoutesTakeTheCanonicalCollectionName(t *testing.T) {
 	asJSON := func(v any) string {
 		data, _ := json.Marshal(v)
 		return string(data)
 	}
+	jsonBody := map[string]string{"Content-Type": "application/json"}
 	routes := []struct {
 		name string
-		do   func(f canonicalNamesFixture, t *testing.T, collection string) (int, string)
+		do   func(f canonicalNamesFixture, t *testing.T, token, collection string) hiddenSourceAnswer
 	}{
-		{"protected PATCH", func(f canonicalNamesFixture, t *testing.T, c string) (int, string) {
+		{"protected PATCH", func(f canonicalNamesFixture, t *testing.T, token, c string) hiddenSourceAnswer {
 			op := writeGuardProtectedOp("update", "/"+c+"/01", writeGuardProtectedSet("name"))
-			return writeGuardRequest(t, f.ts, "PATCH", "/v1/databases/crm/records/"+url.PathEscape(c)+"/01", "application/vnd.dtql.operation+json", asJSON(op))
+			return hiddenSourceAsk(t, f.ts, token, "PATCH", "/v1/databases/crm/records/"+url.PathEscape(c)+"/01", asJSON(op), map[string]string{"Content-Type": "application/vnd.dtql.operation+json"})
 		}},
-		{"evidence", func(f canonicalNamesFixture, t *testing.T, c string) (int, string) {
+		{"evidence", func(f canonicalNamesFixture, t *testing.T, token, c string) hiddenSourceAnswer {
 			body := map[string]any{"apiVersion": az.APIVersion, "resource": az.Resource{DatabaseID: "crm", Path: "/" + c + "/01"}, "requiredFields": [][]string{{"name"}}}
-			return writeGuardRequest(t, f.ts, "POST", "/v1/databases/crm/access/evidence", "application/json", asJSON(body))
+			return hiddenSourceAsk(t, f.ts, token, "POST", "/v1/databases/crm/access/evidence", asJSON(body), jsonBody)
 		}},
-		{"inspection", func(f canonicalNamesFixture, t *testing.T, c string) (int, string) {
+		{"inspection", func(f canonicalNamesFixture, t *testing.T, token, c string) hiddenSourceAnswer {
 			op := writeGuardProtectedOp("get", "/"+c+"/01", nil)
 			request := api.Request{APIVersion: az.APIVersion, Mode: az.ModeInspect, DiagnosticLevel: "references", Operations: []api.Operation{op}}
-			return writeGuardRequest(t, f.ts, "POST", "/v1/databases/crm/access/evaluate", "application/json", asJSON(request))
+			return hiddenSourceAsk(t, f.ts, token, "POST", "/v1/databases/crm/access/evaluate", asJSON(request), jsonBody)
 		}},
 	}
 	for _, r := range routes {
 		t.Run(r.name+"/quoted spelling", func(t *testing.T) {
 			f := startCanonicalNames(t)
-			status, body := r.do(f, t, `"customers"`)
-			if status == http.StatusOK && strings.Contains(body, `"allowed":true`) || strings.Contains(body, "Quoted") || strings.Contains(body, "dataRevision") || strings.Contains(body, `"state":"present"`) {
-				t.Errorf("the quoted spelling was answered as a declared table: status %d: %s", status, body)
+			var answers []hiddenSourceAnswer
+			for _, token := range []string{ownerToken, canonicalNamesQuotedToken} {
+				answer := r.do(f, t, token, `"customers"`)
+				if answer.status == http.StatusOK && strings.Contains(answer.body, `"allowed":true`) || strings.Contains(answer.body, "Quoted") || strings.Contains(answer.body, "dataRevision") || strings.Contains(answer.body, `"state":"present"`) {
+					t.Errorf("the quoted spelling was answered as a declared table: status %d: %s", answer.status, answer.body)
+				}
+				answers = append(answers, answer)
+			}
+			if answers[0] != answers[1] {
+				t.Errorf("the token granted the quoted spelling\n  %d %s\nthe owner\n  %d %s", answers[1].status, answers[1].body, answers[0].status, answers[0].body)
 			}
 			f.quotedTableUntouched(t)
 			if got := f.file.rows(t, "customers"); got != "01=Original" {
@@ -165,9 +187,9 @@ func TestByKeyAuthorizationRoutesTakeTheCanonicalCollectionName(t *testing.T) {
 		})
 		t.Run(r.name+"/canonical name", func(t *testing.T) {
 			f := startCanonicalNames(t)
-			status, body := r.do(f, t, "customers")
-			if status != http.StatusOK {
-				t.Fatalf("the canonical name: status %d: %s", status, body)
+			answer := r.do(f, t, ownerToken, "customers")
+			if answer.status != http.StatusOK {
+				t.Fatalf("the canonical name: status %d: %s", answer.status, answer.body)
 			}
 			f.quotedTableUntouched(t)
 		})

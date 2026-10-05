@@ -125,13 +125,15 @@ GET /v1/databases/{db}/inferred-schema
 
 `collections` is the sorted list of collections the database holds. On `sqlite`, `postgres` and
 `mysql` (and an engine the server does not recognise) it holds the declared collections only,
-each by its canonical name: a name the storage driver reports is kept only when the database
-declares it under exactly that name, so a table of the file that the manifest does not declare,
-and a table named with the quote characters of the quoted spelling of a declared SQLite key, are
-not listed, and every name listed is one the query routes accept. On `ingitdb` and `firestore`
-the list is what the driver reports. On `postgres` the driver reports views as well as tables, so
-a declared collection that is a view is listed, and the foreign keys shown for a table include
-those of a table with uuid, json or array columns.
+each by its canonical name and only when the storage driver reports it, so a table of the file
+that the manifest does not declare, and a table named with the quote characters of the quoted
+spelling of a declared SQLite key, are not listed, and every name listed is one the query routes
+accept. A declared name is matched with the reported one exactly, except on `postgres`, which
+stores a name lower-cased and reports it so: there a declared name that has an upper-case letter
+(`Customers`) is listed under its declared spelling when its lower-cased form is reported. On
+`ingitdb` and `firestore` the list is what the driver reports. On `postgres` the driver reports
+views as well as tables, so a declared collection that is a view is listed, and the foreign keys
+shown for a table include those of a table with uuid, json or array columns.
 
 ### Records
 
@@ -260,14 +262,20 @@ by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
   schema discovery, and a collection it does not declare is answered as a declared collection
   the policy hides, with no message that names it. The routes that take a table give that
   answer in their own form. The protected `PATCH` and `/access/evidence` answer `404
-  resource_unavailable`, redacted, as a hidden or missing record. `/access/evaluate` in
-  inspection and in sampling answers `200` with the redacted deny (`result: deny`, disclosure
-  redacted, no layer detail) for an undeclared table, for the quoted spelling of a declared
-  SQLite key and for a declared table the policy hides alike: the same status and the same body
-  but for the name the caller sent, whatever the request orders by, and for a multi-operation
-  inspection the undeclared operation is redacted as a hidden one is. `/query` and `/dtql`
-  answer `403 ACCESS_DENIED` with the generic message (see [DTQL](#dtql)). These routes give the
-  coordinator the collection as written, which is why they take the canonical name only.
+  resource_unavailable`, redacted, as a hidden or missing record: for an undeclared table, for
+  the quoted spelling of a declared SQLite key and for a declared table the policy hides alike,
+  the same status and the same body but for the name the caller sent, whichever fields of the
+  resource the request carries. `/access/evaluate` in inspection and in sampling answers `200`
+  with the redacted deny (`result: deny`, disclosure redacted, no layer detail) for an
+  undeclared table, for the quoted spelling of a declared SQLite key and for a declared table the
+  policy hides alike, for a caller who may not inspect protected rows: the same status and the
+  same body but for the name the caller sent, whatever the request orders by, and for a
+  multi-operation inspection the undeclared operation is redacted as a hidden one is, and the
+  facts given for the other operations of the request do not depend on which of the two it is.
+  While a policy layer cannot be used, a sample is refused alike whatever collection it names.
+  `/query` and `/dtql` answer `403 ACCESS_DENIED` with the generic message (see
+  [DTQL](#dtql)). These routes give the coordinator the collection as written, which is why they
+  take the canonical name only.
 
 ### Update operation object
 

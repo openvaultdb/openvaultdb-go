@@ -66,8 +66,9 @@ func openPostgresWith(m *manifest.Manifest, open postgresOpener) (dal.DB, []sche
 // and mount errors are printed. The error is a fixed sentence that names the
 // environment variable, and, when the opener returned the adapter's
 // *dalgo2postgres.ConnectionError, that error's own text: the adapter builds it
-// from a fixed sentence and parts it has checked, and no text of the connection
-// string or of the driver's message is in it. The result wraps nothing, so
+// from a fixed sentence, the SQLSTATE code, and the host, port and database name
+// it has checked. No user name, no password, no other text of the connection
+// string and none of the driver's message is in it. The result wraps nothing, so
 // errors.Unwrap reaches neither.
 func postgresOpenError(envVar string, err error) error {
 	sentence := "failed to open Postgres via $" + envVar

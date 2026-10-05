@@ -76,6 +76,17 @@ func (d *Database) SelectAccessSample(ctx context.Context, query dal.StructuredQ
 	if len(order) > 32 {
 		return nil, nil, fmt.Errorf("sample order too large")
 	}
+	// The policy layers are read before the collections of the query are looked
+	// at, and the sample reads under the snapshot read here. A layer that cannot
+	// be used refuses the sample whichever collection it names, with the refusal
+	// the secured database gives (access.PolicyProviderError), so the refusal does
+	// not tell a collection the database does not declare from one it does.
+	var policies []access.Policy
+	if d.HasAccessPolicies() {
+		if policies, err = d.samplePolicies(ctx, requester); err != nil {
+			return nil, order, &access.PolicyProviderError{Err: err}
+		}
+	}
 	// The order is the same whichever collections the query names, so it is
 	// returned with the refusal of a source: what the caller is told of the order
 	// does not tell a collection the database does not declare from one it does.
@@ -84,25 +95,7 @@ func (d *Database) SelectAccessSample(ctx context.Context, query dal.StructuredQ
 	}
 	readDB := d.db
 	if d.HasAccessPolicies() {
-		readDB, err = access.SecureDB(readDB, access.WithDatabasePolicyProvider(func(ctx context.Context) ([]access.Policy, error) {
-			var policies []access.Policy
-			for _, owner := range d.PolicyLayers(ctx) {
-				if !owner.Enabled {
-					continue
-				}
-				if owner.Err != nil {
-					return nil, owner.Err
-				}
-				if len(owner.Policies) == 0 {
-					return nil, fmt.Errorf("mandatory policy source unavailable")
-				}
-				for _, policy := range owner.Policies {
-					if !access.CanInspectPolicy(policy) {
-						return nil, &access.DeniedError{Decision: access.Decision{Code: access.CodeEnforcementUnsupported, Scope: access.DecisionScopeOperation}}
-					}
-					policies = append(policies, requesterPolicy{Policy: policy, principal: requester})
-				}
-			}
+		readDB, err = access.SecureDB(readDB, access.WithDatabasePolicyProvider(func(context.Context) ([]access.Policy, error) {
 			return policies, nil
 		}))
 		if err != nil {
@@ -111,4 +104,30 @@ func (d *Database) SelectAccessSample(ctx context.Context, query dal.StructuredQ
 	}
 	records, err := d.executeDalQueryOn(ctx, readDB, boundedDTQL{sampleQuery{StructuredQuery: query, count: n, order: order}}, collection, false)
 	return records, order, err
+}
+
+// samplePolicies returns the policies a sample reads under: those of every
+// enabled layer, each narrowed to the requester. It fails when an enabled layer
+// has no usable policy: its source is unavailable, it holds none, or one of them
+// is not declared safe for inspection.
+func (d *Database) samplePolicies(ctx context.Context, requester access.Principal) ([]access.Policy, error) {
+	var policies []access.Policy
+	for _, owner := range d.PolicyLayers(ctx) {
+		if !owner.Enabled {
+			continue
+		}
+		if owner.Err != nil {
+			return nil, owner.Err
+		}
+		if len(owner.Policies) == 0 {
+			return nil, fmt.Errorf("mandatory policy source unavailable")
+		}
+		for _, policy := range owner.Policies {
+			if !access.CanInspectPolicy(policy) {
+				return nil, &access.DeniedError{Decision: access.Decision{Code: access.CodeEnforcementUnsupported, Scope: access.DecisionScopeOperation}}
+			}
+			policies = append(policies, requesterPolicy{Policy: policy, principal: requester})
+		}
+	}
+	return policies, nil
 }

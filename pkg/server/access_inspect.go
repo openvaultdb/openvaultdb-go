@@ -147,6 +147,7 @@ func (s *Server) projectInspection(r *http.Request, db *core.Database, request a
 		result.Coverage.Evaluation = az.EvaluationPartial
 	}
 	s.addActorCapabilities(r, db, &result)
+	undecided := undecidedOperations(assessment)
 	for i, op := range request.Operations {
 		details := readable[op.ID]
 		if !details {
@@ -166,12 +167,29 @@ func (s *Server) projectInspection(r *http.Request, db *core.Database, request a
 			redactPoint(&result, op.ID)
 		}
 		result.Result = reduceOutcome(result.Result, result.Operations[i].Result)
-		if !assessment.Complete && details {
+		if details && undecided[op.ID] {
 			result.Coverage.Unevaluated = append(result.Coverage.Unevaluated, az.Unevaluated{OperationID: op.ID, Reason: "row_evidence_required"})
 		}
 	}
 	result.Allowed = result.Result == az.OutcomeAllow && result.Coverage.Evaluation == az.EvaluationComplete
 	return result
+}
+
+// undecidedOperations returns the ids of the operations the assessment could not
+// decide: those with a policy decision that is neither allowed nor a definite
+// denial (an indeterminate code, which includes the decision recorded when the
+// protected session could not prepare the operation's evidence). Whether one
+// operation can be decided is a fact about that operation alone, so the
+// operations that still need row evidence are taken from these decisions and not
+// from the assessment as a whole, which is incomplete when any operation is.
+func undecidedOperations(assessment access.Assessment) map[string]bool {
+	undecided := map[string]bool{}
+	for _, pa := range assessment.Policies {
+		if !pa.Decision.Allowed && pa.Decision.Code.IsIndeterminate() {
+			undecided[pa.OperationID] = true
+		}
+	}
+	return undecided
 }
 
 func redactPoint(result *az.Result, id string) {
@@ -362,22 +380,19 @@ func (s *Server) handleProtectedUpdate(w http.ResponseWriter, r *http.Request, d
 	})
 	if err != nil {
 		if result.RequestID != "" {
-			status, code := 403, "access_denied"
-			if !visible[op.ID] || errors.Is(err, access.ErrProtectedResourceUnavailable) {
-				status, code = 404, "resource_unavailable"
-				redactPoint(&result, op.ID)
-			} else if errors.Is(err, access.ErrDataRevisionConflict) {
+			switch {
+			case !visible[op.ID] || errors.Is(err, access.ErrProtectedResourceUnavailable):
+				// A record the caller may not see is answered as a record of a table
+				// the database does not declare is (see refuseOperation), by the same
+				// function, so the two bodies are built from the same facts.
+				writeUnavailableOperation(w, az.ModeExecution, op)
+			case errors.Is(err, access.ErrDataRevisionConflict):
 				writeError(w, 409, "data_revision_conflict", "record changed; reload before retrying")
-				return
-			} else if !errors.Is(err, access.ErrAccessDenied) {
+			case !errors.Is(err, access.ErrAccessDenied):
 				writeError(w, 422, "validation_failed", "candidate could not be accepted")
-				return
+			default:
+				writeJSON(w, 403, errorBody{Error: errorDetail{Code: "access_denied", RequestID: result.RequestID, Authorization: &result}})
 			}
-			if result.RequestID == "" {
-				writeProtectedFailure(w, err)
-				return
-			}
-			writeJSON(w, status, errorBody{Error: errorDetail{Code: code, RequestID: result.RequestID, Authorization: &result}})
 			return
 		}
 		writeProtectedFailure(w, err)
@@ -446,10 +461,9 @@ func (s *Server) handleAccessEvidence(w http.ResponseWriter, r *http.Request) {
 			writeProtectedFailure(w, err)
 			return
 		}
-		result := newAuthorization(az.ModeInspect)
-		result.Operations = append(result.Operations, az.OperationResult{ID: op.ID, RequestOperationID: op.ID, Action: op.Action, Resource: body.Resource, Result: az.OutcomeDeny, RestrictionIDs: []string{}, AllOf: []string{}, ExecutionClass: op.ExecutionClass})
-		redactPoint(&result, op.ID)
-		writeJSON(w, 404, errorBody{Error: errorDetail{Code: "resource_unavailable", RequestID: result.RequestID, Authorization: &result}})
+		// The answer for a record the caller may not see is the one for a table
+		// the database does not declare (see refuseOperation).
+		writeUnavailableOperation(w, az.ModeInspect, op)
 		return
 	}
 	if evidence[0].DataRevision == "" || len(evidence[0].DataRevision) > 256 {

@@ -46,35 +46,49 @@ func (collectionsListDB) ListReferrers(context.Context, *dal.CollectionRef) ([]d
 }
 
 // TestCollectionsListsOnlyDeclaredCanonicalNamesOnSQLEngines: the driver reports
-// every table it finds. On an engine that builds SQL a name is listed only when
-// the database declares it under exactly that name, so the list is the one the
-// routes that take a collection accept; a document engine lists what its driver
-// reports.
+// every table it finds. On an engine that builds SQL the list is made of the
+// declared collections, by their canonical names, that the driver reports, so it
+// is the list the routes that take a collection accept; a document engine lists
+// what its driver reports. PostgreSQL stores a name it is given lower-cased and
+// reports it so: a declared name is reported when its lower-cased form is.
 func TestCollectionsListsOnlyDeclaredCanonicalNamesOnSQLEngines(t *testing.T) {
 	reported := []string{"customers", "Customers", "ghost", "Order Details", `"Order Details"`, `"customers"`}
 	for _, c := range []struct {
-		engine string
-		mode   schema.Mode
-		want   []string
+		name     string
+		engine   string
+		mode     schema.Mode
+		declared []string
+		reported []string
+		want     []string
 	}{
 		// The quoted key of a SQLite manifest is declared by its public name, and the
 		// table whose name carries the quotes is not that collection.
-		{"sqlite", schema.ModeStrict, []string{"Order Details", "customers"}},
+		{"sqlite", "sqlite", schema.ModeStrict, []string{"customers", `"Order Details"`}, reported, []string{"Order Details", "customers"}},
 		// Other SQL engines take a key as it is written.
-		{"postgres", schema.ModeStrict, []string{`"Order Details"`, "customers"}},
-		{"mysql", schema.ModeStrict, []string{`"Order Details"`, "customers"}},
-		{"ingitdb", schema.ModeSchemaless, []string{`"Order Details"`, `"customers"`, "Customers", "Order Details", "customers", "ghost"}},
+		{"postgres", "postgres", schema.ModeStrict, []string{"customers", `"Order Details"`}, reported, []string{`"Order Details"`, "customers"}},
+		{"mysql", "mysql", schema.ModeStrict, []string{"customers", `"Order Details"`}, reported, []string{`"Order Details"`, "customers"}},
+		{"ingitdb", "ingitdb", schema.ModeSchemaless, []string{"customers", `"Order Details"`}, reported, []string{`"Order Details"`, `"customers"`, "Customers", "Order Details", "customers", "ghost"}},
+		// PostgreSQL reports the lower-cased form of a declared name that has an
+		// upper-case letter; the declared name is listed, and a table that is not
+		// declared is not.
+		{"postgres, a declared name with an upper-case letter", "postgres", schema.ModeStrict, []string{"Customers", "orders"}, []string{"customers", "ghost"}, []string{"Customers"}},
+		{"postgres, the same name declared in two cases", "postgres", schema.ModeStrict, []string{"Customers", "customers"}, []string{"customers"}, []string{"Customers", "customers"}},
+		{"postgres, a declared name the driver does not report", "postgres", schema.ModeStrict, []string{"Customers", "orders"}, []string{"orders"}, []string{"orders"}},
+		// Other engines match the reported name exactly.
+		{"mysql, a declared name with an upper-case letter", "mysql", schema.ModeStrict, []string{"Customers"}, []string{"customers"}, nil},
+		{"sqlite, a declared name with an upper-case letter", "sqlite", schema.ModeStrict, []string{"Customers"}, []string{"customers"}, nil},
 	} {
-		t.Run(c.engine, func(t *testing.T) {
+		t.Run(c.name, func(t *testing.T) {
+			collections := map[string]schema.Collection{}
+			for _, name := range c.declared {
+				collections[name] = schema.Collection{Fields: map[string]schema.Field{"name": {Type: schema.TypeString}}}
+			}
 			m := &manifest.Manifest{
 				Database: manifest.Database{ID: "listed", SchemaMode: c.mode},
 				Storage:  manifest.Storage{Engine: c.engine},
-				Schemas: &schema.Schemas{Collections: map[string]schema.Collection{
-					"customers":       {Fields: map[string]schema.Field{"name": {Type: schema.TypeString}}},
-					`"Order Details"`: {Fields: map[string]schema.Field{"name": {Type: schema.TypeString}}},
-				}},
+				Schemas:  &schema.Schemas{Collections: collections},
 			}
-			db, err := Open(m, collectionsListDB{reported: reported}, []schema.Mode{c.mode}, t.TempDir()+"/inferred.json")
+			db, err := Open(m, collectionsListDB{reported: c.reported}, []schema.Mode{c.mode}, t.TempDir()+"/inferred.json")
 			if err != nil {
 				t.Fatal(err)
 			}

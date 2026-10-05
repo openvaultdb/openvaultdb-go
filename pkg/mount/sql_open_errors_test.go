@@ -79,9 +79,11 @@ func assertNoMarker(t *testing.T, err error, markers ...string) {
 // opening or pinging a postgres mount is built here. It is a fixed sentence that
 // names the environment variable, followed by the text of the adapter's own
 // *dalgo2postgres.ConnectionError when the opener returned one (that text is
-// built by the adapter from a fixed sentence and checked parts, and holds no text
-// of the connection string). The opener's error is not wrapped: neither its text
-// nor the connection string is in what is returned or reachable from it.
+// built by the adapter from a fixed sentence, the SQLSTATE code, and the host,
+// port and database name it has checked: no user name, no password, no other text
+// of the connection string and none of the driver's message). The opener's error
+// is not wrapped: neither its text nor the connection string is in what is
+// returned or reachable from it.
 func TestPostgresOpenErrorIsBuiltFromAFixedSentenceAndTheAdaptersText(t *testing.T) {
 	dsn := "postgres://app:" + markerPassword + "@db.example.test:5432/orders?sslmode=require"
 	t.Setenv("TEST_SQL_MOUNT_DSN", dsn)
