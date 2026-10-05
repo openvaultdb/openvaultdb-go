@@ -36,6 +36,10 @@ func (s *Server) sampleAccess(w http.ResponseWriter, r *http.Request, db *core.D
 		return
 	}
 	rows, order, selectionErr := db.SelectAccessSample(r.Context(), query, request.Sample.Limit, requester)
+	if errors.Is(selectionErr, core.ErrProtectedSingleSource) {
+		s.writeMappedError(w, r, selectionErr)
+		return
+	}
 	selectionErr = hiddenAsDenied(db, selectionErr)
 	result := newAuthorization(az.ModeSample)
 	result.Scope = az.ScopeSample

@@ -257,6 +257,9 @@ func (d *Database) StreamDTQLSnapshot(ctx context.Context, query dal.StructuredQ
 	if query.Limit() != 0 || query.Offset() != 0 {
 		return fmt.Errorf("%w: snapshot query requires limit and offset to be zero", ErrInvalidDTQL)
 	}
+	if err := d.guardProtectedSources(query); err != nil {
+		return err
+	}
 	if err := d.guardSources(query); err != nil {
 		return err
 	}
@@ -304,6 +307,9 @@ func (d *Database) StreamDTQLSnapshot(ctx context.Context, query dal.StructuredQ
 func (d *Database) ExecuteDTQLQuery(ctx context.Context, query dal.StructuredQuery) ([]Record, error) {
 	collection, err := validateDTQLFor(query, d.fieldRule())
 	if err != nil {
+		return nil, err
+	}
+	if err = d.guardProtectedSources(query); err != nil {
 		return nil, err
 	}
 	if err = d.guardSources(query); err != nil {

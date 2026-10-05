@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"testing"
@@ -76,5 +77,24 @@ func TestQueryCollectionsFailsClosedOnShapesItDoesNotKnow(t *testing.T) {
 		if !errors.Is(err, ErrInvalidDTQL) || got != nil {
 			t.Errorf("%s: got %v, %v", label, got, err)
 		}
+	}
+}
+
+// TestQueryCollectionsListsAWideDocumentCompletely: a document with tens of
+// thousands of subqueries, each collection named twice, lists each collection
+// once, in the order the walk meets it.
+func TestQueryCollectionsListsAWideDocumentCompletely(t *testing.T) {
+	const distinct = 20000
+	conditions := make([]dal.Condition, 0, 2*distinct)
+	want := make([]string, 0, distinct)
+	for i := 0; i < distinct; i++ {
+		name := fmt.Sprintf("c%d", i)
+		want = append(want, name)
+		conditions = append(conditions, dal.NewExistsCondition(srcGuardInner(name)), dal.NewExistsCondition(srcGuardInner(name)))
+	}
+	query := selectQuery(fromTree(rootRef("c0")).NewQuery().Where(dal.NewGroupCondition(dal.And, conditions...)))
+	got, err := QueryCollections(query)
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("listed %d collections (first %v), %v; want %d in order", len(got), got[:min(len(got), 3)], err, distinct)
 	}
 }

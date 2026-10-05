@@ -48,10 +48,12 @@ var errSourcesTooDeep = fmt.Errorf("%w: query nesting is too deep", ErrInvalidDT
 // guardSources refuses, before any adapter call, a structured query that reads
 // a collection this database does not declare when its adapter builds SQL
 // (sqlite, postgres, mysql, and any engine not known to be a document engine).
-// It is the same allow-list GuardCollection applies to key reads and writes,
-// applied to every collection the query reads: the root source, every joined
-// source at any depth, every derived source and every subquery (EXISTS, scalar
-// and the ones in a scan order), wherever they sit. A source qualified by a
+// It is the set of declared collections GuardCollection applies to key reads
+// and writes, applied to every collection the query reads: the root source,
+// every joined source at any depth, every derived source and every subquery
+// (EXISTS, scalar and the ones in a scan order), wherever they sit. A query
+// names a declared collection by its canonical name only (checkSourceCollection),
+// where a key may carry any of its spellings. A source qualified by a
 // parent record or a schema, or naming another database, is not a collection
 // of this one and is refused too, because the adapter ignores or rewrites such
 // a qualifier. A shape the walk does not know is refused with ErrInvalidDTQL
@@ -67,6 +69,22 @@ func (d *Database) guardSources(query dal.StructuredQuery) error {
 		return nil
 	}
 	return sourceGuard{visit: d.checkSourceCollection}.query(query, 0)
+}
+
+// guardProtectedSources refuses, before any adapter call and before any
+// collection name is looked at, a structured query that reads more than its
+// root collection on a database with access policies (ErrProtectedSingleSource).
+// DALgo's access layer authorises the base and first-level join sources only,
+// so such a database serves one plain collection per query (singleSourceRead).
+// The decision depends on the shape of the query alone, so the answer is the
+// same whichever collections the query names, declared or not. It is the first
+// source check of the entry points that take one query of the single-collection
+// profile: ExecuteDTQLQuery, StreamDTQLSnapshot and SelectAccessSample.
+func (d *Database) guardProtectedSources(query dal.StructuredQuery) error {
+	if d.HasAccessPolicies() && !singleSourceRead(query) {
+		return ErrProtectedSingleSource
+	}
+	return nil
 }
 
 // guardSource is guardSources for one source, for the call that reads the
@@ -86,14 +104,16 @@ func (d *Database) guardSource(source dal.RecordsetSource) error {
 // the route names. A source that a parent record, a schema or another database
 // qualifies is not named by one root collection of this database, and a shape
 // the walk does not know cannot be read: both are refused with ErrInvalidDTQL
-// and nothing is listed.
+// and nothing is listed. The cost is linear in the size of the query.
 func QueryCollections(query dal.StructuredQuery) ([]string, error) {
 	var names []string
+	listed := map[string]struct{}{}
 	walk := sourceGuard{visit: func(ref dal.CollectionRef) error {
 		if ref.Parent() != nil || ref.Schema() != "" || ref.Database() != "" {
 			return fmt.Errorf("%w: only plain root collections are supported as sources", ErrInvalidDTQL)
 		}
-		if !slices.Contains(names, ref.Name()) {
+		if _, seen := listed[ref.Name()]; !seen {
+			listed[ref.Name()] = struct{}{}
 			names = append(names, ref.Name())
 		}
 		return nil
@@ -206,7 +226,12 @@ func (g sourceGuard) collection(ref dal.CollectionRef, depth int) error {
 
 // checkSourceCollection is the check of guardSources on one collection source:
 // it is refused unless it is a declared collection of this database, named
-// plainly (no parent record, no schema, no other database).
+// plainly (no parent record, no schema, no other database) and by its canonical
+// name. A query gives the adapter the name as written, and the adapter quotes
+// it as one identifier, so a spelling of the collection that is not its
+// canonical name (the SQL-quoted key of a SQLite manifest, with its quote
+// characters) would address the table of that literal name, which is a different
+// table. The canonical name is the only spelling a query may use.
 func (d *Database) checkSourceCollection(ref dal.CollectionRef) error {
 	if ref.Parent() != nil {
 		return fmt.Errorf("%w: collection %q cannot be nested under a record on this database", ErrNotFound, clipName(ref.Name()))
@@ -217,7 +242,7 @@ func (d *Database) checkSourceCollection(ref dal.CollectionRef) error {
 	if named := ref.Database(); named != "" && (d.Manifest == nil || named != d.Manifest.Database.ID) {
 		return fmt.Errorf("%w: collection %q of database %q is not declared by this database", ErrNotFound, clipName(ref.Name()), clipName(named))
 	}
-	if d.GuardCollection(ref.Name()) != nil {
+	if canonical, declared := d.CanonicalCollection(ref.Name()); !declared || canonical != ref.Name() {
 		return errUndeclared(ref.Name())
 	}
 	return nil

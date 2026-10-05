@@ -63,15 +63,27 @@ func hiddenSourceDB(t *testing.T, admitOrders bool) *core.Database {
 	return db
 }
 
-// hiddenSourceServer serves hiddenSourceDB, whose policy denies orders, to the
-// owner token.
+const hiddenSourceGrantedToken = "ovdb_test_hidden_granted"
+
+// hiddenSourceServer serves hiddenSourceDB, whose policy denies orders. Two
+// callers hold a read capability: the owner token, and a token granted every
+// collection a case of the tests below names (customers, orders and ghost).
 func hiddenSourceServer(t *testing.T) *httptest.Server {
 	t.Helper()
+	store, err := auth.OpenStore(filepath.Join(t.TempDir(), "auth.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reads []auth.Capability
+	for _, collection := range []string{"customers", "orders", "ghost"} {
+		reads = append(reads, auth.Capability{Action: auth.CapRecordsRead, Collection: collection})
+	}
+	grantToken(t, store, "crm", hiddenSourceGrantedToken, reads...)
 	service := server.New("test", map[string]*core.Database{"crm": hiddenSourceDB(t, false)},
 		server.WithPrincipalResolver(func(context.Context, *auth.Principal) (access.Principal, error) {
 			return access.Principal{Roles: []string{"reader"}}, nil
 		}),
-		server.WithAuth(&auth.Config{OwnerToken: ownerToken}))
+		server.WithAuth(&auth.Config{OwnerToken: ownerToken, Store: store}))
 	t.Cleanup(service.CloseSnapshots)
 	ts := httptest.NewServer(service.Handler())
 	t.Cleanup(ts.Close)
@@ -85,13 +97,13 @@ type hiddenSourceAnswer struct {
 	body   string
 }
 
-func hiddenSourceAsk(t *testing.T, ts *httptest.Server, method, path, body string, headers map[string]string) hiddenSourceAnswer {
+func hiddenSourceAsk(t *testing.T, ts *httptest.Server, token, method, path, body string, headers map[string]string) hiddenSourceAnswer {
 	t.Helper()
 	req, err := http.NewRequest(method, ts.URL+path, strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("Authorization", "Bearer "+ownerToken)
+	req.Header.Set("Authorization", "Bearer "+token)
 	for name, value := range headers {
 		req.Header.Set(name, value)
 	}
@@ -138,14 +150,20 @@ type hiddenSourceCase struct {
 	// is swapped before the two answers are compared.
 	hiddenRoot string
 	deniedRoot string
+	// refused is true for a document that reads more than its root collection:
+	// a mount with access policies refuses it with 422 whatever it names.
+	refused bool
 }
 
 // TestUndeclaredSourceIsAnsweredAsADeniedOneOnAMountWithPolicies: a mount with
-// access policies does not say which collections it declares. A query that
-// reads a collection the database does not declare, as its root or anywhere
-// inside it, gets the answer the same query gets for a declared collection the
-// policy denies: the same status and the same body, with no word of why and
-// no name of the undeclared collection but the one the caller sent as root.
+// access policies does not say which collections it declares. On every route
+// that takes a query, a query of an undeclared collection gets the answer the
+// same query gets for a declared collection the policy denies: the same status
+// and the same body, with no word of why and no name of the undeclared
+// collection but the one the caller sent as root. A document that reads a
+// second source (a subquery of any kind) is refused for its shape alone, with
+// 422, before any read and whichever collections it names. The pairs below put
+// the two names in the same place, for the owner and for a token granted both.
 func TestUndeclaredSourceIsAnsweredAsADeniedOneOnAMountWithPolicies(t *testing.T) {
 	ts := hiddenSourceServer(t)
 	const db = "/v1/databases/crm"
@@ -158,9 +176,25 @@ func TestUndeclaredSourceIsAnsweredAsADeniedOneOnAMountWithPolicies(t *testing.T
 		return string(data)
 	}
 	dtql := func(from string) string { return "from: {name: " + from + "}\n" }
+	filtered := func(from string) string {
+		return "from: {name: " + from + "}\nwhere: {op: '==', left: {field: id}, right: {value: nobody}}\norderBy: [{field: id}]\nlimit: 5\n"
+	}
 	nested := func(root, inner string) string {
 		return "from: {name: " + root + "}\nwhere: {exists: {query: {from: {name: " + inner + "}}}}\n"
 	}
+	behindFalse := func(inner string) string {
+		return "from: {name: customers}\nwhere: {and: [{op: '==', left: {field: name}, right: {value: nobody}}, {exists: {query: {from: {name: " + inner + "}}}}]}\n"
+	}
+	withJoin := func(inner string) string {
+		return "from: {name: customers}\nwhere: {exists: {query: {from: {name: customers, alias: c2, joins: [{from: {name: " + inner + ", alias: o}, on: [{op: '==', left: {field: id, source: c2}, right: {field: id, source: o}}]}]}}}}\n"
+	}
+	withOrder := func(inner string) string {
+		return "from: {name: customers}\nwhere: {exists: {query: {from: {name: " + inner + "}, orderBy: [{field: id}]}}}\n"
+	}
+	scalar := func(inner string) string {
+		return "from: {name: customers}\nwhere: {op: '==', left: {field: name}, right: {query: {from: {name: " + inner + "}, columns: [{field: id}], limit: 1}}}\n"
+	}
+	ordered := func(doc string) string { return doc + "orderBy: [{field: name}]\n" }
 	sample := func(q string) string {
 		op := writeGuardProtectedOp("update", "/customers", writeGuardProtectedSet("name"))
 		data, _ := json.Marshal(api.Request{APIVersion: az.APIVersion, Mode: az.ModeSample, DiagnosticLevel: "ordinary", Operations: []api.Operation{op},
@@ -186,14 +220,26 @@ func TestUndeclaredSourceIsAnsweredAsADeniedOneOnAMountWithPolicies(t *testing.T
 		{name: "parent", hidden: wire("customers", "customers/c1"), denied: wire("orders", "")},
 		{name: "root with a parent", hidden: wire("ghost", "customers/c1"), denied: wire("orders", "")},
 	}
-	dtqlCases := []hiddenSourceCase{
+	// ofCustomers are documents of customers that read a second source. Each
+	// puts ghost where the denied document puts orders, and the denied
+	// document is built like it. The sample takes these only: its query is of
+	// the collection its operation names.
+	ofCustomers := []hiddenSourceCase{
+		{name: "subquery", hidden: nested("customers", "ghost"), denied: nested("customers", "orders"), refused: true},
+		{name: "subquery behind a false condition", hidden: behindFalse("ghost"), denied: behindFalse("orders"), refused: true},
+		{name: "subquery with a join", hidden: withJoin("ghost"), denied: withJoin("orders"), refused: true},
+		{name: "subquery with an order", hidden: withOrder("ghost"), denied: withOrder("orders"), refused: true},
+		{name: "scalar subquery", hidden: scalar("ghost"), denied: scalar("orders"), refused: true},
+		{name: "subquery, order on the root", hidden: ordered(nested("customers", "ghost")), denied: ordered(nested("customers", "orders")), refused: true},
+	}
+	dtqlCases := append([]hiddenSourceCase{
 		{name: "root", hidden: dtql("ghost"), denied: dtql("orders"), hiddenRoot: "ghost", deniedRoot: "orders"},
-		{name: "subquery", hidden: nested("customers", "ghost"), denied: nested("customers", "orders")},
-		{name: "subquery of a denied root", hidden: nested("orders", "ghost"), denied: dtql("orders")},
-	}
-	sampleCases := []hiddenSourceCase{
-		{name: "subquery", hidden: nested("customers", "ghost"), denied: nested("customers", "orders")},
-	}
+		{name: "root with a filter and an order", hidden: filtered("ghost"), denied: filtered("orders"), hiddenRoot: "ghost", deniedRoot: "orders"},
+		{name: "subquery of the root itself", hidden: nested("ghost", "ghost"), denied: nested("orders", "orders"), hiddenRoot: "ghost", deniedRoot: "orders", refused: true},
+		{name: "subquery of a denied root", hidden: nested("orders", "ghost"), denied: nested("orders", "orders"), refused: true},
+		{name: "subquery of an undeclared root", hidden: nested("ghost", "orders"), denied: nested("orders", "orders"), hiddenRoot: "ghost", deniedRoot: "orders", refused: true},
+	}, ofCustomers...)
+	sampleCases := ofCustomers
 	for _, r := range []route{
 		{name: "/query GET", method: "GET", path: inURL("/query"), body: noBody, cases: wireCases},
 		{name: "/query POST", method: "POST", path: atPath("/query"), body: asBody, cases: wireCases},
@@ -202,31 +248,63 @@ func TestUndeclaredSourceIsAnsweredAsADeniedOneOnAMountWithPolicies(t *testing.T
 		{name: "/dtql snapshot page", method: "POST", path: atPath("/dtql"), body: asBody, headers: map[string]string{"OVDB-Page-Size": "10"}, cases: dtqlCases},
 		{name: "access sample", method: "POST", path: atPath("/access/evaluate"), body: sample, cases: sampleCases},
 	} {
-		t.Run(r.name, func(t *testing.T) {
-			ask := func(q string) hiddenSourceAnswer {
-				return hiddenSourceAsk(t, ts, r.method, r.path(q), r.body(q), r.headers)
-			}
-			for _, c := range r.cases {
-				hidden, denied := ask(c.hidden), ask(c.denied)
-				if hidden.status == http.StatusNotFound || hidden.status == http.StatusInternalServerError {
-					t.Errorf("%s: %d %s", c.name, hidden.status, hidden.body)
+		for _, caller := range []struct{ name, token string }{{"owner", ownerToken}, {"granted token", hiddenSourceGrantedToken}} {
+			t.Run(r.name+"/"+caller.name, func(t *testing.T) {
+				ask := func(q string) hiddenSourceAnswer {
+					return hiddenSourceAsk(t, ts, caller.token, r.method, r.path(q), r.body(q), r.headers)
 				}
-				got := hidden.body
-				if c.hiddenRoot != "" {
-					got = strings.ReplaceAll(got, c.hiddenRoot, c.deniedRoot)
-				}
-				if hidden.status != denied.status || got != denied.body {
-					t.Errorf("%s: undeclared\n  %d %s\ndenied\n  %d %s", c.name, hidden.status, hidden.body, denied.status, denied.body)
-				}
-				if strings.Contains(hidden.body, "ghost") && c.hiddenRoot == "" {
-					t.Errorf("%s: the answer names the undeclared collection: %s", c.name, hidden.body)
-				}
-				for _, why := range []string{"not declared", "nested under", "record not found"} {
-					if strings.Contains(hidden.body, why) {
-						t.Errorf("%s: the answer says why: %s", c.name, hidden.body)
+				for _, c := range r.cases {
+					hidden, denied := ask(c.hidden), ask(c.denied)
+					if hidden.status == http.StatusNotFound || hidden.status == http.StatusInternalServerError {
+						t.Errorf("%s: %d %s", c.name, hidden.status, hidden.body)
+					}
+					if c.refused && (hidden.status != http.StatusUnprocessableEntity || denied.status != http.StatusUnprocessableEntity) {
+						t.Errorf("%s: want 422 for both\n  undeclared %d %s\n  denied %d %s", c.name, hidden.status, hidden.body, denied.status, denied.body)
+					}
+					got := hidden.body
+					if c.hiddenRoot != "" {
+						got = strings.ReplaceAll(got, c.hiddenRoot, c.deniedRoot)
+					}
+					if hidden.status != denied.status || got != denied.body {
+						t.Errorf("%s: undeclared\n  %d %s\ndenied\n  %d %s", c.name, hidden.status, hidden.body, denied.status, denied.body)
+					}
+					if strings.Contains(hidden.body, "ghost") && c.hiddenRoot == "" {
+						t.Errorf("%s: the answer names the undeclared collection: %s", c.name, hidden.body)
+					}
+					for _, why := range []string{"not declared", "nested under", "record not found"} {
+						if strings.Contains(hidden.body, why) {
+							t.Errorf("%s: the answer says why: %s", c.name, hidden.body)
+						}
 					}
 				}
-			}
-		})
+			})
+		}
+	}
+}
+
+// TestSubqueryOnAMountWithPoliciesIsRefusedAsUnsupported: a mount with access
+// policies reads one plain collection per query. A document with a subquery is
+// 422 authorization_unsupported on /dtql and on the access sample, with the
+// message that names no collection, and a document of one readable collection
+// is read as before.
+func TestSubqueryOnAMountWithPoliciesIsRefusedAsUnsupported(t *testing.T) {
+	ts := hiddenSourceServer(t)
+	const db = "/v1/databases/crm"
+	doc := "from: {name: customers}\nwhere: {exists: {query: {from: {name: customers, alias: c2}}}}\n"
+	op := writeGuardProtectedOp("update", "/customers", writeGuardProtectedSet("name"))
+	sample, _ := json.Marshal(api.Request{APIVersion: az.APIVersion, Mode: az.ModeSample, DiagnosticLevel: "ordinary", Operations: []api.Operation{op},
+		Sample: &api.Sample{Limit: 1, Query: api.Query{Format: "dtql-yaml", Text: doc}}})
+	for name, call := range map[string]struct{ path, body string }{
+		"dtql":   {db + "/dtql", doc},
+		"sample": {db + "/access/evaluate", string(sample)},
+	} {
+		answer := hiddenSourceAsk(t, ts, ownerToken, "POST", call.path, call.body, nil)
+		if answer.status != http.StatusUnprocessableEntity || !strings.Contains(answer.body, `"code":"authorization_unsupported"`) || !strings.Contains(answer.body, "one source at a time") {
+			t.Errorf("%s: %d %s", name, answer.status, answer.body)
+		}
+	}
+	plain := hiddenSourceAsk(t, ts, ownerToken, "POST", db+"/dtql", "from: {name: customers}\n", nil)
+	if plain.status != http.StatusOK || !strings.Contains(plain.body, "Ada") {
+		t.Errorf("a document of one collection: %d %s", plain.status, plain.body)
 	}
 }

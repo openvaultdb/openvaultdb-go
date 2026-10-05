@@ -143,7 +143,9 @@ func TestDTQLReadsOfAnotherCollectionAreAuthorizedPerCollection(t *testing.T) {
 
 // TestAccessSampleReadsOfAnotherCollectionAreAuthorizedPerCollection: the sample
 // route runs a DTQL document too, so a subquery in its query is held to the same
-// capability check as the root.
+// capability check as the root. The mount has access policies, so a token that
+// passes the capability check meets the mount's own refusal of a second source
+// (422 authorization_unsupported), never a 403.
 func TestAccessSampleReadsOfAnotherCollectionAreAuthorizedPerCollection(t *testing.T) {
 	service := server.New("test", map[string]*core.Database{"crm": hiddenSourceDB(t, true)},
 		server.WithPrincipalResolver(func(context.Context, *auth.Principal) (access.Principal, error) {
@@ -167,7 +169,7 @@ func TestAccessSampleReadsOfAnotherCollectionAreAuthorizedPerCollection(t *testi
 			t.Errorf("%s, read of orders by a token for customers: %d %s", label, status, body)
 		}
 		for _, token := range []string{nestedScopeBothToken, ownerToken} {
-			if status, body := ask(token, doc); status != http.StatusOK {
+			if status, body := ask(token, doc); status != http.StatusUnprocessableEntity || errorCode(t, body) != "authorization_unsupported" {
 				t.Errorf("%s, token for both: %d %s", label, status, body)
 			}
 		}

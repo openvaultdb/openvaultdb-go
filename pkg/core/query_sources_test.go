@@ -392,11 +392,12 @@ func TestDocumentEnginesKeepTheirCollectionRuleForQueries(t *testing.T) {
 }
 
 // TestDeclaredNamesMatchExactlyInQueries: a name that differs by case, by a
-// space or by a quote is not the declared one, and a quoted SQLite key is
-// declared under its public name as well.
+// space or by a quote is not the declared one. A quoted SQLite key is declared
+// under its public name as well, and a query names the collection by that
+// canonical name only: the quoted spelling is not the name the adapter is given.
 func TestDeclaredNamesMatchExactlyInQueries(t *testing.T) {
 	db, fake := writeGuardOpen(t, "sqlite", "Order Details", `"Quoted Name"`)
-	for _, name := range []string{"order details", "Order  Details", "Order Details ", `Order Details"`, `"Order Details"`, "Quoted", `"Quoted Name"x`} {
+	for _, name := range []string{"order details", "Order  Details", "Order Details ", `Order Details"`, `"Order Details"`, "Quoted", `"Quoted Name"x`, `"Quoted Name"`} {
 		if _, err := db.Execute(context.Background(), Query{Collection: name}); !errors.Is(err, ErrNotFound) {
 			t.Errorf("%q: %v", name, err)
 		}
@@ -404,7 +405,7 @@ func TestDeclaredNamesMatchExactlyInQueries(t *testing.T) {
 	if fake.reached() != 0 {
 		t.Fatalf("the adapter was reached %d times", fake.reached())
 	}
-	for _, name := range []string{"Order Details", `"Quoted Name"`, "Quoted Name"} {
+	for _, name := range []string{"Order Details", "Quoted Name"} {
 		if _, err := db.Execute(context.Background(), Query{Collection: name}); !errors.Is(err, errFakeReached) {
 			t.Errorf("%q: %v", name, err)
 		}
