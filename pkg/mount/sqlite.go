@@ -8,12 +8,15 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/dalgo2sql"
 	"github.com/dal-go/dalgo2sqlite"
+	"github.com/dal-go/record"
 	sqlite "modernc.org/sqlite" // also registers the "sqlite" driver the second handle is opened with
 	sqlite3 "modernc.org/sqlite/lib"
 
@@ -50,8 +53,9 @@ func overDeadline(ctx context.Context, err error) error {
 // busyTimeoutDSN is the name the driver opens the file at path with, carrying the
 // busy timeout by the driver's own option (_busy_timeout, a number of milliseconds, applied
 // to every connection of the handle).
-func busyTimeoutDSN(path string) string {
-	return fmt.Sprintf("%s?_busy_timeout=%d", path, busyTimeout.Milliseconds())
+func busyTimeoutDSN(path string) string { return sqliteWaitDSN(path, busyTimeout) }
+func sqliteWaitDSN(path string, wait time.Duration) string {
+	return fmt.Sprintf("%s?_busy_timeout=%d", path, wait.Milliseconds())
 }
 
 // openSQLite opens a file-backed SQLite database through the dal-go
@@ -66,6 +70,14 @@ func openSQLite(path string, m *manifest.Manifest) (dal.DB, []schema.Mode, error
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, nil, fmt.Errorf("failed to create SQLite directory for %s: %w", path, err)
 	}
+	wait, err := m.Storage.SQLite.LockWait(busyTimeout)
+	if err != nil {
+		return nil, nil, err
+	}
+	keys, err := sqliteRecordKeys(m)
+	if err != nil {
+		return nil, nil, err
+	}
 	recordsets := map[string]*dalgo2sql.Recordset{}
 	if m.Schemas != nil {
 		names := make([]string, 0, len(m.Schemas.Collections))
@@ -74,7 +86,15 @@ func openSQLite(path string, m *manifest.Manifest) (dal.DB, []schema.Mode, error
 		}
 		sort.Strings(names)
 		for _, name := range names {
-			recordset := dalgo2sql.NewRecordset(name, dalgo2sql.Table, []dal.FieldRef{dal.Field("id")})
+			table := name
+			if logical, ok := core.SQLiteLogicalName(name); ok {
+				table = logical
+			}
+			key := "id"
+			if configured, ok := keys[table]; ok {
+				key = configured
+			}
+			recordset := dalgo2sql.NewRecordset(table, dalgo2sql.Table, []dal.FieldRef{dal.Field(key)})
 			recordsets[name] = recordset
 			if logicalName, ok := core.SQLiteLogicalName(name); ok {
 				// A quoted schema key is the SQL-quoted identifier of its table. The
@@ -90,7 +110,7 @@ func openSQLite(path string, m *manifest.Manifest) (dal.DB, []schema.Mode, error
 	}
 	// Both handles wait for a lock: the one the driver reads and writes with, and the one
 	// that reads the columns of a table.
-	dsn := busyTimeoutDSN(path)
+	dsn := sqliteWaitDSN(path, wait)
 	db, err := newSQLiteDatabase(dsn, dal.NewSchema(nil, nil),
 		dalgo2sql.DbOptions{Recordsets: recordsets, StructuredQueryDialect: "sqlite"})
 	if err != nil {
@@ -101,7 +121,12 @@ func openSQLite(path string, m *manifest.Manifest) (dal.DB, []schema.Mode, error
 		_ = db.Close()
 		return nil, nil, fmt.Errorf("failed to open SQLite at %s: %w", path, err)
 	}
-	return &sqliteMount{Database: db, columns: columns}, []schema.Mode{schema.ModeStrict}, nil
+	if err := verifySQLiteKeys(context.Background(), columns, keys); err != nil {
+		_ = columns.Close()
+		_ = db.Close()
+		return nil, nil, err
+	}
+	return &sqliteMount{Database: db, columns: columns, recordKeys: keys, lockWait: wait}, []schema.Mode{schema.ModeStrict}, nil
 }
 
 // newSQLiteDatabase opens the handle the driver reads and writes with, at the name the
@@ -122,7 +147,9 @@ type sqliteMount struct {
 	*dalgo2sqlite.Database
 	// columns is the second handle on the file, which JoinFields reads the columns
 	// of a table with. Close closes it with the driver.
-	columns *sql.DB
+	columns    *sql.DB
+	recordKeys map[string]string
+	lockWait   time.Duration
 }
 
 // RunReadwriteTransaction is the driver's. A write that waits for a lock past the deadline
@@ -223,4 +250,116 @@ func tableColumns(ctx context.Context, query func(ctx context.Context, statement
 		return nil, err
 	}
 	return columns, nil
+}
+
+// SQLiteRecordKeys reports only keys verified against the physical SQLite file.
+func (s *sqliteMount) SQLiteRecordKeys() (map[string]string, time.Duration) {
+	out := make(map[string]string, len(s.recordKeys))
+	for name, key := range s.recordKeys {
+		out[name] = key
+	}
+	return out, s.lockWait
+}
+
+func sqliteRecordKeys(m *manifest.Manifest) (map[string]string, error) {
+	if m.Storage.SQLite == nil || m.Storage.SQLite.RecordKeys == nil {
+		return nil, nil
+	}
+	configured := m.Storage.SQLite.RecordKeys
+	if len(configured) == 0 || m.Schemas == nil {
+		return nil, fmt.Errorf("SQLite record keys require declared collections")
+	}
+	keys := make(map[string]string)
+	spellings := make(map[string]string)
+	for name, collection := range m.Schemas.Collections {
+		canonical := name
+		if logical, ok := core.SQLiteLogicalName(name); ok {
+			canonical = logical
+		}
+		// Opted-in maps use native logical names, never quoted aliases.
+		key, ok := configured[canonical]
+		if !ok || key == "" {
+			return nil, fmt.Errorf("SQLite record key missing for collection %q", canonical)
+		}
+		if _, exists := keys[canonical]; exists {
+			return nil, fmt.Errorf("ambiguous SQLite record key collection %q", canonical)
+		}
+		for _, spelling := range []string{name, canonical} {
+			folded := strings.ToLower(spelling)
+			if prior, exists := spellings[folded]; exists && prior != canonical {
+				return nil, fmt.Errorf("ambiguous SQLite record key collection %q", canonical)
+			}
+			spellings[folded] = canonical
+		}
+		field, ok := collection.Fields[key]
+		if !ok || field.Type != schema.TypeString {
+			return nil, fmt.Errorf("SQLite record key for %q must name a declared string field", canonical)
+		}
+		keys[canonical] = key
+	}
+	if len(configured) != len(keys) {
+		return nil, fmt.Errorf("SQLite record key map must cover exactly the declared canonical collections")
+	}
+	return keys, nil
+}
+
+// quoteSQLiteIdentifier is used only for mount-time physical integrity checks.
+// Query/record SQL generation and quoting remain the DALgo driver's responsibility.
+func quoteSQLiteIdentifier(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+func verifySQLiteKeys(ctx context.Context, db *sql.DB, keys map[string]string) error {
+	for table, key := range keys {
+		var kind, actualType string
+		if err := db.QueryRowContext(ctx, `SELECT type FROM sqlite_schema WHERE name = ? COLLATE BINARY`, table).Scan(&kind); err != nil || kind != "table" {
+			return fmt.Errorf("SQLite serving collection %q must be an existing physical table", table)
+		}
+		if err := db.QueryRowContext(ctx, `SELECT type FROM pragma_table_xinfo(?) WHERE name = ? COLLATE BINARY AND hidden = 0`, table, key).Scan(&actualType); err != nil || !strings.EqualFold(actualType, "TEXT") {
+			return fmt.Errorf("SQLite serving key of %q must be a physical TEXT column", table)
+		}
+		var indexed bool
+		err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pragma_index_list(?) AS i WHERE i.[unique] = 1 AND i.partial = 0 AND (SELECT count(*) FROM pragma_index_xinfo(i.name) WHERE [key] = 1) = 1 AND EXISTS(SELECT 1 FROM pragma_index_xinfo(i.name) WHERE [key] = 1 AND name = ? COLLATE BINARY))`, table, key).Scan(&indexed)
+		if err != nil {
+			return fmt.Errorf("verify SQLite serving index: %w", err)
+		}
+		if !indexed {
+			return fmt.Errorf("SQLite serving key of %q requires a complete single-column unique index", table)
+		}
+		column, relation := quoteSQLiteIdentifier(key), quoteSQLiteIdentifier(table)
+		// A unique index can override the column's collation. The ordinary ORDER BY
+		// uses the column's own collation, so distinct index keys must also be unique
+		// under that comparison (e.g. NOCASE column + BINARY unique index).
+		var duplicateOrder bool
+		if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM `+relation+` GROUP BY `+column+` HAVING count(*) > 1 LIMIT 1)`).Scan(&duplicateOrder); err != nil {
+			return fmt.Errorf("verify SQLite serving order: %w", err)
+		}
+		if duplicateOrder {
+			return fmt.Errorf("SQLite serving key of %q is not unique under its ordering collation", table)
+		}
+		rows, err := db.QueryContext(ctx, `SELECT `+column+`, typeof(`+column+`) FROM `+relation)
+		if err != nil {
+			return fmt.Errorf("verify SQLite serving values: %w", err)
+		}
+		for rows.Next() {
+			var value any
+			var valueType string
+			if err := rows.Scan(&value, &valueType); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("verify SQLite serving values: %w", err)
+			}
+			text, ok := value.(string)
+			if !ok || valueType != "text" || !utf8.ValidString(text) || record.ValidateStringID(text) != nil || core.ValidateSegment(text) != nil {
+				_ = rows.Close()
+				return fmt.Errorf("SQLite serving key of %q contains an invalid transport ID", table)
+			}
+		}
+		err = rows.Err()
+		_ = rows.Close()
+		if err != nil {
+			return fmt.Errorf("verify SQLite serving values: %w", err)
+		}
+
+	}
+	return nil
 }

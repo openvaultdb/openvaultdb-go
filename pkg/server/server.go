@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"sort"
@@ -24,7 +25,12 @@ import (
 
 // Server serves one or more mounted databases.
 type Server struct {
-	version string
+	version             string
+	readProfiles        map[string]ReadProfile
+	readProfilesByDB    map[*core.Database]ReadProfile
+	readProfileRemounts map[string]ReadProfile
+	retiringProfileDBs  map[*core.Database]bool
+	readProfileErr      error
 
 	mu  sync.RWMutex // guards dbs and inflight — databases can be mounted at runtime
 	dbs map[string]*core.Database
@@ -126,6 +132,10 @@ func New(version string, dbs map[string]*core.Database, opts ...Option) *Server 
 	if s.queryGate == nil {
 		s.setQueryLimits(DefaultQueryLimits())
 	}
+	if len(s.readProfiles) > 0 {
+		s.dbs = maps.Clone(s.dbs)
+	}
+	s.readProfileErr = s.validateReadProfiles()
 	s.snapshotDir, s.snapshotDirErr = prepareSnapshotDir()
 	if _, err := rand.Read(s.snapshotKey[:]); err != nil {
 		s.snapshotDirErr = fmt.Errorf("query snapshot token key: %w", err)
@@ -151,7 +161,20 @@ func (s *Server) Mount(db *core.Database) error {
 	if _, taken := s.dbs[db.ID()]; taken {
 		return fmt.Errorf("%w: %s", ErrDatabaseMounted, db.ID())
 	}
+	if s.retiringProfileDBs[db] {
+		return errors.New("profile-bound instance is retiring or closed; mount a new instance")
+	}
+	profile, configured := s.readProfiles[db.ID()]
+	if !configured {
+		profile, configured = s.readProfileRemounts[db.ID()]
+	}
+	if configured && (!s.readOnly || !db.HasImmutableSQLiteKeys()) {
+		return fmt.Errorf("profile-bound database requires verified SQLite keys and zero lock wait")
+	}
 	s.dbs[db.ID()] = db
+	if configured {
+		s.readProfilesByDB[db] = profile
+	}
 	return nil
 }
 
@@ -167,7 +190,9 @@ func (s *Server) Unmount(id string) error {
 // UnmountContext is Unmount with a bound on the wait for in-flight requests.
 // If ctx ends first, the database stays unrouted, requests in flight keep
 // running, Close runs in the background once they finish (its error is
-// dropped), and ctx.Err() is returned.
+// dropped), and ctx.Err() is returned. For a profiled instance shared by mount
+// aliases, removing a nonfinal alias only removes that route; leases and resources
+// remain available through the other aliases until the final removal.
 func (s *Server) UnmountContext(ctx context.Context, id string) error {
 	s.mu.Lock()
 	db, ok := s.dbs[id]
@@ -176,6 +201,17 @@ func (s *Server) UnmountContext(ctx context.Context, id string) error {
 		return fmt.Errorf("%w: %s", ErrDatabaseNotMounted, id)
 	}
 	delete(s.dbs, id)
+	if _, profiled := s.readProfilesByDB[db]; profiled {
+		// Aliases share the verified instance and its request leases. Only the
+		// final alias removal may stop leasing and drain/close that instance.
+		for _, remaining := range s.dbs {
+			if remaining == db {
+				s.mu.Unlock()
+				return nil
+			}
+		}
+		s.retiringProfileDBs[db] = true
+	}
 	wg := s.inflight[db]
 	delete(s.inflight, db)
 	s.mu.Unlock()
@@ -260,6 +296,15 @@ func (s *Server) inflightFor(db *core.Database) *sync.WaitGroup {
 //  2. Auth (when --auth is set) — Layer-1 token validation
 //  3. Per-handler capability checks — Layer-2
 func (s *Server) Handler() http.Handler {
+	if s.readProfileErr != nil {
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			writeError(w, http.StatusInternalServerError, "configuration_error", s.readProfileErr.Error())
+		})
+		if s.corsCfg != nil {
+			return corsMiddleware(s.corsCfg, handler)
+		}
+		return handler
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /.well-known/openvaultdb", s.handleWellKnown)
 	mux.HandleFunc("GET /ovdb/", s.handleHumanServer)
@@ -530,17 +575,22 @@ func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	joins := s.advertisesJoins(db)
+	canQuery := s.advertisesOrdinaryQuery(db)
 	metadata := map[string]any{
 		"id":           db.ID(),
 		"engine":       db.Manifest.Storage.Engine,
 		"schemaMode":   string(db.Manifest.Database.SchemaMode),
 		"collections":  collections,
-		"capabilities": map[string]bool{"read": true, "query": db.CanQuery(), "dtql": db.CanQuery(), "write": !s.readOnly, "joins": joins, "aggregation": joins},
+		"capabilities": map[string]bool{"read": true, "query": canQuery, "dtql": canQuery, "write": !s.readOnly, "joins": joins, "aggregation": joins},
 	}
-	if db.CanQuery() {
+	if canQuery {
 		// A mount the guard refuses structured queries on advertises no query
 		// endpoint or format either.
-		metadata["endpoints"] = map[string]string{"dtql": s.humanOrigin(r) + "/v1/databases/" + url.PathEscape(db.ID()) + "/dtql"}
+		endpointID := db.ID()
+		if s.boundedImmutable(db) {
+			endpointID = r.PathValue("db")
+		}
+		metadata["endpoints"] = map[string]string{"dtql": s.humanOrigin(r) + "/v1/databases/" + url.PathEscape(endpointID) + "/dtql"}
 		metadata["queryFormat"] = "dtql-yaml+json"
 	}
 	writeJSON(w, http.StatusOK, metadata)

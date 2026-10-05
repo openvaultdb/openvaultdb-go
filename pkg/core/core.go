@@ -65,7 +65,9 @@ type Database struct {
 	// allow-list of key reads and writes on an engine whose adapter builds SQL
 	// (see GuardCollection), and the one name the adapter is given for each (see
 	// collectionNames). A Database not built by Open declares nothing.
-	names collectionNames
+	names          collectionNames
+	servingKeys    map[string]string
+	sqliteLockWait time.Duration
 
 	// documentEngine records, when the database opens, whether its adapter
 	// addresses records as documents (see documentEngines). It is not read from
@@ -164,6 +166,11 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 	} else if len(policies) > 0 {
 		fixed := append([]access.Policy(nil), policies...)
 		d.ownerPolicies = func(context.Context) ([]access.Policy, error) { return append([]access.Policy(nil), fixed...), nil }
+	}
+	if source, ok := db.(interface {
+		SQLiteRecordKeys() (map[string]string, time.Duration)
+	}); ok {
+		d.servingKeys, d.sqliteLockWait = source.SQLiteRecordKeys()
 	}
 	if m.Schemas != nil {
 		ctx := context.Background()
@@ -382,6 +389,13 @@ func (d *Database) reportedName(name string) string {
 // provider. A provider without schema introspection contributes no keys;
 // manifest-declared references are handled separately by the caller.
 func (d *Database) CollectionForeignKeys(ctx context.Context, collection string) ([]dbschema.ForeignKeyDef, error) {
+	if len(d.servingKeys) > 0 {
+		if err := d.GuardCollection(collection); err != nil {
+			return nil, err
+		}
+		collection, _ = d.CanonicalCollection(collection)
+	}
+
 	reader, ok := dal.As[dbschema.SchemaReader](d.db)
 	if !ok {
 		return nil, nil
@@ -397,6 +411,15 @@ func (d *Database) CollectionForeignKeys(ctx context.Context, collection string)
 	}
 	if def == nil {
 		return nil, nil
+	}
+	if len(d.servingKeys) > 0 {
+		visible := make([]dbschema.ForeignKeyDef, 0, len(def.ForeignKeys))
+		for _, fk := range def.ForeignKeys {
+			if _, declared := d.CanonicalCollection(fk.ReferencedCollection); declared && fk.ReferencedNamespace == "" {
+				visible = append(visible, fk)
+			}
+		}
+		return visible, nil
 	}
 	return def.ForeignKeys, nil
 }
@@ -674,6 +697,11 @@ func (d *Database) validateOps(ctx context.Context, ops []Op) error {
 // modes above the driver. An error from the adapter of a server engine is not
 // wrapped (see provisionError).
 func (d *Database) ensureCollection(ctx context.Context, collection string, fields map[string]schema.Field) error {
+	if _, configured := d.servingKeys[collection]; configured {
+		// Already physically verified; never provision a native id.
+		return nil
+	}
+
 	modifier, ok := dal.As[ddl.SchemaModifier](d.db)
 	if !ok {
 		// Drivers without a DDL surface (Firestore) have implicit
@@ -767,4 +795,20 @@ func (d *Database) PublishPolicies(ctx context.Context, expected string, documen
 		return policystore.Snapshot{}, fmt.Errorf("mount has no generation policy store")
 	}
 	return d.policyController.Activate(ctx, expected, documents)
+}
+
+// ServingKey returns the immutable, physically verified SQLite transport key.
+func (d *Database) ServingKey(collection string) (string, bool) {
+	canonical, ok := d.CanonicalCollection(collection)
+	if !ok {
+		return "", false
+	}
+	key, ok := d.servingKeys[canonical]
+	return key, ok
+}
+
+// HasImmutableSQLiteKeys reports whether every declared collection has a verified
+// key and the SQLite handles have no automatic lock wait.
+func (d *Database) HasImmutableSQLiteKeys() bool {
+	return d.Engine() == "sqlite" && len(d.servingKeys) > 0 && len(d.servingKeys) == len(d.names.spellings) && d.sqliteLockWait == 0
 }

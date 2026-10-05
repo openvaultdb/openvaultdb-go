@@ -117,6 +117,32 @@ back from SQLite's 0/1 integers on reads. The adapter quotes every collection,
 field and primary-key name it writes, so a collection named with a space or a
 hyphen is an ordinary table (see "Names and queries on the SQL engines").
 
+#### Explicit SQLite serving keys
+
+`storage.sqlite` is optional. Omitting it retains the legacy `id` key and five-second lock wait. `busy_timeout` is a presence-aware duration string from `0s` through `5s`, in whole milliseconds; the configured wait applies to both driver and metadata handles. Explicit nulls are invalid.
+
+```yaml
+storage:
+  engine: sqlite
+  path: ./data.sqlite
+  sqlite:
+    busy_timeout: 0s
+    record_keys:
+      organizations: __ovdb_record_id_1
+```
+
+When supplied, `record_keys` must cover exactly the declared canonical collections. Map names are native logical names, including when an existing schema declaration uses a quoted SQL alias. Each serving column must be explicitly declared as `string`, physically exist as `TEXT`, and have a complete single-column unique index and unique values under the column’s ordering collation. Mount checks stream every key once, rejecting null, empty, non-text, invalid UTF-8 or unrepresentable values. The published record key contract reserves literal `%`; core also rejects control characters and relative path components. Slash, colon, dollar and dot values use the existing escaping once. Native `id` and other fields remain unchanged. No missing driver key falls back to native `id` for these mounts. Only declared source/target relations appear in public foreign-key metadata; native foreign-key definitions remain in the file.
+
+#### Immutable lookup profiles
+
+Embedded servers may supply `WithDatabaseReadProfiles(map[string]ReadProfile)` with `Kind: server.BoundedImmutable` (`bounded-immutable/1`). Use `server.NewChecked` to report invalid configuration before HTTP publication. The existing `server.New` signature remains available; invalid explicit profiles serve `configuration_error` and execute no query. Profiles require a read-only server and complete physically verified SQLite serving keys with zero lock wait. Profiles bind to the verified mounted instance, so all server aliases share the same execution, metadata and cache policy. Conflicting alias profiles fail construction; remounts retain the configured policy by manifest identity and invalid remounts are refused. For profiled instances shared by mount aliases, removing an alias retains the instance and its shared request leases until the last alias is removed. Final removal drains leases and closes once; cancellation preserves background draining, and the retiring/closed instance cannot be remounted. A fresh verified instance may replace it with the same policy. Keyed GET/HEAD success and error responses use `no-store`.
+
+`AllowOrdinaryQuery` enables guarded ordinary DTQL. `PublishedQuery` independently controls advertised ordinary query/dtql capabilities and endpoint/format metadata; it cannot publish a disabled query. Candidate smoke reads may enable the former while keeping the latter false. Relational execution and joins/aggregation discovery share the same refusal predicate. Legacy databases and the global query feature block retain their existing behavior.
+
+The ordinary per-database DTQL route supplies unique ascending serving-key order while preserving predicates, projection, limit and offset. Caller ordering returns `400 ordering_unsupported`. Snapshot headers, the legacy JSON query route, query-source aliases/joins/aggregation/subqueries/derived and cross-database execution involving a profiled database are refused before execution. Responses use `no-store`. Both candidate and published profiles omit the human collection query link; metadata/schema links remain available.
+
+`ParseCORSOrigins(...).WithHeaders(allowed, exposed)` returns an independent configuration with additive request and exposed response header names. Origins retain exact matching and legacy default headers remain unchanged. The embedding runtime supplies its immutable pin header names, verifies pinned inputs and enforces request deadlines; the library profile does not implement that middleware.
+
 ### Firestore
 
 `dalgo2firestore` over Application Default Credentials (or

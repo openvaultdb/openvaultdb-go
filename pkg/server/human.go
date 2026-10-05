@@ -118,6 +118,11 @@ func (s *Server) humanDatabases(r *http.Request, includeProviderReferences bool,
 				query := url.Values{"q": {string(queryJSON)}}
 				references := make([]humanReference, 0, len(schema.References))
 				for _, ref := range schema.References {
+					if s.boundedImmutable(db) {
+						if _, declared := db.CanonicalCollection(ref.Collection); !declared {
+							continue
+						}
+					}
 					fields, targets := []string{ref.Field}, []string{ref.TargetField}
 					if len(ref.Fields) > 0 {
 						fields, targets = ref.Fields, ref.TargetFields
@@ -178,7 +183,7 @@ func (s *Server) humanDatabases(r *http.Request, includeProviderReferences bool,
 					return references[i].Field < references[j].Field
 				})
 				queryURL := ""
-				if db.CanQuery() {
+				if db.CanQuery() && !s.boundedImmutable(db) {
 					queryURL = origin + "/v1/databases/" + url.PathEscape(id) + "/query?" + query.Encode()
 				}
 				collections = append(collections, humanCollection{Name: name, Path: humanCollectionPath(id, name), QueryURL: queryURL, Fields: fields, References: references})
