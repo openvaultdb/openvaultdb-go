@@ -3,6 +3,7 @@ package joinexec
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/dal-go/dalgo/dal"
 )
@@ -16,13 +17,29 @@ import (
 // of the query without saying so: a query of several sources then reads a field of
 // the wrong source and answers with its values. The check below closes that: before
 // DALgo reads anything, it refuses an unqualified field of a query of more than one
-// source when any source of that query supplies no field list, and leaves the
-// decision to DALgo when every source supplies one.
+// source when any source of that query supplies no field list.
+//
+// When every source supplies one, DALgo decides, but not on every route: its
+// streaming plan of a flat join of two sources binds an unqualified field to the first
+// source with no ambiguity check at all. The check therefore refuses, in DALgo's own
+// words, a name that two of the lists carry, and leaves DALgo what it decides on every
+// route: a name that one list carries is bound to that source, and one that none
+// carries is refused as unavailable. The DTQL parser keeps an unqualified field out of
+// a join with no subquery as well, but Execute takes any query and does not depend on
+// it.
 //
 // A query here is one level of the document: the root query, a derived source, a
 // scalar subquery or an EXISTS test, each with its own sources. A field is read
 // against the sources of the query whose clause holds it; a subquery inside a
 // clause is a level of its own.
+//
+// A name that a column of the select list carries as its alias is not a field of a
+// source where DALgo reads it as the column: in HAVING and ORDER BY of a query that
+// aggregates, outside the argument of an aggregate (resolveAliases replaces such a
+// name by the column before DALgo sees it). Everywhere else, the WHERE, ON, GROUP BY
+// and column expressions, the argument of an aggregate, and the ORDER BY of a query
+// that does not aggregate, DALgo reads a field of a source, whatever the select list
+// calls its columns, so the name is looked at like any other.
 
 // fieldSupplier answers the field list of a source, the way the executors DALgo
 // reads through do (dal.JoinFieldsProvider): nil when the source has no list.
@@ -42,11 +59,12 @@ type scopeLevel struct {
 
 // checkScopes refuses the first unqualified field of a query of several sources,
 // in document order, that DALgo cannot bind because a source of that query
-// supplies no field list. The refusal is a scope error (*dal.QueryValidationError),
-// which the server answers as a 400 invalid_dtql, and nothing has been read when it
-// is returned. An error of fields is returned as it is. A query with one source,
-// and a field a source qualifies or the select list names as an alias, are not
-// looked at.
+// supplies no field list, or that two of the lists carry. The refusal is a scope
+// error (*dal.QueryValidationError), which the server answers as a 400
+// invalid_dtql, and nothing has been read when it is returned. An error of fields
+// is returned as it is. A query with one source, and a field a source qualifies or
+// that is the alias of a column where DALgo reads it as the column, are not looked
+// at.
 func checkScopes(ctx context.Context, query dal.StructuredQuery, fields fieldSupplier) error {
 	scope := &scopeWalk{}
 	scope.query(query, "")
@@ -54,8 +72,9 @@ func checkScopes(ctx context.Context, query dal.StructuredQuery, fields fieldSup
 		if len(level.sources) < 2 || len(level.refs) == 0 {
 			continue
 		}
+		var lists [][]string
 		for _, source := range level.sources {
-			supplied, err := suppliedFields(ctx, source, fields)
+			list, supplied, err := suppliedFields(ctx, source, fields)
 			if err != nil {
 				return err
 			}
@@ -68,19 +87,41 @@ func checkScopes(ctx context.Context, query dal.StructuredQuery, fields fieldSup
 						clip(first.name)),
 				}
 			}
+			lists = append(lists, list)
+		}
+		for _, ref := range level.refs {
+			if carriers(lists, ref.name) > 1 {
+				return &dal.QueryValidationError{
+					Category: "scope",
+					Path:     ref.path,
+					Message:  fmt.Sprintf("ambiguous unqualified field %s", clip(ref.name)),
+				}
+			}
 		}
 	}
 	return nil
 }
 
-// suppliedFields reports whether source supplies a field list. A derived source
-// supplies none, and is not asked: DALgo evaluates it by running its query.
-func suppliedFields(ctx context.Context, source dal.RecordsetSource, fields fieldSupplier) (bool, error) {
+// carriers counts the lists that hold name.
+func carriers(lists [][]string, name string) int {
+	count := 0
+	for _, list := range lists {
+		if slices.Contains(list, name) {
+			count++
+		}
+	}
+	return count
+}
+
+// suppliedFields returns the field list of source and whether it supplies one. A
+// derived source supplies none, and is not asked: DALgo evaluates it by running its
+// query.
+func suppliedFields(ctx context.Context, source dal.RecordsetSource, fields fieldSupplier) ([]string, bool, error) {
 	if _, derived := source.(dal.QuerySource); derived {
-		return false, nil
+		return nil, false, nil
 	}
 	list, err := fields(ctx, source)
-	return list != nil, err
+	return list, list != nil, err
 }
 
 // scopeWalk collects the levels of a document in document order: a level is
@@ -92,25 +133,22 @@ type scopeWalk struct {
 func (w *scopeWalk) query(query dal.StructuredQuery, path string) {
 	level := &scopeLevel{}
 	w.levels = append(w.levels, level)
-	aliases := map[string]bool{}
-	for _, column := range query.Columns() {
-		if column.Alias != "" {
-			aliases[column.Alias] = true
-		}
-		if as, ok := column.Expression.(dal.QueryExpression); ok && as.As() != "" {
-			aliases[as.As()] = true
-		}
-	}
-	flow := &scopeFlow{walk: w, level: level, aliases: aliases}
+	flow := &scopeFlow{walk: w, level: level}
 	flow.from(query.From(), path+"from")
 	flow.condition(query.Where(), path+"where")
 	for i, group := range query.GroupBy() {
 		flow.expression(group, fmt.Sprintf("%sgroupBy[%d]", path, i))
 	}
+	// HAVING and ORDER BY of a query that aggregates read the alias of a column as the
+	// column.
+	if dal.HasAggregation(query) {
+		flow.aliases = columnAliases(query.Columns())
+	}
 	flow.condition(query.Having(), path+"having")
 	for i, order := range query.OrderBy() {
 		flow.expression(order.Expression(), fmt.Sprintf("%sorderBy[%d]", path, i))
 	}
+	flow.aliases = nil
 	for i, column := range query.Columns() {
 		flow.expression(column.Expression, fmt.Sprintf("%scolumns[%d]", path, i))
 	}
@@ -119,9 +157,12 @@ func (w *scopeWalk) query(query dal.StructuredQuery, path string) {
 // scopeFlow walks the clauses of one level, adding its sources and unqualified
 // fields to it and handing every query inside a clause to the walk.
 type scopeFlow struct {
-	walk    *scopeWalk
-	level   *scopeLevel
-	aliases map[string]bool
+	walk  *scopeWalk
+	level *scopeLevel
+	// aliases are the names a field may carry without naming a field of a source: the
+	// aliases of the columns, while HAVING and ORDER BY of a query that aggregates are
+	// walked, and none otherwise.
+	aliases map[string]dal.Expression
 }
 
 // from walks a relation tree: its base source, then each join's relation tree and
@@ -167,16 +208,20 @@ func (f *scopeFlow) condition(condition dal.Condition, path string) {
 func (f *scopeFlow) expression(expression dal.Expression, path string) {
 	switch value := expression.(type) {
 	case dal.FieldRef:
-		if value.Source() == "" && !f.aliases[value.Name()] {
+		if _, alias := f.aliases[value.Name()]; value.Source() == "" && !alias {
 			f.level.refs = append(f.level.refs, scopeRef{name: value.Name(), path: path})
 		}
 	case dal.BinaryExpression:
 		f.expression(value.Left, path+".left")
 		f.expression(value.Right, path+".right")
 	case dal.AggregateFunc:
+		// An argument is read per row, from a source: an alias is not a field there.
+		aliases := f.aliases
+		f.aliases = nil
 		for i, arg := range value.FuncArgs() {
 			f.expression(arg, fmt.Sprintf("%s.args[%d]", path, i))
 		}
+		f.aliases = aliases
 	case dal.QueryExpression:
 		f.walk.query(value.Query(), path+".query.")
 	}

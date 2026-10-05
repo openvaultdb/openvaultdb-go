@@ -96,9 +96,15 @@ func TestADatabaseWithAccessPoliciesSuppliesNoFields(t *testing.T) {
 			if !db.HasAccessPolicies() {
 				t.Fatal("the database must have access policies")
 			}
-			got, err := declaredJoinFields(t, db, dal.NewRootCollectionRef("people", ""))
-			if got != nil || err != nil {
-				t.Fatalf("got %v, %v; want no schema of a protected database", got, err)
+			// A declared collection and one the manifest does not declare get the same answer,
+			// on a SQL engine too, where an undeclared source of a database without policies is
+			// refused: the policy decides what a caller learns of the schema, and nothing of it
+			// comes before that.
+			for name, collection := range map[string]string{"a declared collection": "people", "an undeclared collection": "ghost"} {
+				got, err := declaredJoinFields(t, db, dal.NewRootCollectionRef(collection, ""))
+				if got != nil || err != nil {
+					t.Fatalf("%s: got %v, %v; want no schema of a protected database", name, got, err)
+				}
 			}
 			if *calls != (joinSrcRecorder{}) {
 				t.Fatalf("the driver was reached: %+v", *calls)
@@ -190,5 +196,37 @@ func TestADriverThatSuppliesFieldsIsNotOverriddenByTheManifest(t *testing.T) {
 	got, err := declaredJoinFields(t, db, dal.NewRootCollectionRef("people", ""))
 	if !errors.Is(err, errJoinSrcFields) || !reflect.DeepEqual(got, []string{"id"}) || calls.fields != 1 {
 		t.Fatalf("got %v, %v, driver calls %+v; want the driver's answer", got, err, *calls)
+	}
+}
+
+// A record of a collection that declares an object, or a field of any type, holds a
+// value the manifest does not list the insides of, and DALgo reads a field by walking
+// its dotted path while it compares the name with the list by equality. A list of the
+// top-level names would refuse a path such as address.city, which a read has always
+// answered, so such a collection supplies none, as a partial database does: a path is
+// read as it is written, and what a list is needed for (a wildcard, an unqualified
+// field of a query of several sources) is refused instead of guessed.
+func TestACollectionThatDeclaresAnObjectOrAnyFieldSuppliesNone(t *testing.T) {
+	m := &manifest.Manifest{
+		Database: manifest.Database{ID: "declared", SchemaMode: schema.ModeStrict},
+		Storage:  manifest.Storage{Engine: "ingitdb"},
+		Schemas: &schema.Schemas{Collections: map[string]schema.Collection{
+			"flat":    {Fields: map[string]schema.Field{"name": {Type: schema.TypeString}, "tags": {Type: schema.TypeArray}}},
+			"nested":  {Fields: map[string]schema.Field{"name": {Type: schema.TypeString}, "address": {Type: schema.TypeObject}}},
+			"untyped": {Fields: map[string]schema.Field{"name": {Type: schema.TypeString}, "extra": {Type: schema.TypeAny}}},
+		}},
+	}
+	db, err := Open(m, joinSrcDB{calls: &joinSrcRecorder{}}, []schema.Mode{schema.ModeStrict}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The control: an array is a value, not a path to walk, so its collection keeps its list.
+	if got, err := declaredJoinFields(t, db, dal.NewRootCollectionRef("flat", "")); err != nil || !reflect.DeepEqual(got, []string{"name", "tags"}) {
+		t.Fatalf("the control: %v, %v", got, err)
+	}
+	for _, collection := range []string{"nested", "untyped"} {
+		if got, err := declaredJoinFields(t, db, dal.NewRootCollectionRef(collection, "")); got != nil || err != nil {
+			t.Errorf("%s: %v, %v; want no fields: a path inside the field is read", collection, got, err)
+		}
 	}
 }
