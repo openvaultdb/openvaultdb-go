@@ -460,6 +460,47 @@ func relHTTPNames(rows []map[string]any, field string) []any {
 	return out
 }
 
+func TestInFilterIsSupportedBySQLiteAndRefusedByInGitDB(t *testing.T) {
+	set := relIntSet{
+		tables: map[string][]string{"items": {"id", "name"}},
+		rows: map[string][]map[string]any{"items": {
+			{"id": json.Number("1"), "name": "Alpha"},
+			{"id": json.Number("2"), "name": "Beta"},
+			{"id": json.Number("3"), "name": "Gamma"},
+		}},
+	}
+	sqliteDB := relIntMountSQLite(t, "sqlite", "", set)
+	gitDB := relIntMountInGitDB(t, "gitdb", "", set)
+	host := relIntServe(t, map[string]*core.Database{"sqlite": sqliteDB, "gitdb": gitDB})
+	doc := `from: {name: items}
+where:
+  op: In
+  left: {field: name}
+  right: {values: [Alpha, Gamma]}
+orderBy: [{field: id}]
+columns: [{field: name}]
+`
+
+	t.Run("SQLite evaluates the filter", func(t *testing.T) {
+		resp := relHTTPPost(t, host, "/v1/databases/sqlite/dtql", "", doc)
+		if resp.status != http.StatusOK {
+			t.Fatalf("status %d %s: %s", resp.status, resp.errorField("code"), resp.raw)
+		}
+		if got := relHTTPNames(resp.rows(t), "name"); !reflect.DeepEqual(got, []any{"Alpha", "Gamma"}) {
+			t.Fatalf("names = %v, want [Alpha Gamma]", got)
+		}
+	})
+	t.Run("inGitDB refuses before returning rows", func(t *testing.T) {
+		resp := relHTTPPost(t, host, "/v1/databases/gitdb/dtql", "", doc)
+		if resp.status != http.StatusUnprocessableEntity || resp.errorField("code") != "query_unsupported" {
+			t.Fatalf("status %d %s: %s, want 422 query_unsupported", resp.status, resp.errorField("code"), resp.raw)
+		}
+		if records, exists := resp.body["records"]; exists {
+			t.Fatalf("unsupported membership query returned records: %v", records)
+		}
+	})
+}
+
 func TestRelationalDTQLOverHTTPAcceptance(t *testing.T) {
 	chinook, countries := relHTTPChinook(t, ""), relHTTPCountries(t, "")
 	service := server.New("test", map[string]*core.Database{"chinook": chinook, "countries": countries})

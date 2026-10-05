@@ -274,6 +274,9 @@ func (d *Database) StreamDTQLSnapshot(ctx context.Context, query dal.StructuredQ
 	if err != nil {
 		return err
 	}
+	if err := d.checkRelationalNames(query); err != nil {
+		return err
+	}
 	if query.Limit() != 0 || query.Offset() != 0 {
 		return fmt.Errorf("%w: snapshot query requires limit and offset to be zero", ErrInvalidDTQL)
 	}
@@ -356,6 +359,9 @@ func (d *Database) executeDalQuery(ctx, request context.Context, query dal.Struc
 // a connection that does not answer ends on that budget, and is the failure of the database
 // whenever the request itself is still alive.
 func (d *Database) executeDalQueryOn(ctx, request context.Context, db dal.DB, query dal.StructuredQuery, collection string, keysOnly bool) ([]Record, error) {
+	if err := d.guardQueryConditions(query); err != nil {
+		return nil, err
+	}
 	// Single choke point for every structured read: no engine that is not
 	// cleared for queries (see queryEngines) is ever handed one.
 	if err := d.guardQuery(); err != nil {
