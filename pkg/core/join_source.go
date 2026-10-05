@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/dalgo/recordset"
+
+	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 )
 
 // This file makes *Database usable as a source of joined reads. It satisfies,
@@ -175,14 +179,21 @@ func (g guardedQueryExecutor) ExecuteQueryToRecordsetReader(ctx context.Context,
 	return g.executor.ExecuteQueryToRecordsetReader(ctx, query, options...)
 }
 
-// JoinFields passes the driver's schema-ordered fields through when it has
-// them. A driver without them serves none, which DALgo reads as "no schema
-// supplied", exactly as for an executor that is not a JoinFieldsProvider.
-// No current mount supplies fields through this path: the SQLite mount hides
-// the driver's JoinFields, and inGitDB, Firestore and the secured wrapper have
-// none, so a qualified wildcard column fails in DALgo on the in-memory join
-// route ("wildcard expansion requires ordered schema metadata"). Callers
-// (OJ-03, OJ-05) must use explicit columns until a mount forwards JoinFields.
+// JoinFields supplies the fields of a declared collection to the join engine, in
+// the order the engine reads them in, or none. The declared-collection and name
+// checks come first, as for a read, and so does the engine guard.
+//
+// A database with access policies supplies no schema at all: whether it declares a
+// collection is decided where its policy decides a read, at the read, and not by a
+// question that comes before it (the leaf of pkg/joinexec holds the same rule).
+//
+// Otherwise the fields are the driver's own when it supplies them (the SQLite mount
+// reads the columns of the table), and else those the manifest declares
+// (declaredJoinFields). A driver that supplies none and a manifest that does not
+// declare them all supplies nothing, which DALgo reads as "no schema supplied",
+// exactly as for an executor that is not a JoinFieldsProvider: the engine then
+// refuses a wildcard of that source and cannot tell which source carries an
+// unqualified field.
 func (g guardedQueryExecutor) JoinFields(ctx context.Context, source dal.RecordsetSource) ([]string, error) {
 	if err := g.db.guardSource(source); err != nil {
 		return nil, err
@@ -190,8 +201,49 @@ func (g guardedQueryExecutor) JoinFields(ctx context.Context, source dal.Records
 	if err := g.db.guardQuery(); err != nil {
 		return nil, err
 	}
+	if g.db.HasAccessPolicies() {
+		return nil, nil
+	}
 	if provider, ok := g.executor.(dal.JoinFieldsProvider); ok {
 		return provider.JoinFields(ctx, source)
 	}
-	return nil, nil
+	return g.db.declaredJoinFields(source), nil
+}
+
+// declaredJoinFields returns the fields the manifest declares for the collection
+// source reads, or nil when it does not declare them all.
+//
+// Only a strict database declares all the fields of a collection: a partial one
+// allows fields the manifest does not list and a schemaless one declares none, and
+// a list of the declared fields alone would make the engine refuse a field a record
+// really holds. The source must be a plain root collection of this database (one
+// that no schema, parent record or other database qualifies) that the manifest
+// declares, under whichever spelling it declares it.
+//
+// The manifest keeps the fields of a collection in a map, which has no order, so
+// the order is the one the mount provisions the collection's columns in
+// (ensureCollection): the key column first on a SQL engine, whose table holds it
+// whether or not the manifest declares it, and then the declared fields by name. A
+// document engine holds only the declared fields in a record, by name.
+func (d *Database) declaredJoinFields(source dal.RecordsetSource) []string {
+	ref, ok := source.(dal.CollectionRef)
+	if !ok || ref.Parent() != nil || ref.Schema() != "" {
+		return nil
+	}
+	if named := ref.Database(); named != "" && named != d.Manifest.Database.ID {
+		return nil
+	}
+	if d.Manifest.Database.SchemaMode != schema.ModeStrict {
+		return nil
+	}
+	collection := d.schemaCollection(ref.Name())
+	if collection == nil || len(collection.Fields) == 0 {
+		return nil
+	}
+	fields := slices.Sorted(maps.Keys(collection.Fields))
+	if !d.isDocumentEngine() {
+		fields = slices.DeleteFunc(fields, func(name string) bool { return name == "id" })
+		fields = slices.Insert(fields, 0, "id")
+	}
+	return fields
 }

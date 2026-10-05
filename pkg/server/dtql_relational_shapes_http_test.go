@@ -325,10 +325,12 @@ func TestRefusalsOfADocumentRepeatNoMoreThanABoundedTextOverHTTP(t *testing.T) {
 	})
 }
 
-// A column that the database does not know is a 400 when the database runs the
-// whole document and a null when the executor reads the sources and joins them
-// itself; a correlated subquery reads its inner collection once for every row of
-// the outer one, and every read counts against the source budget.
+// A column that no source has is a 400 on both routes: when the database runs the
+// whole document it names the column, and when the executor reads the sources and
+// joins them itself the mounts have given it the fields of every source, so it
+// refuses the column before it joins anything (it was a null while the mounts
+// supplied no fields). A correlated subquery reads its inner collection once for
+// every row of the outer one, and every read counts against the source budget.
 func TestAnUnknownColumnAndACorrelatedSubqueryOverHTTP(t *testing.T) {
 	chinook, countries := relHTTPChinook(t, ""), relHTTPCountries(t, "")
 	t.Run("an unknown column", func(t *testing.T) {
@@ -342,17 +344,9 @@ func TestAnUnknownColumnAndACorrelatedSubqueryOverHTTP(t *testing.T) {
 		}
 		doc := strings.Replace(relHTTPCustomerRegions, "{field: region, source: k}", "{field: nosuch, source: k}", 1)
 		memory := relHTTPPost(t, host.URL, "/v1/dtql", "", doc)
-		if memory.status != http.StatusOK || memory.execution(t)["route"] != "in-memory" {
-			t.Fatalf("in-memory route: status %d: %s", memory.status, memory.raw)
-		}
-		rows := memory.rows(t)
-		if len(rows) != 3 {
-			t.Fatalf("rows = %v", rows)
-		}
-		for _, row := range rows {
-			if value, present := row["nosuch"]; !present || value != nil {
-				t.Fatalf("row = %v, want a null for the column no database knows", row)
-			}
+		if memory.status != http.StatusBadRequest || memory.errorField("code") != "invalid_dtql" || !strings.Contains(memory.errorField("message"), "nosuch") ||
+			memory.body["records"] != nil || memory.body["execution"] != nil {
+			t.Fatalf("in-memory route: status %d, want a 400 invalid_dtql that names the column: %s", memory.status, memory.raw)
 		}
 	})
 	t.Run("a correlated subquery", func(t *testing.T) {

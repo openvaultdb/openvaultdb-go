@@ -423,12 +423,19 @@ type relIntDivergences struct {
 }
 
 type relIntDivergence struct {
-	Case    string           `json:"case"`
-	Engines []string         `json:"engines"`
-	Status  int              `json:"status"`
-	Code    string           `json:"code,omitempty"`
-	Rows    []map[string]any `json:"rows,omitempty"`
-	Reason  string           `json:"reason"`
+	Case    string   `json:"case"`
+	Engines []string `json:"engines"`
+	Status  int      `json:"status"`
+	Code    string   `json:"code,omitempty"`
+	// Message, when set, is a fragment the message of the error answer must hold, so
+	// an entry that lists a refusal pins the reason of the refusal and not only its
+	// status and code.
+	Message string `json:"message,omitempty"`
+	// Route, when set, is the route the execution block of the 200 answer must name
+	// (database or in-memory), so an entry whose reason names a route pins it.
+	Route  string           `json:"route,omitempty"`
+	Rows   []map[string]any `json:"rows,omitempty"`
+	Reason string           `json:"reason"`
 }
 
 func relIntLoadDivergences(t *testing.T) relIntDivergences {
@@ -487,12 +494,29 @@ func TestRelationalFixtureCorpusOverHTTP(t *testing.T) {
 	known := map[string]bool{}
 	byCase := map[string][]relIntDivergence{}
 	used := map[string]bool{}
+	entryFor := func(caseID, engine string) *relIntDivergence {
+		for i, candidate := range byCase[caseID] {
+			for _, name := range candidate.Engines {
+				if name == engine {
+					used[caseID+"|"+engine] = true
+					return &byCase[caseID][i]
+				}
+			}
+		}
+		return nil
+	}
 	for _, entry := range file.Divergences {
 		if strings.TrimSpace(entry.Reason) == "" || strings.ContainsAny(entry.Reason, "\r\n") || !strings.HasSuffix(entry.Reason, ".") {
 			t.Errorf("%s: the reason is one sentence on one line that ends in a full stop: %q", entry.Case, entry.Reason)
 		}
 		if entry.Status < 100 || entry.Status > 599 {
 			t.Errorf("%s: status %d", entry.Case, entry.Status)
+		}
+		if entry.Route != "" && entry.Status != http.StatusOK {
+			t.Errorf("%s: only a 200 answer has a route to pin, not status %d", entry.Case, entry.Status)
+		}
+		if entry.Message != "" && entry.Status == http.StatusOK {
+			t.Errorf("%s: only an error answer has a message to pin", entry.Case)
 		}
 		if len(entry.Engines) == 0 {
 			t.Errorf("%s: no engine", entry.Case)
@@ -531,6 +555,10 @@ func TestRelationalFixtureCorpusOverHTTP(t *testing.T) {
 		for _, c := range cases {
 			seen[c.id] = true
 			for _, engine := range relIntEngines {
+				// The entry is looked up, and marked as used, outside the subtests: a run
+				// that selects some of them (go test -run) would otherwise report every
+				// entry of the others as one for an engine the fixtures do not run on.
+				entry := entryFor(c.id, engine.name)
 				for _, endpoint := range []struct{ name, path, database string }{
 					{"per-database endpoint", "/v1/databases/" + engine.id + "/dtql", ""},
 					{"/v1/dtql", "/v1/dtql", engine.id},
@@ -539,15 +567,6 @@ func TestRelationalFixtureCorpusOverHTTP(t *testing.T) {
 						doc := relIntRewrite(t, c.doc, endpoint.database)
 						resp := relHTTPPost(t, base, endpoint.path, "", string(doc))
 						green := relIntMatches(t, c, resp)
-						var entry *relIntDivergence
-						for i, candidate := range byCase[c.id] {
-							for _, name := range candidate.Engines {
-								if name == engine.name {
-									entry = &byCase[c.id][i]
-									used[c.id+"|"+engine.name] = true
-								}
-							}
-						}
 						switch {
 						case entry == nil && !green:
 							t.Fatalf("the answer is not the fixture's and the case is not in joins-divergences.json: %s", relIntDescribe(resp))
@@ -558,6 +577,14 @@ func TestRelationalFixtureCorpusOverHTTP(t *testing.T) {
 						}
 						if resp.status != entry.Status || (entry.Code != "" && resp.errorField("code") != entry.Code) {
 							t.Fatalf("joins-divergences.json says status %d %s: %s", entry.Status, entry.Code, relIntDescribe(resp))
+						}
+						if entry.Message != "" && !strings.Contains(resp.errorField("message"), entry.Message) {
+							t.Fatalf("joins-divergences.json says the message holds %q: %s", entry.Message, relIntDescribe(resp))
+						}
+						if entry.Route != "" {
+							if route, _ := resp.execution(t)["route"].(string); route != entry.Route {
+								t.Fatalf("joins-divergences.json says the route is %q, the answer says %q: %s", entry.Route, route, relIntDescribe(resp))
+							}
 						}
 						if entry.Rows != nil && !reflect.DeepEqual(resp.rows(t), entry.Rows) {
 							t.Fatalf("joins-divergences.json lists other rows: %s", relIntDescribe(resp))

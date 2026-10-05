@@ -116,6 +116,27 @@ func relIntAsyncPost(base, path, token, doc string) <-chan relIntAnswer {
 	return out
 }
 
+// relIntFailer is what relIntAwaitParked reports a failure to: a *testing.T, or a
+// recorder in the test of the helper itself.
+type relIntFailer interface {
+	Helper()
+	Fatalf(format string, args ...any)
+}
+
+// relIntAwaitParked waits until a read of the parked mount has stopped at the gate.
+// It selects on the answer of the request too: a request that is answered before its
+// read parks (a refusal, an error) never reaches the gate, and nothing else would ever
+// close it, so the test fails at once with the answer the request got instead of
+// waiting for the end of the test run.
+func relIntAwaitParked(t relIntFailer, gate *relIntParkGate, answer <-chan relIntAnswer) {
+	t.Helper()
+	select {
+	case <-gate.entered:
+	case got := <-answer:
+		t.Fatalf("the request was answered before its read parked: error %v, status %d: %s", got.err, got.resp.status, got.resp.raw)
+	}
+}
+
 // Documents of the parked mount. relIntParkedJoin reads Country inside the mount, so
 // it parks on the database route (the whole join is one statement of SQLite);
 // relIntParkedAcross reads it from another mount and parks on the in-memory one. Both
@@ -217,7 +238,7 @@ func relIntCheckCapacity(t *testing.T, base, token string) {
 		t.Run(route.name, func(t *testing.T) {
 			gate := relIntArmPark(t)
 			parked := relIntAsyncPost(base, route.path, token, route.doc)
-			<-gate.entered
+			relIntAwaitParked(t, gate, parked)
 
 			refused := relHTTPDo(t, base, http.MethodPost, route.path, token, route.doc, nil)
 			if refused.status != http.StatusServiceUnavailable || refused.errorField("code") != "query_capacity" || refused.header.Get("Retry-After") == "" {
@@ -273,7 +294,7 @@ func TestUnmountingAMountWhileAQueryReadsItWaitsForTheQuery(t *testing.T) {
 	gate := relIntArmPark(t)
 
 	running := relIntAsyncPost(host.URL, "/v1/dtql", "", relIntParkedAcross)
-	<-gate.entered
+	relIntAwaitParked(t, gate, running)
 
 	unmounted := make(chan error, 1)
 	go func() { unmounted <- service.Unmount("slow") }()
@@ -308,4 +329,54 @@ func TestUnmountingAMountWhileAQueryReadsItWaitsForTheQuery(t *testing.T) {
 	if !closed.Load() {
 		t.Fatal("Unmount returned and the mount is not closed")
 	}
+}
+
+// relIntRecorder is a relIntFailer that records what it is told instead of ending the
+// test.
+type relIntRecorder struct{ failures []string }
+
+func (*relIntRecorder) Helper() {}
+
+func (r *relIntRecorder) Fatalf(format string, args ...any) {
+	r.failures = append(r.failures, fmt.Sprintf(format, args...))
+}
+
+// A request that is answered before its read parks fails the test with its answer,
+// where waiting on the gate alone would hang until the test run times out; a read that
+// parks is waited for as before.
+func TestAParkedRequestThatIsAnsweredEarlyFailsTheTestInsteadOfHangingIt(t *testing.T) {
+	newGate := func() *relIntParkGate {
+		return &relIntParkGate{entered: make(chan struct{}), release: make(chan struct{})}
+	}
+
+	t.Run("answered before the read parks", func(t *testing.T) {
+		answer := make(chan relIntAnswer, 1)
+		answer <- relIntAnswer{resp: relHTTPResponse{status: http.StatusServiceUnavailable, raw: `{"error":{"code":"query_capacity"}}`}}
+		recorder := &relIntRecorder{}
+		relIntAwaitParked(recorder, newGate(), answer)
+		if len(recorder.failures) != 1 || !strings.Contains(recorder.failures[0], "answered before its read parked") ||
+			!strings.Contains(recorder.failures[0], "503") || !strings.Contains(recorder.failures[0], "query_capacity") {
+			t.Fatalf("failures = %q, want one that carries the answer", recorder.failures)
+		}
+	})
+
+	t.Run("answered with an error of the transport", func(t *testing.T) {
+		answer := make(chan relIntAnswer, 1)
+		answer <- relIntAnswer{err: io.ErrUnexpectedEOF}
+		recorder := &relIntRecorder{}
+		relIntAwaitParked(recorder, newGate(), answer)
+		if len(recorder.failures) != 1 || !strings.Contains(recorder.failures[0], io.ErrUnexpectedEOF.Error()) {
+			t.Fatalf("failures = %q", recorder.failures)
+		}
+	})
+
+	t.Run("the read parks", func(t *testing.T) {
+		gate := newGate()
+		close(gate.entered)
+		recorder := &relIntRecorder{}
+		relIntAwaitParked(recorder, gate, make(chan relIntAnswer))
+		if len(recorder.failures) != 0 {
+			t.Fatalf("failures = %q, want none for a read that parked", recorder.failures)
+		}
+	})
 }
