@@ -393,3 +393,81 @@ func TestAFunctionOfAReadTransactionThatFailsIsReturnedAsItWasGiven(t *testing.T
 		}
 	}
 }
+
+// sqlStateError is the error of a database server with the SQLSTATE of its refusal, as
+// the driver of PostgreSQL gives it (*pgconn.PgError has the same method).
+type sqlStateError struct{ code string }
+
+func (e *sqlStateError) Error() string {
+	return `ERROR: invalid input syntax for type bigint: "` + failureMarker + `" (SQLSTATE ` + e.code + `)`
+}
+func (e *sqlStateError) SQLState() string { return e.code }
+
+// TestAServerRefusalOfAValueOrANameOfTheQueryIsABuiltRefusalOfTheCaller: a database
+// server that refuses a statement because a value does not fit the type of its column
+// (a word against an integer: 22P02, any other of class 22), or a name does not fit
+// (42883 no such operator, 42804, 42703, 42P18), refuses the query the caller wrote, and
+// the answer is ErrQueryDoesNotFit, built here with none of the server's text, on every
+// route and at every step. The SQLSTATE is read by type: the same text on an error that
+// has no such method, any other code, and an engine that is not a server are not it.
+func TestAServerRefusalOfAValueOrANameOfTheQueryIsABuiltRefusalOfTheCaller(t *testing.T) {
+	setPreview(t, true, "1")
+	refused := []string{"22P02", "22007", "22003", "22001", "22000", "42883", "42804", "42703", "42P18"}
+	notRefused := []string{"23505", "42601", "42P01", "XX000", "57014", "08006", "28P01", "", "2", "2200", "220000", "4288", "42884", "42P19"}
+	run := func(t *testing.T, code string, wrap bool) map[string]error {
+		var cause error = &sqlStateError{code: code}
+		if wrap {
+			cause = fmt.Errorf("failed to get SQL reader: %w", cause)
+		}
+		out := map[string]error{}
+		for route, err := range queryRoutes(t, openScripted(t, "postgres", &scriptedQueryDB{openErr: cause})) {
+			out[route+", open"] = err
+		}
+		for route, err := range queryRoutes(t, openScripted(t, "postgres", &scriptedQueryDB{reader: &scriptedReader{nextErr: cause}})) {
+			if route != "Executor, recordset" {
+				out[route+", next"] = err
+			}
+		}
+		return out
+	}
+	for _, code := range refused {
+		for _, wrap := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s wrapped %v", code, wrap), func(t *testing.T) {
+				for route, err := range run(t, code, wrap) {
+					if !errors.Is(err, ErrQueryDoesNotFit) {
+						t.Errorf("%s: %v, want ErrQueryDoesNotFit", route, err)
+						continue
+					}
+					if strings.Contains(err.Error(), failureMarker) || errors.Is(err, ErrQueryNotRunnable) {
+						t.Errorf("%s: the error repeats the server's text or is a query nothing can run: %v", route, err)
+					}
+				}
+			})
+		}
+	}
+	for _, code := range notRefused {
+		t.Run("not "+code, func(t *testing.T) {
+			for route, err := range run(t, code, false) {
+				if err == nil || errors.Is(err, ErrQueryDoesNotFit) || strings.Contains(err.Error(), failureMarker) {
+					t.Errorf("%s: %v, want a built failure of the server that is not ErrQueryDoesNotFit", route, err)
+				}
+			}
+		})
+	}
+	t.Run("the text alone is not a SQLSTATE", func(t *testing.T) {
+		cause := errors.New(`ERROR: invalid input syntax for type bigint: "` + failureMarker + `" (SQLSTATE 22P02)`)
+		for route, err := range queryRoutes(t, openScripted(t, "postgres", &scriptedQueryDB{openErr: cause})) {
+			if errors.Is(err, ErrQueryDoesNotFit) {
+				t.Errorf("%s: a SQLSTATE read from the text: %v", route, err)
+			}
+		}
+	})
+	t.Run("an engine that is not a server keeps the error", func(t *testing.T) {
+		cause := &sqlStateError{code: "22P02"}
+		for route, err := range queryRoutes(t, openScripted(t, "sqlite", &scriptedQueryDB{openErr: cause})) {
+			if errors.Is(err, ErrQueryDoesNotFit) || !errors.Is(err, cause) {
+				t.Errorf("%s: %v, want the adapter's error in the chain", route, err)
+			}
+		}
+	})
+}

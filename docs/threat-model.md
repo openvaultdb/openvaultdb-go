@@ -213,12 +213,18 @@ answering 501 `query_unsupported` as before, and no statement is sent to the
 server for a query). With the switch on, the adapter compiles a query with its
 typed PostgreSQL dialect: every value is a bound parameter and every name is
 quoted, and ovdb still refuses, before the adapter, a field name outside the
-plain-name rule and a collection the manifest does not declare. The mount states
+plain-name rule, a collection the manifest does not declare, a field that no
+column of a declared collection of a strict mount has and a source qualifier that
+no source of the query has (400 `invalid_dtql`, nothing logged). The mount states
 that names are folded to lower case. What the adapter says on this path never
 reaches a response or a log: `dal.ErrNotSupported` and an unknown dialect are
-422 `query_unsupported` with a fixed message, and any other failure of the
-server is a 500 whose log line names the step and the collection and holds no
-text of the driver. Access control on a PostgreSQL mount stays refused when the
+422 `query_unsupported` with a fixed message; a value or a name the server
+refuses by a SQLSTATE read by type (class 22, 42883, 42804, 42703, 42P18, which a
+caller's mistake can cause) is a 400 `invalid_dtql` with a fixed message and
+nothing logged, so no caller can fill the log with them; and any other failure
+of the server, a read transaction that cannot begin or commit and the field list
+of a collection included, is a 500 whose log line names the step and the
+collection and holds no text of the driver. Access control on a PostgreSQL mount stays refused when the
 manifest is mounted. The switch is removed after the security review of the
 whole path. MySQL has no dialect and stays refused.
 

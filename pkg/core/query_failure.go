@@ -19,6 +19,37 @@ import (
 // text of the adapter's.
 var ErrQueryNotRunnable = errors.New("the storage engine cannot run this query")
 
+// ErrQueryDoesNotFit identifies a structured query that the database server of the mount
+// refused because a value or a name of it does not fit the table: a value that is no
+// value of the type of its field (a word compared with an integer), a number compared
+// with text, a name the table does not have. It is the caller's mistake, mapped to HTTP
+// 400 invalid_dtql with a fixed message and not logged. The error is built here: it
+// holds no text of the server's, which can repeat the value.
+var ErrQueryDoesNotFit = errors.New("a value or a name of the query does not fit the field it is used with")
+
+// sqlStated is an error that carries the SQLSTATE of a database server's refusal, as
+// the driver of PostgreSQL's does (*pgconn.PgError.SQLState).
+type sqlStated interface{ SQLState() string }
+
+// isQueryThatDoesNotFit reports whether err is the refusal of a database server
+// because of what the query holds, by the SQLSTATE the error carries and never by its
+// text: class 22 (a data exception: a value that is no value of its type, out of its
+// range or of the wrong format), 42883 (no operator for the types the query compares),
+// 42804 (datatype mismatch), 42703 (no such column) and 42P18 (a value nothing gives a
+// type). Any other code, and an error with none, is a failure of the server.
+func isQueryThatDoesNotFit(err error) bool {
+	var stated sqlStated
+	if !errors.As(err, &stated) {
+		return false
+	}
+	switch code := stated.SQLState(); code {
+	case "42883", "42804", "42703", "42P18":
+		return true
+	default:
+		return len(code) == 5 && code[:2] == "22"
+	}
+}
+
 // unknownDialectPrefix starts the text of the adapter's refusal of a dialect it
 // does not know (dalgo2sql: unsupported structured query dialect "x"). It is a
 // plain error with no type to ask for, and it is only ever read here, to choose the
@@ -43,10 +74,11 @@ func isQueryNotRunnable(err error) bool {
 // the sentence prefix says (it names the step and the collection). A query the
 // adapter cannot run is ErrQueryNotRunnable, on every engine. An engine reached
 // through a connection string (serverEngines) gets a built error and nothing of the
-// adapter's: a cancellation and a deadline keep their identity, and any other
-// failure is a fixed sentence, because the text of a database server's error can
-// repeat a value, a name or a hint of the request, and it would reach a log. The
-// other engines keep the adapter's error in the chain.
+// adapter's: a cancellation and a deadline keep their identity, a refusal of the
+// server because of what the query holds (isQueryThatDoesNotFit) is
+// ErrQueryDoesNotFit, and any other failure is a fixed sentence, because the text of a
+// database server's error can repeat a value, a name or a hint of the request, and it
+// would reach a log. The other engines keep the adapter's error in the chain.
 func (d *Database) queryError(prefix string, err error) error {
 	switch {
 	case isQueryNotRunnable(err):
@@ -57,6 +89,8 @@ func (d *Database) queryError(prefix string, err error) error {
 		return fmt.Errorf("%s: %w", prefix, context.Canceled)
 	case errors.Is(err, context.DeadlineExceeded):
 		return fmt.Errorf("%s: %w", prefix, context.DeadlineExceeded)
+	case isQueryThatDoesNotFit(err):
+		return fmt.Errorf("%s: %w", prefix, ErrQueryDoesNotFit)
 	}
 	return fmt.Errorf("%s: the database server could not run the query", prefix)
 }

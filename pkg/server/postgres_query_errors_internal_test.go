@@ -85,6 +85,16 @@ func (f *previewPGDriver) JoinFields(context.Context, dal.RecordsetSource) ([]st
 
 const previewPGMarker = "MARKER-text-of-the-database-server-7c2a"
 
+// previewPGCollections are the collections both mounts declare. A strict mount holds
+// the fields it declares and its key, and a query that names another is refused before
+// the driver is reached.
+func previewPGCollections() map[string]schema.Collection {
+	return map[string]schema.Collection{
+		"orders":    {Fields: map[string]schema.Field{"customer_id": {Type: schema.TypeString}}},
+		"customers": {Fields: map[string]schema.Field{"name": {Type: schema.TypeString}}},
+	}
+}
+
 // previewPGServer serves a PostgreSQL mount (the preview switch on, so it is
 // queried) whose driver fails every read with openErr, beside a SQLite mount, and
 // returns the host and what the server logs.
@@ -100,7 +110,7 @@ func previewPGServerOf(t *testing.T, driver *previewPGDriver) (*httptest.Server,
 	m := &manifest.Manifest{
 		Database: manifest.Database{ID: "pg", SchemaMode: schema.ModeStrict},
 		Storage:  manifest.Storage{Engine: "postgres"},
-		Schemas:  &schema.Schemas{Collections: map[string]schema.Collection{"orders": {}, "customers": {}}},
+		Schemas:  &schema.Schemas{Collections: previewPGCollections()},
 	}
 	pg, err := core.Open(m, driver, []schema.Mode{schema.ModeStrict}, "")
 	if err != nil {
@@ -109,7 +119,7 @@ func previewPGServerOf(t *testing.T, driver *previewPGDriver) (*httptest.Server,
 	am := &manifest.Manifest{
 		Database: manifest.Database{ID: "alpha", SchemaMode: schema.ModeStrict},
 		Storage:  manifest.Storage{Engine: "sqlite"},
-		Schemas:  &schema.Schemas{Collections: map[string]schema.Collection{"orders": {}, "customers": {}}},
+		Schemas:  &schema.Schemas{Collections: previewPGCollections()},
 	}
 	alpha, err := core.Open(am, &previewPGDriver{}, []schema.Mode{schema.ModeStrict}, "")
 	if err != nil {
@@ -287,4 +297,89 @@ func TestAFailedTransactionOrFieldListOfAPostgresMountRepeatsNoDriverTextInTheAn
 			})
 		}
 	}
+}
+
+// previewPGStateError is a refusal of the database server with its SQLSTATE, as the
+// driver of PostgreSQL gives it.
+type previewPGStateError struct{ code string }
+
+func (e *previewPGStateError) Error() string {
+	return `ERROR: invalid input syntax for type bigint: "` + previewPGMarker + `" (SQLSTATE ` + e.code + `)`
+}
+func (e *previewPGStateError) SQLState() string { return e.code }
+
+// TestAValueOrANameThePostgresServerRefusesIsA400WithAFixedMessageAndNoLog: a word
+// compared with an integer field (22P02), a number compared with a text field (42883)
+// and a name the table does not have (42703) are mistakes of the caller. On every route
+// they are answered 400 invalid_dtql with one fixed message that repeats nothing of the
+// request or of the server, and they are not logged: a caller who may read cannot
+// fill the log of the server with them.
+func TestAValueOrANameThePostgresServerRefusesIsA400WithAFixedMessageAndNoLog(t *testing.T) {
+	for _, code := range []string{"22P02", "42883", "42703"} {
+		for _, route := range previewPGRoutes {
+			t.Run(code+"/"+route.name, func(t *testing.T) {
+				host, logs, driver := previewPGServer(t, fmt.Errorf("failed to get SQL reader: %w", &previewPGStateError{code: code}))
+				resp := relFakeDo(t, host, http.MethodPost, route.path, "", route.body, nil)
+				if resp.status != http.StatusBadRequest || resp.code() != "invalid_dtql" {
+					t.Fatalf("status %d: %s", resp.status, resp.raw)
+				}
+				if message, _ := resp.errorDetail()["message"].(string); message != core.ErrQueryDoesNotFit.Error() {
+					t.Errorf("message = %q, want the fixed message", message)
+				}
+				if strings.Contains(resp.raw, previewPGMarker) || strings.Contains(logs.String(), previewPGMarker) {
+					t.Errorf("text of the server is in the answer %s or in the log %s", resp.raw, logs)
+				}
+				if logs.Len() != 0 {
+					t.Errorf("a mistake of the caller was logged: %s", logs)
+				}
+				if driver.reads.Load() == 0 {
+					t.Errorf("the driver was not reached: the route refused before it ran")
+				}
+			})
+		}
+	}
+}
+
+// TestAFieldOrQualifierThePostgresTablesDoNotHaveIsARefusalBeforeTheDriver: a field no
+// column of a declared collection has and a qualifier no source has are the caller's
+// mistakes, and on a strict PostgreSQL mount every route refuses them before the driver
+// is reached: 400 invalid_dtql with a sentence that repeats a bounded name, and no log
+// record. The adapter would only fail them as a fault of the server.
+func TestAFieldOrQualifierThePostgresTablesDoNotHaveIsARefusalBeforeTheDriver(t *testing.T) {
+	for _, c := range []struct{ name, path, body, want string }{
+		{"wire query, where", "/v1/databases/pg/query", `{"collection":"customers","where":[{"field":"nosuch","op":"==","value":"x"}]}`, `has no field "nosuch"`},
+		{"wire query, order by", "/v1/databases/pg/query", `{"collection":"customers","orderBy":[{"field":"nosuch"}]}`, `has no field "nosuch"`},
+		{"wire query, a dotted name", "/v1/databases/pg/query", `{"collection":"customers","where":[{"field":"name.first","op":"==","value":"x"}]}`, `has no field "name.first"`},
+		{"DTQL of the database, where", "/v1/databases/pg/dtql", "from: {name: customers}\nwhere: {op: '==', left: {field: nosuch}, right: {value: x}}\n", `has no field "nosuch"`},
+		{"DTQL of the database, a column", "/v1/databases/pg/dtql", "from: {name: customers}\ncolumns: [{field: nosuch}]\n", `has no field "nosuch"`},
+		{"relational document, a field", "/v1/dtql", "from: {database: pg, name: customers, alias: c}\nwhere: {op: '==', left: {field: nosuch, source: c}, right: {value: x}}\n", `has no field "nosuch"`},
+		{"relational document, a qualifier", "/v1/dtql", "from: {database: pg, name: customers, alias: c}\nwhere: {op: '==', left: {field: name, source: x}, right: {value: x}}\n", `no source of the query is named "x"`},
+		{"relational document, the collection of an aliased source", "/v1/dtql", "from: {database: pg, name: customers, alias: c}\nwhere: {op: '==', left: {field: name, source: customers}, right: {value: x}}\n", `no source of the query is named "customers"`},
+		{"relational document, a join on", "/v1/dtql", strings.Replace(previewPGSameDatabaseJoin, "{field: customer_id, source: o}", "{field: nosuch, source: o}", 1), `collection "orders" has no field "nosuch"`},
+		{"relational document, a join order", "/v1/dtql", previewPGSameDatabaseJoin + "orderBy: [{field: nosuch, source: c}]\n", `collection "customers" has no field "nosuch"`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			host, logs, driver := previewPGServer(t, nil)
+			resp := relFakeDo(t, host, http.MethodPost, c.path, "", c.body, nil)
+			if resp.status != http.StatusBadRequest || resp.code() != "invalid_dtql" {
+				t.Fatalf("status %d: %s", resp.status, resp.raw)
+			}
+			if message, _ := resp.errorDetail()["message"].(string); !strings.Contains(message, c.want) {
+				t.Errorf("message = %q, want it to say %q", message, c.want)
+			}
+			if driver.reads.Load() != 0 {
+				t.Errorf("the driver was reached %d times by a refused query", driver.reads.Load())
+			}
+			if logs.Len() != 0 {
+				t.Errorf("a mistake of the caller was logged: %s", logs)
+			}
+		})
+	}
+	t.Run("a field the table has reaches the driver", func(t *testing.T) {
+		host, _, driver := previewPGServer(t, nil)
+		resp := relFakeDo(t, host, http.MethodPost, "/v1/databases/pg/query", "", `{"collection":"customers","where":[{"field":"Name","op":"==","value":"x"}],"orderBy":[{"field":"id"}]}`, nil)
+		if resp.status != http.StatusOK || driver.reads.Load() != 1 {
+			t.Fatalf("status %d with %d driver reads: %s", resp.status, driver.reads.Load(), resp.raw)
+		}
+	})
 }

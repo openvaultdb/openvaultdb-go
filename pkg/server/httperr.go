@@ -52,6 +52,11 @@ func writeMappedError(w http.ResponseWriter, err error) (internal bool) {
 		writeError(w, http.StatusBadRequest, "invalid_key", err.Error())
 	case errors.Is(err, core.ErrInvalidQuery), errors.Is(err, core.ErrInvalidFieldName), errors.Is(err, core.ErrEmptyWrite):
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+	case errors.Is(err, core.ErrQueryDoesNotFit):
+		// The database server refused a value or a name of the query: the caller's
+		// mistake, answered with a fixed message (the error is built in core and holds
+		// nothing of the server's) and, like every refusal here, not logged.
+		writeError(w, http.StatusBadRequest, "invalid_dtql", core.ErrQueryDoesNotFit.Error())
 	case errors.Is(err, core.ErrInvalidDTQL):
 		writeError(w, http.StatusBadRequest, "invalid_dtql", err.Error())
 	case errors.Is(err, core.ErrQueryNotRunnable):

@@ -1,9 +1,11 @@
 package server_test
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,7 +39,7 @@ const (
 
 // pgITTables are the tables the tests create and drop. ovdb_canary is not declared
 // by any manifest: nothing a caller sends may touch it.
-const pgITTables = "customers, orders, ovdb_canary"
+const pgITTables = "customers, orders, people, ovdb_canary"
 
 // pgITAdmin opens the connection the test looks at the server with, and leaves the
 // database with the tables of the tests dropped and a canary table of one row.
@@ -122,6 +125,10 @@ const pgITSchemas = `schemas:
         customer_id: {type: string}
         total: {type: integer}
         status: {type: string}
+    people:
+      fields:
+        FirstName: {type: string}
+        city: {type: string}
 `
 
 // pgITMount mounts the PostgreSQL database as id, its sessions named application on
@@ -172,17 +179,47 @@ func pgITLite(t *testing.T, id string) *core.Database {
 	return db
 }
 
+// pgITLog is what a server under test logs. A handler may still be writing a record
+// when the response it sent is read, so it is safe for concurrent use.
+type pgITLog struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *pgITLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *pgITLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
+}
+
 // pgITServe serves the mounts, with PostgreSQL among the engines that join.
 func pgITServe(t *testing.T, mounts map[string]*core.Database) string {
 	t.Helper()
-	service := server.New("test", mounts, server.WithQueryLimits(server.QueryLimits{JoinEngines: []string{"sqlite", "postgres"}}))
+	base, _ := pgITServeLogged(t, mounts)
+	return base
+}
+
+// pgITServeLogged is pgITServe, and returns what the server logs.
+func pgITServeLogged(t *testing.T, mounts map[string]*core.Database) (string, *pgITLog) {
+	t.Helper()
+	logs := &pgITLog{}
+	service := server.New("test", mounts,
+		server.WithLogger(slog.New(slog.NewJSONHandler(logs, nil))),
+		server.WithQueryLimits(server.QueryLimits{JoinEngines: []string{"sqlite", "postgres"}}))
 	t.Cleanup(service.CloseSnapshots)
 	host := httptest.NewServer(service.Handler())
 	t.Cleanup(host.Close)
-	return host.URL
+	return host.URL, logs
 }
 
-// pgITRows are the rows both databases hold: four customers and five orders.
+// pgITRows are the rows both databases hold: four customers, five orders, and two
+// people (under the keys of two customers, and with a field whose name has capitals).
 var pgITRows = []struct{ collection, id, data string }{
 	{"customers", "c1", `{"name":"Ada","country":"IE"}`},
 	{"customers", "c2", `{"name":"Bob","country":"US"}`},
@@ -193,6 +230,8 @@ var pgITRows = []struct{ collection, id, data string }{
 	{"orders", "o3", `{"customer_id":"c2","total":75,"status":"open"}`},
 	{"orders", "o4", `{"customer_id":"c3","total":300,"status":"paid"}`},
 	{"orders", "o5", `{"customer_id":"c3","total":20,"status":"open"}`},
+	{"people", "c1", `{"FirstName":"Ada","city":"Dublin"}`},
+	{"people", "c2", `{"FirstName":"Bob","city":"Austin"}`},
 }
 
 // pgITSeed writes the rows to database id by key, over HTTP.
@@ -534,12 +573,17 @@ var pgITCollectionProbes = []string{
 // quote, a semicolon that starts a second statement and a comment marker, in a
 // value, in a field name and in a collection name, on every route that takes one:
 // each is a record that is stored and found as it was written, an empty result or a
-// refusal (a 4xx), never a server fault, and a canary table that no manifest
-// declares is what it was.
+// refusal (a 4xx), and a canary table that no manifest declares is what it was.
+//
+// A value against a text field is bound, so it finds its record or nothing. A value that
+// does not fit its field (a word against the integer field total, a number or a boolean
+// against the text field name), a field the table does not have, a dotted name and a
+// qualifier no source has are the caller's mistakes, and each is a 400 invalid_dtql on
+// every route, never a 500: the server logs no error for any probe of the test.
 func TestPostgresIntegration_ProbesAreRowsAnEmptyResultOrARefusal(t *testing.T) {
 	admin := pgITAdmin(t)
 	pg := pgITMount(t, "pg", "ovdb-it-probes", true)
-	base := pgITServe(t, map[string]*core.Database{"pg": pg})
+	base, logs := pgITServeLogged(t, map[string]*core.Database{"pg": pg})
 	pgITSeed(t, base, "pg")
 
 	// A value is bound: a record written with it is found by it, exactly, and by
@@ -568,6 +612,46 @@ func TestPostgresIntegration_ProbesAreRowsAnEmptyResultOrARefusal(t *testing.T) 
 		if got := relHTTPDo(t, base, http.MethodGet, "/v1/databases/pg/records/customers/"+id, "", "", nil); !strings.Contains(got.raw, string(encoded)) {
 			t.Errorf("the record written with the value %q reads back as %s", probe, got.raw)
 		}
+	}
+
+	// A value that does not fit its field is the caller's mistake: a 400, on every route.
+	mistakes := 0
+	mistake := func(what string, resp relHTTPResponse) {
+		t.Helper()
+		mistakes++
+		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" {
+			t.Errorf("%s: status %d, want 400 invalid_dtql: %s", what, resp.status, resp.raw)
+		}
+	}
+	against := func(collection, alias, field, encoded string) {
+		t.Helper()
+		what := fmt.Sprintf("the value %s against %s.%s", encoded, collection, field)
+		mistake("/query, "+what, relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/query", "", `{"collection":"`+collection+`","where":[{"field":"`+field+`","op":"==","value":`+encoded+`}]}`, nil))
+		mistake("/query, in, "+what, relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/query", "", `{"collection":"`+collection+`","where":[{"field":"`+field+`","op":"in","value":[`+encoded+`]}]}`, nil))
+		mistake("/dtql, "+what, relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/dtql", "", "from: {name: "+collection+"}\nwhere: {op: '==', left: {field: "+field+"}, right: {value: "+encoded+"}}\n", nil))
+		mistake("/v1/dtql, "+what, relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", "from: {database: pg, name: "+collection+", alias: "+alias+"}\nwhere: {op: '==', left: {field: "+field+", source: "+alias+"}, right: {value: "+encoded+"}}\ncolumns: [{field: id, source: "+alias+"}]\n", nil))
+	}
+	for _, probe := range pgITValueProbes {
+		encoded, _ := json.Marshal(probe)
+		against("orders", "o", "total", string(encoded))
+	}
+	for _, encoded := range []string{"5", "1.5", "true"} {
+		against("customers", "c", "name", encoded)
+	}
+	// A field the table does not have, a dotted name and a qualifier no source has.
+	mistake("/query, an undeclared field in where", relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/query", "", `{"collection":"customers","where":[{"field":"nosuch","op":"==","value":"x"}]}`, nil))
+	mistake("/query, an undeclared field in orderBy", relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/query", "", `{"collection":"customers","orderBy":[{"field":"nosuch"}]}`, nil))
+	mistake("/query, a dotted name", relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/query", "", `{"collection":"customers","where":[{"field":"name.first","op":"==","value":"x"}]}`, nil))
+	mistake("/dtql, an undeclared field in where", relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/dtql", "", "from: {name: customers}\nwhere: {op: '==', left: {field: nosuch}, right: {value: x}}\n", nil))
+	mistake("/dtql, an undeclared field in orderBy", relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/dtql", "", "from: {name: customers}\norderBy: [{field: nosuch}]\n", nil))
+	mistake("/dtql, an undeclared column", relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/dtql", "", "from: {name: customers}\ncolumns: [{field: nosuch}]\n", nil))
+	mistake("/v1/dtql, an undeclared field", relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", "from: {database: pg, name: customers, alias: c}\nwhere: {op: '==', left: {field: nosuch, source: c}, right: {value: x}}\n", nil))
+	mistake("/v1/dtql, an undeclared column", relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", "from: {database: pg, name: customers, alias: c}\ncolumns: [{field: nosuch, source: c}]\n", nil))
+	mistake("/v1/dtql, a qualifier no source has", relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", "from: {database: pg, name: customers, alias: c}\nwhere: {op: '==', left: {field: name, source: x}, right: {value: x}}\n", nil))
+	mistake("/v1/dtql, a qualifier no source has, in a join", relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", pgITDoc(pgITJoin, "pg")+"where: {op: '==', left: {field: name, source: x}, right: {value: x}}\n", nil))
+	mistake("/v1/dtql, an undeclared field of a joined source", relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", strings.Replace(pgITDoc(pgITJoin, "pg"), "{field: name, source: c, as: customer}", "{field: nosuch, source: c, as: customer}", 1), nil))
+	if want := (len(pgITValueProbes)+3)*4 + 11; mistakes != want {
+		t.Errorf("%d probes of a mistake were made, want %d", mistakes, want)
 	}
 
 	// A name is refused or finds nothing: it is never part of a statement.
@@ -608,6 +692,11 @@ func TestPostgresIntegration_ProbesAreRowsAnEmptyResultOrARefusal(t *testing.T) 
 		t.Errorf("only %d of %d probes of a name were refused", refused, want)
 	}
 
+	// Not one of the probes was a fault of the server: it logs no error record.
+	if strings.Contains(logs.String(), `"level":"ERROR"`) {
+		t.Errorf("the server logged an error while it answered the probes:\n%s", logs)
+	}
+
 	pgITCanary(t, admin)
 	var customers, orders int
 	if err := admin.QueryRow("SELECT (SELECT count(*) FROM customers), (SELECT count(*) FROM orders)").Scan(&customers, &orders); err != nil {
@@ -616,6 +705,96 @@ func TestPostgresIntegration_ProbesAreRowsAnEmptyResultOrARefusal(t *testing.T) 
 	if customers != 4+len(pgITValueProbes) || orders != 5 {
 		t.Errorf("the tables hold %d customers and %d orders, want %d and 5", customers, orders, 4+len(pgITValueProbes))
 	}
+}
+
+// pgITNameDocs are documents that select a field of people under a spelling of its name
+// (SPELLING), alone in one database and joined to the customers of another.
+const (
+	pgITNameDoc = `from: {database: DB, name: people, alias: p}
+where: {op: '==', left: {field: SPELLING, source: p}, right: {value: Ada}}
+columns:
+  - {field: id, source: p}
+  - {field: SPELLING, source: p}
+`
+	pgITNameJoinDoc = `from:
+  database: PEOPLE
+  name: people
+  alias: p
+  joins:
+    - type: inner
+      from: {database: CUSTOMERS, name: customers, alias: c}
+      on:
+        - {left: {field: id, source: p}, op: '==', right: {field: id, source: c}}
+orderBy:
+  - {field: id, source: p}
+columns:
+  - {field: SPELLING, source: p, as: first}
+  - {field: name, source: c, as: customer}
+`
+)
+
+// TestPostgresIntegration_MixedCaseFieldNames: a manifest that declares a field with
+// capitals in its name (FirstName) holds it in a PostgreSQL table folded to lower case.
+// A route that reads one collection, and a document that runs in the database, find it
+// by the declared spelling and by the folded one, and answer as a SQLite mount does,
+// under the declared name. A join across databases reads the names the server holds,
+// which are lower case: it answers the lower-case spelling, and refuses the declared one
+// (400), where a SQLite mount answers the declared spelling and refuses the lower-case
+// one. The limit is stated in docs/api.md.
+func TestPostgresIntegration_MixedCaseFieldNames(t *testing.T) {
+	admin := pgITAdmin(t)
+	pg, lite, other := pgITMount(t, "pg", "ovdb-it-mixed", true), pgITLite(t, "lite"), pgITLite(t, "other")
+	base := pgITServe(t, map[string]*core.Database{"pg": pg, "lite": lite, "other": other})
+	for _, id := range []string{"pg", "lite", "other"} {
+		pgITSeed(t, base, id)
+	}
+
+	for _, spelling := range []string{"FirstName", "firstname"} {
+		wire := `{"collection":"people","where":[{"field":"` + spelling + `","op":"==","value":"Ada"}],"orderBy":[{"field":"` + spelling + `"}]}`
+		t.Run("/query, "+spelling, func(t *testing.T) {
+			resp := pgITBoth(t, base, http.MethodPost, "/v1/databases/pg/query", "/v1/databases/lite/query", wire, wire)
+			if keys := pgITKeys(resp); !reflect.DeepEqual(keys, []string{"people/c1"}) || !strings.Contains(resp.raw, `"FirstName":"Ada"`) {
+				t.Fatalf("keys = %v, the answer is %s, want people/c1 under the declared name", keys, resp.raw)
+			}
+		})
+		doc := "from: {name: people}\nwhere: {op: '==', left: {field: " + spelling + "}, right: {value: Ada}}\n"
+		t.Run("/dtql, "+spelling, func(t *testing.T) {
+			resp := pgITBoth(t, base, http.MethodPost, "/v1/databases/pg/dtql", "/v1/databases/lite/dtql", doc, doc)
+			if keys := pgITKeys(resp); !reflect.DeepEqual(keys, []string{"people/c1"}) || !strings.Contains(resp.raw, `"FirstName":"Ada"`) {
+				t.Fatalf("keys = %v, the answer is %s, want people/c1 under the declared name", keys, resp.raw)
+			}
+		})
+		t.Run("/v1/dtql in one database, "+spelling, func(t *testing.T) {
+			doc := strings.ReplaceAll(pgITNameDoc, "SPELLING", spelling)
+			resp := pgITBoth(t, base, http.MethodPost, "/v1/dtql", "/v1/dtql", pgITDoc(doc, "pg"), pgITDoc(doc, "lite"))
+			relIntRowsAre(t, resp, []map[string]any{{"id": "c1", spelling: "Ada"}})
+			if route := pgITRoute(resp); route != "database" {
+				t.Errorf("route = %q, want database", route)
+			}
+		})
+	}
+
+	across := func(spelling, people, customers string) string {
+		return strings.NewReplacer("SPELLING", spelling, "PEOPLE", people, "CUSTOMERS", customers).Replace(pgITNameJoinDoc)
+	}
+	t.Run("a join across databases, the folded spelling", func(t *testing.T) {
+		pgResp := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", across("firstname", "pg", "lite"), nil)
+		liteResp := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", across("FirstName", "lite", "other"), nil)
+		if pgResp.status != http.StatusOK || liteResp.status != http.StatusOK {
+			t.Fatalf("status: PostgreSQL %d (%s), SQLite %d (%s)", pgResp.status, pgResp.raw, liteResp.status, liteResp.raw)
+		}
+		if !reflect.DeepEqual(pgResp.body["records"], liteResp.body["records"]) || pgITRoute(pgResp) != "in-memory" {
+			t.Fatalf("PostgreSQL: %s\nSQLite:     %s", pgResp.raw, liteResp.raw)
+		}
+		relIntRowsAre(t, pgResp, []map[string]any{{"first": "Ada", "customer": "Ada"}, {"first": "Bob", "customer": "Bob"}})
+	})
+	t.Run("a join across databases, the declared spelling", func(t *testing.T) {
+		resp := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", across("FirstName", "pg", "lite"), nil)
+		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" {
+			t.Fatalf("status %d, want 400 invalid_dtql: %s", resp.status, resp.raw)
+		}
+	})
+	pgITCanary(t, admin)
 }
 
 // TestPostgresIntegration_WithoutTheSwitchEveryQueryRouteRefusesAndNoStatementIsSent:

@@ -424,11 +424,36 @@ What a client sees. Where the adapter can run a document (filters, order, limit,
 aggregates and joins of one database) it runs on the server, and the answer reports
 `execution.route: "database"`; a document with a subquery, and a join across databases, runs in the
 engine of this server, and its source bounds apply. A document the adapter cannot compile is
-`422 query_unsupported` with the message `the storage engine cannot run this query`. A failure of
-the database server is `500 internal`, and the log line says only which step failed: no text of the
-driver or of the server, which can repeat a value of the request, reaches an answer or a log. A
-`postgres` mount takes part in a relational document only when `postgres` is in the join engines of
-the query limits (`joinEngines`), which the operator sets; the discovery document lists it, and
+`422 query_unsupported` with the message `the storage engine cannot run this query`.
+
+What the tables of the mount do not hold is the caller's mistake, and it is a refusal, never a
+failure of the server. A field that no column of a declared collection has, and a qualifier that no
+source of the query has, are `400 invalid_dtql`, refused before the driver is reached. A strict
+mount holds the key column `id` and the fields its manifest declares, each under the name the server
+folds it to, so a dotted name is no column; a source is named by its alias, or by its collection when
+it has none; a partial or schemaless mount may hold columns its manifest does not list, so it checks
+no field (a qualifier is still checked). A value that the server cannot read as the type of its
+column (a word compared with an integer field, a number or a boolean compared with a text field) is
+`400 invalid_dtql` as well: the server refuses it with a SQLSTATE of class 22, or 42883, 42804, 42703
+or 42P18, which is read from the error by type and never from its text. The message of that answer
+is fixed (`a value or a name of the query does not fit the field it is used with`), it repeats
+nothing of the request or of the server, and nothing is logged. A SQLite mount answers some of
+these requests with an empty result.
+
+A failure of the database server of any other kind is `500 internal`, and the log line says only
+which step failed: no text of the driver or of the server, which can repeat a value of the request
+or name the connection, reaches an answer or a log. That holds for a read transaction that cannot
+begin or commit and for the field list of a collection, as it does for a query.
+
+A field declared with capitals (`FirstName`) is held by PostgreSQL in lower case. A route that reads
+one collection and a document that runs in the database find it by the declared spelling and by the
+lower-case one, and answer under the declared name. A join across databases, and a subquery, run in
+the engine of this server over the names the database holds, which are lower case: such a document
+writes `firstname`, and the declared spelling is `400 invalid_dtql` there (a SQLite mount reads the
+declared spelling and refuses the lower-case one).
+
+A `postgres` mount takes part in a relational document only when `postgres` is in the join engines
+of the query limits (`joinEngines`), which the operator sets; the discovery document lists it, and
 advertises `query`, `dtql`, `joins` and `aggregation` for such a mount, only while the switch is on.
 
 Supported `op`: `==`, `<`, `<=`, `>`, `>=`, `in`, `array-contains`, `array-contains-any`.
