@@ -9,10 +9,11 @@ require (
 	github.com/dal-go/dalgo v0.89.6
 	github.com/dal-go/dalgo2firestore v0.10.3
 	github.com/dal-go/dalgo2mysql v0.2.2
-	github.com/dal-go/dalgo2postgres v0.6.0
+	github.com/dal-go/dalgo2postgres v0.6.3
 	github.com/dal-go/record v0.1.4
 	github.com/ingitdb/dalgo2ingitdb v0.6.2
 	github.com/ingitdb/ingitdb-go/ingitdb v0.7.4
+	golang.org/x/net v0.57.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.60.1
 )
@@ -55,7 +56,6 @@ require (
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.54.0 // indirect
-	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
