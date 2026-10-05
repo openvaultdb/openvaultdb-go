@@ -44,7 +44,7 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 	doc = withoutDefaultSchema(doc, db.Engine())
 	query, profile, err := classifyDTQLDocument(doc)
 	if err != nil {
-		s.writeMappedError(w, r, err)
+		s.writeMappedError(w, r, clippedError{err})
 		return
 	}
 	if profile.Kind == core.ProfileRelational {
@@ -92,7 +92,7 @@ func (s *Server) readDTQLDocument(w http.ResponseWriter, r *http.Request) ([]byt
 			if errors.Is(err, errDTQLURLTooLong) {
 				status = http.StatusRequestURITooLong
 			}
-			writeError(w, status, "bad_request", err.Error())
+			writeError(w, status, "bad_request", clipText(err.Error(), maxRefusalText))
 			return nil, false
 		}
 		return doc, true
@@ -109,12 +109,24 @@ func (s *Server) readDTQLDocument(w http.ResponseWriter, r *http.Request) ([]byt
 	if strings.EqualFold(strings.TrimSpace(strings.SplitN(r.Header.Get("Content-Type"), ";", 2)[0]), "application/json") {
 		doc, err = bindDTQLParameters(doc)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_dtql", err.Error())
+			writeError(w, http.StatusBadRequest, "invalid_dtql", clipText(err.Error(), maxRefusalText))
 			return nil, false
 		}
 	}
 	return doc, true
 }
+
+// maxRefusalText is the most bytes of the text of a refused document an error body
+// repeats. It is long enough to keep the whole message of any realistic name, and
+// short enough that a name as long as the request body does not come back whole.
+const maxRefusalText = 1024
+
+// clippedError is err with the text of its message cut at maxRefusalText. It keeps
+// the chain, so the status and code of the error are the ones err would have.
+type clippedError struct{ err error }
+
+func (e clippedError) Error() string { return clipText(e.err.Error(), maxRefusalText) }
+func (e clippedError) Unwrap() error { return e.err }
 
 // classifyDTQLDocument deserialises a document and classifies it. The error of
 // a document that is not DTQL, or that the classifier refuses, wraps

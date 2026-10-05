@@ -8,6 +8,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/record"
 )
@@ -196,13 +197,17 @@ func withClock(now func() time.Time) Option {
 //  6. Refuse a scan clause on a source with access policies
 //     (ErrScanOnProtectedSource).
 //  7. Choose the route, take a slot for it when WithAdmission is set
-//     (CapacityError), and run.
+//     (CapacityError), and run. The retry in memory takes a slot of its own.
 //
 // The database route is chosen when every source is in one database, that
 // database's engine is native, it has no access policies, the document has no
 // subquery and no null test, and no source has a scan clause (no engine adapter
 // applies a scan bound or compiles a null test). The whole document then runs in
-// one read transaction of the database. Every other document runs in memory:
+// one read transaction of the database. A join with no aggregation that the
+// database answers with an enforcement-unsupported denial (its adapter cannot
+// compile the document, and says so before any row is read) is read again in
+// memory, after the first slot is given back; see request.retryInMemory. Every
+// other document runs in memory:
 // DALgo reads each source with a single-collection query through a guarded leaf
 // and joins, filters and aggregates above the leaves, so a source with access
 // policies is only ever read through its policy-checked executor and only rows
@@ -218,8 +223,9 @@ func withClock(now func() time.Time) Option {
 // The walk checks every name of a document (fields, aliases, qualifiers,
 // parameters, the result names of scalar subqueries and collections) by the
 // strict rules of pkg/core, the arithmetic operators and aggregate names by the
-// classifier's lists, and refuses a document whose conditions and expressions
-// nest more than 64 levels. A field name must pass the strict rule
+// classifier's lists, refuses a query whose columns carry one output name twice
+// (the later column would replace the earlier one in a row), and refuses a
+// document whose conditions and expressions nest more than 64 levels. A field name must pass the strict rule
 // (core.ValidateFieldName) whatever the route and the engine. The classifier of
 // pkg/core applies a wider quoted-name rule to the field names of a relational
 // document, so a name such as "zip code" classifies and Execute then refuses it
@@ -266,25 +272,15 @@ func Execute(ctx context.Context, query dal.StructuredQuery, profile Profile, de
 		return Result{}, err
 	}
 
+	req := &request{cfg: cfg, query: query, doc: doc, databases: databases, qualified: qualified, sources: sources, authorize: authorize, limits: limits}
 	route := cfg.route(doc, databases, sources)
-	if cfg.admit != nil {
-		release, ok := cfg.admit(ctx, route)
-		if !ok {
-			return Result{}, &CapacityError{Route: route}
-		}
-		if release != nil {
-			defer release()
-		}
-	}
-	guard := NewGuard(authorize, limits)
-	ctx, cancel := guard.Context(ctx)
-	defer cancel()
-	r := &run{guard: guard, sources: sources}
-	var records []record.Record
-	if route == RouteDatabase {
-		records, err = r.database(ctx, query, sources[databases[0]])
-	} else {
-		records, err = r.inMemory(ctx, query, doc, databases, qualified)
+	records, guard, err := req.attempt(ctx, route)
+	if err != nil && route == RouteDatabase && req.retryInMemory(err) {
+		// The database could not compile the document: it was refused before any row
+		// was read, so nothing was delivered and the guard of the first attempt holds
+		// nothing to carry over. The first attempt has given its slot back.
+		route = RouteInMemory
+		records, guard, err = req.attempt(ctx, route)
 	}
 	if err != nil {
 		return Result{}, err
@@ -388,6 +384,73 @@ func (c *config) route(doc document, databases []string, sources map[string]Sour
 		}
 	}
 	return RouteInMemory
+}
+
+// request is one validated, authorised and resolved document, ready to read.
+type request struct {
+	cfg       *config
+	query     dal.StructuredQuery
+	doc       document
+	databases []string
+	qualified bool
+	sources   map[string]Source
+	authorize Authorize
+	limits    Limits
+}
+
+// attempt reads the document on route: it takes a slot for the route when
+// WithAdmission is set (a *CapacityError when there is none, with nothing read),
+// holds it until the read has ended, and reads under a Guard of its own, so that
+// the budgets, statistics and failure of one attempt never reach the next. It
+// returns the Guard so that the caller can report what the read touched.
+func (q *request) attempt(ctx context.Context, route string) ([]record.Record, *Guard, error) {
+	if q.cfg.admit != nil {
+		release, ok := q.cfg.admit(ctx, route)
+		if !ok {
+			return nil, nil, &CapacityError{Route: route}
+		}
+		if release != nil {
+			defer release()
+		}
+	}
+	guard := NewGuard(q.authorize, q.limits)
+	ctx, cancel := guard.Context(ctx)
+	defer cancel()
+	r := &run{guard: guard, sources: q.sources}
+	var (
+		records []record.Record
+		err     error
+	)
+	if route == RouteDatabase {
+		records, err = r.database(ctx, q.query, q.sources[q.databases[0]])
+	} else {
+		records, err = r.inMemory(ctx, q.query, q.doc, q.databases, q.qualified)
+	}
+	return records, guard, err
+}
+
+// retryInMemory reports whether err, the failure of the database route, is one
+// the in-memory route can answer instead: the whole-document denial of an adapter
+// that could not compile a join that does not aggregate. The SQL adapters answer
+// a compile failure of any kind with an enforcement-unsupported denial, and a
+// join that selects no unaliased column named like the collection's registered
+// key is one they cannot compile: they append an unqualified helper column for
+// the key, which the SQLite compiler refuses in a query with a join. A database
+// with access policies never takes the database route, so the document is read
+// again only from a database that has none, and every read of the retry is
+// authorised as any in-memory read is. A document with one source or with an
+// aggregation does not have that cause and keeps the adapter's answer.
+func (q *request) retryInMemory(err error) bool {
+	if len(q.doc.sources) < 2 || dal.HasAggregation(q.query) {
+		return false
+	}
+	decisions := access.DecisionsFromError(err)
+	for _, decision := range decisions {
+		if decision.Code != access.CodeEnforcementUnsupported {
+			return false
+		}
+	}
+	return len(decisions) > 0
 }
 
 // run holds what one request reads through.

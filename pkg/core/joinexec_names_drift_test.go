@@ -20,7 +20,7 @@ import (
 // The name check compared with the walk is the one the classifier runs on a
 // relational document, validateRelationalNames (ClassifyDTQL calls it). A
 // document the two answer differently is listed with the named difference that
-// says why; there are two, and every other document gets the same answer from
+// says why; there are three, and every other document gets the same answer from
 // both.
 
 // The differences between the walk and the classifier's name check. A row of the
@@ -36,6 +36,12 @@ const (
 	// query and the queries around it; the walk scopes it to the whole document.
 	// The name is a validated collection name or alias either way.
 	differenceQualifierScope = "qualifier scope: the classifier scopes a qualifier to its own query and the queries around it, the walk to the whole document"
+	// differenceOutputNames: the walk refuses a query whose columns carry one
+	// output name twice (an alias, else the field name), because a row is keyed by
+	// that name and the later column would replace the earlier one. The name check
+	// of the classifier does not compare the output names of a query's columns, so
+	// the document classifies and does not run.
+	differenceOutputNames = "output names: the walk refuses a query that selects one output name twice, the classifier's name check does not compare them"
 )
 
 // driftRegistry is never asked: the authorise function below denies everything.
@@ -281,6 +287,16 @@ func TestJoinexecWalkAndCoreAgreeOnNames(t *testing.T) {
 			differenceQualifierScope,
 		},
 
+		// Output names: the walk refuses a repeated one in any query of the document,
+		// and a name that repeats across queries or sits beside a wildcard is fine.
+		{"two fields of one name", driftWith(root("a", ""), nil, driftColumn("a", "id"), driftColumn("b", "id")), true, false, differenceOutputNames},
+		{"two aliases of one name", driftWith(root("a", ""), nil, dal.Column{Expression: dal.NewFieldRef("", "x"), Alias: "r"}, dal.Column{Expression: dal.NewFieldRef("", "y"), Alias: "r"}), true, false, differenceOutputNames},
+		{"an alias equal to the field name of another column", driftWith(root("a", ""), nil, driftColumn("", "id"), dal.Column{Expression: dal.NewFieldRef("", "x"), Alias: "id"}), true, false, differenceOutputNames},
+		{"two columns of one name in a derived source", driftWith(derived(driftWith(root("b", ""), nil, driftColumn("", "id"), driftColumn("c", "id")), "d"), nil, driftColumn("d", "id")), true, false, differenceOutputNames},
+		{"one field under two aliases", driftWith(root("a", ""), nil, dal.Column{Expression: dal.NewFieldRef("", "x"), Alias: "r"}, dal.Column{Expression: dal.NewFieldRef("", "x"), Alias: "s"}), true, true, ""},
+		{"the same name in a query and in a derived source", driftWith(derived(driftWith(root("b", ""), nil, driftColumn("", "id")), "d"), nil, driftColumn("d", "id")), true, true, ""},
+		{"a wildcard beside a field", driftWith(root("a", ""), nil, dal.Column{Wildcard: &dal.WildcardProjection{Source: "a"}}, driftColumn("a", "id")), true, true, ""},
+
 		// Parameters.
 		{"plain parameter", driftWith(root("a", ""), where(dal.NewComparison(dal.NewFieldRef("", "id"), dal.Equal, dal.Param{Name: "city"}))), true, true, ""},
 		{"parameter with a space", driftWith(root("a", ""), where(dal.NewComparison(dal.NewFieldRef("", "id"), dal.Equal, dal.Param{Name: "bad name"}))), false, false, ""},
@@ -331,7 +347,7 @@ func TestJoinexecWalkAndCoreAgreeOnNames(t *testing.T) {
 				t.Fatalf("a document the two answer differently names the difference, and only that one: classifier=%v walk=%v difference=%q", tc.classifier, tc.walk, tc.difference)
 			}
 			if tc.difference != "" {
-				if tc.difference != differenceFieldNames && tc.difference != differenceQualifierScope {
+				if tc.difference != differenceFieldNames && tc.difference != differenceQualifierScope && tc.difference != differenceOutputNames {
 					t.Fatalf("%q is not a named difference", tc.difference)
 				}
 				seen[tc.difference] = true
@@ -345,7 +361,7 @@ func TestJoinexecWalkAndCoreAgreeOnNames(t *testing.T) {
 		})
 	}
 	// A difference no row exercises would be listed and untested.
-	for _, difference := range []string{differenceFieldNames, differenceQualifierScope} {
+	for _, difference := range []string{differenceFieldNames, differenceQualifierScope, differenceOutputNames} {
 		if !seen[difference] {
 			t.Errorf("no row of the table exercises the difference %q", difference)
 		}

@@ -556,20 +556,50 @@ func TestRelationalDTQLGrantsOverHTTP(t *testing.T) {
 			t.Fatalf("owner: status %d: %s", owner.status, owner.raw)
 		}
 	})
-	t.Run("a collection that the document hides in a derived source or a scalar subquery is checked", func(t *testing.T) {
+	t.Run("a collection that the document hides is checked wherever it is", func(t *testing.T) {
+		// Every document reads Customer in a place a check of the root source or of the
+		// joins at the first level would not look, or under a name that is not its own.
+		// The token is granted Invoice only, so each is a 403 that names Customer and
+		// returns no row; the owner gets rows for the same document, so none of them is
+		// refused for another reason.
 		for name, doc := range map[string]string{
 			"derived source":  "from:\n  query:\n    as: d\n    from: {database: chinook, name: Customer}\n    columns: [{field: id}]\n",
 			"scalar subquery": "from: {database: chinook, name: Invoice}\ncolumns:\n  - field: id\n  - query: {as: n, from: {database: chinook, name: Customer}, columns: [{aggregate: {function: count, args: [{star: true}]}}]}\n",
+			"a join nested in the relation tree of a join": `from:
+  database: chinook
+  name: Invoice
+  alias: i
+  joins:
+    - type: inner
+      from:
+        database: chinook
+        name: Invoice
+        alias: j
+        joins:
+          - type: inner
+            from: {database: chinook, name: Customer, alias: c}
+            on:
+              - {left: {field: customer_id, source: j}, op: '==', right: {field: id, source: c}}
+      on:
+        - {left: {field: id, source: i}, op: '==', right: {field: id, source: j}}
+columns:
+  - {field: id, source: i}
+`,
+			"a subquery in ORDER BY":                             "from: {database: chinook, name: Invoice}\norderBy:\n  - query: {as: n, from: {database: chinook, name: Customer}, columns: [{aggregate: {function: count, args: [{star: true}]}}]}\ncolumns: [{field: id}]\n",
+			"a query as the operand of a comparison":             "from: {database: chinook, name: Invoice}\nwhere: {op: '>', left: {field: total}, right: {query: {as: m, from: {database: chinook, name: Customer}, columns: [{aggregate: {function: count, args: [{star: true}]}}]}}}\ncolumns: [{field: id}]\n",
+			"an alias equal to the granted collection":           "from: {database: chinook, name: Customer, alias: Invoice}\ncolumns: [{field: id, source: Invoice}]\n",
+			"a derived source aliased as the granted collection": "from:\n  query:\n    as: Invoice\n    from: {database: chinook, name: Customer}\n    columns: [{field: id}]\n",
 		} {
 			resp := relHTTPPost(t, host.URL, "/v1/dtql", "tok-invoice-only", doc)
-			if resp.status != http.StatusForbidden && resp.status != http.StatusBadRequest {
-				t.Errorf("%s: status %d: %s", name, resp.status, resp.raw)
+			if resp.status != http.StatusForbidden || resp.errorField("code") != "forbidden" || !strings.Contains(resp.errorField("message"), "Customer") {
+				t.Errorf("%s: status %d, want a 403 that names Customer: %s", name, resp.status, resp.raw)
 			}
-			if resp.status == http.StatusForbidden && !strings.Contains(resp.errorField("message"), "Customer") {
-				t.Errorf("%s: %s", name, resp.raw)
+			if resp.body["records"] != nil || strings.Contains(resp.raw, "c1") {
+				t.Errorf("%s: a refused request returned rows: %s", name, resp.raw)
 			}
-			if resp.status == http.StatusOK {
-				t.Errorf("%s: rows were returned: %s", name, resp.raw)
+			owner := relHTTPPost(t, host.URL, "/v1/dtql", ownerToken, doc)
+			if owner.status != http.StatusOK || len(owner.rows(t)) == 0 {
+				t.Errorf("%s: the owner's status %d, want rows: %s", name, owner.status, owner.raw)
 			}
 		}
 	})

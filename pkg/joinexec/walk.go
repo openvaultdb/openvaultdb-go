@@ -17,6 +17,7 @@ import (
 //     them, with whether the read carries a scan clause;
 //   - whether any subquery or null test appears;
 //   - whether every name in the document is a plain name;
+//   - whether the columns of every query have output names that differ;
 //   - whether conditions and expressions nest within a bound.
 //
 // A node of a type it does not know is refused: whatever such a node holds is
@@ -67,14 +68,16 @@ const maxEchoLen = 64
 // change to one rule without the other is caught. A name is a plain name when it
 // matches, so a character nobody thought of is refused.
 //
-// Two differences between the walk's name rules and the classifier's are known
+// Three differences between the walk's name rules and the classifier's are known
 // and pinned by that test. The classifier applies a wider quoted-name rule to the
 // field names of a relational document (a column named "zip code" is a name
 // there); the walk applies the strict rule on every route, so Execute refuses a
-// document with a field name that only the wider rule accepts. And a field
+// document with a field name that only the wider rule accepts. A field
 // qualifier may name a source of any query of the document, where the classifier
 // scopes it to its own query and the queries around it; the name is a validated
-// collection name or alias either way. The walk also refuses an arithmetic
+// collection name or alias either way. And the walk refuses a query whose
+// columns carry one output name twice, which the classifier's name check does not
+// compare. The walk also refuses an arithmetic
 // operator outside + - * / and an aggregate name outside the classifier's seven,
 // as the classifier does, so those are not differences. What only the classifier
 // checks is listed on Execute.
@@ -195,12 +198,46 @@ func (w *walker) query(query dal.StructuredQuery, path string, depth int) error 
 			return err
 		}
 	}
+	names := map[string]bool{}
 	for i, column := range query.Columns() {
-		if err := w.column(column, fmt.Sprintf("%s.columns[%d]", path, i), depth); err != nil {
+		columnPath := fmt.Sprintf("%s.columns[%d]", path, i)
+		if err := w.column(column, columnPath, depth); err != nil {
 			return err
+		}
+		// A row is keyed by the output name of its columns, so two columns with one
+		// name would lose one of them (a database that runs the document keeps the
+		// later column) or fail (DALgo's join refuses the document): the document
+		// is refused on every route before anything is read.
+		if name := outputName(column); name != "" {
+			if names[name] {
+				return refuse(columnPath, "duplicate output name %q", clip(name))
+			}
+			names[name] = true
 		}
 	}
 	return nil
+}
+
+// outputName is the name a column has in the result: its alias, else the field
+// name of a field, the result name of a scalar subquery, or the text of an
+// aggregate, as DALgo names them. A wildcard stands for the fields of its source
+// and a column of any other kind has no name to compare; both return "".
+func outputName(column dal.Column) string {
+	if column.Wildcard != nil {
+		return ""
+	}
+	if column.Alias != "" {
+		return column.Alias
+	}
+	switch value := column.Expression.(type) {
+	case dal.FieldRef:
+		return value.Name()
+	case dal.QueryExpression:
+		return value.As()
+	case dal.AggregateFunc:
+		return value.String()
+	}
+	return ""
 }
 
 func (w *walker) column(column dal.Column, path string, depth int) error {

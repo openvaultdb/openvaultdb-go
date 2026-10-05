@@ -259,9 +259,27 @@ func TestRelationalHandlerMapsEveryErrorOfTheExecutor(t *testing.T) {
 		{name: "invalid document, long message", err: fmt.Errorf("%w: %s", joinexec.ErrInvalidDocument, long), status: 400, code: "invalid_dtql"},
 		{name: "profile that does not match is the server's defect", err: fmt.Errorf("%w: %w: sources", joinexec.ErrInvalidDocument, joinexec.ErrProfileMismatch), status: 500, code: "internal", logged: true, excludes: []string{"profile"}},
 		{name: "adapter refuses a null test", err: errors.New("unsupported condition dal.IsNullCondition"), status: 422, code: "query_unsupported"},
-		{name: "adapter refuses a null test, in a source", err: &joinexec.SourceError{Database: "alpha", Collection: "orders", Err: errors.New("failed to build query: unsupported condition dal.IsNullCondition")}, status: 422, code: "query_unsupported"},
+		{name: "adapter refuses a null test, in a source", err: &joinexec.SourceError{Database: "alpha", Collection: "orders", Err: errors.New("dalgo2ingitdb: unsupported condition type dal.IsNullCondition")}, status: 422, code: "query_unsupported"},
+		{name: "adapter refuses a null test, wrapped twice", err: fmt.Errorf("executing: %w", &joinexec.SourceError{Database: "alpha", Collection: "orders", Err: fmt.Errorf("failed to build query: %w", errors.New("unsupported condition dal.IsNullCondition"))}), status: 422, code: "query_unsupported"},
+		{name: "the phrase in the middle of an error is not the refusal", err: errors.New("read failed: unsupported condition in the driver"), status: 500, code: "internal", logged: true},
+		{name: "a source named like the refusal, failing for another reason", err: &joinexec.SourceError{Database: "alpha", Collection: "unsupported condition", Err: errors.New("disk exploded")}, status: 500, code: "internal", logged: true, excludes: []string{"disk exploded", "unsupported condition"}},
 		{name: "column the database does not know", err: errors.New("SQL logic error: no such column: Fooo (1)"), status: 400, code: "invalid_dtql", contains: []string{"Fooo"}, excludes: []string{"SQL logic error"}},
+		{name: "column the database does not know, in a source", err: &joinexec.SourceError{Database: "alpha", Collection: "orders", Err: fmt.Errorf("failed to get SQL reader: %w", errors.New("SQL logic error: no such column: c.Fooo (1)"))}, status: 400, code: "invalid_dtql", contains: []string{"c.Fooo"}},
 		{name: "column with a long name", err: errors.New("SQL logic error: no such column: " + long), status: 400, code: "invalid_dtql"},
+		{name: "the phrase for a missing column in the middle of an error is not the refusal", err: errors.New("read failed: no such column: x"), status: 500, code: "internal", logged: true},
+		{name: "a source named like a missing column, failing for another reason", err: &joinexec.SourceError{Database: "alpha", Collection: "no such column: x", Err: errors.New("disk exploded")}, status: 500, code: "internal", logged: true, excludes: []string{"disk exploded", "no such column"}},
+		{name: "a join the executor could not plan, fixed refusal", err: &dal.JoinValidationError{Category: "join_plan", Path: "columns[0]", Message: "wildcard expansion requires ordered schema metadata"}, status: 400, code: "invalid_dtql", contains: []string{"wildcard expansion"}},
+		{name: "a join the executor could not plan, fixed refusal, wrapped", err: fmt.Errorf("joining: %w", &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: "generic JOIN does not support provider cursors"}), status: 400, code: "invalid_dtql", contains: []string{"provider cursors"}},
+		{name: "a join the executor could not plan, IN without an array", err: &dal.JoinValidationError{Category: "join_plan", Path: "where", Message: "IN or NOT IN requires an array"}, status: 400, code: "invalid_dtql"},
+		{name: "a join the executor could not plan, IS NULL without an operand", err: &dal.JoinValidationError{Category: "join_plan", Path: "where", Message: "IS NULL requires an operand"}, status: 400, code: "invalid_dtql"},
+		{name: "a join the executor could not plan, operator", err: &dal.JoinValidationError{Category: "join_plan", Path: "where", Message: "unsupported operator like"}, status: 400, code: "invalid_dtql", contains: []string{"like"}},
+		{name: "a join whose scan failed", err: &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: "cannot scan c: disk I/O error"}, status: 500, code: "internal", logged: true, excludes: []string{"disk I/O", "scan"}},
+		{name: "a join whose scan failed part way", err: &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: "scan c: disk I/O error"}, status: 500, code: "internal", logged: true, excludes: []string{"disk I/O"}},
+		{name: "a join whose scan failed to close", err: &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: "close scan c: disk I/O error"}, status: 500, code: "internal", logged: true, excludes: []string{"disk I/O"}},
+		{name: "a join that could not load the fields of a source", err: &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: "cannot load fields for c: disk I/O error"}, status: 500, code: "internal", logged: true, excludes: []string{"disk I/O"}},
+		{name: "a join that could not load the fields of a wildcard", err: &dal.JoinValidationError{Category: "join_plan", Path: "columns", Message: "cannot load wildcard fields: disk I/O error"}, status: 500, code: "internal", logged: true, excludes: []string{"disk I/O"}},
+		{name: "a join whose output could not be encoded", err: &dal.JoinValidationError{Category: "join_plan", Path: "columns", Message: "output is not JSON serializable: unsupported value"}, status: 500, code: "internal", logged: true, excludes: []string{"unsupported value"}},
+		{name: "a join whose scan failed with a text that looks like a refusal", err: &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: "unsupported expression dal.X"}, status: 500, code: "internal", logged: true},
 		{name: "structured queries unsupported on an engine", err: &joinexec.SourceError{Database: "alpha", Collection: "orders", Err: &core.QueryUnsupportedError{Engine: "postgres"}}, status: 501, code: "query_unsupported"},
 		{name: "an error nothing knows", err: errors.New("disk exploded"), status: 500, code: "internal", logged: true, excludes: []string{"disk exploded"}},
 		{name: "a source that fails", err: &joinexec.SourceError{Database: "alpha", Collection: "orders", Err: errors.New("disk exploded")}, status: 500, code: "internal", logged: true, excludes: []string{"disk exploded"}},
@@ -537,9 +555,10 @@ func TestLeaseRelationalDatabasesHoldsOneLeasePerDatabase(t *testing.T) {
 }
 
 // A collection that a database on an engine that builds SQL does not declare is
-// a 404 before the executor is called, whatever the grant says, ahead of the
-// paging and engine refusals; a document engine takes any collection.
-func TestRelationalHandlerRefusesAnUndeclaredCollectionBeforeAnythingElse(t *testing.T) {
+// a 404 before the executor is called, whatever the grant says. The check follows
+// the refusals that do not depend on the collection (paging headers, engines); a
+// document engine takes any collection.
+func TestRelationalHandlerRefusesAnUndeclaredCollectionBeforeTheExecutor(t *testing.T) {
 	ghost := "from: {database: alpha, name: ghost}\n"
 	for _, tc := range []struct {
 		name    string
@@ -547,25 +566,30 @@ func TestRelationalHandlerRefusesAnUndeclaredCollectionBeforeAnythingElse(t *tes
 		doc     string
 		headers map[string]string
 		status  int
+		code    string
 	}{
-		{"sqlite", "sqlite", ghost, nil, 404},
-		{"postgres, whose engine is refused as well", "postgres", ghost, nil, 404},
-		{"mysql", "mysql", ghost, nil, 404},
-		{"with a paging header", "sqlite", ghost, map[string]string{"OVDB-Page-Size": "10"}, 404},
-		{"named by a subquery", "sqlite", "from: {database: alpha, name: orders}\nwhere: {exists: {query: {from: {database: alpha, name: ghost}}}}\n", nil, 404},
-		{"a declared collection is read", "sqlite", "from: {database: alpha, name: orders}\n", nil, 200},
-		{"ingitdb takes any collection", "ingitdb", ghost, nil, 200},
-		{"firestore takes any collection but is not joined", "firestore", ghost, nil, 422},
+		{"sqlite", "sqlite", ghost, nil, 404, "not_found"},
+		{"postgres, whose engine is refused first", "postgres", ghost, nil, 501, "query_unsupported"},
+		{"mysql, whose engine is refused first", "mysql", ghost, nil, 501, "query_unsupported"},
+		{"with a paging header, which is refused first", "sqlite", ghost, map[string]string{"OVDB-Page-Size": "10"}, 422, "snapshot_unsupported"},
+		{"named by a subquery", "sqlite", "from: {database: alpha, name: orders}\nwhere: {exists: {query: {from: {database: alpha, name: ghost}}}}\n", nil, 404, "not_found"},
+		{"a spelling of a declared collection that is not its canonical name", "sqlite", "from: {database: alpha, name: '\"orders\"'}\n", nil, 404, "not_found"},
+		{"a declared collection is read", "sqlite", "from: {database: alpha, name: orders}\n", nil, 200, ""},
+		{"ingitdb takes any collection", "ingitdb", ghost, nil, 200, ""},
+		{"firestore takes any collection but is not joined", "firestore", ghost, nil, 422, "join_engine_unsupported"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := &relFakeExecutor{result: joinexec.Result{Columns: []string{}}}
 			_, host := relFakeServer(t, fake, []*core.Database{relFakeMount("alpha", tc.engine, "")})
 			resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", tc.doc, tc.headers)
-			if resp.status != tc.status {
-				t.Fatalf("status %d, want %d: %s", resp.status, tc.status, resp.raw)
+			if resp.status != tc.status || (tc.code != "" && resp.code() != tc.code) {
+				t.Fatalf("status %d code %q, want %d %q: %s", resp.status, resp.code(), tc.status, tc.code, resp.raw)
 			}
-			if tc.status == 404 && (resp.code() != "not_found" || fake.count() != 0 || !strings.Contains(resp.raw, "ghost")) {
-				t.Fatalf("code %q, executor calls %d: %s", resp.code(), fake.count(), resp.raw)
+			if tc.status != 200 && fake.count() != 0 {
+				t.Fatalf("the executor was called %d times for a refused request", fake.count())
+			}
+			if tc.status == 404 && !strings.Contains(resp.raw, "orders") && !strings.Contains(resp.raw, "ghost") {
+				t.Fatalf("the refusal names no collection: %s", resp.raw)
 			}
 		})
 	}

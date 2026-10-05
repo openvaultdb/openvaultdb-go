@@ -29,9 +29,10 @@ import (
 // does not rely on it: it settles the database of every source the classifier
 // found (the root, joins at any depth, derived sources, subqueries), refuses a
 // document that strays outside the endpoint, checks the caller's capability on
-// every database and collection, and only then leases the databases, checks that
-// the collections are declared and runs. Nothing is gated or read for a request
-// that fails a check before it.
+// every database and collection, and only then leases the databases, refuses the
+// paging headers and the engines the server does not join, checks that the
+// collections are declared and runs. Nothing is gated or read for a request that
+// fails a check before it.
 
 // joinExecuteFunc is the signature of joinexec.Execute: the seam the handler
 // runs a relational document through.
@@ -64,7 +65,7 @@ func (s *Server) handleCrossDatabaseDTQL(w http.ResponseWriter, r *http.Request)
 	}
 	query, profile, err := classifyDTQLDocument(doc)
 	if err != nil {
-		s.writeMappedError(w, r, err)
+		s.writeMappedError(w, r, clippedError{err})
 		return
 	}
 	s.serveRelationalDTQL(w, r, nil, query, profile)
@@ -98,16 +99,6 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	if !ok {
 		return
 	}
-	// A collection that a database on an engine that builds SQL does not declare is
-	// not read, whatever the grant says. The executor reads one source at a time, so
-	// without this check a document that names one would reach the adapter for the
-	// sources before it.
-	for _, target := range targets {
-		if err := databases[target.database].GuardCollection(target.collection); err != nil {
-			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("collection not found: %q in database %q", clipName(target.collection), clipName(target.database)))
-			return
-		}
-	}
 	for _, header := range pagingHeaders {
 		if r.Header.Get(header) != "" {
 			writeError(w, http.StatusUnprocessableEntity, "snapshot_unsupported", "a joined result is returned whole: the paging headers are not supported on a relational query")
@@ -117,6 +108,20 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	if err := s.checkRelationalEngines(databases, order); err != nil {
 		s.writeRelationalError(w, r, err)
 		return
+	}
+	// A collection that a database on an engine that builds SQL does not declare is
+	// not read, whatever the grant says, and neither is one the document spells
+	// another way than its canonical name. The executor reads one source at a time,
+	// so without this check a document that names one would reach the adapter for
+	// the sources before it. The check comes after every refusal that does not depend
+	// on the collection, so that a database with access policies answers a request
+	// for an undeclared collection exactly as it answers one for a declared
+	// collection that its policy does not allow.
+	for _, target := range targets {
+		if db := databases[target.database]; !readableCollection(db, target.collection) {
+			s.refuseUnreadableCollection(w, r, db, target)
+			return
+		}
 	}
 	defaultDatabase := ""
 	if endpoint != nil {
@@ -151,6 +156,35 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 		records[i] = relationalRecord{Data: rec.Data()}
 	}
 	writeJSON(w, http.StatusOK, relationalResponse{Records: records, Columns: result.Columns, Execution: result.Execution})
+}
+
+// readableCollection reports whether a relational document may name collection of
+// db: one the database declares, under its canonical name. A collection a
+// database on an engine that builds SQL does not declare is refused (a document
+// engine takes any name that passes the path rule). The adapter writes the name
+// into a statement and quotes it, so the SQLite spelling that carries the quote
+// characters of a declared collection would address a table of that literal name
+// that the manifest does not declare; no query needs a spelling other than the
+// canonical one.
+func readableCollection(db *core.Database, collection string) bool {
+	if db.GuardCollection(collection) != nil {
+		return false
+	}
+	canonical, declared := db.CanonicalCollection(collection)
+	return !declared || canonical == collection
+}
+
+// refuseUnreadableCollection answers a collection readableCollection refused. A
+// database with access policies answers as it answers a collection its policy does
+// not allow (a 403 with the same body), so that the answer says nothing about which
+// collections the database declares; any other database says the collection is not
+// declared.
+func (s *Server) refuseUnreadableCollection(w http.ResponseWriter, r *http.Request, db *core.Database, target relationalTarget) {
+	if db.HasAccessPolicies() {
+		s.writeMappedError(w, r, access.ErrAccessDenied)
+		return
+	}
+	writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("collection not found: %q in database %q", clipName(target.collection), clipName(target.database)))
 }
 
 // relationalResponse is the body of a relational answer: rows without keys, the
@@ -353,7 +387,7 @@ func (s *Server) writeRelationalError(w http.ResponseWriter, r *http.Request, er
 		writeError(w, http.StatusUnprocessableEntity, "join_unsupported", "this query cannot run on a database with access policies")
 	case errors.Is(err, access.ErrAccessDenied):
 		s.writeMappedError(w, r, err)
-	case errors.As(err, &joinShape):
+	case errors.As(err, &joinShape) && isRefusedJoin(joinShape):
 		writeError(w, http.StatusBadRequest, "invalid_dtql", clipText(joinShape.Error(), maxEchoText))
 	case errors.As(err, &queryShape):
 		writeError(w, http.StatusBadRequest, "invalid_dtql", clipText(fmt.Sprintf("%s at %s: %s", queryShape.Category, queryShape.Path, queryShape.Message), maxEchoText))
@@ -374,23 +408,67 @@ func (s *Server) writeRelationalError(w http.ResponseWriter, r *http.Request, er
 	}
 }
 
-// isUnsupportedConditionError recognises the refusal of an engine adapter to
-// compile a condition of the query, such as a null test. The adapters report it
-// as a plain error whose text starts "unsupported condition", with no type to
-// ask for.
-func isUnsupportedConditionError(err error) bool {
-	return strings.Contains(err.Error(), "unsupported condition")
+// joinPlanRefusals are the messages of the join_plan category that DALgo gives a
+// document it cannot run, the only ones of that category a caller can act on. Every
+// other join_plan error carries the text of a failed read (a scan, a close, a field
+// load) or of an encoding fault, or reports a bound that Execute maps to a budget
+// refusal first, so it is answered as a server fault: a logged 500 that repeats
+// nothing of the cause.
+var joinPlanRefusals = map[string]bool{
+	"wildcard expansion requires ordered schema metadata": true,
+	"generic JOIN does not support provider cursors":      true,
+	"IN or NOT IN requires an array":                      true,
+	"IS NULL requires an operand":                         true,
 }
 
-// unknownColumnPattern matches the text SQLite gives for a column it does not
-// know.
-var unknownColumnPattern = regexp.MustCompile(`no such column: (\S+)`)
+// joinPlanOperatorRefusal starts the message of a comparison operator DALgo's join
+// does not evaluate; the rest of it is the operator the document wrote.
+const joinPlanOperatorRefusal = "unsupported operator "
 
-// unknownColumn reports whether err says the database has no such column, and
-// the name it gives. A column the caller named that the database does not have is
-// the caller's mistake, not the server's.
+// isRefusedJoin reports whether err is a shape error of the document, which the
+// caller made and can change: every category of DALgo's join errors but join_plan,
+// and the join_plan refusals of the document (joinPlanRefusals).
+func isRefusedJoin(err *dal.JoinValidationError) bool {
+	if err.Category != "join_plan" {
+		return true
+	}
+	return joinPlanRefusals[err.Message] || strings.HasPrefix(err.Message, joinPlanOperatorRefusal)
+}
+
+// leafError returns the innermost error of err's chain: the error the source
+// reported, without the wrappers around it. A wrapper prints names the caller
+// chose (a SourceError prints the collection), so a text the server looks for in
+// an error is looked for in the leaf only.
+func leafError(err error) error {
+	for {
+		inner := errors.Unwrap(err)
+		if inner == nil {
+			return err
+		}
+		err = inner
+	}
+}
+
+// unsupportedConditionPattern matches the refusal of an engine adapter to compile
+// a condition of the query: the adapters report it as a plain error whose text
+// starts "unsupported condition", after at most the name of the adapter, with no
+// type to ask for.
+var unsupportedConditionPattern = regexp.MustCompile(`^(?:[\w.-]+: )?unsupported condition\b`)
+
+// isUnsupportedConditionError recognises that refusal in the leaf of err.
+func isUnsupportedConditionError(err error) bool {
+	return unsupportedConditionPattern.MatchString(leafError(err).Error())
+}
+
+// unknownColumnPattern matches the whole text SQLite gives for a column it does
+// not know, with or without the prefix and the code the driver adds.
+var unknownColumnPattern = regexp.MustCompile(`^(?:SQL logic error: )?no such column: (\S+)(?: \(\d+\))?$`)
+
+// unknownColumn reports whether the leaf of err says the database has no such
+// column, and the name it gives. A column the caller named that the database does
+// not have is the caller's mistake, not the server's.
 func unknownColumn(err error) (string, bool) {
-	match := unknownColumnPattern.FindStringSubmatch(err.Error())
+	match := unknownColumnPattern.FindStringSubmatch(leafError(err).Error())
 	if match == nil {
 		return "", false
 	}
