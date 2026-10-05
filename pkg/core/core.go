@@ -72,6 +72,13 @@ type Database struct {
 	// the live manifest afterwards.
 	documentEngine bool
 
+	// foldsIdentifiers records, when the database opens, whether the engine
+	// resolves a collection name without regard to the case of ASCII letters
+	// (PostgreSQL stores a name lower-cased and reports it so, and SQLite finds a
+	// table whatever the case of its name), so a name the driver reports is
+	// compared with a declared one with the ASCII letters folded.
+	foldsIdentifiers bool
+
 	// afterWrite, when set, runs after each successfully applied write batch
 	// (e.g. git push for inGitDB-backed databases). A returned error is
 	// reported to the client, but the batch itself is already applied.
@@ -130,8 +137,11 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 	if err != nil {
 		return nil, err
 	}
+	if err = checkFieldNames(m); err != nil {
+		return nil, err
+	}
 	d := &Database{Manifest: m, db: db, modes: supportedModes, policyController: controller,
-		names: names, documentEngine: documentEngines[m.Storage.Engine]}
+		names: names, documentEngine: documentEngines[m.Storage.Engine], foldsIdentifiers: foldingEngines[m.Storage.Engine]}
 	// Retain the raw driver's Close: protected/secured wrappers installed
 	// below replace d.db but share the driver's underlying handle.
 	if closer, ok := db.(io.Closer); ok {
@@ -299,7 +309,15 @@ func (d *Database) Exists(ctx context.Context, key *record.Key) (bool, error) {
 	return d.db.Exists(ctx, d.adapterKey(key))
 }
 
-// Collections lists collections known to the driver.
+// Collections lists the collections of the database, sorted. A document engine
+// lists the collections its driver knows. On an engine whose adapter builds SQL
+// the list is made of the declared collections only, by their canonical names
+// (CanonicalCollection), each when the driver reports it: a table of the file that
+// the manifest does not declare, and a table named with the quote characters of
+// the quoted spelling of a declared key, are not listed. A declared name is
+// reported under exactly that name, except on PostgreSQL, which stores and
+// reports it lower-cased. Every name listed is one the routes that take a
+// collection accept.
 func (d *Database) Collections(ctx context.Context) ([]string, error) {
 	reader, ok := dal.As[dbschema.SchemaReader](d.db)
 	if !ok {
@@ -309,12 +327,47 @@ func (d *Database) Collections(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to list collections: %w", err)
 	}
-	names := make([]string, 0, len(refs))
-	for _, ref := range refs {
-		names = append(names, ref.Name())
+	var names []string
+	if d.isDocumentEngine() {
+		names = make([]string, 0, len(refs))
+		for _, ref := range refs {
+			names = append(names, ref.Name())
+		}
+	} else {
+		reported := make(map[string]bool, len(refs))
+		for _, ref := range refs {
+			reported[d.reportedName(ref.Name())] = true
+		}
+		names = make([]string, 0, len(d.names.spellings))
+		for canonical := range d.names.spellings {
+			if reported[d.reportedName(canonical)] {
+				names = append(names, canonical)
+			}
+		}
 	}
 	sort.Strings(names)
 	return names, nil
+}
+
+// foldingEngines lists the engines that resolve a collection name without regard
+// to the case of ASCII letters (see Database.foldsIdentifiers). MySQL is not one:
+// whether it folds depends on the server's lower_case_table_names.
+var foldingEngines = map[string]bool{"postgres": true, "sqlite": true}
+
+// reportedName is name as the driver of the database reports it (see
+// foldsIdentifiers): the ASCII letters of a name are lower-cased, and any other
+// character stays as it is.
+func (d *Database) reportedName(name string) string {
+	if !d.foldsIdentifiers {
+		return name
+	}
+	folded := []byte(name)
+	for i, c := range folded {
+		if 'A' <= c && c <= 'Z' {
+			folded[i] = c + 'a' - 'A'
+		}
+	}
+	return string(folded)
 }
 
 // CollectionForeignKeys returns foreign keys discovered by the storage
@@ -501,8 +554,8 @@ func (d *Database) Apply(ctx context.Context, ops []Op, message string) (int, er
 func (d *Database) SetAfterWrite(fn func(ctx context.Context) error) { d.afterWrite = fn }
 
 type stagedState struct {
-	data   map[string]any // nil when absent/deleted, or written with no data
-	exists bool           // the record is in the store, or an earlier op of the batch wrote it
+	data   map[string]any // nil when absent or deleted, or written with no data
+	exists bool           // the record is in the store, or an earlier op of the batch wrote it, and no later op deleted it
 }
 
 // validateOps simulates the batch against current store state to reject it
@@ -577,11 +630,17 @@ func (d *Database) validateOps(ctx context.Context, ops []Op) error {
 
 	if mode != schema.ModeSchemaless {
 		for ks, st := range stage {
-			if st.data == nil {
+			if !st.exists {
 				continue
 			}
+			// A record written with no data is a record with no fields, validated
+			// as one: only a record the batch leaves absent is not validated.
+			data := st.data
+			if data == nil {
+				data = map[string]any{}
+			}
 			leaf := leafByKey[ks]
-			if err := schema.ValidateRecord(mode, leaf, d.schemaCollection(leaf), st.data); err != nil {
+			if err := schema.ValidateRecord(mode, leaf, d.schemaCollection(leaf), data); err != nil {
 				return err
 			}
 		}

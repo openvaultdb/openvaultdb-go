@@ -35,17 +35,26 @@ import (
 // base and first-level join sources of a query, so a joined query inside a
 // secured transaction would read deeper sources unsecured. The same limit
 // applies to a query given to Executor on a protected database, which refuses
-// one that has a join, a derived source or a subquery (ErrProtectedSingleSource).
+// one that has a join, a derived source, a subquery or a scan bound
+// (ErrProtectedSingleSource).
 
 // ErrProtectedReadTx is returned by ReadTx for a database that has access
 // policies: such a database is read through Executor, one single-source query
 // at a time, never inside a joined read transaction.
 var ErrProtectedReadTx = errors.New("a policy-protected database is read through Executor, not a read transaction")
 
-// ErrProtectedSingleSource is returned by the executors of a database that has
-// access policies for a query that is not a plain single-source read: one with a
-// join, a derived source, a subquery or a scan bound. Such a database is read
-// one collection at a time.
+// ErrProtectedSingleSource is returned, on a database that has access policies,
+// for a structured query that is not a plain read of one collection (see
+// singleSourceRead): one with a join, a derived source, a subquery anywhere, a
+// scan bound, or a source that is not a plain collection. DALgo's access layer
+// authorises the base and first-level join sources of a query and not what is
+// nested deeper, so such a database is read one collection at a time instead of
+// partly authorising a query. The decision depends on the shape of the query
+// alone, before any collection name is looked at, so the error is the same
+// whichever collections the query names and says nothing of which exist. The
+// executor of Executor and the entry points that take one query (ExecuteDTQLQuery,
+// StreamDTQLSnapshot, SelectAccessSample) return it; ReadTx refuses such a
+// database whole (ErrProtectedReadTx).
 var ErrProtectedSingleSource = errors.New("a policy-protected database is read one source at a time: no join, derived source or subquery")
 
 // errJoinSourceStructuredOnly refuses a query that is not a dal.StructuredQuery.
@@ -118,10 +127,12 @@ var (
 
 // guardStructured refuses, before the driver is reached, any query that is not
 // a dal.StructuredQuery (a text query runs verbatim on a SQL driver); a query
-// whose names are not plain for the engine; on a SQL engine a query that reads a
-// collection the database does not declare; an engine that is not cleared for
-// queries; and, on a database with access policies, a query that is not a
-// single-source read.
+// whose names are not plain for the engine; on a database with access policies, a
+// query that is not a single-source read (guardProtectedSources, which looks at
+// the shape of the query and at no name, so a declared and an undeclared source
+// in the same place get the same error); on a SQL engine a query that reads a
+// collection the database does not declare; and an engine that is not cleared
+// for queries.
 func (g guardedQueryExecutor) guardStructured(query dal.Query) error {
 	structured, ok := query.(dal.StructuredQuery)
 	if !ok {
@@ -130,16 +141,13 @@ func (g guardedQueryExecutor) guardStructured(query dal.Query) error {
 	if err := g.db.checkRelationalNames(structured); err != nil {
 		return err
 	}
+	if err := g.db.guardProtectedSources(structured); err != nil {
+		return err
+	}
 	if err := g.db.guardSources(structured); err != nil {
 		return err
 	}
-	if err := g.db.guardQuery(); err != nil {
-		return err
-	}
-	if g.db.HasAccessPolicies() && !singleSourceRead(structured) {
-		return ErrProtectedSingleSource
-	}
-	return nil
+	return g.db.guardQuery()
 }
 
 // singleSourceRead reports whether query reads one plain collection: no join,

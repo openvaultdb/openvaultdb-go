@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -35,7 +36,18 @@ func TestGuardOperation(t *testing.T) {
 		return az.Resource{DatabaseID: "crm", Table: table, RowID: "01", Columns: columns}
 	}
 	set := func(path ...string) *api.Mutation {
-		return &api.Mutation{Changes: []api.Change{{Op: "set", Path: path}}}
+		return &api.Mutation{Changes: []api.Change{{Op: "set", Path: path, Value: json.RawMessage(`1`)}}}
+	}
+	// action is the authorization-API action the case stands for: the protected
+	// session is asked about it between the field names and the table.
+	action := func(op api.Operation) string {
+		switch {
+		case op.Mutation == nil:
+			return "get"
+		case op.Mutation.Data != nil:
+			return "insert"
+		}
+		return "update"
 	}
 	for _, c := range []struct {
 		name   string
@@ -57,11 +69,26 @@ func TestGuardOperation(t *testing.T) {
 		{"map key as later column segment on SQL", "sqlite", api.Operation{Resource: resource("customers", []string{"related", "c1@space2"})}, core.ErrInvalidFieldName},
 		{"blank later change segment on a document engine", "ingitdb", api.Operation{Resource: resource("customers"), Mutation: set("related", " ")}, core.ErrInvalidFieldName},
 		{"empty change path", "ingitdb", api.Operation{Resource: resource("customers"), Mutation: set()}, core.ErrInvalidFieldName},
+		{"hostile column on an undeclared table", "sqlite", api.Operation{Resource: resource("ghost", []string{`a"b`})}, core.ErrInvalidFieldName},
+		{"change of the key column on an undeclared table", "sqlite", api.Operation{Resource: resource("ghost"), Mutation: set("ID")}, core.ErrInvalidFieldName},
+		{"unsupported class on a declared table", "sqlite", api.Operation{Resource: resource("customers"), ExecutionClass: az.ExecutionNativeSQL}, errProtectedUnsupported},
+		{"unsupported class on an undeclared table", "sqlite", api.Operation{Resource: resource("ghost"), ExecutionClass: az.ExecutionNativeSQL}, errProtectedUnsupported},
+		{"unsupported class on an undeclared table of a document engine", "ingitdb", api.Operation{Resource: resource("ghost"), ExecutionClass: az.ExecutionNativeSQL}, errProtectedUnsupported},
+		{"change value that is not JSON, undeclared table", "sqlite", api.Operation{Resource: resource("ghost"), Mutation: &api.Mutation{Changes: []api.Change{{Op: "set", Path: []string{"name"}, Value: json.RawMessage(`{`)}}}}, errProtectedUnsupported},
+		{"operation on a table, not a record", "sqlite", api.Operation{Resource: az.Resource{DatabaseID: "crm", Table: "ghost"}}, errProtectedUnsupported},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			err := guardOperation(declared(c.engine), c.op)
+			op := c.op
+			op.ID, op.Action = "op1", action(op)
+			if op.ExecutionClass == "" {
+				op.ExecutionClass = az.ExecutionDTQL
+			}
+			internal, err := guardOperation(declared(c.engine), op)
 			if c.want == nil && err != nil || c.want != nil && !errors.Is(err, c.want) {
 				t.Fatalf("got %v, want %v", err, c.want)
+			}
+			if err == nil && internal.ID() != "op1" {
+				t.Errorf("protected operation %q, want op1", internal.ID())
 			}
 		})
 	}

@@ -61,7 +61,11 @@ func protectedOperation(op api.Operation) (access.ProtectedOperation, error) {
 
 // projectInspection uses the same pinned assessment as execution. Metadata is
 // taken from that assessment, never reloaded while a policy lease is held.
-func (s *Server) projectInspection(r *http.Request, db *core.Database, request api.Request, owners []core.PolicyLayer, assessment access.Assessment, readable map[string]bool) az.Result {
+// hidden holds the ids of operations on a table the database does not declare
+// (see inspectAccess): no layer decides them, and they are redacted whatever the
+// caller may inspect, which is how an operation on a declared table the policy
+// hides is answered for a caller who may not inspect protected rows.
+func (s *Server) projectInspection(r *http.Request, db *core.Database, request api.Request, owners []core.PolicyLayer, assessment access.Assessment, readable, hidden map[string]bool) az.Result {
 	// Data visibility requires both owner ACLs and the actual token's data
 	// capability; write-only or policy-admin credentials do not imply reads.
 	if s.authCfg != nil {
@@ -83,6 +87,9 @@ func (s *Server) projectInspection(r *http.Request, db *core.Database, request a
 			layer.ACLState = "enabled"
 		}
 		for i, op := range request.Operations {
+			if hidden[op.ID] {
+				continue
+			}
 			outcome := az.OutcomeAllow
 			matched := !owner.Enabled
 			for _, pa := range assessment.Policies {
@@ -140,6 +147,7 @@ func (s *Server) projectInspection(r *http.Request, db *core.Database, request a
 		result.Coverage.Evaluation = az.EvaluationPartial
 	}
 	s.addActorCapabilities(r, db, &result)
+	undecided := undecidedOperations(assessment)
 	for i, op := range request.Operations {
 		details := readable[op.ID]
 		if !details {
@@ -150,18 +158,38 @@ func (s *Server) projectInspection(r *http.Request, db *core.Database, request a
 				}
 			}
 		}
+		if hidden[op.ID] {
+			details = false
+		}
 		// A successful write may be authorized without read permission. A dry run
 		// does not get that exception: it cannot disclose a hidden row's existence.
 		if !details && (request.Mode != az.ModeExecution || result.Operations[i].Result != az.OutcomeAllow) {
 			redactPoint(&result, op.ID)
 		}
 		result.Result = reduceOutcome(result.Result, result.Operations[i].Result)
-		if !assessment.Complete && details {
+		if details && undecided[op.ID] {
 			result.Coverage.Unevaluated = append(result.Coverage.Unevaluated, az.Unevaluated{OperationID: op.ID, Reason: "row_evidence_required"})
 		}
 	}
 	result.Allowed = result.Result == az.OutcomeAllow && result.Coverage.Evaluation == az.EvaluationComplete
 	return result
+}
+
+// undecidedOperations returns the ids of the operations the assessment could not
+// decide: those with a policy decision that is neither allowed nor a definite
+// denial (an indeterminate code, which includes the decision recorded when the
+// protected session could not prepare the operation's evidence). Whether one
+// operation can be decided is a fact about that operation alone, so the
+// operations that still need row evidence are taken from these decisions and not
+// from the assessment as a whole, which is incomplete when any operation is.
+func undecidedOperations(assessment access.Assessment) map[string]bool {
+	undecided := map[string]bool{}
+	for _, pa := range assessment.Policies {
+		if !pa.Decision.Allowed && pa.Decision.Code.IsIndeterminate() {
+			undecided[pa.OperationID] = true
+		}
+	}
+	return undecided
 }
 
 func redactPoint(result *az.Result, id string) {
@@ -209,24 +237,35 @@ func redactPoint(result *az.Result, id string) {
 	result.Coverage.Unevaluated = append(remaining, az.Unevaluated{OperationID: id, Reason: "evidence_not_authorized"})
 }
 
+// inspectAccess answers an inspection of operations on single records. An
+// operation on a table the database does not declare is answered as one on a
+// declared table the policy hides: 200, redacted, with nothing that tells the two
+// apart, and the adapter is never asked about it. Its field names and its
+// support by the protected session are checked first (guardOperation), as they
+// are for a declared table, so a refusal for them is the same for both.
 func (s *Server) inspectAccess(w http.ResponseWriter, r *http.Request, db *core.Database, request api.Request, owners []core.PolicyLayer, requester access.Principal) {
 	coordinator := db.Coordinator()
 	if coordinator == nil {
 		writeError(w, 422, "authorization_unsupported", "protected inspection unavailable")
 		return
 	}
-	ops := make([]access.ProtectedOperation, len(request.Operations))
-	for i, op := range request.Operations {
-		if err := guardOperation(db, op); err != nil {
+	ops := make([]access.ProtectedOperation, 0, len(request.Operations))
+	hidden := map[string]bool{}
+	for _, op := range request.Operations {
+		internal, err := guardOperation(db, op)
+		if errors.Is(err, core.ErrNotFound) {
+			hidden[op.ID] = true
+			continue
+		}
+		if err != nil {
 			s.refuseOperation(w, r, az.ModeInspect, op, err)
 			return
 		}
-		var err error
-		ops[i], err = protectedOperation(op)
-		if err != nil {
-			writeError(w, 422, "authorization_unsupported", "operation cannot be inspected")
-			return
-		}
+		ops = append(ops, internal)
+	}
+	if len(ops) == 0 {
+		writeAuthorization(w, 200, s.projectInspection(r, db, request, owners, access.Assessment{}, map[string]bool{}, hidden))
+		return
 	}
 	var result az.Result
 	err := coordinator.WithinInspection(r.Context(), ops, func(session access.InspectionSession) error {
@@ -238,7 +277,7 @@ func (s *Server) inspectAccess(w http.ResponseWriter, r *http.Request, db *core.
 		if err != nil {
 			return err
 		}
-		result = s.projectInspection(r, db, request, owners, assessment, visible)
+		result = s.projectInspection(r, db, request, owners, assessment, visible, hidden)
 		if admissionErr != nil {
 			// Never publish an allow after failed admission. A hidden or
 			// missing point retains the same generic dry-run denial.
@@ -293,13 +332,9 @@ func (s *Server) handleProtectedUpdate(w http.ResponseWriter, r *http.Request, d
 		writeError(w, 400, "bad_request", "operation and request path must identify the same update")
 		return
 	}
-	if err = guardOperation(db, op); err != nil {
-		s.refuseOperation(w, r, az.ModeExecution, op, err)
-		return
-	}
-	internal, err := protectedOperation(op)
+	internal, err := guardOperation(db, op)
 	if err != nil {
-		writeError(w, 422, "authorization_unsupported", "unsupported mutation")
+		s.refuseOperation(w, r, az.ModeExecution, op, err)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -320,7 +355,7 @@ func (s *Server) handleProtectedUpdate(w http.ResponseWriter, r *http.Request, d
 		if err != nil {
 			return err
 		}
-		result = s.projectInspection(r, db, request, owners, assessment, visible)
+		result = s.projectInspection(r, db, request, owners, assessment, visible, nil)
 		if admissionErr != nil {
 			return admissionErr
 		}
@@ -337,22 +372,19 @@ func (s *Server) handleProtectedUpdate(w http.ResponseWriter, r *http.Request, d
 	})
 	if err != nil {
 		if result.RequestID != "" {
-			status, code := 403, "access_denied"
-			if !visible[op.ID] || errors.Is(err, access.ErrProtectedResourceUnavailable) {
-				status, code = 404, "resource_unavailable"
-				redactPoint(&result, op.ID)
-			} else if errors.Is(err, access.ErrDataRevisionConflict) {
+			switch {
+			case !visible[op.ID] || errors.Is(err, access.ErrProtectedResourceUnavailable):
+				// A record the caller may not see is answered as a record of a table
+				// the database does not declare is (see refuseOperation), by the same
+				// function, so the two bodies are built from the same facts.
+				writeUnavailableOperation(w, az.ModeExecution, op)
+			case errors.Is(err, access.ErrDataRevisionConflict):
 				writeError(w, 409, "data_revision_conflict", "record changed; reload before retrying")
-				return
-			} else if !errors.Is(err, access.ErrAccessDenied) {
+			case !errors.Is(err, access.ErrAccessDenied):
 				writeError(w, 422, "validation_failed", "candidate could not be accepted")
-				return
+			default:
+				writeJSON(w, 403, errorBody{Error: errorDetail{Code: "access_denied", RequestID: result.RequestID, Authorization: &result}})
 			}
-			if result.RequestID == "" {
-				writeProtectedFailure(w, err)
-				return
-			}
-			writeJSON(w, status, errorBody{Error: errorDetail{Code: code, RequestID: result.RequestID, Authorization: &result}})
 			return
 		}
 		writeProtectedFailure(w, err)
@@ -399,13 +431,9 @@ func (s *Server) handleAccessEvidence(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, db.ID(), auth.CapRecordsRead, op.Resource.Table) {
 		return
 	}
-	if err = guardOperation(db, op); err != nil {
-		s.refuseOperation(w, r, az.ModeInspect, op, err)
-		return
-	}
-	internal, err := protectedOperation(op)
+	internal, err := guardOperation(db, op)
 	if err != nil {
-		writeError(w, 400, "bad_request", "invalid evidence fields")
+		s.refuseOperation(w, r, az.ModeInspect, op, err)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
@@ -421,10 +449,9 @@ func (s *Server) handleAccessEvidence(w http.ResponseWriter, r *http.Request) {
 			writeProtectedFailure(w, err)
 			return
 		}
-		result := newAuthorization(az.ModeInspect)
-		result.Operations = append(result.Operations, az.OperationResult{ID: op.ID, RequestOperationID: op.ID, Action: op.Action, Resource: body.Resource, Result: az.OutcomeDeny, RestrictionIDs: []string{}, AllOf: []string{}, ExecutionClass: op.ExecutionClass})
-		redactPoint(&result, op.ID)
-		writeJSON(w, 404, errorBody{Error: errorDetail{Code: "resource_unavailable", RequestID: result.RequestID, Authorization: &result}})
+		// The answer for a record the caller may not see is the one for a table
+		// the database does not declare (see refuseOperation).
+		writeUnavailableOperation(w, az.ModeInspect, op)
 		return
 	}
 	if evidence[0].DataRevision == "" || len(evidence[0].DataRevision) > 256 {
