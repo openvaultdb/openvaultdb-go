@@ -23,7 +23,10 @@ func (s *Server) sampleAccess(w http.ResponseWriter, r *http.Request, db *core.D
 	if !s.authorize(w, r, db.ID(), auth.CapRecordsRead, template.Resource.Table) {
 		return
 	}
-	if err := guardOperation(db, template); err != nil {
+	// Only the field names are checked here. A table the database does not
+	// declare is the root of the query below, and the selection refuses it before
+	// it reads anything: the answer is that of a declared table the policy hides.
+	if err := guardOperationFields(db, template); err != nil {
 		s.refuseOperation(w, r, az.ModeSample, template, err)
 		return
 	}
@@ -139,7 +142,7 @@ func (s *Server) sampleAccess(w http.ResponseWriter, r *http.Request, db *core.D
 				return access.ErrAccessDenied
 			}
 		}
-		result = s.projectInspection(r, db, selected, owners, assessment, visible)
+		result = s.projectInspection(r, db, selected, owners, assessment, visible, nil)
 		if admissionErr != nil {
 			return admissionErr
 		}

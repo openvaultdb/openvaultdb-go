@@ -531,29 +531,50 @@ func TestJoinSourceExecutorReadsThroughThePolicyWrapper(t *testing.T) {
 // TestJoinSourceExecutorRefusesNonSingleSourceReadsOnAProtectedDatabase: DALgo's
 // access layer authorises only the base and first-level join sources, so a
 // protected database serves one plain collection per query, and no query with a
-// join, a derived source or a subquery reaches the driver.
+// join, a derived source or a subquery reaches the driver. The refusal depends on
+// the shape of the query alone: a source the database declares and a source it
+// does not declare, in the same place, get the same error, so the error does not
+// say which collections exist. A read of one plain collection is a different
+// case: an undeclared one is ErrNotFound, and a declared one reaches the driver.
 func TestJoinSourceExecutorRefusesNonSingleSourceReadsOnAProtectedDatabase(t *testing.T) {
 	ctx := context.Background()
 	for _, engine := range []string{"sqlite", "ingitdb"} {
-		for _, tc := range srcGuardCases("ghost") {
-			t.Run(engine+"/"+tc.name, func(t *testing.T) {
-				db, calls := joinSrcProtected(t, engine, joinSrcAllowPolicy{})
-				plain := tc.name == "root"
-				_, err := db.Executor().ExecuteQueryToRecordsReader(ctx, tc.query)
-				_, recordsetErr := db.Executor().ExecuteQueryToRecordsetReader(ctx, tc.query)
-				if plain {
-					if !errors.Is(err, errJoinSrcReader) || !errors.Is(recordsetErr, errJoinSrcReader) || calls.readers != 1 || calls.recordsets != 1 {
-						t.Fatalf("a single-source read: %v, %v, calls %+v", err, recordsetErr, *calls)
+		for _, source := range []struct {
+			name, collection string
+			declared         bool
+		}{{"declared", "ghost", true}, {"undeclared", "nowhere", false}} {
+			for _, tc := range srcGuardCases(source.collection) {
+				t.Run(engine+"/"+source.name+"/"+tc.name, func(t *testing.T) {
+					db, calls := joinSrcProtected(t, engine, joinSrcAllowPolicy{})
+					plain := tc.name == "root"
+					_, err := db.Executor().ExecuteQueryToRecordsReader(ctx, tc.query)
+					_, recordsetErr := db.Executor().ExecuteQueryToRecordsetReader(ctx, tc.query)
+					if plain {
+						if source.declared {
+							if !errors.Is(err, errJoinSrcReader) || !errors.Is(recordsetErr, errJoinSrcReader) || calls.readers != 1 || calls.recordsets != 1 {
+								t.Fatalf("a single-source read: %v, %v, calls %+v", err, recordsetErr, *calls)
+							}
+							return
+						}
+						// On sqlite the source guard answers the undeclared collection; ingitdb
+						// keeps the collection rule of the document engines and reaches the
+						// driver.
+						if engine == "sqlite" && (!errors.Is(err, ErrNotFound) || !errors.Is(recordsetErr, ErrNotFound) || calls.readers != 0 || calls.recordsets != 0) {
+							t.Fatalf("a single-source read of an undeclared collection: %v, %v, calls %+v", err, recordsetErr, *calls)
+						}
+						if engine == "ingitdb" && (!errors.Is(err, errJoinSrcReader) || !errors.Is(recordsetErr, errJoinSrcReader) || calls.readers != 1 || calls.recordsets != 1) {
+							t.Fatalf("a single-source read on a document engine: %v, %v, calls %+v", err, recordsetErr, *calls)
+						}
+						return
 					}
-					return
-				}
-				if !errors.Is(err, ErrProtectedSingleSource) || !errors.Is(recordsetErr, ErrProtectedSingleSource) {
-					t.Fatalf("got %v, %v; want ErrProtectedSingleSource", err, recordsetErr)
-				}
-				if calls.readers != 0 || calls.recordsets != 0 || calls.txStarts != 0 {
-					t.Fatalf("a refused read reached the driver: %+v", *calls)
-				}
-			})
+					if !errors.Is(err, ErrProtectedSingleSource) || !errors.Is(recordsetErr, ErrProtectedSingleSource) {
+						t.Fatalf("got %v, %v; want ErrProtectedSingleSource", err, recordsetErr)
+					}
+					if calls.readers != 0 || calls.recordsets != 0 || calls.txStarts != 0 {
+						t.Fatalf("a refused read reached the driver: %+v", *calls)
+					}
+				})
+			}
 		}
 	}
 }
