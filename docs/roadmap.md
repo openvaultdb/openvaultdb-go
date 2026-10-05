@@ -105,10 +105,10 @@ See [docs/threat-model.md](threat-model.md) for the current posture.
 
 ### DTQL as primary query surface
 
-DTQL (DALgo Typed Query Language) YAML passes through `dalgo2openvaultdb` to the ovdb server
-today as an opaque blob; the server does not parse or validate it. Proper DTQL support:
+DTQL (DALgo Typed Query Language) YAML is parsed, classified and validated by the server, which
+runs a single-collection document and a bounded relational one (joins, grouping, aggregates,
+subqueries, several mounted databases); see `docs/api.md`. Still to do:
 
-- Parse DTQL YAML on the server and translate to the `core.Query` structure.
 - Return typed, potentially transformed record sets.
 - Evaluate whether DTQL should cover the write path (batch mutations described in DTQL).
 
@@ -228,8 +228,8 @@ are not exposed by the `ovdb` HTTP wire protocol in MVP. The `dalgo2openvaultdb`
 | Query cursors / `StartFrom`       | Pagination via cursor token not in MVP                                  |
 | Query `Offset`                    | Skip-N not in query wire format                                         |
 | Query column projections          | `Columns` field in `dal.Query` not translated                           |
-| Query `GroupBy` / `Having`        | Aggregation not in MVP                                                  |
-| Collection-group queries          | Cross-collection queries not supported                                  |
+| Query `GroupBy` / `Having`        | Not in the `/query` wire format (DTQL documents have them)              |
+| Collection-group queries          | Not in the `/query` wire format (DTQL documents join collections)       |
 | Cross-transaction isolation       | No optimistic concurrency; no MVCC                                      |
 
 These are wire-protocol gaps, not engine limitations. Adding any of them requires extending the
