@@ -214,7 +214,7 @@ func TestGuardRecordsALeafErrorWhateverShapeDalgoGivesIt(t *testing.T) {
 func TestDalgoAggregationGroupLimitIsMapped(t *testing.T) {
 	// A flat unordered join feeding GROUP BY on a fact column streams the fact
 	// side, so the group count (one per fact row here) hits DALgo's own bound.
-	const groups = 100001
+	const groups = MaxInMemoryGroups + 1
 	guard := NewGuard(allowAll, Limits{MaxSourceRows: groups + 10, MaxSourceBytes: 1 << 30})
 	aRows := make([]record.Record, groups)
 	for i := range aRows {
@@ -233,9 +233,12 @@ func TestDalgoAggregationGroupLimitIsMapped(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected DALgo to refuse more than 100,000 groups")
 	}
+	// The limit is the one DALgo's message states (the engine ran to its own
+	// bound), and the figure the server advertises is MaxInMemoryGroups: they are
+	// one number, so a change of the constant alone fails here.
 	budget := mustBudget(t, guard.Classify(err, RouteInMemory))
-	if budget.Name != BudgetAggregationGroups || budget.Limit != 100000 {
-		t.Fatalf("budget = %+v (dalgo error: %v)", budget, err)
+	if budget.Name != BudgetAggregationGroups || budget.Limit != MaxInMemoryGroups {
+		t.Fatalf("budget = %+v, want the limit MaxInMemoryGroups = %d (dalgo error: %v)", budget, MaxInMemoryGroups, err)
 	}
 }
 

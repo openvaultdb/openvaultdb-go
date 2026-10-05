@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/dal-go/dalgo/dal"
-	"github.com/dal-go/dalgo/dtql"
 	"github.com/dal-go/record"
 )
 
@@ -167,9 +166,9 @@ var ErrInvalidDTQL = errors.New("invalid or unsupported DTQL query")
 // quotedNameEngines); the Database that runs the query checks them again with
 // the rule of its own engine, before any adapter is reached.
 func ParseDTQL(doc []byte) (dal.StructuredQuery, string, error) {
-	query, err := dtql.Deserialize(doc)
+	query, err := DeserializeDTQL(doc)
 	if err != nil {
-		return nil, "", fmt.Errorf("%w: %v", ErrInvalidDTQL, err)
+		return nil, "", err
 	}
 	collection, err := validateDTQL(query)
 	return query, collection, err

@@ -12,7 +12,6 @@ import (
 
 	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/dalgo/dal"
-	"github.com/dal-go/dalgo/dtql"
 	az "github.com/dal-go/dalgo/dtql/authorization"
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
@@ -138,9 +137,9 @@ func (e clippedError) Unwrap() error { return e.err }
 // a document that is not DTQL, or that the classifier refuses, wraps
 // core.ErrInvalidDTQL.
 func classifyDTQLDocument(doc []byte) (dal.StructuredQuery, core.Profile, error) {
-	query, err := dtql.Deserialize(doc)
+	query, err := core.DeserializeDTQL(doc)
 	if err != nil {
-		return nil, core.Profile{}, fmt.Errorf("%w: %v", core.ErrInvalidDTQL, err)
+		return nil, core.Profile{}, err
 	}
 	profile, err := core.ClassifyDTQL(query)
 	if err != nil {

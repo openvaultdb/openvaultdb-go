@@ -115,3 +115,49 @@ func TestAggregateFunctionsIsTheFiveOfTheProfile(t *testing.T) {
 		}
 	}
 }
+
+// TestDeserializeDTQLRefusesAnUnknownAggregateWithoutRepeatingTheName: DALgo's
+// deserializer quotes the caller's text when it refuses an aggregate function it does
+// not know. The error DeserializeDTQL (and ParseDTQL, which uses it) returns wraps
+// ErrInvalidDTQL, lists the functions of the profile and holds no text of the
+// caller's, wherever the aggregate stands and whatever the quoting of the name; any
+// other refusal keeps DALgo's message.
+func TestDeserializeDTQLRefusesAnUnknownAggregateWithoutRepeatingTheName(t *testing.T) {
+	const marker = "zzmarkerfn"
+	documents := map[string]string{
+		"a column": "from: {name: orders, alias: o}\ncolumns: [{aggregate: {function: NAME, args: [{field: total, source: o}]}, as: n}]\n",
+		"HAVING":   "from: {name: orders, alias: o}\ngroupBy: [{field: c, source: o}]\nhaving: {op: '>', left: {aggregate: {function: NAME, args: [{field: total, source: o}]}}, right: {value: 1}}\ncolumns: [{field: c, source: o}]\n",
+		"ORDER BY": "from: {name: orders, alias: o}\ngroupBy: [{field: c, source: o}]\norderBy: [{aggregate: {function: NAME, args: [{field: total, source: o}]}}]\ncolumns: [{field: c, source: o}]\n",
+	}
+	for position, document := range documents {
+		for _, name := range []string{marker, `"quoted \" name; --"`, "'" + marker + "'"} {
+			doc := strings.ReplaceAll(document, "NAME", name)
+			for label, parse := range map[string]func() error{
+				"DeserializeDTQL": func() error { _, err := DeserializeDTQL([]byte(doc)); return err },
+				"ParseDTQL":       func() error { _, _, err := ParseDTQL([]byte(doc)); return err },
+			} {
+				err := parse()
+				if !errors.Is(err, ErrInvalidDTQL) {
+					t.Errorf("%s %s %s: %v, want an error that wraps ErrInvalidDTQL", position, name, label, err)
+					continue
+				}
+				text := err.Error()
+				if !strings.Contains(text, "an aggregate function must be one of count, sum, avg, min, max") {
+					t.Errorf("%s %s %s: %q does not list the functions of the profile", position, name, label, text)
+				}
+				for _, echoed := range []string{"marker", "MARKER", "quoted", "QUOTED", "DROP"} {
+					if strings.Contains(text, echoed) {
+						t.Errorf("%s %s %s: %q repeats %q", position, name, label, text, echoed)
+					}
+				}
+			}
+		}
+	}
+	// Another refusal is DALgo's own, and a document that parses has no error.
+	if _, err := DeserializeDTQL([]byte("from: {name: orders}\ncolumns: [{aggregate: {function: sum, args: [{field: a}, {field: b}]}}]\n")); !errors.Is(err, ErrInvalidDTQL) || strings.Contains(err.Error(), "must be one of") {
+		t.Errorf("another refusal: %v", err)
+	}
+	if query, err := DeserializeDTQL([]byte("from: {name: orders}\n")); err != nil || query == nil {
+		t.Errorf("a plain document: %v", err)
+	}
+}

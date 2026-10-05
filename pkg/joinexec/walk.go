@@ -438,8 +438,11 @@ func (w *walker) expressionNode(expression dal.Expression, path string, depth in
 		}
 		return w.expression(value.Right, path+".right", depth)
 	case dal.AggregateFunc:
-		// The same: DALgo validates an aggregate's name only where it aggregates.
-		if !aggregateFunctions[strings.ToUpper(value.FuncName())] {
+		// The same: DALgo validates an aggregate's name only where it aggregates. A
+		// name with a byte of 0x80 or above is refused, as core.IsAggregateFunction
+		// refuses it: the two fold the case of a name in opposite directions, and
+		// Go's folding does not agree with itself outside ASCII.
+		if !isASCII(value.FuncName()) || !aggregateFunctions[strings.ToUpper(value.FuncName())] {
 			return refuse(path, "an aggregate function must be one of COUNT, SUM, AVG, MIN, MAX")
 		}
 		for i, arg := range value.FuncArgs() {
@@ -524,4 +527,14 @@ func clip(name string) string {
 		cut--
 	}
 	return name[:cut] + "..."
+}
+
+// isASCII reports whether every byte of s is below 0x80.
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }

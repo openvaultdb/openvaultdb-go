@@ -37,8 +37,11 @@ const (
 	dalgoJoinBytes      = 16 << 20
 	dalgoJoinCandidates = dalgoJoinRows * 10
 	// dalgoAggregationGroups is the most groups DALgo keeps for one aggregation
-	// (defaultMaxAggregationGroups); a message that carries it states it, and the
-	// pin test checks it against the DALgo in go.mod.
+	// (defaultMaxAggregationGroups). The limit a mapped error reports is the one in
+	// DALgo's message; this constant is the figure the server advertises
+	// (MaxInMemoryGroups), and TestDalgoAggregationGroupLimitIsMapped runs the real
+	// engine over the bound and asserts that the two are one number. The pin test
+	// checks only that the literal is still in DALgo's source.
 	dalgoAggregationGroups = 100_000
 )
 

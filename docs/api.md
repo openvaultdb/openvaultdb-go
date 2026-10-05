@@ -685,13 +685,15 @@ server does, from the configuration it runs with:
 - `joinEngines`: the storage engines whose databases may take part in a relational document. An
   engine is listed when the operator's list names it, the server clears it for structured queries
   and it is not the GitHub-backed inGitDB engine, which no list enables. A database on a listed
-  engine advertises `joins: true` unless it has access policies.
+  engine advertises `joins: true` unless it has access policies or is a GitHub-backed inGitDB
+  mount (which shows `engine: ingitdb`, a listed engine).
 
 Each database in the list (listed when auth is off) and the metadata of a database
 (`GET /v1/databases/{db}`, the way to read it when auth is on) carry two booleans, `joins` and
 `aggregation`, in the `capabilities` map beside `read`, `query`, `dtql` and `write`. They are true
 when a relational document that names the database is not refused for the database itself: its
-engine is in `joinEngines`, and it has no access policies. The value comes from the check the
+engine is in `joinEngines`, it has no access policies and it is not a GitHub-backed inGitDB
+mount. The value comes from the check the
 relational handler applies to the request, so a client that reads `joins: true` is not refused by
 the database it names.
 
@@ -1499,9 +1501,13 @@ columns:
 - The server joins only the databases mounted on it: `externalSources` is false. Window functions
   are not supported. A condition that the storage engine cannot run is `422 query_unsupported`.
 - Only the engines in `joinEngines` take part. A GitHub-backed inGitDB mount never does.
-- The profile has five aggregate functions (`count`, `sum`, `avg`, `min`, `max`), in any letter
-  case. `first` and `last` are not in the profile: a document that uses either, in any position, is
-  `400 invalid_dtql` before anything is read, and the message names the function.
+- The profile has five aggregate functions (`count`, `sum`, `avg`, `min`, `max`), in any ASCII
+  letter case (a name with a byte of 0x80 or above is refused). `first` and `last` are not in the profile: a document that uses either, in any position, is
+  `400 invalid_dtql` before anything is read. Where the classifier refuses it the message names the
+  function; where DALgo's parser refuses it first (`first` in `groupBy`, or inside another
+  aggregate) the message is DALgo's. An aggregate function that DALgo does not know is refused in
+  every position with one built message that lists the functions of the profile and repeats none of
+  the text of the document.
 - On the in-memory route a join holds at most 10,000 rows and 16 MiB, and a grouping at most
   100,000 groups (`maxInMemoryJoinRows`, `maxInMemoryJoinBytes` and `maxGroups` of `limits`). Beyond that the answer is `422 query_budget_exceeded`, and `error.budget` names
   the bound.
@@ -1520,7 +1526,7 @@ columns:
 | `422` | `snapshot_unsupported` | A paging header was sent. |
 | `422` | `query_budget_exceeded` | A bound of the request was reached. `error.budget` names it (`name`, `limit`, `route`, and `path` where it applies) and `error.hint` says what to change. |
 | `422` | `query_unsupported` | The storage engine cannot run a condition of the document, or the adapter reports that it cannot run the document (a fixed message). |
-| `501` | `query_unsupported` | The storage engine is not cleared for structured queries (`mysql`, a `postgres` mount that opened with the preview switch off, an unknown engine), whatever `joinEngines` says. |
+| `501` | `query_unsupported` | The storage engine is not cleared for structured queries (`mysql`, a `postgres` mount that opened with the preview switch off, an unknown engine), whatever the operator's list of join engines says. |
 | `503` | `query_capacity` | No slot of the concurrency gate freed within the server's queue wait; `Retry-After: 1`. |
 | `504` | `query_timeout` | The query ran longer than `timeoutMs`. |
 | `500` | `internal` | A fault of the server, logged and not described. |
