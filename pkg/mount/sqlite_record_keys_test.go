@@ -151,12 +151,20 @@ func TestSQLiteW1ZeroLockWaitBothHandlesAndTransactionRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer writer.Close()
+	defer func() {
+		if err := writer.Close(); err != nil {
+			t.Errorf("close lock writer database: %v", err)
+		}
+	}()
 	conn, err := writer.Conn(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			t.Errorf("close lock writer connection: %v", err)
+		}
+	}()
 	if _, err = conn.ExecContext(context.Background(), "BEGIN EXCLUSIVE"); err != nil {
 		t.Fatal(err)
 	}
@@ -347,7 +355,11 @@ func TestSQLiteServingForeignKeyMetadataExcludesUndeclaredRelations(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer raw.Close()
+	defer func() {
+		if err := raw.Close(); err != nil {
+			t.Errorf("close native foreign-key database: %v", err)
+		}
+	}()
 	var count int
 	if err := raw.QueryRow(`SELECT count(*) FROM pragma_foreign_key_list('things')`).Scan(&count); err != nil || count != 2 {
 		t.Fatalf("native FK definitions changed: %d %v", count, err)
