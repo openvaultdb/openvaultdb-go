@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "tables": {
+    "Invoice": ["InvoiceId", "CustomerId"],
+    "Customer": ["CustomerId", "FirstName", "SupportRepId"],
+    "Employee": ["EmployeeId", "FirstName"],
+    "A": ["id", "aId"],
+    "B": ["id", "aId"],
+    "C": ["id", "aId"]
+  }
+}

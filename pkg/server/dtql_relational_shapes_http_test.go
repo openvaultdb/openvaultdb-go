@@ -24,14 +24,14 @@ import (
 // that share an output name, a protected database that is asked for a collection
 // it does not declare, the spelling of a collection, names that are too long to
 // repeat, and the answer to a column no database knows. The helpers of this file
-// start with relRev so they cannot clash with the helpers of the other test files
+// start with relShape so they cannot clash with the helpers of the other test files
 // of the package.
 
-// relRevDocument joins Invoice (alias i) to Customer (alias c) in the database
+// relShapeDocument joins Invoice (alias i) to Customer (alias c) in the database
 // chinook and selects columns (a YAML list), then tail (more top-level keys). A
 // document for /v1/dtql names the database of every source (qualified); one for
 // the per-database endpoint names none.
-func relRevDocument(qualified bool, columns, tail string) string {
+func relShapeDocument(qualified bool, columns, tail string) string {
 	root, joined := "  name: Invoice\n", "{name: Customer, alias: c}"
 	if qualified {
 		root, joined = "  database: chinook\n  name: Invoice\n", "{database: chinook, name: Customer, alias: c}"
@@ -41,10 +41,10 @@ func relRevDocument(qualified bool, columns, tail string) string {
 		"columns:\n" + columns + tail
 }
 
-// relRevEndpoints are the two routes a document of the join reaches: the
+// relShapeEndpoints are the two routes a document of the join reaches: the
 // per-database endpoint, with sources that name no database, and /v1/dtql, with
 // sources that name it.
-var relRevEndpoints = []struct {
+var relShapeEndpoints = []struct {
 	name      string
 	path      string
 	qualified bool
@@ -61,7 +61,7 @@ func TestAJoinThatSelectsNoUnaliasedKeyColumnIsAnsweredOverHTTP(t *testing.T) {
 	host := httptest.NewServer(service.Handler())
 	defer host.Close()
 	const orderByID = "orderBy:\n  - {field: id, source: i}\n"
-	for _, endpoint := range relRevEndpoints {
+	for _, endpoint := range relShapeEndpoints {
 		for _, tc := range []struct {
 			name    string
 			columns string
@@ -97,7 +97,7 @@ func TestAJoinThatSelectsNoUnaliasedKeyColumnIsAnsweredOverHTTP(t *testing.T) {
 			},
 		} {
 			t.Run(endpoint.name+", "+tc.name, func(t *testing.T) {
-				resp := relHTTPPost(t, host.URL, endpoint.path, "", relRevDocument(endpoint.qualified, tc.columns, tc.tail))
+				resp := relHTTPPost(t, host.URL, endpoint.path, "", relShapeDocument(endpoint.qualified, tc.columns, tc.tail))
 				if resp.status != http.StatusOK {
 					t.Fatalf("status %d: %s", resp.status, resp.raw)
 				}
@@ -124,14 +124,14 @@ func TestTwoColumnsWithOneOutputNameAreRefusedOverHTTP(t *testing.T) {
 	defer service.CloseSnapshots()
 	host := httptest.NewServer(service.Handler())
 	defer host.Close()
-	for _, endpoint := range relRevEndpoints {
+	for _, endpoint := range relShapeEndpoints {
 		for name, columns := range map[string]string{
 			"the same field of two sources":                      "  - {field: id, source: i}\n  - {field: id, source: c}\n",
 			"two aliases of one name":                            "  - {field: total, source: i, as: a}\n  - {field: name, source: c, as: a}\n",
 			"an alias equal to the field name of another column": "  - {field: id, source: i}\n  - {field: name, source: c, as: id}\n",
 		} {
 			t.Run(endpoint.name+", "+name, func(t *testing.T) {
-				resp := relHTTPPost(t, host.URL, endpoint.path, "", relRevDocument(endpoint.qualified, columns, ""))
+				resp := relHTTPPost(t, host.URL, endpoint.path, "", relShapeDocument(endpoint.qualified, columns, ""))
 				if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || !strings.Contains(resp.errorField("message"), "duplicate output name") {
 					t.Fatalf("status %d: %s", resp.status, resp.raw)
 				}
@@ -174,11 +174,11 @@ func TestColumnsWhoseOutputNamesDifferAreAnsweredOverHTTP(t *testing.T) {
 	}
 }
 
-// relRevProtectedServer serves the policy-protected crm database to a principal
+// relShapeProtectedServer serves the policy-protected crm database to a principal
 // that holds role: the policy of relHTTPProtected lets the role reader read
 // customers and orders (customers only in part) and gives every other role
 // nothing.
-func relRevProtectedServer(t *testing.T, role string, opts ...server.Option) *httptest.Server {
+func relShapeProtectedServer(t *testing.T, role string, opts ...server.Option) *httptest.Server {
 	t.Helper()
 	opts = append([]server.Option{
 		server.WithPrincipalResolver(func(context.Context, *auth.Principal) (access.Principal, error) {
@@ -198,10 +198,12 @@ func relRevProtectedServer(t *testing.T, role string, opts ...server.Option) *ht
 // both endpoints, with real SQLite files and the real executor: the answer for a
 // collection the policy lets the role read, one it hides, one the database does not
 // declare and a spelling that is not canonical is one and the same, and no row
-// comes back. The streamed join is the shape DALgo reads one source before the other:
-// under a source budget of one row a join of a collection with more rows than that
-// would otherwise end in the budget refusal for the collections the database
-// declares and in a denial for the ones it does not.
+// comes back. The server runs with a source budget of one row, so a document that
+// read a source would end in a budget refusal, or in a denial that depends on the
+// collection it names: an answer that does not change with the name shows that the
+// refusal came before any read. The test sends a streamed join, a subquery and one
+// aliased source under each of the four names, as two roles, and compares every
+// answer with the first.
 func TestARelationalDocumentOnAProtectedDatabaseIsRefusedWhateverItNames(t *testing.T) {
 	const (
 		join     = "from: {%[2]sname: %[1]s, alias: r, joins: [{from: {%[2]sname: orders, alias: o}, on: [{left: {field: id, source: r}, op: '==', right: {field: customer_id, source: o}}]}]}\ncolumns: [{field: id, source: o}]\n"
@@ -210,7 +212,7 @@ func TestARelationalDocumentOnAProtectedDatabaseIsRefusedWhateverItNames(t *test
 	)
 	names := []string{"customers", "ghost", "orders", `'"customers"'`}
 	for _, role := range []string{"reader", "nobody"} {
-		host := relRevProtectedServer(t, role, server.WithQueryLimits(server.QueryLimits{MaxSourceRows: 1}))
+		host := relShapeProtectedServer(t, role, server.WithQueryLimits(server.QueryLimits{MaxSourceRows: 1}))
 		for _, endpoint := range []struct{ name, path, database string }{
 			{"per-database endpoint", "/v1/databases/crm/dtql", ""},
 			{"/v1/dtql", "/v1/dtql", "database: crm, "},
@@ -334,7 +336,7 @@ func TestAnUnknownColumnAndACorrelatedSubqueryOverHTTP(t *testing.T) {
 		defer service.CloseSnapshots()
 		host := httptest.NewServer(service.Handler())
 		defer host.Close()
-		database := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", relRevDocument(false, "  - {field: id, source: i}\n  - {field: nosuch, source: c}\n", ""))
+		database := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", relShapeDocument(false, "  - {field: id, source: i}\n  - {field: nosuch, source: c}\n", ""))
 		if database.status != http.StatusBadRequest || !strings.Contains(database.errorField("message"), "nosuch") {
 			t.Fatalf("database route: status %d: %s", database.status, database.raw)
 		}
