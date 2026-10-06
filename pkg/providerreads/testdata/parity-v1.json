@@ -1,0 +1,294 @@
+{
+  "format": "synthetic-provider-parity/1",
+  "jsCommit": "6b6060a617ccb6eaf2ebd8f39445ff92a27526f9",
+  "cases": [
+    {
+      "mode": "proxy",
+      "metadata": {
+        "sourceRights": [
+          {
+            "sourceId": "ovdb:gateway/db/daily",
+            "source": {
+              "serverId": "gateway",
+              "databaseId": "db",
+              "recordset": "daily"
+            },
+            "declaration": {
+              "name": "Synthetic terms",
+              "url": "https://example.com/terms"
+            },
+            "declaredAt": {
+              "serverId": "gateway",
+              "databaseId": "db"
+            },
+            "declarationScope": "database",
+            "evidenceOrigin": "publisher-definition-verified",
+            "pins": [],
+            "transformations": [
+              "Synthetic XML to rows"
+            ],
+            "attribution": {
+              "text": "Synthetic provider"
+            },
+            "freeSource": {
+              "text": "Free original",
+              "url": "https://example.com/original.xml"
+            }
+          }
+        ],
+        "usedSourceIds": [
+          "ovdb:gateway/db/daily"
+        ],
+        "providerReads": {
+          "format": "ovdb-provider-read/1",
+          "execution": {
+            "id": "synthetic-execution",
+            "mode": "proxy",
+            "executorId": "gateway"
+          },
+          "bindings": [
+            {
+              "providerSourceId": "provider:synthetic/FxReferenceQuote",
+              "rightsSourceId": "ovdb:gateway/db/daily",
+              "resourceId": "synthetic-daily",
+              "definitionDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "decoderDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "rightsDigest": "a107718ec3f3066bd8531d4419f460e83a5f9e40ef98c2a5bcaeddc67ebc9212"
+            }
+          ],
+          "reads": [
+            {
+              "resourceId": "synthetic-daily",
+              "requestDigest": "692024e61aefebffb05290e6856a7d5bd13fd057230faaf24d6eaec945d97032",
+              "fetchedAt": "2026-10-06T09:00:00Z",
+              "upstreamUrl": "https://example.com/original.xml",
+              "status": 200,
+              "contentType": "text/xml",
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "bytes": 42,
+              "referenceDate": "2026-10-05",
+              "etag": "\"synthetic\"",
+              "lastModified": "Mon, 05 Oct 2026 13:00:00 GMT",
+              "attestation": "proxy-executor-observed",
+              "observationId": "285db910ddc214a06256514bb8a63a439bb0b464a1a9526ac7fdf3a2ceedafe8"
+            }
+          ],
+          "usage": [
+            {
+              "providerSourceId": "provider:synthetic/FxReferenceQuote",
+              "rightsSourceId": "ovdb:gateway/db/daily",
+              "observationIds": [
+                "285db910ddc214a06256514bb8a63a439bb0b464a1a9526ac7fdf3a2ceedafe8"
+              ]
+            }
+          ]
+        }
+      },
+      "plan": {
+        "execution": {
+          "id": "synthetic-execution",
+          "mode": "proxy",
+          "executorId": "gateway"
+        },
+        "bindings": [
+          {
+            "providerSourceId": "provider:synthetic/FxReferenceQuote",
+            "rightsSourceId": "ovdb:gateway/db/daily",
+            "resourceId": "synthetic-daily",
+            "definitionDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "decoderDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "rightsDigest": "a107718ec3f3066bd8531d4419f460e83a5f9e40ef98c2a5bcaeddc67ebc9212"
+          }
+        ],
+        "requests": [
+          {
+            "resourceId": "synthetic-daily",
+            "method": "GET",
+            "upstreamUrl": "https://example.com/original.xml",
+            "params": {}
+          }
+        ],
+        "sourceRights": [
+          {
+            "sourceId": "ovdb:gateway/db/daily",
+            "source": {
+              "serverId": "gateway",
+              "databaseId": "db",
+              "recordset": "daily"
+            },
+            "declaration": {
+              "name": "Synthetic terms",
+              "url": "https://example.com/terms"
+            },
+            "declaredAt": {
+              "serverId": "gateway",
+              "databaseId": "db"
+            },
+            "declarationScope": "database",
+            "evidenceOrigin": "publisher-definition-verified",
+            "pins": [],
+            "transformations": [
+              "Synthetic XML to rows"
+            ],
+            "attribution": {
+              "text": "Synthetic provider"
+            },
+            "freeSource": {
+              "text": "Free original",
+              "url": "https://example.com/original.xml"
+            }
+          }
+        ],
+        "usedSourceIds": [
+          "ovdb:gateway/db/daily"
+        ]
+      },
+      "canonical": "{\"providerReads\":{\"bindings\":[{\"decoderDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"definitionDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"providerSourceId\":\"provider:synthetic/FxReferenceQuote\",\"resourceId\":\"synthetic-daily\",\"rightsDigest\":\"a107718ec3f3066bd8531d4419f460e83a5f9e40ef98c2a5bcaeddc67ebc9212\",\"rightsSourceId\":\"ovdb:gateway/db/daily\"}],\"execution\":{\"executorId\":\"gateway\",\"id\":\"synthetic-execution\",\"mode\":\"proxy\"},\"format\":\"ovdb-provider-read/1\",\"reads\":[{\"attestation\":\"proxy-executor-observed\",\"bytes\":42,\"contentType\":\"text/xml\",\"etag\":\"\\\"synthetic\\\"\",\"fetchedAt\":\"2026-10-06T09:00:00Z\",\"lastModified\":\"Mon, 05 Oct 2026 13:00:00 GMT\",\"observationId\":\"285db910ddc214a06256514bb8a63a439bb0b464a1a9526ac7fdf3a2ceedafe8\",\"referenceDate\":\"2026-10-05\",\"requestDigest\":\"692024e61aefebffb05290e6856a7d5bd13fd057230faaf24d6eaec945d97032\",\"resourceId\":\"synthetic-daily\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"status\":200,\"upstreamUrl\":\"https://example.com/original.xml\"}],\"usage\":[{\"observationIds\":[\"285db910ddc214a06256514bb8a63a439bb0b464a1a9526ac7fdf3a2ceedafe8\"],\"providerSourceId\":\"provider:synthetic/FxReferenceQuote\",\"rightsSourceId\":\"ovdb:gateway/db/daily\"}]},\"sourceRights\":[{\"attribution\":{\"text\":\"Synthetic provider\"},\"declaration\":{\"name\":\"Synthetic terms\",\"url\":\"https://example.com/terms\"},\"declarationScope\":\"database\",\"declaredAt\":{\"databaseId\":\"db\",\"serverId\":\"gateway\"},\"evidenceOrigin\":\"publisher-definition-verified\",\"freeSource\":{\"text\":\"Free original\",\"url\":\"https://example.com/original.xml\"},\"pins\":[],\"source\":{\"databaseId\":\"db\",\"recordset\":\"daily\",\"serverId\":\"gateway\"},\"sourceId\":\"ovdb:gateway/db/daily\",\"transformations\":[\"Synthetic XML to rows\"]}],\"usedSourceIds\":[\"ovdb:gateway/db/daily\"]}",
+      "metadataDigest": "01183524cb2e5fc8065d9650af2ccdd9cbd90a5522970d177d7990eefbb97fd1"
+    },
+    {
+      "mode": "direct",
+      "metadata": {
+        "sourceRights": [
+          {
+            "sourceId": "direct:synthetic/daily",
+            "source": {
+              "serverId": "gateway",
+              "databaseId": "db",
+              "recordset": "daily"
+            },
+            "declaration": {
+              "name": "Synthetic terms",
+              "url": "https://example.com/terms"
+            },
+            "declaredAt": {
+              "serverId": "gateway",
+              "databaseId": "db"
+            },
+            "declarationScope": "database",
+            "evidenceOrigin": "publisher-definition-verified",
+            "pins": [],
+            "transformations": [
+              "Synthetic XML to rows"
+            ],
+            "attribution": {
+              "text": "Synthetic provider"
+            },
+            "freeSource": {
+              "text": "Free original",
+              "url": "https://example.com/original.xml"
+            }
+          }
+        ],
+        "usedSourceIds": [
+          "direct:synthetic/daily"
+        ],
+        "providerReads": {
+          "format": "ovdb-provider-read/1",
+          "execution": {
+            "id": "synthetic-execution",
+            "mode": "direct",
+            "executorId": "admitted-browser"
+          },
+          "bindings": [
+            {
+              "providerSourceId": "provider:synthetic/FxReferenceQuote",
+              "rightsSourceId": "direct:synthetic/daily",
+              "resourceId": "synthetic-daily",
+              "definitionDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "decoderDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "rightsDigest": "1479d3eda991fd61c256c3641b22d4ad310cac0d51f33ac7c9ecc4ce6a8322f1"
+            }
+          ],
+          "reads": [
+            {
+              "resourceId": "synthetic-daily",
+              "requestDigest": "692024e61aefebffb05290e6856a7d5bd13fd057230faaf24d6eaec945d97032",
+              "fetchedAt": "2026-10-06T09:00:00Z",
+              "upstreamUrl": "https://example.com/original.xml",
+              "status": 200,
+              "contentType": "text/xml",
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "bytes": 42,
+              "referenceDate": "2026-10-05",
+              "etag": "\"synthetic\"",
+              "lastModified": "Mon, 05 Oct 2026 13:00:00 GMT",
+              "attestation": "direct-executor-observed",
+              "observationId": "cd573a94069875a4927e72ab08fbf72a747b6f490df54873d7af86c4facf303d"
+            }
+          ],
+          "usage": [
+            {
+              "providerSourceId": "provider:synthetic/FxReferenceQuote",
+              "rightsSourceId": "direct:synthetic/daily",
+              "observationIds": [
+                "cd573a94069875a4927e72ab08fbf72a747b6f490df54873d7af86c4facf303d"
+              ]
+            }
+          ]
+        }
+      },
+      "plan": {
+        "execution": {
+          "id": "synthetic-execution",
+          "mode": "direct",
+          "executorId": "admitted-browser"
+        },
+        "bindings": [
+          {
+            "providerSourceId": "provider:synthetic/FxReferenceQuote",
+            "rightsSourceId": "direct:synthetic/daily",
+            "resourceId": "synthetic-daily",
+            "definitionDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "decoderDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "rightsDigest": "1479d3eda991fd61c256c3641b22d4ad310cac0d51f33ac7c9ecc4ce6a8322f1"
+          }
+        ],
+        "requests": [
+          {
+            "resourceId": "synthetic-daily",
+            "method": "GET",
+            "upstreamUrl": "https://example.com/original.xml",
+            "params": {}
+          }
+        ],
+        "sourceRights": [
+          {
+            "sourceId": "direct:synthetic/daily",
+            "source": {
+              "serverId": "gateway",
+              "databaseId": "db",
+              "recordset": "daily"
+            },
+            "declaration": {
+              "name": "Synthetic terms",
+              "url": "https://example.com/terms"
+            },
+            "declaredAt": {
+              "serverId": "gateway",
+              "databaseId": "db"
+            },
+            "declarationScope": "database",
+            "evidenceOrigin": "publisher-definition-verified",
+            "pins": [],
+            "transformations": [
+              "Synthetic XML to rows"
+            ],
+            "attribution": {
+              "text": "Synthetic provider"
+            },
+            "freeSource": {
+              "text": "Free original",
+              "url": "https://example.com/original.xml"
+            }
+          }
+        ],
+        "usedSourceIds": [
+          "direct:synthetic/daily"
+        ]
+      },
+      "canonical": "{\"providerReads\":{\"bindings\":[{\"decoderDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"definitionDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"providerSourceId\":\"provider:synthetic/FxReferenceQuote\",\"resourceId\":\"synthetic-daily\",\"rightsDigest\":\"1479d3eda991fd61c256c3641b22d4ad310cac0d51f33ac7c9ecc4ce6a8322f1\",\"rightsSourceId\":\"direct:synthetic/daily\"}],\"execution\":{\"executorId\":\"admitted-browser\",\"id\":\"synthetic-execution\",\"mode\":\"direct\"},\"format\":\"ovdb-provider-read/1\",\"reads\":[{\"attestation\":\"direct-executor-observed\",\"bytes\":42,\"contentType\":\"text/xml\",\"etag\":\"\\\"synthetic\\\"\",\"fetchedAt\":\"2026-10-06T09:00:00Z\",\"lastModified\":\"Mon, 05 Oct 2026 13:00:00 GMT\",\"observationId\":\"cd573a94069875a4927e72ab08fbf72a747b6f490df54873d7af86c4facf303d\",\"referenceDate\":\"2026-10-05\",\"requestDigest\":\"692024e61aefebffb05290e6856a7d5bd13fd057230faaf24d6eaec945d97032\",\"resourceId\":\"synthetic-daily\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"status\":200,\"upstreamUrl\":\"https://example.com/original.xml\"}],\"usage\":[{\"observationIds\":[\"cd573a94069875a4927e72ab08fbf72a747b6f490df54873d7af86c4facf303d\"],\"providerSourceId\":\"provider:synthetic/FxReferenceQuote\",\"rightsSourceId\":\"direct:synthetic/daily\"}]},\"sourceRights\":[{\"attribution\":{\"text\":\"Synthetic provider\"},\"declaration\":{\"name\":\"Synthetic terms\",\"url\":\"https://example.com/terms\"},\"declarationScope\":\"database\",\"declaredAt\":{\"databaseId\":\"db\",\"serverId\":\"gateway\"},\"evidenceOrigin\":\"publisher-definition-verified\",\"freeSource\":{\"text\":\"Free original\",\"url\":\"https://example.com/original.xml\"},\"pins\":[],\"source\":{\"databaseId\":\"db\",\"recordset\":\"daily\",\"serverId\":\"gateway\"},\"sourceId\":\"direct:synthetic/daily\",\"transformations\":[\"Synthetic XML to rows\"]}],\"usedSourceIds\":[\"direct:synthetic/daily\"]}",
+      "metadataDigest": "05ec520b0ae033397b0feec52d26c209e69ae1cdde48a582aac7881f07c3dd50"
+    }
+  ]
+}

@@ -31,6 +31,10 @@ func WithDatabaseReadProfiles(profiles map[string]ReadProfile) Option {
 // NewChecked is New with startup validation of optional read profiles.
 func NewChecked(version string, dbs map[string]*core.Database, opts ...Option) (*Server, error) {
 	s := New(version, dbs, opts...)
+	if s.providerProfileErr != nil {
+		s.CloseSnapshots()
+		return nil, s.providerProfileErr
+	}
 	if s.rightsErr != nil {
 		s.CloseSnapshots()
 		return nil, s.rightsErr
