@@ -89,7 +89,7 @@ func TestHumanPagesRenderAdmittedDynamicNoticesAndRetention(t *testing.T) {
 		page := humanRequest(s.Handler(), path)
 		body := page.Body.String()
 		for _, want := range []string{
-			"Synthetic terms", "Source terms", "Attribution:", "Synthetic provider &lt;script&gt;secret&lt;/script&gt;",
+			"Synthetic terms", "Source terms", "do not grant an output license", "Attribution:", "Synthetic provider &lt;script&gt;secret&lt;/script&gt;",
 			"Original free source:", `href="` + manifest.ECBDailyURL + `"`, "Synthetic original is free",
 			"Transformations", "XML &lt;row&gt; to quote", "Retention: none", "not retained by this server",
 		} {
