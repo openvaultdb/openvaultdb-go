@@ -40,6 +40,10 @@ func retentionFixture(t *testing.T, engine, retention string) (*core.Database, *
 	driver := &retentionDriver{}
 	m := &manifest.Manifest{Database: manifest.Database{ID: "live", SchemaMode: schema.ModeStrict, Retention: retention},
 		Storage: manifest.Storage{Engine: engine}, Schemas: &schema.Schemas{Collections: previewPGCollections()}}
+	if engine == "http" {
+		m.Storage.HTTP = &manifest.HTTPOptions{Profile: manifest.HTTPProfileECBDaily, Collection: "customers"}
+		m.Schemas = &schema.Schemas{Collections: map[string]schema.Collection{"customers": {Fields: map[string]schema.Field{"time": {Type: schema.TypeString}, "currency": {Type: schema.TypeString}, "rate": {Type: schema.TypeString}}}}}
+	}
 	db, err := core.Open(m, driver, []schema.Mode{schema.ModeStrict}, "")
 	if err != nil {
 		t.Fatal(err)

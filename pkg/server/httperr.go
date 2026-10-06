@@ -48,6 +48,8 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 func writeMappedError(w http.ResponseWriter, err error) (internal bool) {
 	var validationErr *schema.ValidationError
 	switch {
+	case errors.Is(err, core.ErrHTTPOperationUnsupported):
+		writeError(w, http.StatusNotImplemented, "operation_unsupported", "the source does not support this operation")
 	case errors.Is(err, core.ErrDatabaseUnreachable):
 		// The database server of the mount cannot be reached: one status and one code
 		// whatever the failure, and one fixed message. Nothing of the connection (the

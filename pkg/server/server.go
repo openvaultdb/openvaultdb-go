@@ -545,6 +545,9 @@ func (s *Server) db(w http.ResponseWriter, r *http.Request) *core.Database {
 		writeError(w, http.StatusNotFound, "not_found", "database not found: "+id)
 		return nil
 	}
+	if db.NoRetention() {
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	if !isMutation(r) && !s.guardRetentionRead(w, r, db) {
 		return nil
 	}
@@ -640,7 +643,7 @@ func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
 		"engine":       db.Manifest.Storage.Engine,
 		"schemaMode":   string(db.Manifest.Database.SchemaMode),
 		"collections":  collections,
-		"capabilities": map[string]bool{"read": true, "query": canQuery, "dtql": canQuery, "write": !s.readOnly, "joins": joins, "aggregation": joins},
+		"capabilities": map[string]bool{"read": !db.ReadOnlyHTTP(), "query": canQuery, "dtql": canQuery, "write": !s.readOnly && !db.ReadOnlyHTTP(), "joins": joins, "aggregation": joins},
 	}
 	if db.Retention() != "" {
 		metadata["retention"] = db.Retention()

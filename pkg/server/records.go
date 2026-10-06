@@ -117,6 +117,10 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 		s.readRecord(w, r, db, key)
 	case http.MethodHead:
 		exists, err := db.Exists(ctx, key)
+		if errors.Is(err, core.ErrHTTPOperationUnsupported) {
+			w.WriteHeader(http.StatusNotImplemented)
+			return
+		}
 		if errors.Is(err, core.ErrDatabaseUnreachable) {
 			s.logUnreachable(r, err)
 			w.WriteHeader(http.StatusServiceUnavailable)

@@ -98,6 +98,10 @@ func FileWithOptions(manifestPath string, opts Options) (*core.Database, error) 
 	var cataloguePath string
 	var closeClient func() error // engine resources the dal.DB does not own
 	switch m.Storage.Engine {
+	case "http":
+		if db, modes, err = openHTTP(m, nil); err != nil {
+			return nil, fmt.Errorf("%s: %w", manifestPath, err)
+		}
 	case "sqlite":
 		if db, modes, err = openSQLite(storagePath, m); err != nil {
 			return nil, fmt.Errorf("%s: %w", manifestPath, err)
@@ -137,7 +141,7 @@ func FileWithOptions(manifestPath string, opts Options) (*core.Database, error) 
 		}
 		cataloguePath = filepath.Join(baseDir, m.Database.ID+".inferred.json")
 	default:
-		return nil, fmt.Errorf("%s: unknown storage engine %q (supported: sqlite, ingitdb, firestore, postgres, mysql)",
+		return nil, fmt.Errorf("%s: unknown storage engine %q (supported: sqlite, ingitdb, firestore, postgres, mysql, http)",
 			manifestPath, m.Storage.Engine)
 	}
 
