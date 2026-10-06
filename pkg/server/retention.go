@@ -6,9 +6,11 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
+	"gopkg.in/yaml.v3"
 )
 
 var errRetentionNotAuthorized = errors.New("retained result copies are not authorized for this source")
@@ -63,21 +65,118 @@ func continuationName(name string) bool {
 	return false
 }
 
-func continuationDocument(data []byte) bool {
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(data, &fields) != nil {
+func continuationDocument(data []byte, dtql bool) (bool, error) {
+	if dtql {
+		decoder := yaml.NewDecoder(bytes.NewReader(data))
+		var document yaml.Node
+		if err := decoder.Decode(&document); err != nil {
+			return false, err
+		}
+		found := continuationYAML(&document)
+		if err := decoder.Decode(new(yaml.Node)); err != io.EOF {
+			return found, errors.New("query must contain one YAML document")
+		}
+		return found, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	found, count := false, 0
+	for {
+		var fields map[string]json.RawMessage
+		err := decoder.Decode(&fields)
+		if err == io.EOF && count == 1 {
+			return found, nil
+		}
+		if err != nil {
+			return found, errors.New("query must contain one complete JSON object")
+		}
+		count++
+		for name := range fields {
+			found = found || continuationName(name)
+		}
+		if count > 1 {
+			return found, errors.New("query must contain one JSON object")
+		}
+	}
+}
+
+func continuationYAML(document *yaml.Node) bool {
+	if document.Kind == yaml.DocumentNode && len(document.Content) == 1 {
+		document = document.Content[0]
+	}
+	if document.Kind != yaml.MappingNode {
 		return false
 	}
-	for name := range fields {
-		if continuationName(name) {
+	for i := 0; i+1 < len(document.Content); i += 2 {
+		if continuationName(document.Content[i].Value) {
 			return true
+		}
+		// The JSON DTQL envelope carries its YAML document in query. Do not
+		// traverse parameter values or arbitrary user data as protocol fields.
+		if document.Content[i].Value == "query" && document.Content[i+1].Kind == yaml.ScalarNode {
+			var nested yaml.Node
+			if yaml.Unmarshal([]byte(document.Content[i+1].Value), &nested) == nil && continuationYAMLRoot(&nested) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
+func continuationYAMLRoot(document *yaml.Node) bool {
+	if document.Kind == yaml.DocumentNode && len(document.Content) == 1 {
+		document = document.Content[0]
+	}
+	if document.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(document.Content); i += 2 {
+			if continuationName(document.Content[i].Value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// withoutContinuationFields is only for metadata classification on the
+// cross-database route. The original request remains available to the guard;
+// this document must never execute until every source has been checked.
+func withoutContinuationFields(data []byte, jsonEnvelope bool) []byte {
+	if jsonEnvelope {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(data, &fields) != nil {
+			return data
+		}
+		for name := range fields {
+			if continuationName(name) {
+				delete(fields, name)
+			}
+		}
+		out, err := json.Marshal(fields)
+		if err == nil {
+			return out
+		}
+		return data
+	}
+	var document yaml.Node
+	if yaml.Unmarshal(data, &document) != nil || len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return data
+	}
+	root := document.Content[0]
+	fields := make([]*yaml.Node, 0, len(root.Content))
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if !continuationName(root.Content[i].Value) {
+			fields = append(fields, root.Content[i], root.Content[i+1])
+		}
+	}
+	root.Content = fields
+	out, err := yaml.Marshal(&document)
+	if err != nil {
+		return data
+	}
+	return out
+}
+
 // guardRetentionRead runs before any adapter read, query admission or snapshot
-// lookup. URL/JSON continuation fields are refused even on routes that otherwise
+// lookup. URL/JSON/YAML continuation fields are refused even on routes that otherwise
 // ignore them. Request bodies are bounded and restored for the ordinary decoder.
 func (s *Server) guardRetentionRead(w http.ResponseWriter, r *http.Request, db *core.Database) bool {
 	if !db.NoRetention() {
@@ -85,11 +184,28 @@ func (s *Server) guardRetentionRead(w http.ResponseWriter, r *http.Request, db *
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	forbidden := hasPagingHeaders(r)
-	for name, values := range r.URL.Query() {
+	values, queryErr := url.ParseQuery(r.URL.RawQuery)
+	// ParseQuery reports bad escapes while returning valid fields. Inspect
+	// names separately so an invalid continuation value cannot erase presence.
+	for _, field := range strings.Split(r.URL.RawQuery, "&") {
+		name, _, _ := strings.Cut(field, "=")
+		name, err := url.QueryUnescape(name)
+		forbidden = forbidden || (err == nil && continuationName(name))
+	}
+	dtql := strings.HasSuffix(r.URL.Path, "/dtql")
+	for name, values := range values {
 		forbidden = forbidden || continuationName(name)
 		if name == "q" {
 			for _, value := range values {
-				forbidden = forbidden || continuationDocument([]byte(value))
+				if len(value) > maxQueryRequestBytes {
+					writeError(w, http.StatusBadRequest, "bad_request", "query parameter exceeds the bounded read limit")
+					return false
+				}
+				found, err := continuationDocument([]byte(value), dtql)
+				forbidden = forbidden || found
+				if queryErr == nil {
+					queryErr = err
+				}
 			}
 		}
 	}
@@ -100,10 +216,18 @@ func (s *Server) guardRetentionRead(w http.ResponseWriter, r *http.Request, db *
 			return false
 		}
 		r.Body = io.NopCloser(bytes.NewReader(data))
-		forbidden = continuationDocument(data)
+		found, err := continuationDocument(data, dtql)
+		forbidden = forbidden || found
+		if queryErr == nil {
+			queryErr = err
+		}
 	}
 	if forbidden {
 		return !refuseRetainedOperation(w, db)
+	}
+	if queryErr != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "query request must contain one valid document and valid URL escapes")
+		return false
 	}
 	return true
 }
