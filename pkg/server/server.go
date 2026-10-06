@@ -408,7 +408,7 @@ func (s *Server) Handler() http.Handler {
 	// configured TTL in cacheReadResponse.
 	next := h
 	h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.isReadResponseEndpoint(r) {
+		if s.isNoStoreResponseEndpoint(r) {
 			w.Header().Set("Cache-Control", "no-store")
 		}
 		next.ServeHTTP(w, r)
@@ -419,14 +419,11 @@ func (s *Server) Handler() http.Handler {
 	return h
 }
 
-// Default no-retention reads to no-store before authentication, including point
-// reads and metadata, while preserving the established native cache defaults.
-func (s *Server) isReadResponseEndpoint(r *http.Request) bool {
+// Default all no-retention source routes to no-store before authentication or
+// read-only refusal, while preserving the established native cache defaults.
+func (s *Server) isNoStoreResponseEndpoint(r *http.Request) bool {
 	if isReadCacheEndpoint(r) {
 		return true
-	}
-	if isMutation(r) {
-		return false
 	}
 	for _, prefix := range []string{"/v1/databases/", "/ovdb/dbs/"} {
 		if strings.HasPrefix(r.URL.Path, prefix) {

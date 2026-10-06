@@ -79,6 +79,27 @@ func TestLiveHTTPSourceEndpoints(t *testing.T) {
 			t.Fatalf("unsupported %s %s: %d %v %s", route.method, route.path, w.Code, w.Header(), w.Body)
 		}
 	}
+	t.Run("read-only refusals", func(t *testing.T) {
+		readOnly := New("test", map[string]*core.Database{"ecb": db}, WithReadOnly(true), WithSourceRights("synthetic-server", nil))
+		t.Cleanup(readOnly.CloseSnapshots)
+		before := calls
+		for _, route := range []struct{ method, path, body string }{
+			{"PUT", "/v1/databases/ecb/records/daily/AAA", `{"data":{"rate":"2"}}`},
+			{"PATCH", "/v1/databases/ecb/records/daily/AAA", `{"updates":[]}`},
+			{"DELETE", "/v1/databases/ecb/records/daily/AAA", ""},
+			{"POST", "/v1/databases/ecb/records/daily/AAA", `{"data":{"rate":"2"}}`},
+			{"POST", "/v1/databases/ecb/batch", `{"ops":[]}`},
+		} {
+			w := retentionRequest(readOnly.Handler(), route.method, route.path, route.body, nil)
+			if w.Code != 403 || w.Header().Get("Cache-Control") != "no-store" || !strings.Contains(w.Body.String(), `"code":"read_only"`) {
+				t.Fatalf("%s %s: %d %v %s", route.method, route.path, w.Code, w.Header(), w.Body)
+			}
+		}
+		files, err := os.ReadDir(readOnly.snapshotDir)
+		if err != nil || calls != before || readOnly.snapshotSlots != 0 || len(readOnly.snapshots) != 0 || len(files) != 0 {
+			t.Fatalf("read-only refusal read or retained source: calls=%d slots=%d files=%v err=%v", calls-before, readOnly.snapshotSlots, files, err)
+		}
+	})
 	for _, header := range []http.Header{{"OVDB-Page-Size": {"1"}}, {"OVDB-Page-Token": {""}}, {"OVDB-Page-Close": {"true", "true"}}} {
 		assertRetentionRefusal(t, retentionRequest(handler, "POST", "/v1/databases/ecb/dtql", query, header))
 		assertRetentionRefusal(t, retentionRequest(handler, "POST", "/v1/dtql", "from: {database: ecb, name: daily}\n", header))
