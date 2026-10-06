@@ -15,6 +15,7 @@ import (
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 	"github.com/openvaultdb/openvaultdb-go/pkg/joinexec"
+	"github.com/openvaultdb/openvaultdb-go/pkg/license"
 )
 
 // This file answers a relational DTQL document: a join, a grouping, an alias, a
@@ -148,6 +149,11 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 		s.writeRelationalError(w, r, err)
 		return
 	}
+	capture, err := s.captureRights(databases, targets)
+	if err != nil {
+		s.rightsError(w, err)
+		return
+	}
 	defaultDatabase := ""
 	if endpoint != nil {
 		defaultDatabase = endpoint.ID()
@@ -183,7 +189,21 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	for i, rec := range result.Records {
 		records[i] = relationalRecord{Data: rec.Data()}
 	}
-	writeJSON(w, http.StatusOK, relationalResponse{Records: records, Columns: result.Columns, Execution: result.Execution})
+	if len(capture.rights) == 0 {
+		writeJSON(w, http.StatusOK, relationalResponse{Records: records, Columns: result.Columns, Execution: result.Execution})
+		return
+	}
+	usedIDs := make([]string, 0, len(result.Execution.Sources))
+	for _, source := range result.Execution.Sources {
+		usedIDs = append(usedIDs, (license.Identity{ServerID: s.rightsServerID, DatabaseID: source.Database, Recordset: source.Collection}).SourceID())
+	}
+	used, err := capture.used(usedIDs)
+	if err != nil {
+		s.rightsError(w, err)
+		return
+	}
+	response := map[string]any{"records": records, "columns": result.Columns, "execution": result.Execution}
+	s.writeRightsResult(w, r, response, capture, used, joinexec.MaxResultBytes)
 }
 
 // readableCollection reports whether a relational document may name collection of

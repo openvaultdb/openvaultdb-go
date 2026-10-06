@@ -21,10 +21,14 @@ import (
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 	"github.com/openvaultdb/openvaultdb-go/pkg/joinexec"
+	"github.com/openvaultdb/openvaultdb-go/pkg/license"
 )
 
 // Server serves one or more mounted databases.
 type Server struct {
+	rightsServerID      string
+	serverLicense       *license.Declaration
+	rightsErr           error
 	version             string
 	readProfiles        map[string]ReadProfile
 	readProfilesByDB    map[*core.Database]ReadProfile
@@ -132,10 +136,11 @@ func New(version string, dbs map[string]*core.Database, opts ...Option) *Server 
 	if s.queryGate == nil {
 		s.setQueryLimits(DefaultQueryLimits())
 	}
-	if len(s.readProfiles) > 0 {
+	if len(s.readProfiles) > 0 || s.rightsServerID != "" {
 		s.dbs = maps.Clone(s.dbs)
 	}
 	s.readProfileErr = s.validateReadProfiles()
+	s.rightsErr = s.validateSourceRights()
 	s.snapshotDir, s.snapshotDirErr = prepareSnapshotDir()
 	if _, err := rand.Read(s.snapshotKey[:]); err != nil {
 		s.snapshotDirErr = fmt.Errorf("query snapshot token key: %w", err)
@@ -170,6 +175,9 @@ func (s *Server) Mount(db *core.Database) error {
 	}
 	if configured && (!s.readOnly || !db.HasImmutableSQLiteKeys()) {
 		return fmt.Errorf("profile-bound database requires verified SQLite keys and zero lock wait")
+	}
+	if db.HasLicenseDeclarations() && s.rightsServerID == "" {
+		return fmt.Errorf("database terms require WithSourceRights and a stable server identity")
 	}
 	s.dbs[db.ID()] = db
 	if configured {
@@ -296,6 +304,11 @@ func (s *Server) inflightFor(db *core.Database) *sync.WaitGroup {
 //  2. Auth (when --auth is set) — Layer-1 token validation
 //  3. Per-handler capability checks — Layer-2
 func (s *Server) Handler() http.Handler {
+	if s.rightsErr != nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			writeError(w, http.StatusInternalServerError, "configuration_error", s.rightsErr.Error())
+		})
+	}
 	if s.readProfileErr != nil {
 		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "configuration_error", s.readProfileErr.Error())
@@ -527,6 +540,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if s.isOwner(r) {
 		status["databases"] = s.databaseIDs()
 	}
+	attachRights(status, s.serverRights(), nil)
 	writeJSON(w, http.StatusOK, status)
 }
 
@@ -536,9 +550,10 @@ func (s *Server) handleDatabases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type dbInfo struct {
-		ID         string `json:"id"`
-		Engine     string `json:"engine"`
-		SchemaMode string `json:"schemaMode"`
+		ID           string                `json:"id"`
+		Engine       string                `json:"engine"`
+		SchemaMode   string                `json:"schemaMode"`
+		SourceRights []license.SourceRight `json:"sourceRights,omitempty"`
 	}
 	ids := s.databaseIDs()
 	infos := make([]dbInfo, 0, len(ids))
@@ -547,7 +562,12 @@ func (s *Server) handleDatabases(w http.ResponseWriter, r *http.Request) {
 		if db == nil {
 			continue
 		}
-		infos = append(infos, dbInfo{
+		rights, err := s.databaseRights(db, "")
+		if err != nil {
+			s.rightsError(w, err)
+			return
+		}
+		infos = append(infos, dbInfo{SourceRights: rights,
 			ID:         id,
 			Engine:     db.Manifest.Storage.Engine,
 			SchemaMode: string(db.Manifest.Database.SchemaMode),
@@ -599,6 +619,12 @@ func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
 		metadata["endpoints"] = map[string]string{"dtql": s.humanOrigin(r) + "/v1/databases/" + url.PathEscape(endpointID) + "/dtql"}
 		metadata["queryFormat"] = "dtql-yaml+json"
 	}
+	rights, err := s.databaseRights(db, append([]string{""}, collections...)...)
+	if err != nil {
+		s.rightsError(w, err)
+		return
+	}
+	attachRights(metadata, rights, nil)
 	writeJSON(w, http.StatusOK, metadata)
 }
 

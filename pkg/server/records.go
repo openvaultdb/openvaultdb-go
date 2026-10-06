@@ -198,6 +198,7 @@ func isProtectedUpdate(r *http.Request) bool {
 }
 
 func (s *Server) readRecord(w http.ResponseWriter, r *http.Request, db *core.Database, key *record.Key) {
+	capture, rightsErr := s.singleRights(db, core.RootCollection(key))
 	data, err := db.Get(r.Context(), key)
 	if err != nil {
 		if db.HasAccessPolicies() && (errors.Is(err, access.ErrAccessDenied) || errors.Is(err, core.ErrNotFound)) {
@@ -207,8 +208,12 @@ func (s *Server) readRecord(w http.ResponseWriter, r *http.Request, db *core.Dat
 		s.writeMappedError(w, r, err)
 		return
 	}
+	if rightsErr != nil {
+		s.rightsError(w, rightsErr)
+		return
+	}
 	s.cacheReadResponse(w, r, db)
-	writeJSON(w, http.StatusOK, map[string]any{"key": key.String(), "data": data})
+	s.writeRightsResult(w, r, map[string]any{"key": key.String(), "data": data}, capture, capture.allUsed(), core.ResultBufferBytes)
 }
 
 func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
@@ -324,6 +329,7 @@ func (s *Server) executeQuery(w http.ResponseWriter, r *http.Request, db *core.D
 		writeError(w, http.StatusUnprocessableEntity, "read_profile_unsupported", "immutable lookup pages require the guarded ordinary DTQL route")
 		return
 	}
+	capture, rightsErr := s.singleRights(db, scope)
 	records, err := db.Execute(r.Context(), q)
 	if err != nil {
 		s.writeMappedError(w, r, hiddenAsDenied(db, err))
@@ -341,8 +347,12 @@ func (s *Server) executeQuery(w http.ResponseWriter, r *http.Request, db *core.D
 		}
 		out = append(out, ro)
 	}
+	if rightsErr != nil {
+		s.rightsError(w, rightsErr)
+		return
+	}
 	s.cacheReadResponse(w, r, db)
-	writeJSON(w, http.StatusOK, map[string]any{"records": out})
+	s.writeRightsResult(w, r, map[string]any{"records": out}, capture, capture.allUsed(), core.ResultBufferBytes)
 }
 
 func (s *Server) cacheReadResponse(w http.ResponseWriter, r *http.Request, db *core.Database) {
