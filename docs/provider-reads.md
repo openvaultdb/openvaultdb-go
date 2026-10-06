@@ -82,3 +82,27 @@ and refuse unsupported required formats.
 
 No source/result retention, snapshot, export or real-source fixture is authorized
 by this API. Public activation and default joins remain blocked pending all gates.
+
+## Independent review r1 disposition
+
+M1 (provider alias/retirement lifetime) is fixed: provider-bound instances now use
+the same shared-alias lease and final-retirement guard as immutable profiles.
+Removing a nonfinal alias preserves the shared waitgroup and resources; final
+removal retires the pointer before draining, including a canceled caller wait.
+Tests hold leases through two aliases, add a new lease through the surviving
+alias, verify final close occurs once after all releases, and reject remounting
+the retiring/closed pointer under its native ID.
+
+m1 (generic URL mismatch) is fixed by explicitly narrowing the Go v1 admission
+profile. It accepts lowercase ASCII DNS authorities with at least two labels and
+an alphabetic top-level label, optional canonical nondefault numeric port, an
+explicit path, reviewed ASCII URI characters and valid percent escapes. It
+refuses literal/encoded dot path segments, credentials/fragments, default/zero-
+padded ports, IP/numeric-host forms, single-label/trailing-dot hosts, raw Unicode
+and characters requiring WHATWG normalization. Existing punycode labels may be
+used as ASCII. URLs are never rewritten after binding. This is a fail-closed
+subset of the broader JS core HTTPS gate; future host/locator grammar expansion
+requires its own cross-runtime review. The fixed ECB locator remains accepted.
+`testdata/url-grammar-v1.json` records Go/JS acceptance separately: all 22 cases
+were checked against the exact JS consumer above, with no Go-accepted URL rejected
+by JS. No finding was declined. Independent review r2 remains pending.

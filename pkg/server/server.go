@@ -227,7 +227,9 @@ func (s *Server) UnmountContext(ctx context.Context, id string) error {
 		return fmt.Errorf("%w: %s", ErrDatabaseNotMounted, id)
 	}
 	delete(s.dbs, id)
-	if _, profiled := s.readProfilesByDB[db]; profiled {
+	_, immutableProfiled := s.readProfilesByDB[db]
+	_, providerProfiled := s.providerProfilesByDB[db]
+	if immutableProfiled || providerProfiled {
 		// Aliases share the verified instance and its request leases. Only the
 		// final alias removal may stop leasing and drain/close that instance.
 		for _, remaining := range s.dbs {

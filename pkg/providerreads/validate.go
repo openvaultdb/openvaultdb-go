@@ -7,6 +7,7 @@ import (
 	"github.com/openvaultdb/openvaultdb-go/pkg/license"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -49,16 +50,59 @@ func digests(ss ...string) error {
 	}
 	return nil
 }
+
+// safeURL admits a deliberately constrained canonical HTTPS subset that the
+// JS WHATWG gate accepts unchanged. It never normalizes a bound locator.
 func safeURL(s string) error {
 	if err := text(s, false, false); err != nil {
 		return err
 	}
-	u, e := url.Parse(s)
-	if e != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.Fragment != "" || u.Opaque != "" || u.String() != s || u.Host != strings.ToLower(u.Host) || u.Path == "" || strings.ContainsAny(s, "\\ ") {
+	u, err := url.Parse(s)
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Opaque != "" || u.Fragment != "" || u.String() != s || u.Path == "" || strings.Contains(s, "#") {
 		return fmt.Errorf("unsafe or noncanonical upstream URL")
+	}
+	// DNS names only: no IP/WHATWG numeric host forms, IDNA, single-label names,
+	// trailing dots, uppercase or bracketed authorities in this v1 Go profile.
+	if !canonicalDNS.MatchString(u.Hostname()) {
+		return fmt.Errorf("unsupported upstream host grammar")
+	}
+	authority := u.Hostname()
+	if port := u.Port(); port != "" {
+		n, e := strconv.Atoi(port)
+		if e != nil || n < 1 || n > 65535 || n == 443 || strconv.Itoa(n) != port {
+			return fmt.Errorf("noncanonical upstream port")
+		}
+		authority += ":" + port
+	}
+	if u.Host != authority {
+		return fmt.Errorf("noncanonical upstream authority")
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c > 127 || !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || strings.ContainsRune("-._~!$&()*+,;=:/?@%", rune(c))) {
+			return fmt.Errorf("unsupported upstream URL character")
+		}
+		if c == '%' {
+			if i+2 >= len(s) {
+				return fmt.Errorf("invalid URL escape")
+			}
+			if _, e := strconv.ParseUint(s[i+1:i+3], 16, 8); e != nil {
+				return fmt.Errorf("invalid URL escape")
+			}
+			i += 2
+		}
+	}
+	for _, segment := range strings.Split(u.EscapedPath(), "/") {
+		decoded, e := url.PathUnescape(segment)
+		if e != nil || decoded == "." || decoded == ".." {
+			return fmt.Errorf("noncanonical upstream path")
+		}
 	}
 	return nil
 }
+
+var canonicalDNS = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
+
 func requestValue(v any) error {
 	switch x := v.(type) {
 	case nil, bool:

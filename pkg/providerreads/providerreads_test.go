@@ -249,3 +249,31 @@ func TestProviderMetadataFullPreflight(t *testing.T) {
 		t.Fatal("missing required metadata accepted")
 	}
 }
+
+func TestProviderConstrainedURLGrammar(t *testing.T) {
+	raw, err := os.ReadFile("testdata/url-grammar-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		URL        string
+		GoAccepted bool
+		JSAccepted bool
+	}
+	if err = json.Unmarshal(raw, &cases); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range cases {
+		t.Run(tc.URL, func(t *testing.T) {
+			p := syntheticPlan(t, "proxy")
+			p.Requests[0].UpstreamURL = tc.URL
+			_, err := NewCollector(p)
+			if (err == nil) != tc.GoAccepted {
+				t.Fatalf("Go admission differs: %v", err)
+			}
+			if tc.GoAccepted && !tc.JSAccepted {
+				t.Fatal("Go profile may not admit a JS-incompatible URL")
+			}
+		})
+	}
+}

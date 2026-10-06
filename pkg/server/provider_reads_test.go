@@ -1,11 +1,15 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -128,4 +132,94 @@ func hexHash(h [32]byte) string {
 		b[2*i+1] = digits[v&15]
 	}
 	return string(b)
+}
+
+func TestProviderProfileSharedAliasLifetime(t *testing.T) {
+	driver, err := dalgo2http.NewDB(dalgo2http.Config{Mode: dalgo2http.ModeLive, Collections: []dalgo2http.Collection{{Name: "daily", URLTemplate: manifest.ECBDailyURL, Decoder: dalgo2http.DecoderECBEuroFXRef, KeyField: "currency", Timeout: 10 * time.Second}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &manifest.Manifest{Database: manifest.Database{ID: "ecb", SchemaMode: schema.ModeStrict, License: &license.Declaration{URL: "https://example.org/synthetic-terms"}}, Storage: manifest.Storage{Engine: "http", HTTP: &manifest.HTTPOptions{Profile: manifest.HTTPProfileECBDaily, Collection: "daily"}}, Schemas: &schema.Schemas{Collections: map[string]schema.Collection{"daily": {Fields: map[string]schema.Field{"time": {Type: schema.TypeString}, "currency": {Type: schema.TypeString}, "rate": {Type: schema.TypeString}}}}}}
+	db, err := core.Open(m, driver, []schema.Mode{schema.ModeStrict}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	right, err := db.SourceRight("synthetic-server", nil, "daily")
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := providerreads.RightsDigest(*right)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := ProviderReadProfile{Collection: "daily", Binding: providerreads.Binding{ProviderSourceID: "provider:synthetic/FxReferenceQuote", RightsSourceID: right.SourceID, ResourceID: "ecb-daily", DefinitionDigest: strings.Repeat("a", 64), DecoderDigest: strings.Repeat("b", 64), RightsDigest: digest}}
+	s, err := NewChecked("test", map[string]*core.Database{"alias": db, "second": db}, WithSourceRights("synthetic-server", nil), WithProviderReadProfiles(map[string]ProviderReadProfile{"alias": profile}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.CloseSnapshots)
+	var closeCount atomic.Int32
+	closed := make(chan struct{})
+	db.OnClose(func() error {
+		if closeCount.Add(1) == 1 {
+			close(closed)
+		}
+		return nil
+	})
+	first, second := &leases{}, &leases{}
+	for id, held := range map[string]*leases{"alias": first, "second": second} {
+		r := httptest.NewRequest("GET", "/v1/databases/"+id, nil)
+		r = r.WithContext(context.WithValue(r.Context(), leasesKey{}, held))
+		if s.acquire(r, id) != db {
+			t.Fatal("missing shared lease")
+		}
+		t.Cleanup(held.release)
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err = s.UnmountContext(canceled, "alias"); err != nil {
+		t.Fatal("nonfinal removal waited", err)
+	}
+	if closeCount.Load() != 0 || s.getDB("alias") != nil || s.getDB("second") != db {
+		t.Fatal("nonfinal removal closed or unrouted remaining alias")
+	}
+	// New leases through the remaining alias must share the retained waitgroup.
+	third := &leases{}
+	r := httptest.NewRequest("GET", "/v1/databases/second", nil)
+	r = r.WithContext(context.WithValue(r.Context(), leasesKey{}, third))
+	if s.acquire(r, "second") != db {
+		t.Fatal("remaining alias cannot lease")
+	}
+	t.Cleanup(third.release)
+	meta := retentionRequest(s.Handler(), "GET", "/v1/databases/second", "", nil)
+	if meta.Code != 200 || !strings.Contains(meta.Body.String(), providerreads.Format) {
+		t.Fatalf("remaining admitted metadata: %d %s", meta.Code, meta.Body)
+	}
+	if err = s.UnmountContext(canceled, "second"); !errors.Is(err, context.Canceled) {
+		t.Fatal("final removal did not respect held leases", err)
+	}
+	if closeCount.Load() != 0 || s.getDB("second") != nil {
+		t.Fatal("final removal closed before leases drained")
+	}
+	if err = s.Mount(db); err == nil {
+		t.Fatal("retiring provider pointer remounted under native ID")
+	}
+	first.release()
+	second.release()
+	if closeCount.Load() != 0 {
+		t.Fatal("new remaining-alias lease lost its shared waitgroup")
+	}
+	third.release()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("final lease release did not close")
+	}
+	if closeCount.Load() != 1 {
+		t.Fatal("close not exactly once")
+	}
+	if err = s.Mount(db); err == nil {
+		t.Fatal("retired provider pointer remounted")
+	}
 }
