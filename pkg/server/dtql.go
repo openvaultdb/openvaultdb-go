@@ -70,6 +70,7 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 		s.handlePagedDTQL(w, r, db, query, doc)
 		return
 	}
+	capture, rightsErr := s.singleRights(db, collection)
 	records, err := db.ExecuteDTQLQuery(r.Context(), query)
 	if err != nil {
 		err = hiddenAsDenied(db, err)
@@ -89,8 +90,12 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 	for _, rec := range records {
 		out = append(out, recordOut{Key: rec.Key.String(), Data: rec.Data})
 	}
+	if rightsErr != nil {
+		s.rightsError(w, rightsErr)
+		return
+	}
 	s.cacheReadResponse(w, r, db)
-	writeJSON(w, http.StatusOK, map[string]any{"records": out})
+	s.writeRightsResult(w, r, map[string]any{"records": out}, capture, capture.allUsed(), core.ResultBufferBytes)
 }
 
 // readDTQLDocument returns the DTQL document of a request: the q parameter of a

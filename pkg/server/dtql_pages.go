@@ -66,6 +66,7 @@ func WithSnapshotLimits(limits SnapshotLimits) Option {
 // querySnapshot contains no live reader or transaction. Its complete result
 // was captured into a private temporary file before the first page was sent.
 type querySnapshot struct {
+	rights    rightsCapture
 	path      string
 	bytes     int64
 	db        *core.Database
@@ -166,7 +167,27 @@ func (s *Server) handlePagedDTQL(w http.ResponseWriter, r *http.Request, db *cor
 		s.writeInternalError(w, r, "query snapshot storage is unavailable", s.snapshotDirErr)
 		return
 	}
-	path, size, err := spoolDTQL(r.Context(), db, query, s.snapshotDir, s.snapshotLimits)
+	collections, err := core.QueryCollections(query)
+	if err != nil {
+		s.writeMappedError(w, r, err)
+		return
+	}
+	targets := make([]relationalTarget, 0, len(collections))
+	for _, collection := range collections {
+		targets = append(targets, relationalTarget{database: db.ID(), collection: collection})
+	}
+	capture, err := s.captureRights(map[string]*core.Database{db.ID(): db}, targets)
+	if err != nil {
+		s.rightsError(w, err)
+		return
+	}
+	limits := s.snapshotLimits
+	limits.Bytes -= int64(capture.reservedBytes)
+	if limits.Bytes <= 0 {
+		s.rightsError(w, fmt.Errorf("snapshot metadata budget"))
+		return
+	}
+	path, size, err := spoolDTQL(r.Context(), db, query, s.snapshotDir, limits, capture.reservedBytes)
 	if err != nil {
 		var bound *snapshotBoundError
 		if errors.As(err, &bound) {
@@ -182,7 +203,7 @@ func (s *Server) handlePagedDTQL(w http.ResponseWriter, r *http.Request, db *cor
 		s.writeInternalError(w, r, "failed to create query snapshot", err)
 		return
 	}
-	snap := &querySnapshot{path: path, bytes: size, db: db, queryHash: queryHash,
+	snap := &querySnapshot{rights: capture, path: path, bytes: size, db: db, queryHash: queryHash,
 		actorHash: actorHash, pageSize: pageSize, id: id, expiresAt: time.Now().Add(snapshotLifetime)}
 	s.mu.RLock()
 	if s.dbs[db.ID()] != db {
@@ -207,7 +228,7 @@ type snapshotBoundError string
 
 func (e *snapshotBoundError) Error() string { return string(*e) }
 
-func spoolDTQL(ctx context.Context, db *core.Database, query dal.StructuredQuery, dir string, limits SnapshotLimits) (path string, size int64, err error) {
+func spoolDTQL(ctx context.Context, db *core.Database, query dal.StructuredQuery, dir string, limits SnapshotLimits, metadataBytes int) (path string, size int64, err error) {
 	f, err := os.CreateTemp(dir, "snapshot-*")
 	if err != nil {
 		return "", 0, err
@@ -230,7 +251,11 @@ func spoolDTQL(ctx context.Context, db *core.Database, query dal.StructuredQuery
 		if marshalErr != nil {
 			return marshalErr
 		}
-		if len(row) > maxPageBytes {
+		rowBudget := maxPageBytes
+		if metadataBytes > 0 {
+			rowBudget -= metadataBytes + 2048
+		}
+		if len(row) > rowBudget {
 			bound := snapshotBoundError("one query row exceeds the page size limit")
 			return &bound
 		}
@@ -402,7 +427,10 @@ func (s *Server) serveSnapshotPage(w http.ResponseWriter, token string, db *core
 	}
 	reader := bufio.NewReader(f)
 	rows := make([]json.RawMessage, 0, pageSize)
-	var pageBytes int
+	pageBytes := snap.rights.reservedBytes
+	if pageBytes > 0 {
+		pageBytes += 2048
+	}
 	for len(rows) < pageSize && offset < snap.bytes {
 		row, readErr := reader.ReadBytes('\n')
 		if readErr != nil {
@@ -412,8 +440,15 @@ func (s *Server) serveSnapshotPage(w http.ResponseWriter, token string, db *core
 			writeError(w, http.StatusGone, "snapshot_expired", "query snapshot is damaged; restart the query")
 			return
 		}
-		if pageBytes+len(row) > maxPageBytes && len(rows) > 0 {
-			break
+		if pageBytes+len(row) > maxPageBytes {
+			if len(rows) > 0 {
+				break
+			}
+			_ = f.Close()
+			s.removeSnapshotLocked(snap)
+			s.snapshotMu.Unlock()
+			s.writeMappedError(w, nil, core.ErrResultTooLarge)
+			return
 		}
 		rows = append(rows, json.RawMessage(row[:len(row)-1]))
 		pageBytes += len(row)
@@ -428,8 +463,9 @@ func (s *Server) serveSnapshotPage(w http.ResponseWriter, token string, db *core
 	if offset < snap.bytes {
 		response["nextPageToken"] = s.pageToken(snap.id, offset, db.ID(), queryHash, actorHash, pageSize)
 	}
+	attachRights(response, snap.rights.rights, snap.rights.allUsed())
 	s.snapshotMu.Unlock()
-	writeJSON(w, http.StatusOK, response)
+	s.writeRightsResult(w, nil, response, snap.rights, snap.rights.allUsed(), maxPageBytes)
 }
 
 func (s *Server) removeSnapshotLocked(snap *querySnapshot) {

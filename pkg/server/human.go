@@ -14,6 +14,7 @@ import (
 
 	"github.com/dal-go/dalgo/dbschema"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
+	"github.com/openvaultdb/openvaultdb-go/pkg/license"
 )
 
 // The default human surface is intentionally neutral. Deployments with their
@@ -24,6 +25,7 @@ import (
 var humanAssets embed.FS
 
 type humanDB struct {
+	Rights                                              []license.SourceRight
 	ID, Path, Engine, SchemaMode, APIURL, ConnectionURL string
 	Collections                                         []humanCollection
 	Protected                                           bool
@@ -35,6 +37,7 @@ type humanField struct {
 }
 
 type humanCollection struct {
+	Rights               []license.SourceRight
 	Name, Path, QueryURL string
 	Fields               []humanField
 	References           []humanReference
@@ -49,6 +52,7 @@ type humanReference struct {
 }
 
 type humanView struct {
+	Rights         []license.SourceRight
 	Title, Version string
 	Private        bool
 	Databases      []humanDB
@@ -58,10 +62,11 @@ type humanView struct {
 
 var humanTemplate = template.Must(template.New("human").Parse(`{{define "head"}}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>{{.Title}} | OpenVaultDB</title><link rel="stylesheet" href="/ovdb/style.css"></head><body><header><nav aria-label="Main"><a class="brand" href="/ovdb/">OpenVaultDB</a><a href="/ovdb/dbs/">Databases</a></nav></header><main>{{end}}
 {{define "foot"}}</main><footer>OpenVaultDB {{.Version}}</footer></body></html>{{end}}
-{{define "server"}}{{template "head" .}}<p class="eyebrow">OpenVaultDB server</p><h1>OpenVaultDB</h1><p>This server exposes databases through a versioned HTTP API. Browse the public databases or use the discovery document to connect a client.</p>{{if .Private}}<p class="notice">This server requires authentication. Its database catalog is private.</p>{{else}}<p>{{len .Databases}} database{{if ne (len .Databases) 1}}s{{end}} available.</p><a class="button" href="/ovdb/dbs/">Browse databases</a>{{end}}<p><a href="/.well-known/openvaultdb">Discovery document</a> · <a href="/v1/status">Server status API</a></p>{{template "foot" .}}{{end}}
+{{define "rights"}}<section aria-label="Source data terms"><h2>Source data terms</h2>{{if .}}{{range .}}<p>Declared at {{.DeclarationScope}} scope{{if .DeclaredAt.DatabaseID}} · {{.DeclaredAt.DatabaseID}}{{end}}{{if .DeclaredAt.Recordset}} / {{.DeclaredAt.Recordset}}{{end}}.</p>{{with .Declaration}}<p>{{if .Name}}<strong>{{.Name}}</strong>{{end}}{{if .SPDX}} <code>{{.SPDX}}</code>{{end}}</p>{{if .URL}}<p><a href="{{.URL}}" rel="external noreferrer">Source terms</a></p>{{end}}{{if .Text}}<pre class="source-terms">{{.Text}}</pre>{{end}}{{end}}{{end}}{{else}}<p>Source data terms not declared.</p>{{end}}</section>{{end}}
+{{define "server"}}{{template "head" .}}<p class="eyebrow">OpenVaultDB server</p><h1>OpenVaultDB</h1>{{template "rights" .Rights}}<p>This server exposes databases through a versioned HTTP API. Browse the public databases or use the discovery document to connect a client.</p>{{if .Private}}<p class="notice">This server requires authentication. Its database catalog is private.</p>{{else}}<p>{{len .Databases}} database{{if ne (len .Databases) 1}}s{{end}} available.</p><a class="button" href="/ovdb/dbs/">Browse databases</a>{{end}}<p><a href="/.well-known/openvaultdb">Discovery document</a> · <a href="/v1/status">Server status API</a></p>{{template "foot" .}}{{end}}
 {{define "list"}}{{template "head" .}}<p class="eyebrow">OpenVaultDB server</p><h1>Databases</h1>{{if .Private}}<p class="notice">The database catalog requires authentication. Use an authorized client to query this server.</p>{{else if .Databases}}<ul class="cards">{{range .Databases}}<li><a href="{{.Path}}"><strong>{{.ID}}</strong><span>{{.Engine}} · {{.SchemaMode}} schema</span></a></li>{{end}}</ul>{{else}}<p>No databases are mounted.</p>{{end}}<p><a href="/ovdb/">Back to server</a></p>{{template "foot" .}}{{end}}
-{{define "database"}}{{template "head" .}}<p class="eyebrow"><a href="/ovdb/dbs/">Databases</a> / profile</p><h1>{{.Database.ID}}</h1><p>This URL identifies the database. Machine operations use separately versioned endpoints.</p><dl><dt>Connection URL</dt><dd><code>{{.Database.ConnectionURL}}</code></dd><dt>Storage engine</dt><dd>{{.Database.Engine}}</dd><dt>Schema mode</dt><dd>{{.Database.SchemaMode}}</dd></dl><h2>Declared collections</h2>{{if .Database.Protected}}<p>This database's collection schema requires an authorized client.</p>{{else if .Database.Collections}}<ul class="cards">{{range .Database.Collections}}<li><a href="{{.Path}}"><strong>{{.Name}}</strong><span>{{len .Fields}} declared fields</span></a></li>{{end}}</ul>{{else}}<p>No declared collections.</p>{{end}}<p><a href="{{.Database.APIURL}}">Machine metadata</a> · <a href="/.well-known/openvaultdb">Discovery document</a></p>{{template "foot" .}}{{end}}
-{{define "collection"}}{{template "head" .}}<p class="eyebrow"><a href="/ovdb/dbs/">Databases</a> / <a href="{{.Database.Path}}">{{.Database.ID}}</a> / collection</p><h1>{{.Collection.Name}}</h1><p>Declared collection schema in the {{.Database.ID}} database.</p>{{if .Collection.Fields}}<div class="table-scroll"><table><thead><tr><th scope="col">Field</th><th scope="col">Type</th><th scope="col">Required</th></tr></thead><tbody>{{range .Collection.Fields}}<tr><th scope="row"><code>{{.Name}}</code></th><td>{{.Type}}</td><td>{{if .Required}}Yes{{else}}No{{end}}</td></tr>{{end}}</tbody></table></div>{{else}}<p>No fields are declared for this collection.</p>{{end}}<h2>References</h2>{{if .Collection.References}}<ul>{{range .Collection.References}}<li><code>{{.Field}}</code> → {{if .Path}}<a href="{{.Path}}">{{.Collection}}</a>{{else}}{{.Collection}}{{end}}{{if .TargetField}}.<code>{{.TargetField}}</code>{{end}} <small>({{.Source}}; enforcement: {{.Enforcement}}{{if .Name}}; key: {{.Name}}{{end}}{{if .OnDelete}}; on delete: {{.OnDelete}}{{end}}{{if .OnUpdate}}; on update: {{.OnUpdate}}{{end}})</small></li>{{end}}</ul>{{else}}<p>No outgoing references.</p>{{end}}<h2>Referenced by</h2>{{if .Collection.ReferencedBy}}<ul>{{range .Collection.ReferencedBy}}<li><a href="{{.Path}}">{{.Collection}}</a>.<code>{{.Field}}</code>{{if .TargetField}} → <code>{{.TargetField}}</code>{{end}} <small>({{.Source}}; enforcement: {{.Enforcement}}{{if .Name}}; key: {{.Name}}{{end}}{{if .OnDelete}}; on delete: {{.OnDelete}}{{end}}{{if .OnUpdate}}; on update: {{.OnUpdate}}{{end}})</small></li>{{end}}</ul>{{else}}<p>No incoming references.</p>{{end}}<p><a href="{{.Database.APIURL}}">Database metadata API</a>{{if .Collection.QueryURL}} · <a href="{{.Collection.QueryURL}}">Query records (JSON)</a>{{end}}</p>{{template "foot" .}}{{end}}
+{{define "database"}}{{template "head" .}}<p class="eyebrow"><a href="/ovdb/dbs/">Databases</a> / profile</p><h1>{{.Database.ID}}</h1>{{template "rights" .Database.Rights}}<p>This URL identifies the database. Machine operations use separately versioned endpoints.</p><dl><dt>Connection URL</dt><dd><code>{{.Database.ConnectionURL}}</code></dd><dt>Storage engine</dt><dd>{{.Database.Engine}}</dd><dt>Schema mode</dt><dd>{{.Database.SchemaMode}}</dd></dl><h2>Declared collections</h2>{{if .Database.Protected}}<p>This database's collection schema requires an authorized client.</p>{{else if .Database.Collections}}<ul class="cards">{{range .Database.Collections}}<li><a href="{{.Path}}"><strong>{{.Name}}</strong><span>{{len .Fields}} declared fields</span></a></li>{{end}}</ul>{{else}}<p>No declared collections.</p>{{end}}<p><a href="{{.Database.APIURL}}">Machine metadata</a> · <a href="/.well-known/openvaultdb">Discovery document</a></p>{{template "foot" .}}{{end}}
+{{define "collection"}}{{template "head" .}}<p class="eyebrow"><a href="/ovdb/dbs/">Databases</a> / <a href="{{.Database.Path}}">{{.Database.ID}}</a> / collection</p><h1>{{.Collection.Name}}</h1>{{template "rights" .Collection.Rights}}<p>Declared collection schema in the {{.Database.ID}} database.</p>{{if .Collection.Fields}}<div class="table-scroll"><table><thead><tr><th scope="col">Field</th><th scope="col">Type</th><th scope="col">Required</th></tr></thead><tbody>{{range .Collection.Fields}}<tr><th scope="row"><code>{{.Name}}</code></th><td>{{.Type}}</td><td>{{if .Required}}Yes{{else}}No{{end}}</td></tr>{{end}}</tbody></table></div>{{else}}<p>No fields are declared for this collection.</p>{{end}}<h2>References</h2>{{if .Collection.References}}<ul>{{range .Collection.References}}<li><code>{{.Field}}</code> → {{if .Path}}<a href="{{.Path}}">{{.Collection}}</a>{{else}}{{.Collection}}{{end}}{{if .TargetField}}.<code>{{.TargetField}}</code>{{end}} <small>({{.Source}}; enforcement: {{.Enforcement}}{{if .Name}}; key: {{.Name}}{{end}}{{if .OnDelete}}; on delete: {{.OnDelete}}{{end}}{{if .OnUpdate}}; on update: {{.OnUpdate}}{{end}})</small></li>{{end}}</ul>{{else}}<p>No outgoing references.</p>{{end}}<h2>Referenced by</h2>{{if .Collection.ReferencedBy}}<ul>{{range .Collection.ReferencedBy}}<li><a href="{{.Path}}">{{.Collection}}</a>.<code>{{.Field}}</code>{{if .TargetField}} → <code>{{.TargetField}}</code>{{end}} <small>({{.Source}}; enforcement: {{.Enforcement}}{{if .Name}}; key: {{.Name}}{{end}}{{if .OnDelete}}; on delete: {{.OnDelete}}{{end}}{{if .OnUpdate}}; on update: {{.OnUpdate}}{{end}})</small></li>{{end}}</ul>{{else}}<p>No incoming references.</p>{{end}}<p><a href="{{.Database.APIURL}}">Database metadata API</a>{{if .Collection.QueryURL}} · <a href="{{.Collection.QueryURL}}">Query records (JSON)</a>{{end}}</p>{{template "foot" .}}{{end}}
 {{define "missing"}}{{template "head" .}}<h1>Database not found</h1><p>No public database exists at this URL.</p><p><a href="/ovdb/dbs/">Browse databases</a></p>{{template "foot" .}}{{end}}
 {{define "missingCollection"}}{{template "head" .}}<h1>Collection not found</h1><p>No declared public collection exists at this URL.</p><p><a href="/ovdb/dbs/">Browse databases</a></p>{{template "foot" .}}{{end}}`))
 
@@ -187,7 +192,11 @@ func (s *Server) humanDatabases(r *http.Request, includeProviderReferences bool,
 				if db.CanQuery() && !s.boundedImmutable(db) {
 					queryURL = origin + "/v1/databases/" + url.PathEscape(id) + "/query?" + query.Encode()
 				}
-				collections = append(collections, humanCollection{Name: name, Path: humanCollectionPath(id, name), QueryURL: queryURL, Fields: fields, References: references})
+				rights, err := s.databaseRights(db, queryName)
+				if err != nil {
+					return nil, err
+				}
+				collections = append(collections, humanCollection{Rights: rights, Name: name, Path: humanCollectionPath(id, name), QueryURL: queryURL, Fields: fields, References: references})
 			}
 			sort.Slice(collections, func(i, j int) bool { return collections[i].Name < collections[j].Name })
 			for source := range collections {
@@ -201,7 +210,11 @@ func (s *Server) humanDatabases(r *http.Request, includeProviderReferences bool,
 				}
 			}
 		}
-		result = append(result, humanDB{ID: id, Path: humanDatabasePath(id), Engine: db.Manifest.Storage.Engine, SchemaMode: string(db.Manifest.Database.SchemaMode), APIURL: origin + "/v1/databases/" + url.PathEscape(id), ConnectionURL: origin + humanDatabasePath(id), Collections: collections, Protected: protected})
+		rights, err := s.databaseRights(db, "")
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, humanDB{Rights: rights, ID: id, Path: humanDatabasePath(id), Engine: db.Manifest.Storage.Engine, SchemaMode: string(db.Manifest.Database.SchemaMode), APIURL: origin + "/v1/databases/" + url.PathEscape(id), ConnectionURL: origin + humanDatabasePath(id), Collections: collections, Protected: protected})
 	}
 	return result, nil
 }
@@ -239,7 +252,7 @@ func (s *Server) handleHumanServer(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.writeHuman(w, r, http.StatusOK, "server", humanView{Title: "Server", Version: s.version, Private: s.authCfg != nil, Databases: databases})
+	s.writeHuman(w, r, http.StatusOK, "server", humanView{Rights: s.serverRights(), Title: "Server", Version: s.version, Private: s.authCfg != nil, Databases: databases})
 }
 
 func (s *Server) handleHumanDatabases(w http.ResponseWriter, r *http.Request) {

@@ -52,6 +52,7 @@ func (e *ModeCompatibilityError) Error() string {
 // Database is one mounted logical database: a DALgo driver plus mode
 // enforcement.
 type Database struct {
+	rights           licenseSnapshot
 	Manifest         *manifest.Manifest
 	db               dal.DB
 	modes            []schema.Mode
@@ -130,6 +131,9 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 	if m.ACL != nil && m.ACL.Enabled && len(policies) == 0 && controller == nil {
 		return nil, fmt.Errorf("enabled OpenVaultDB ACL requires loaded policies")
 	}
+	if err := m.ValidateLicenses(); err != nil {
+		return nil, err
+	}
 	mode := m.Database.SchemaMode
 	supported := false
 	for _, sm := range supportedModes {
@@ -151,6 +155,9 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 	d := &Database{Manifest: m, db: db, modes: supportedModes, policyController: controller,
 		names: names, documentEngine: documentEngines[m.Storage.Engine], foldsIdentifiers: foldingEngines[m.Storage.Engine],
 		previewPostgres: previewPostgresQueries()}
+	if err = d.snapshotLicenses(); err != nil {
+		return nil, err
+	}
 	// Retain the raw driver's Close: protected/secured wrappers installed
 	// below replace d.db but share the driver's underlying handle.
 	if closer, ok := db.(io.Closer); ok {

@@ -16,15 +16,17 @@ import (
 	"unicode/utf8"
 
 	"github.com/dal-go/dalgo/access"
+	"github.com/openvaultdb/openvaultdb-go/pkg/license"
 	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 	"gopkg.in/yaml.v3"
 )
 
 // Manifest is the root of a database manifest file.
 type Manifest struct {
-	Database Database        `yaml:"database" json:"database"`
-	Storage  Storage         `yaml:"storage" json:"storage"`
-	Schemas  *schema.Schemas `yaml:"schemas,omitempty" json:"schemas,omitempty"`
+	RecordsetLicenses map[string]license.Declaration `yaml:"recordset_licenses,omitempty" json:"recordsetLicenses,omitempty"`
+	Database          Database                       `yaml:"database" json:"database"`
+	Storage           Storage                        `yaml:"storage" json:"storage"`
+	Schemas           *schema.Schemas                `yaml:"schemas,omitempty" json:"schemas,omitempty"`
 	// ACL policies belong to this OpenVaultDB mount. Files resolve relative to
 	// the manifest directory; underlying engines retain their own policies.
 	ACLStore *PolicyStoreConfig       `yaml:"acl_store,omitempty" json:"aclStore,omitempty"`
@@ -38,9 +40,10 @@ type PolicyStoreConfig struct {
 
 // Database identifies the logical database and its schema mode.
 type Database struct {
-	ID         string      `yaml:"id" json:"id"`
-	SchemaMode schema.Mode `yaml:"schema_mode" json:"schemaMode"`
-	CacheTTL   string      `yaml:"cache_ttl,omitempty" json:"cacheTtl,omitempty"`
+	License    *license.Declaration `yaml:"license,omitempty" json:"license,omitempty"`
+	ID         string               `yaml:"id" json:"id"`
+	SchemaMode schema.Mode          `yaml:"schema_mode" json:"schemaMode"`
+	CacheTTL   string               `yaml:"cache_ttl,omitempty" json:"cacheTtl,omitempty"`
 }
 
 // ReadCacheTTL is the database's public read cache duration. Invalid values
@@ -284,6 +287,14 @@ func Parse(b []byte) (*Manifest, error) {
 	if err := decodeYAML(func() error { return unmarshalYAML(b, &document) }); err != nil {
 		return nil, parseError(err)
 	}
+	if database, present := document["database"]; present {
+		if err := validateDatabaseLicenseNode(&database, 0); err != nil {
+			return nil, err
+		}
+	}
+	if recordsets, present := document["recordset_licenses"]; present && recordsets.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("recordset_licenses must be a mapping")
+	}
 	if storage, present := document["storage"]; present {
 		for i := 0; storage.Kind == yaml.MappingNode && i+1 < len(storage.Content); i += 2 {
 			if storage.Content[i].Value != "sqlite" {
@@ -401,6 +412,9 @@ func parseError(err error) error {
 // (see CheckPostgresNames): a manifest that declares one is refused here,
 // before any connection is made.
 func (m *Manifest) Validate() error {
+	if err := m.ValidateLicenses(); err != nil {
+		return err
+	}
 	if m.ACLStore != nil {
 		if m.ACL == nil || !m.ACL.Enabled || m.ACLStore.Path == "" || len(m.ACL.Policies) > 0 {
 			return fmt.Errorf("acl_store requires enabled acl, a path, and no flat policies")
