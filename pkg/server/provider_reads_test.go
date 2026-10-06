@@ -45,11 +45,16 @@ func TestProviderObservedHTTPResponses(t *testing.T) {
 	if err != nil || right == nil {
 		t.Fatal(right, err)
 	}
+	right.EvidenceOrigin = "publisher-definition-verified"
+	right.Pins = []license.Pin{{Role: "provider", Repository: "https://github.com/synthetic/provider", Revision: strings.Repeat("c", 40), Path: "ovdb.yaml", SHA256: strings.Repeat("a", 64), Bytes: 42}}
+	right.Attribution = &license.Notice{Text: "Synthetic provider", URL: "https://example.org/"}
+	right.FreeSource = &license.Notice{Text: "Synthetic original is free", URL: manifest.ECBDailyURL}
+	right.Transformations = []string{"Synthetic XML restructured into rows"}
 	rd, err := providerreads.RightsDigest(*right)
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile := ProviderReadProfile{Collection: "daily", Binding: providerreads.Binding{ProviderSourceID: "provider:synthetic/FxReferenceQuote", RightsSourceID: right.SourceID, ResourceID: "ecb-daily", DefinitionDigest: strings.Repeat("a", 64), DecoderDigest: strings.Repeat("b", 64), RightsDigest: rd}}
+	profile := ProviderReadProfile{Collection: "daily", SourceRight: right, Binding: providerreads.Binding{ProviderSourceID: "provider:synthetic/FxReferenceQuote", RightsSourceID: right.SourceID, ResourceID: "ecb-daily", DefinitionDigest: strings.Repeat("a", 64), DecoderDigest: strings.Repeat("b", 64), RightsDigest: rd}}
 	profiles := map[string]ProviderReadProfile{"ecb": profile}
 	s, err := NewChecked("test", map[string]*core.Database{"ecb": db}, WithSourceRights("synthetic-server", nil), WithProviderReadProfiles(profiles))
 	if err != nil {
