@@ -75,9 +75,9 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 		s.rightsError(w, rightsErr)
 		return
 	}
-	ctx, providerCapture, providerErr := s.beginProviderRead(r.Context(), db, collection, capture)
+	ctx, providerCapture, providerErr := s.beginProviderRead(r, db, collection, capture)
 	if providerErr != nil {
-		s.rightsError(w, providerErr)
+		s.providerReadError(w, providerErr)
 		return
 	}
 	records, err := db.ExecuteDTQLQuery(ctx, query)

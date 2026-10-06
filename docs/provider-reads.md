@@ -17,6 +17,25 @@ native field mapping, EUR direction, semantic grain and transient transport keys
 This API checks equality and bounds, not artifact existence or semantic approval.
 It cannot admit arbitrary URL, decoder, snapshot or cache configuration.
 
+Strict clients freeze a complete independently admitted plan before awaiting
+credentials or network I/O, then send its fresh 128-bit execution ID as exactly
+one `OVDB-Execution-ID` request header containing 32 lowercase hexadecimal
+characters. On profile-enabled structured query and DTQL routes the producer
+validates this header before collector reservation or upstream I/O and binds its
+value into `execution.id` and the hashed observation envelope. Empty, malformed,
+comma-coalesced or duplicate values return `400 invalid_execution_id` with
+`Cache-Control: no-store`. Errors contain no supplied header value. Missing
+headers retain the fresh server-generated nonce for legacy callers; a strict
+client cannot obtain independent admission by copying that nonce from a response.
+Non-profile instances ignore the header. Client IDs correlate executions only:
+they do not authenticate, admit sources, select resources or alter server-owned
+executor/bindings/rights. Clients generate a new cryptographic ID per execution;
+the server stores no replay ledger or new source/result state.
+
+If CORS origins are configured, provider opt-in adds `OVDB-Execution-ID` to the
+allowed request headers on that server's independent CORS configuration. It
+preserves the configured origins and leaves non-profile server defaults intact.
+
 Source rights remain the complete frozen normalized inventory. Rights digest is
 SHA-256 of RFC 8785 UTF-8 JSON:
 
@@ -73,6 +92,9 @@ and refuse unsupported required formats.
 - Deploy aware strict readers and validate source/expectedServerId equality,
   complete source rights, notices and provider/executor bindings before producer
   opt-in. The producer does not rewrite rights or relax old identity checks.
+- Verify the paired consumer sends the independently frozen execution ID and
+  rejects changed/missing execution evidence through an actual synthetic Go HTTP
+  producer to consumer journey before claiming interoperability.
 - Verify the exact immutable live definition, decoder, ModelSpec/MeaningGraph
   artifacts and declared terms/notices at admission. A definition digest does not
   certify future XML bytes.

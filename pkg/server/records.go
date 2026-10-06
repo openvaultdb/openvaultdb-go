@@ -337,9 +337,9 @@ func (s *Server) executeQuery(w http.ResponseWriter, r *http.Request, db *core.D
 		s.rightsError(w, rightsErr)
 		return
 	}
-	ctx, providerCapture, providerErr := s.beginProviderRead(r.Context(), db, scope, capture)
+	ctx, providerCapture, providerErr := s.beginProviderRead(r, db, scope, capture)
 	if providerErr != nil {
-		s.rightsError(w, providerErr)
+		s.providerReadError(w, providerErr)
 		return
 	}
 	records, err := db.Execute(ctx, q)
