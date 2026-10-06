@@ -42,6 +42,7 @@ type PolicyStoreConfig struct {
 type Database struct {
 	License    *license.Declaration `yaml:"license,omitempty" json:"license,omitempty"`
 	ID         string               `yaml:"id" json:"id"`
+	Tags       []string             `yaml:"tags,omitempty" json:"tags,omitempty"`
 	SchemaMode schema.Mode          `yaml:"schema_mode" json:"schemaMode"`
 	CacheTTL   string               `yaml:"cache_ttl,omitempty" json:"cacheTtl,omitempty"`
 	Retention  string               `yaml:"retention,omitempty" json:"retention,omitempty"`
@@ -225,6 +226,9 @@ func (o *InGitDBOptions) PushBranch() string {
 }
 
 var dbIDRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+
+// Tags are public descriptive labels, never storage or access-control settings.
+var databaseTagRe = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 var envVarNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
@@ -431,6 +435,19 @@ func (m *Manifest) Validate() error {
 	}
 	if !dbIDRe.MatchString(m.Database.ID) {
 		return fmt.Errorf("database.id %q is invalid: must match %s", clipID(m.Database.ID), dbIDRe.String())
+	}
+	if len(m.Database.Tags) > 16 {
+		return fmt.Errorf("database.tags must contain at most 16 tags")
+	}
+	seenTags := make(map[string]bool, len(m.Database.Tags))
+	for i, tag := range m.Database.Tags {
+		if len(tag) > 64 || !databaseTagRe.MatchString(tag) {
+			return fmt.Errorf("database.tags[%d] must be a lowercase slug of at most 64 characters (letters, digits, and single hyphens)", i)
+		}
+		if seenTags[tag] {
+			return fmt.Errorf("database.tags[%d] duplicates an earlier tag", i)
+		}
+		seenTags[tag] = true
 	}
 	if err := m.Database.SchemaMode.Validate(); err != nil {
 		return fmt.Errorf("database: %w", err)

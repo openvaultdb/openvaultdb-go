@@ -1,13 +1,82 @@
 package manifest_test
 
 import (
+	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/manifest"
 	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
+	"gopkg.in/yaml.v3"
 )
+
+func TestDatabaseTagsRoundTripAndLegacyManifest(t *testing.T) {
+	base := "database: {id: chinook, schema_mode: schemaless%s}\nstorage: {engine: ingitdb, path: ./data}\n"
+	for _, tc := range []struct {
+		name, field string
+		want        []string
+	}{
+		{"tagged", ", tags: [chinook, sqlite]", []string{"chinook", "sqlite"}},
+		{"legacy", "", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := manifest.Parse([]byte(fmt.Sprintf(base, tc.field)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(m.Database.Tags, tc.want) {
+				t.Fatalf("parsed tags = %v, want %v", m.Database.Tags, tc.want)
+			}
+			for _, marshal := range []struct {
+				name string
+				fn   func(any) ([]byte, error)
+			}{
+				{"yaml", yaml.Marshal}, {"json", json.Marshal},
+			} {
+				encoded, err := marshal.fn(m)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(string(encoded), "tags") != (tc.want != nil) {
+					t.Fatalf("%s tags presence: %s", marshal.name, encoded)
+				}
+				var decoded manifest.Manifest
+				if marshal.name == "yaml" {
+					err = yaml.Unmarshal(encoded, &decoded)
+				} else {
+					err = json.Unmarshal(encoded, &decoded)
+				}
+				if err != nil || !reflect.DeepEqual(decoded.Database.Tags, tc.want) {
+					t.Fatalf("%s roundtrip: tags %v, err %v", marshal.name, decoded.Database.Tags, err)
+				}
+			}
+		})
+	}
+}
+
+func TestDatabaseTagsValidation(t *testing.T) {
+	base := "database: {id: chinook, schema_mode: schemaless, tags: %s}\nstorage: {engine: ingitdb, path: ./data}\n"
+	for _, tc := range []struct{ name, value, want string }{
+		{"uppercase", "[SQLite]", "database.tags[0]"},
+		{"spaces", "['chinook sqlite']", "database.tags[0]"},
+		{"punctuation", "[sqlite/postgresql]", "database.tags[0]"},
+		{"empty", "['']", "database.tags[0]"},
+		{"leading hyphen", "[-sqlite]", "database.tags[0]"},
+		{"consecutive hyphen", "[my--tag]", "database.tags[0]"},
+		{"duplicate", "[chinook, chinook]", "database.tags[1] duplicates"},
+		{"long", "['" + strings.Repeat("a", 65) + "']", "database.tags[0]"},
+		{"many", "[" + strings.Repeat("sqlite, ", 16) + "sqlite]", "at most 16 tags"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := manifest.Parse([]byte(fmt.Sprintf(base, tc.value)))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v; want %q", err, tc.want)
+			}
+		})
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Parse / Validate tests

@@ -826,6 +826,11 @@ mount. The value comes from the check the
 relational handler applies to the request, so a client that reads `joins: true` is not refused by
 the database it names.
 
+When a manifest declares `database.tags`, the database list and detail response
+include `tags` as an array of public descriptive slugs, for example
+`["chinook", "sqlite"]`. The field is omitted for older manifests without tags.
+Tags do not grant access or select a storage engine.
+
 <!-- doc-example method=GET path=/v1/databases/chinook status=200 -->
 ```json
 {

@@ -605,6 +605,7 @@ func (s *Server) handleDatabases(w http.ResponseWriter, r *http.Request) {
 	}
 	type dbInfo struct {
 		ID           string                `json:"id"`
+		Tags         []string              `json:"tags,omitempty"`
 		Engine       string                `json:"engine"`
 		SchemaMode   string                `json:"schemaMode"`
 		SourceRights []license.SourceRight `json:"sourceRights,omitempty"`
@@ -623,6 +624,7 @@ func (s *Server) handleDatabases(w http.ResponseWriter, r *http.Request) {
 		}
 		infos = append(infos, dbInfo{SourceRights: rights,
 			ID:         id,
+			Tags:       db.Manifest.Database.Tags,
 			Engine:     db.Manifest.Storage.Engine,
 			SchemaMode: string(db.Manifest.Database.SchemaMode),
 		})
@@ -657,6 +659,9 @@ func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
 		"schemaMode":   string(db.Manifest.Database.SchemaMode),
 		"collections":  collections,
 		"capabilities": map[string]bool{"read": !db.ReadOnlyHTTP(), "query": canQuery, "dtql": canQuery, "write": !s.readOnly && !db.ReadOnlyHTTP(), "joins": joins, "aggregation": joins},
+	}
+	if len(db.Manifest.Database.Tags) > 0 {
+		metadata["tags"] = db.Manifest.Database.Tags
 	}
 	if _, configured := s.providerProfilesByDB[db]; configured {
 		metadata["requiredEvidenceFormats"] = []string{providerreads.Format}
