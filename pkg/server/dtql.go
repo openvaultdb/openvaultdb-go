@@ -71,7 +71,16 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	capture, rightsErr := s.singleRights(db, collection)
-	records, err := db.ExecuteDTQLQuery(r.Context(), query)
+	if rightsErr != nil && db.ReadOnlyHTTP() {
+		s.rightsError(w, rightsErr)
+		return
+	}
+	ctx, providerCapture, providerErr := s.beginProviderRead(r.Context(), db, collection, capture)
+	if providerErr != nil {
+		s.rightsError(w, providerErr)
+		return
+	}
+	records, err := db.ExecuteDTQLQuery(ctx, query)
 	if err != nil {
 		err = hiddenAsDenied(db, err)
 		if errors.Is(err, access.ErrAccessDenied) {
@@ -95,7 +104,16 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.cacheReadResponse(w, r, db)
-	s.writeRightsResult(w, r, map[string]any{"records": out}, capture, capture.allUsed(), core.ResultBufferBytes)
+	response := map[string]any{"records": out}
+	evidence, providerErr := providerCapture.finish(capture.allUsed())
+	if providerErr != nil {
+		s.rightsError(w, providerErr)
+		return
+	}
+	if evidence != nil {
+		response["providerReads"] = evidence
+	}
+	s.writeRightsResult(w, r, response, capture, capture.allUsed(), core.ResultBufferBytes)
 }
 
 // readDTQLDocument returns the DTQL document of a request: the q parameter of a

@@ -22,20 +22,24 @@ import (
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 	"github.com/openvaultdb/openvaultdb-go/pkg/joinexec"
 	"github.com/openvaultdb/openvaultdb-go/pkg/license"
+	"github.com/openvaultdb/openvaultdb-go/pkg/providerreads"
 )
 
 // Server serves one or more mounted databases.
 type Server struct {
-	rightsServerID      string
-	serverLicense       *license.Declaration
-	rightsErr           error
-	retentionErr        error
-	version             string
-	readProfiles        map[string]ReadProfile
-	readProfilesByDB    map[*core.Database]ReadProfile
-	readProfileRemounts map[string]ReadProfile
-	retiringProfileDBs  map[*core.Database]bool
-	readProfileErr      error
+	providerProfiles     map[string]ProviderReadProfile
+	providerProfilesByDB map[*core.Database]ProviderReadProfile
+	providerProfileErr   error
+	rightsServerID       string
+	serverLicense        *license.Declaration
+	rightsErr            error
+	retentionErr         error
+	version              string
+	readProfiles         map[string]ReadProfile
+	readProfilesByDB     map[*core.Database]ReadProfile
+	readProfileRemounts  map[string]ReadProfile
+	retiringProfileDBs   map[*core.Database]bool
+	readProfileErr       error
 
 	mu  sync.RWMutex // guards dbs and inflight — databases can be mounted at runtime
 	dbs map[string]*core.Database
@@ -142,6 +146,7 @@ func New(version string, dbs map[string]*core.Database, opts ...Option) *Server 
 	}
 	s.readProfileErr = s.validateReadProfiles()
 	s.rightsErr = s.validateSourceRights()
+	s.providerProfileErr = s.validateProviderProfiles()
 	for _, db := range s.dbs {
 		if err := db.ValidateRetentionCache(); err != nil {
 			s.retentionErr = err
@@ -175,6 +180,9 @@ func (s *Server) Mount(db *core.Database) error {
 	defer s.mu.Unlock()
 	if _, taken := s.dbs[db.ID()]; taken {
 		return fmt.Errorf("%w: %s", ErrDatabaseMounted, db.ID())
+	}
+	if _, configured := s.providerProfiles[db.ID()]; configured {
+		return fmt.Errorf("provider profile requires startup admission of the exact instance")
 	}
 	if s.retiringProfileDBs[db] {
 		return errors.New("profile-bound instance is retiring or closed; mount a new instance")
@@ -314,6 +322,12 @@ func (s *Server) inflightFor(db *core.Database) *sync.WaitGroup {
 //  2. Auth (when --auth is set) — Layer-1 token validation
 //  3. Per-handler capability checks — Layer-2
 func (s *Server) Handler() http.Handler {
+	if s.providerProfileErr != nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-store")
+			writeError(w, 500, "configuration_error", "provider admission configuration invalid")
+		})
+	}
 	if s.retentionErr != nil {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Cache-Control", "no-store")
@@ -641,6 +655,9 @@ func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
 		"schemaMode":   string(db.Manifest.Database.SchemaMode),
 		"collections":  collections,
 		"capabilities": map[string]bool{"read": !db.ReadOnlyHTTP(), "query": canQuery, "dtql": canQuery, "write": !s.readOnly && !db.ReadOnlyHTTP(), "joins": joins, "aggregation": joins},
+	}
+	if _, configured := s.providerProfilesByDB[db]; configured {
+		metadata["requiredEvidenceFormats"] = []string{providerreads.Format}
 	}
 	if db.Retention() != "" {
 		metadata["retention"] = db.Retention()

@@ -333,7 +333,16 @@ func (s *Server) executeQuery(w http.ResponseWriter, r *http.Request, db *core.D
 		return
 	}
 	capture, rightsErr := s.singleRights(db, scope)
-	records, err := db.Execute(r.Context(), q)
+	if rightsErr != nil && db.ReadOnlyHTTP() {
+		s.rightsError(w, rightsErr)
+		return
+	}
+	ctx, providerCapture, providerErr := s.beginProviderRead(r.Context(), db, scope, capture)
+	if providerErr != nil {
+		s.rightsError(w, providerErr)
+		return
+	}
+	records, err := db.Execute(ctx, q)
 	if err != nil {
 		s.writeMappedError(w, r, hiddenAsDenied(db, err))
 		return
@@ -355,7 +364,16 @@ func (s *Server) executeQuery(w http.ResponseWriter, r *http.Request, db *core.D
 		return
 	}
 	s.cacheReadResponse(w, r, db)
-	s.writeRightsResult(w, r, map[string]any{"records": out}, capture, capture.allUsed(), core.ResultBufferBytes)
+	response := map[string]any{"records": out}
+	evidence, providerErr := providerCapture.finish(capture.allUsed())
+	if providerErr != nil {
+		s.rightsError(w, providerErr)
+		return
+	}
+	if evidence != nil {
+		response["providerReads"] = evidence
+	}
+	s.writeRightsResult(w, r, response, capture, capture.allUsed(), core.ResultBufferBytes)
 }
 
 func (s *Server) cacheReadResponse(w http.ResponseWriter, r *http.Request, db *core.Database) {
