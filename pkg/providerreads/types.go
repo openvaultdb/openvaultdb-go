@@ -1,6 +1,9 @@
 package providerreads
 
-import "github.com/openvaultdb/openvaultdb-go/pkg/license"
+import (
+	"fmt"
+	"github.com/openvaultdb/openvaultdb-go/pkg/license"
+)
 
 const Format = "ovdb-provider-read/1"
 const MaxItems = 64
@@ -83,4 +86,24 @@ func ObservationDigest(ex Execution, b Binding, o Observation) (string, error) {
 		raw["etag"] = o.ETag
 	}
 	return Digest(map[string]any{"format": "ovdb-read-observation-id/1", "execution": ex, "binding": b, "read": raw})
+}
+
+// Metadata captures only response evidence. Rows and other parent response
+// fields must not be accessed or cloned by the evidence gate.
+type Metadata struct {
+	SourceRights  []license.SourceRight `json:"sourceRights"`
+	UsedSourceIDs []string              `json:"usedSourceIds"`
+	ProviderReads *Envelope             `json:"providerReads"`
+}
+
+// ValidateMetadata requires full response-rights and legacy-usage equality with
+// independent admission facts before checking the envelope/digest bindings.
+func ValidateMetadata(metadata Metadata, plan Plan, admittedUsed []string) error {
+	if metadata.ProviderReads == nil {
+		return fmt.Errorf("required provider evidence missing")
+	}
+	if !equal(metadata.SourceRights, plan.SourceRights) || !equal(metadata.UsedSourceIDs, admittedUsed) {
+		return fmt.Errorf("response rights or usage preflight mismatch")
+	}
+	return Validate(*metadata.ProviderReads, plan, admittedUsed)
 }

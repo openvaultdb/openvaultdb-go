@@ -57,8 +57,10 @@ bytes from that. HTTP relational joins/self-joins remain refused before fetching
 No joins, historic lookup or live source activation are enabled by this change.
 
 Go consumers call `providerreads.Decode` for the closed wire shape, then
-`providerreads.Validate` with independently admitted execution, immutable
+`providerreads.ValidateMetadata` with independently admitted execution, immutable
 bindings, requests, source rights and actual legacy usage before releasing rows.
+This checks full response rights/usage equality before the lower-level envelope
+`Validate` check; validating digests alone is insufficient.
 Missing required evidence must fail the selecting product's gate; optional legacy
 absence remains unknown. Every strict transport must preserve known envelopes
 and refuse unsupported required formats.

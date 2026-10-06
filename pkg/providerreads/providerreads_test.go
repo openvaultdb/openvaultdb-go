@@ -224,3 +224,28 @@ func TestProviderMissingReadAndZeroBudget(t *testing.T) {
 		t.Fatal("zero read budget accepted a read")
 	}
 }
+
+func TestProviderMetadataFullPreflight(t *testing.T) {
+	p := syntheticPlan(t, "proxy")
+	e := fixture(t, p)
+	used := []string{p.Bindings[0].RightsSourceID}
+	actual := Metadata{SourceRights: p.SourceRights, UsedSourceIDs: used, ProviderReads: &e}
+	if err := ValidateMetadata(actual, p, used); err != nil {
+		t.Fatal(err)
+	}
+	actual.SourceRights = append([]license.SourceRight{}, p.SourceRights...)
+	actual.SourceRights[0].Declaration.Name = "changed response"
+	if err := ValidateMetadata(actual, p, used); err == nil {
+		t.Fatal("changed response rights accepted")
+	}
+	actual.SourceRights = p.SourceRights
+	actual.UsedSourceIDs = []string{}
+	if err := ValidateMetadata(actual, p, used); err == nil {
+		t.Fatal("changed response usage accepted")
+	}
+	actual.UsedSourceIDs = used
+	actual.ProviderReads = nil
+	if err := ValidateMetadata(actual, p, used); err == nil {
+		t.Fatal("missing required metadata accepted")
+	}
+}
