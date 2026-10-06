@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -151,6 +152,39 @@ func testHumanDB(id string) *core.Database {
 	}}}}
 }
 
+func TestDatabaseTagsInDiscoveryAndDetails(t *testing.T) {
+	db := testHumanDB("chinook")
+	db.Manifest.Database.Tags = []string{"chinook", "sqlite"}
+	s := New("test", map[string]*core.Database{"chinook": db})
+	t.Cleanup(s.CloseSnapshots)
+	for _, tc := range []struct {
+		path string
+		list bool
+	}{
+		{"/v1/databases", true},
+		{"/v1/databases/chinook", false},
+	} {
+		w := humanRequest(s.Handler(), tc.path)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s status %d: %s", tc.path, w.Code, w.Body.String())
+		}
+		var body map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if tc.list {
+			entries, ok := body["databases"].([]any)
+			if !ok || len(entries) != 1 {
+				t.Fatalf("%s databases = %v", tc.path, body["databases"])
+			}
+			body = entries[0].(map[string]any)
+		}
+		if tags, ok := body["tags"].([]any); !ok || !reflect.DeepEqual(tags, []any{"chinook", "sqlite"}) {
+			t.Fatalf("%s tags = %v", tc.path, body["tags"])
+		}
+	}
+}
+
 func TestHumanQueryLinkEncodesCollectionNameAsJSON(t *testing.T) {
 	const name = "collection\x01name"
 	db := testHumanDB("db")
@@ -241,7 +275,9 @@ func TestHumanQueryLinkOnlyWhenTheGuardAllowsQueries(t *testing.T) {
 }
 
 func TestHumanPagesAndDiscovery(t *testing.T) {
-	s := New("test", map[string]*core.Database{"chinook": testHumanDB("chinook")}, WithPublicOrigin("https://data.example.test"))
+	db := testHumanDB("chinook")
+	db.Manifest.Database.Tags = []string{"chinook", "sqlite"}
+	s := New("test", map[string]*core.Database{"chinook": db}, WithPublicOrigin("https://data.example.test"))
 	t.Cleanup(s.CloseSnapshots)
 	h := s.Handler()
 	for _, tc := range []struct{ path, text string }{{"/ovdb/", "OpenVaultDB server"}, {"/ovdb/dbs/", "chinook"}, {"/ovdb/dbs/chinook", "Album"}} {
@@ -254,6 +290,12 @@ func TestHumanPagesAndDiscovery(t *testing.T) {
 		}
 	}
 	databasePage := humanRequest(h, "/ovdb/dbs/chinook")
+	if list := humanRequest(h, "/ovdb/dbs/"); !strings.Contains(list.Body.String(), "Tags: chinook, sqlite") {
+		t.Fatalf("database list missing tags: %s", list.Body.String())
+	}
+	if !strings.Contains(databasePage.Body.String(), "<dt>Tags</dt><dd>chinook, sqlite</dd>") {
+		t.Fatalf("database profile missing tags: %s", databasePage.Body.String())
+	}
 	if !strings.Contains(databasePage.Body.String(), `href="/ovdb/dbs/chinook/collections/Album"`) {
 		t.Fatalf("database does not link to Album: %s", databasePage.Body.String())
 	}

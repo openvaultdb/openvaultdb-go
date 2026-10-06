@@ -334,6 +334,7 @@ building GraphSpec/ModelSpec now.
 ```yaml
 database:
   id: sneat-dev
+  tags: [sneat, ingitdb] # optional public descriptive labels
   schema_mode: schemaless   # strict | partial | schemaless
 
 storage:
@@ -350,6 +351,12 @@ schemas:                    # required for strict; optional for partial
       fields:
         title: {type: string, required: true}
 ```
+
+`database.tags` is optional. Each tag is a unique lowercase slug of at most 64
+characters using letters, digits, and single hyphens; a database can have at
+most 16 tags. Examples include `[chinook, sqlite]` and `[chinook, postgresql]`.
+Tags describe a database for discovery and have no effect on its storage engine
+or access rights. Existing manifests without tags remain valid.
 
 ## HTTP API
 
