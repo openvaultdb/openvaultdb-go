@@ -4,8 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"maps"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +17,12 @@ import (
 	"github.com/openvaultdb/openvaultdb-go/pkg/manifest"
 	"github.com/openvaultdb/openvaultdb-go/pkg/providerreads"
 )
+
+// ProviderExecutionIDHeader correlates a query with its independently admitted
+// execution. It grants no source, resource, rights or executor authority.
+const ProviderExecutionIDHeader = "OVDB-Execution-ID"
+
+var errProviderExecutionID = errors.New("OVDB-Execution-ID must have exactly one 32-character lowercase hexadecimal value")
 
 // ProviderReadProfile is trusted, externally verified admission configuration.
 // It does not verify artifact existence or authorize public activation. Definition
@@ -56,6 +65,13 @@ func (s *Server) validateProviderProfiles() error {
 		}
 		s.providerProfilesByDB[db] = p
 	}
+	if len(s.providerProfilesByDB) > 0 && s.corsCfg != nil {
+		cfg, err := s.corsCfg.WithHeaders([]string{ProviderExecutionIDHeader}, nil)
+		if err != nil {
+			return err
+		}
+		s.corsCfg = cfg
+	}
 	return nil
 }
 func (s *Server) providerPlan(p ProviderReadProfile, capture rightsCapture, id string) providerreads.Plan {
@@ -68,7 +84,8 @@ type providerCapture struct {
 	err       error
 }
 
-func (s *Server) beginProviderRead(ctx context.Context, db *core.Database, collection string, capture rightsCapture) (context.Context, *providerCapture, error) {
+func (s *Server) beginProviderRead(r *http.Request, db *core.Database, collection string, capture rightsCapture) (context.Context, *providerCapture, error) {
+	ctx := r.Context()
 	p, configured := s.providerProfilesByDB[db]
 	if !configured {
 		return ctx, nil, nil
@@ -76,11 +93,11 @@ func (s *Server) beginProviderRead(ctx context.Context, db *core.Database, colle
 	if p.Collection != collection {
 		return ctx, nil, fmt.Errorf("unplanned provider recordset")
 	}
-	var nonce [16]byte
-	if _, err := rand.Read(nonce[:]); err != nil {
+	id, err := providerExecutionID(r.Header)
+	if err != nil {
 		return ctx, nil, err
 	}
-	plan := s.providerPlan(p, capture, hex.EncodeToString(nonce[:]))
+	plan := s.providerPlan(p, capture, id)
 	collector, err := providerreads.NewCollector(plan)
 	if err != nil {
 		return ctx, nil, err
@@ -105,6 +122,49 @@ func (s *Server) beginProviderRead(ctx context.Context, db *core.Database, colle
 	})
 	return observed, pc, nil
 }
+
+func providerExecutionID(headers http.Header) (string, error) {
+	// Inspect every case variant, rather than Header.Get's first value. HTTP
+	// parsers may retain duplicates separately or coalesce them with commas.
+	count, id, present := 0, "", false
+	for name, values := range headers {
+		if strings.EqualFold(name, ProviderExecutionIDHeader) {
+			if len(values) != 1 {
+				return "", errProviderExecutionID
+			}
+			present = true
+			count++
+			id = values[0]
+		}
+	}
+	if present {
+		if count != 1 || len(id) != 32 {
+			return "", errProviderExecutionID
+		}
+		for _, c := range id {
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+				return "", errProviderExecutionID
+			}
+		}
+		return id, nil
+	}
+	// Legacy callers cannot independently predict this nonce. Strict consumers
+	// supply their fresh client ID instead; no retained replay ledger is needed.
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(nonce[:]), nil
+}
+
+func (s *Server) providerReadError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errProviderExecutionID) {
+		writeError(w, http.StatusBadRequest, "invalid_execution_id", errProviderExecutionID.Error())
+		return
+	}
+	s.rightsError(w, err)
+}
+
 func (pc *providerCapture) finish(used []string) (*providerreads.Envelope, error) {
 	if pc == nil {
 		return nil, nil

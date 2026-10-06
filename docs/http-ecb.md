@@ -57,14 +57,15 @@ read, including reads filtered to zero rows. Its transient observation includes
 collection, live mode, status, fetchedAt, decoder, EUR base, referenceDate,
 upstream URL, content type, Last-Modified, ETag, SHA-256 and byte count. It stores
 no body. Fetch time and HTTP update metadata are separate from source date.
-The OVDB HTTP response does not yet emit the proposed providerReads envelope.
-The producer insertion point is the operation context before `Database.Execute`,
-`ExecuteDTQLQuery` or `joinexec.Execute`, with a per-execution observer collector;
-emission belongs beside sourceRights/usedSourceIds after complete bounded reads.
-That collector must bind a preflight provider/resource/definition/decoder/rights
-inventory, reject conflicting/unplanned observations, deduplicate identical
-resource requests, and produce canonical request/rights/observation digests.
-Using Recorder.Last() alone cannot satisfy that multi-read contract.
+The opt-in [providerReads producer](provider-reads.md) emits the closed
+`ovdb-provider-read/1` envelope beside sourceRights/usedSourceIds on ordinary
+structured queries and DTQL. Its per-execution collector freezes trusted
+provider/resource/definition/decoder/rights bindings before reading and produces
+canonical request/rights/observation digests from the transient observer. Strict
+clients supply their independently admitted fresh execution ID through the
+validated `OVDB-Execution-ID` header. Legacy requests retain a server nonce;
+non-profile instances omit providerReads. This does not enable joins or establish
+consumer interoperability, source admission or public activation.
 
 Public activation still requires the closed versioned evidence contract and
 tolerant/strict consumer rollout, affected semantic and rights admission,
