@@ -59,6 +59,7 @@ func (d Database) ReadCacheTTL() time.Duration {
 
 // Storage selects and configures the storage engine.
 type Storage struct {
+	HTTP      *HTTPOptions      `yaml:"http,omitempty" json:"http,omitempty"`
 	SQLite    *SQLiteOptions    `yaml:"sqlite,omitempty" json:"sqlite,omitempty"`
 	Engine    string            `yaml:"engine" json:"engine"`                 // "sqlite" | "ingitdb" | "firestore" | "postgres" | "mysql"
 	Path      string            `yaml:"path,omitempty" json:"path,omitempty"` // unused by firestore/postgres/mysql
@@ -447,9 +448,12 @@ func (m *Manifest) Validate() error {
 	// remote repo, not a local working tree).
 	ingitdbGitHub := m.Storage.Engine == "ingitdb" && m.Storage.InGitDB != nil && m.Storage.InGitDB.GitHub != nil
 	pathless := m.Storage.Engine == "firestore" || m.Storage.Engine == "postgres" ||
-		m.Storage.Engine == "mysql" || ingitdbGitHub
+		m.Storage.Engine == "mysql" || m.Storage.Engine == "http" || ingitdbGitHub
 	if m.Storage.Path == "" && !pathless {
 		return fmt.Errorf("storage.path is required")
+	}
+	if err := m.ValidateHTTP(); err != nil {
+		return err
 	}
 	if m.Storage.Engine == "firestore" {
 		if m.Storage.Firestore == nil || m.Storage.Firestore.Project == "" {

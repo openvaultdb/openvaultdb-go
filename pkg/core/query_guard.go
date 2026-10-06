@@ -46,6 +46,7 @@ var queryEngines = map[string]bool{
 	"sqlite":    true,
 	"ingitdb":   true,
 	"firestore": true,
+	"http":      true,
 }
 
 // guardQuery returns a *QueryUnsupportedError unless the mounted engine is

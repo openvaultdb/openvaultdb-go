@@ -302,7 +302,7 @@ func (d *Database) declaredJoinFields(source dal.RecordsetSource) []string {
 		}
 	}
 	fields := slices.Sorted(maps.Keys(collection.Fields))
-	if !d.isDocumentEngine() {
+	if !d.isDocumentEngine() && !d.readOnlyHTTP {
 		fields = slices.DeleteFunc(fields, func(name string) bool { return name == "id" })
 		fields = slices.Insert(fields, 0, "id")
 	}

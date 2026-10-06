@@ -84,6 +84,16 @@ func isQueryNotRunnable(err error) bool {
 // database server's error can repeat a value, a name or a hint of the request, and it
 // would reach a log. The other engines keep the adapter's error in the chain.
 func (d *Database) queryError(ctx context.Context, prefix string, err error) error {
+	if d.readOnlyHTTP {
+		switch {
+		case errors.Is(err, dal.ErrNotSupported):
+			return ErrHTTPOperationUnsupported
+		case ctx.Err() != nil:
+			return ctx.Err()
+		default:
+			return ErrDatabaseUnreachable
+		}
+	}
 	switch {
 	case isQueryNotRunnable(err):
 		return fmt.Errorf("%s: %w", prefix, ErrQueryNotRunnable)

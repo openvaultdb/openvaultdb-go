@@ -408,7 +408,7 @@ func (s *Server) Handler() http.Handler {
 	// configured TTL in cacheReadResponse.
 	next := h
 	h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.isReadResponseEndpoint(r) {
+		if s.isNoStoreResponseEndpoint(r) {
 			w.Header().Set("Cache-Control", "no-store")
 		}
 		next.ServeHTTP(w, r)
@@ -419,14 +419,11 @@ func (s *Server) Handler() http.Handler {
 	return h
 }
 
-// Default no-retention reads to no-store before authentication, including point
-// reads and metadata, while preserving the established native cache defaults.
-func (s *Server) isReadResponseEndpoint(r *http.Request) bool {
+// Default all no-retention source routes to no-store before authentication or
+// read-only refusal, while preserving the established native cache defaults.
+func (s *Server) isNoStoreResponseEndpoint(r *http.Request) bool {
 	if isReadCacheEndpoint(r) {
 		return true
-	}
-	if isMutation(r) {
-		return false
 	}
 	for _, prefix := range []string{"/v1/databases/", "/ovdb/dbs/"} {
 		if strings.HasPrefix(r.URL.Path, prefix) {
@@ -545,6 +542,9 @@ func (s *Server) db(w http.ResponseWriter, r *http.Request) *core.Database {
 		writeError(w, http.StatusNotFound, "not_found", "database not found: "+id)
 		return nil
 	}
+	if db.NoRetention() {
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	if !isMutation(r) && !s.guardRetentionRead(w, r, db) {
 		return nil
 	}
@@ -640,7 +640,7 @@ func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
 		"engine":       db.Manifest.Storage.Engine,
 		"schemaMode":   string(db.Manifest.Database.SchemaMode),
 		"collections":  collections,
-		"capabilities": map[string]bool{"read": true, "query": canQuery, "dtql": canQuery, "write": !s.readOnly, "joins": joins, "aggregation": joins},
+		"capabilities": map[string]bool{"read": !db.ReadOnlyHTTP(), "query": canQuery, "dtql": canQuery, "write": !s.readOnly && !db.ReadOnlyHTTP(), "joins": joins, "aggregation": joins},
 	}
 	if db.Retention() != "" {
 		metadata["retention"] = db.Retention()
