@@ -17,6 +17,25 @@ native field mapping, EUR direction, semantic grain and transient transport keys
 This API checks equality and bounds, not artifact existence or semantic approval.
 It cannot admit arbitrary URL, decoder, snapshot or cache configuration.
 
+`ProviderReadProfile.sourceRight` optionally carries an independently reviewed
+dynamic-definition rights record. It preserves the mounted source ID, executor,
+declaration, scope and declared-at identity exactly, adding attribution, the
+original free-resource notice and transformation disclosure. Startup requires
+`publisher-definition-verified` origin and exactly one `provider` pin of metadata:
+an immutable GitHub repository revision and relative manifest path whose SHA-256
+equals the profile's definition digest. Input/body pins are refused. The original
+free-resource link must equal the fixed daily resource. The complete rights
+digest, text and evidence budgets are validated before requests can run.
+
+The operator must obtain the record through original-object publisher checking
+and independent source/semantic/rights admission. The server does not read Git or
+verify those declarations itself. It detaches profile notices and pin arrays
+before application, uses the same immutable record for discovery and execution
+(including empty output), and preserves it across aliases of the exact mounted
+instance. Omission retains existing declaration-only behavior. This option does
+not enable a blocked publisher definition, approve paid use, grant access or
+retention, or certify the changing source response as immutable publisher data.
+
 Strict clients freeze a complete independently admitted plan before awaiting
 credentials or network I/O, then send its fresh 128-bit execution ID as exactly
 one `OVDB-Execution-ID` request header containing 32 lowercase hexadecimal

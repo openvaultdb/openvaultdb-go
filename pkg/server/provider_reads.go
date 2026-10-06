@@ -6,14 +6,15 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"maps"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/dal-go/dalgo2http"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
+	"github.com/openvaultdb/openvaultdb-go/pkg/license"
 	"github.com/openvaultdb/openvaultdb-go/pkg/manifest"
 	"github.com/openvaultdb/openvaultdb-go/pkg/providerreads"
 )
@@ -31,13 +32,17 @@ var errProviderExecutionID = errors.New("OVDB-Execution-ID must have exactly one
 type ProviderReadProfile struct {
 	Collection string
 	Binding    providerreads.Binding
+	// SourceRight optionally supplies reviewed dynamic-definition notices and
+	// a metadata-only publisher pin. It cannot replace the mounted declaration,
+	// change access/retention, or certify immutable upstream response bytes.
+	SourceRight *license.SourceRight `json:"sourceRight,omitempty"`
 }
 
 // WithProviderReadProfiles opts selected HTTP instances into providerReads v1.
 // Neither query input nor request Host can choose a binding or upstream URL.
 func WithProviderReadProfiles(profiles map[string]ProviderReadProfile) Option {
-	frozen := maps.Clone(profiles)
-	return func(s *Server) { s.providerProfiles = maps.Clone(frozen) }
+	frozen := cloneProviderProfiles(profiles)
+	return func(s *Server) { s.providerProfiles = cloneProviderProfiles(frozen) }
 }
 func (s *Server) validateProviderProfiles() error {
 	s.providerProfilesByDB = map[*core.Database]ProviderReadProfile{}
@@ -50,9 +55,15 @@ func (s *Server) validateProviderProfiles() error {
 		if !ok || canonical != p.Collection {
 			return fmt.Errorf("provider profile collection is undeclared")
 		}
-		if prior, ok := s.providerProfilesByDB[db]; ok && prior != p {
+		if prior, ok := s.providerProfilesByDB[db]; ok && !reflect.DeepEqual(prior, p) {
 			return fmt.Errorf("conflicting provider profiles across mount aliases")
 		}
+		if err := s.validateDynamicProviderRight(db, p); err != nil {
+			return err
+		}
+		// The trusted detached notices participate in the same startup rights
+		// capture and digest validation as legacy declarations.
+		s.providerProfilesByDB[db] = p
 		capture, err := s.singleRights(db, p.Collection)
 		if err != nil {
 			return err
@@ -63,7 +74,6 @@ func (s *Server) validateProviderProfiles() error {
 		if _, err = providerreads.NewCollector(s.providerPlan(p, capture, "startup")); err != nil {
 			return err
 		}
-		s.providerProfilesByDB[db] = p
 	}
 	if len(s.providerProfilesByDB) > 0 && s.corsCfg != nil {
 		cfg, err := s.corsCfg.WithHeaders([]string{ProviderExecutionIDHeader}, nil)

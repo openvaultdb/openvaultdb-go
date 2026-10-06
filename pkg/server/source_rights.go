@@ -66,6 +66,13 @@ func (s *Server) databaseRights(db *core.Database, collections ...string) ([]lic
 	}
 	out := make([]license.SourceRight, 0, len(collections))
 	for _, collection := range collections {
+		if canonical, declared := db.CanonicalCollection(collection); declared {
+			collection = canonical
+		}
+		if profile, ok := s.providerProfilesByDB[db]; ok && profile.SourceRight != nil && profile.Collection == collection {
+			out = append(out, cloneDynamicRight(*profile.SourceRight))
+			continue
+		}
 		right, err := db.SourceRight(s.rightsServerID, s.serverLicense, collection)
 		if err != nil {
 			return nil, err
