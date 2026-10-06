@@ -290,6 +290,9 @@ func TestHumanPagesAndDiscovery(t *testing.T) {
 		}
 	}
 	databasePage := humanRequest(h, "/ovdb/dbs/chinook")
+	if strings.Contains(databasePage.Body.String(), "Retention: none") || strings.Contains(databasePage.Body.String(), "Original free source:") || strings.Contains(databasePage.Body.String(), "Transformations") {
+		t.Fatalf("native database profile gained undeclared source notices: %s", databasePage.Body.String())
+	}
 	if list := humanRequest(h, "/ovdb/dbs/"); !strings.Contains(list.Body.String(), "Tags: chinook, sqlite") {
 		t.Fatalf("database list missing tags: %s", list.Body.String())
 	}

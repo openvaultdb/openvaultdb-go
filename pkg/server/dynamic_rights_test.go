@@ -71,6 +71,61 @@ func TestDynamicProviderRightsFrozenAcrossOptionsAndAliases(t *testing.T) {
 	}
 }
 
+func TestHumanPagesRenderAdmittedDynamicNoticesAndRetention(t *testing.T) {
+	db, profile := dynamicRightsFixture(t)
+	profile.SourceRight.Attribution.Text = "Synthetic provider <script>secret</script>"
+	profile.SourceRight.Transformations = []string{"XML <row> to quote"}
+	digest, err := providerreads.RightsDigest(*profile.SourceRight)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.Binding.RightsDigest = digest
+	s, err := NewChecked("test", map[string]*core.Database{"synthetic": db}, WithSourceRights("synthetic-server", nil), WithProviderReadProfiles(map[string]ProviderReadProfile{"synthetic": profile}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.CloseSnapshots)
+	for _, path := range []string{"/ovdb/dbs/synthetic", "/ovdb/dbs/synthetic/collections/daily"} {
+		page := humanRequest(s.Handler(), path)
+		body := page.Body.String()
+		for _, want := range []string{
+			"Synthetic terms", "Source terms", "Attribution:", "Synthetic provider &lt;script&gt;secret&lt;/script&gt;",
+			"Original free source:", `href="` + manifest.ECBDailyURL + `"`, "Synthetic original is free",
+			"Transformations", "XML &lt;row&gt; to quote", "Retention: none", "not retained by this server",
+		} {
+			if page.Code != 200 || !strings.Contains(body, want) {
+				t.Fatalf("%s missing %q: %d %s", path, want, page.Code, body)
+			}
+		}
+		if strings.Contains(body, "<script>secret</script>") || strings.Contains(body, "<row>") || strings.Contains(body, profile.SourceRight.Pins[0].SHA256) {
+			t.Fatalf("%s rendered unsafe text or internal pin: %s", path, body)
+		}
+	}
+	for _, path := range []string{"/ovdb/", "/ovdb/dbs/"} {
+		body := humanRequest(s.Handler(), path).Body.String()
+		if strings.Contains(body, "Synthetic provider") || strings.Contains(body, "Original free source:") {
+			t.Fatalf("%s disclosed source notices outside source page: %s", path, body)
+		}
+	}
+}
+
+func TestHumanPagesOmitUnadmittedDynamicNotices(t *testing.T) {
+	db, _ := dynamicRightsFixture(t)
+	s, err := NewChecked("test", map[string]*core.Database{"synthetic": db}, WithSourceRights("synthetic-server", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.CloseSnapshots)
+	for _, path := range []string{"/ovdb/dbs/synthetic", "/ovdb/dbs/synthetic/collections/daily"} {
+		page := humanRequest(s.Handler(), path)
+		body := page.Body.String()
+		if page.Code != 200 || !strings.Contains(body, "Synthetic terms") || !strings.Contains(body, "Retention: none") ||
+			strings.Contains(body, "Attribution:") || strings.Contains(body, "Original free source:") || strings.Contains(body, "Transformations") {
+			t.Fatalf("%s does not distinguish declared terms from admitted notices: %d %s", path, page.Code, body)
+		}
+	}
+}
+
 func TestDynamicProviderRightsRefuseContradictoryAdmission(t *testing.T) {
 	cases := map[string]func(*ProviderReadProfile){
 		"terms":                   func(p *ProviderReadProfile) { p.SourceRight.Declaration.Text = "replacement terms" },
