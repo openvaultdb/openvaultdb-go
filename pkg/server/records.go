@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -303,7 +302,7 @@ func decodeQuery(w http.ResponseWriter, r *http.Request, q *core.Query) error {
 		if err != nil {
 			return fmt.Errorf("failed to read body: %w", err)
 		}
-		if err := json.NewDecoder(bytes.NewReader(body)).Decode(q); err != nil {
+		if err := json.Unmarshal(body, q); err != nil {
 			return fmt.Errorf("invalid JSON body: %w", err)
 		}
 		return nil
@@ -356,7 +355,7 @@ func (s *Server) executeQuery(w http.ResponseWriter, r *http.Request, db *core.D
 }
 
 func (s *Server) cacheReadResponse(w http.ResponseWriter, r *http.Request, db *core.Database) {
-	if s.boundedImmutable(db) {
+	if db.NoRetention() || s.boundedImmutable(db) {
 		w.Header().Set("Cache-Control", "no-store")
 		return
 	}

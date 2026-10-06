@@ -132,7 +132,7 @@ GET /v1/databases
 → 200 {"databases":[{"id":"sneat-dev","engine":"ingitdb","schemaMode":"schemaless"}, ...]}
 
 GET /v1/databases/{db}
-→ 200 {"id":"...","engine":"...","schemaMode":"...","collections":["..."],"schemas":{"collections":{"...":{"fields":{"...":{"type":"decimal","decimal":{"precision":19,"scale":4,"storage":"text"}}}}}},"capabilities":{"read":true,"query":true,"dtql":true,"write":true,"joins":true,"aggregation":true}}   // declared collections and optional declared field metadata
+→ 200 {"id":"...","serverId":"...","retention":"none","engine":"...","schemaMode":"...","collections":["..."],"schemas":{"collections":{"...":{"fields":{"...":{"type":"decimal","decimal":{"precision":19,"scale":4,"storage":"text"}}}}}},"capabilities":{"read":true,"query":true,"dtql":true,"write":true,"joins":true,"aggregation":true}}   // declared collections and optional declared field metadata
 
 GET /v1/databases/{db}/inferred-schema
 → 200 inferred schema catalogue JSON (see pkg/inferred); 404 for strict databases
@@ -810,6 +810,13 @@ server does, from the configuration it runs with:
   engine advertises `joins: true` unless it has access policies or is a GitHub-backed inGitDB
   mount (which shows `engine: ingitdb`, a listed engine).
 
+Database metadata includes `serverId` (empty when the server has no configured identity).
+The optional `retention` field reflects the immutable policy admitted when the database
+opened. `retention: "none"` requires ordinary reads with `Cache-Control: no-store` and
+refuses paging or continuation requests with `422 retention_not_authorized` before any
+source read or snapshot admission. Native databases with the legacy default policy omit
+`retention`, as in the executable Chinook example below.
+
 Each database in the list (listed when auth is off) and the metadata of a database
 (`GET /v1/databases/{db}`, the way to read it when auth is on) carry two booleans, `joins` and
 `aggregation`, in the `capabilities` map beside `read`, `query`, `dtql` and `write`. They are true
@@ -841,6 +848,7 @@ the database it names.
   "id": "chinook",
   "queryFormat": "dtql-yaml+json",
   "schemaMode": "strict",
+  "serverId": "",
   "schemas": {
     "collections": {
       "Customer": {

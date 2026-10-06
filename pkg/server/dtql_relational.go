@@ -67,11 +67,11 @@ var pagingHeaders = []string{"OVDB-Page-Size", "OVDB-Page-Token", "OVDB-Page-Clo
 // no database in the path to take it from.
 func (s *Server) handleCrossDatabaseDTQL(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	doc, ok := s.readDTQLDocument(w, r)
+	doc, ok := s.readDTQLDocumentForClassification(w, r, true)
 	if !ok {
 		return
 	}
-	query, profile, err := classifyDTQLDocument(doc)
+	query, profile, err := classifyDTQLDocument(withoutContinuationFields(doc, false))
 	if err != nil {
 		s.writeMappedError(w, r, clippedError{err})
 		return
@@ -107,6 +107,23 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	if !ok {
 		return
 	}
+	for _, db := range databases {
+		if !s.guardRetentionRead(w, r, db) {
+			return
+		}
+	}
+	if endpoint == nil {
+		// Native sources keep the ordinary parser refusal for continuation
+		// fields. Classification above removed them only to identify sources.
+		doc, ok := s.readDTQLDocument(w, r)
+		if !ok {
+			return
+		}
+		if _, _, err := classifyDTQLDocument(doc); err != nil {
+			s.writeMappedError(w, r, clippedError{err})
+			return
+		}
+	}
 	// A database with access policies is not read by a relational document. The
 	// refusal is decided by the databases the document names, before a collection
 	// name is looked at, so no answer says which collections that database declares.
@@ -140,7 +157,7 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 		}
 	}
 	for _, header := range pagingHeaders {
-		if r.Header.Get(header) != "" {
+		if headerPresent(r, header) {
 			writeError(w, http.StatusUnprocessableEntity, "snapshot_unsupported", "a joined result is returned whole: the paging headers are not supported on a relational query")
 			return
 		}
@@ -178,7 +195,7 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	facts := make([]cacheFacts, 0, len(order))
 	for _, id := range order {
 		db := databases[id]
-		facts = append(facts, cacheFacts{TTL: db.Manifest.Database.ReadCacheTTL(), HasAccessPolicies: db.HasAccessPolicies()})
+		facts = append(facts, cacheFacts{TTL: db.Manifest.Database.ReadCacheTTL(), HasAccessPolicies: db.HasAccessPolicies(), NoRetention: db.NoRetention()})
 	}
 	cacheControl := relationalCacheControl(s.readOnly, s.authCfg != nil, r.Method, facts)
 	w.Header().Set("Cache-Control", cacheControl)

@@ -44,6 +44,7 @@ type Database struct {
 	ID         string               `yaml:"id" json:"id"`
 	SchemaMode schema.Mode          `yaml:"schema_mode" json:"schemaMode"`
 	CacheTTL   string               `yaml:"cache_ttl,omitempty" json:"cacheTtl,omitempty"`
+	Retention  string               `yaml:"retention,omitempty" json:"retention,omitempty"`
 }
 
 // ReadCacheTTL is the database's public read cache duration. Invalid values
@@ -412,6 +413,9 @@ func parseError(err error) error {
 // (see CheckPostgresNames): a manifest that declares one is refused here,
 // before any connection is made.
 func (m *Manifest) Validate() error {
+	if err := m.ValidateRetention(); err != nil {
+		return err
+	}
 	if err := m.ValidateLicenses(); err != nil {
 		return err
 	}

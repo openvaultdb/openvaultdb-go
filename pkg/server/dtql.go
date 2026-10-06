@@ -66,7 +66,7 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if r.Header.Get("OVDB-Page-Size") != "" || r.Header.Get("OVDB-Page-Token") != "" || r.Header.Get("OVDB-Page-Close") != "" {
+	if hasPagingHeaders(r) {
 		s.handlePagedDTQL(w, r, db, query, doc)
 		return
 	}
@@ -102,6 +102,10 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 // GET, or the body of a POST (with its parameters bound when the body is JSON).
 // It answers the 4xx of a request that carries none and reports false.
 func (s *Server) readDTQLDocument(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	return s.readDTQLDocumentForClassification(w, r, false)
+}
+
+func (s *Server) readDTQLDocumentForClassification(w http.ResponseWriter, r *http.Request, classifySources bool) ([]byte, bool) {
 	if r.Method == http.MethodGet {
 		doc, err := dtqlFromURL(r.URL)
 		if err != nil {
@@ -123,7 +127,13 @@ func (s *Server) readDTQLDocument(w http.ResponseWriter, r *http.Request) ([]byt
 		writeError(w, http.StatusBadRequest, "bad_request", "body must contain a DTQL YAML document")
 		return nil, false
 	}
+	// Relational source classification reads metadata first, then applies each
+	// source's retention guard to the complete original request.
+	r.Body = io.NopCloser(bytes.NewReader(doc))
 	if strings.EqualFold(strings.TrimSpace(strings.SplitN(r.Header.Get("Content-Type"), ";", 2)[0]), "application/json") {
+		if classifySources {
+			doc = withoutContinuationFields(doc, true)
+		}
 		doc, err = bindDTQLParameters(doc)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_dtql", clipText(err.Error(), maxRefusalText))
