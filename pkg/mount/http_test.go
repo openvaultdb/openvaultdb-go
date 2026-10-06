@@ -83,6 +83,10 @@ func TestHTTPMountNativeLiveQuery(t *testing.T) {
 	if err != nil || len(rows) != 1 || rows[0].Data["rate"] != "001.23000" || rows[0].Data["time"] != "2037-02-03" || len(rows[0].Data) != 3 {
 		t.Fatalf("lexical native query: %v, %v", rows, err)
 	}
+	// This is a daily response transport key, not the semantic [time,currency] grain.
+	if rows[0].Key.ID != "AAA" {
+		t.Fatalf("daily transport key: %v", rows[0].Key)
+	}
 	if len(observations) != 1 || observations[0].SHA256 != fmt.Sprintf("%x", sha256.Sum256([]byte(httpSyntheticXML))) || observations[0].Bytes != len(httpSyntheticXML) || observations[0].UpstreamURL != manifest.ECBDailyURL || observations[0].ReferenceDate != "2037-02-03" || observations[0].BaseCurrency != "EUR" || observations[0].Source != dalgo2http.SourceLive {
 		t.Fatalf("observation: %+v", observations)
 	}

@@ -28,7 +28,9 @@ source reference date, quote currency and positive decimal rate lexeme.
 Rates remain strings, including trailing zeros. EUR is the observed base,
 not a synthesized source row. The collection name is local; the transport
 record key is the currency within this single daily response and is not a
-historical compound-key promise.
+historical compound-key promise. The OVDB record API exposes no stable canonical
+composite key in this preparatory mount; publisher semantic grain
+`[time, currency]` therefore needs independent contract review before activation.
 
 Single-collection structured queries and DTQL support plain field projections,
 supported residual predicates and limits. Keyed Get/Exists, writes, ordering,
