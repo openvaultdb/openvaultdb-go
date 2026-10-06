@@ -76,7 +76,7 @@ func boundedText(value string, bound int, multiline bool) bool {
 		return false
 	}
 	for _, ch := range value {
-		if unicode.IsControl(ch) && !(multiline && (ch == '\n' || ch == '\r' || ch == '\t')) {
+		if unicode.IsControl(ch) && (!multiline || ch != '\n' && ch != '\r' && ch != '\t') {
 			return false
 		}
 	}
