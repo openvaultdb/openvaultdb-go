@@ -277,3 +277,17 @@ func TestProviderConstrainedURLGrammar(t *testing.T) {
 		})
 	}
 }
+
+func TestProviderPunycodeLabelsFailClosed(t *testing.T) {
+	// Includes the independent r2 mismatches plus a valid A-label deliberately
+	// refused by the narrower Go profile; no locator is normalized silently.
+	for _, host := range []string{"xn--0.com", "xn--a-ecp.com", "xn--bcher-kva.example", "sub.xn--0.com", "xn--0.sub.example.com"} {
+		for _, path := range []string{"/file", "/a%2Fb?x=one%20two"} {
+			plan := syntheticPlan(t, "proxy")
+			plan.Requests[0].UpstreamURL = "https://" + host + path
+			if _, err := NewCollector(plan); err == nil {
+				t.Fatalf("punycode label admitted: %s", plan.Requests[0].UpstreamURL)
+			}
+		}
+	}
+}

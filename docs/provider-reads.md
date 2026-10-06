@@ -99,10 +99,23 @@ an alphabetic top-level label, optional canonical nondefault numeric port, an
 explicit path, reviewed ASCII URI characters and valid percent escapes. It
 refuses literal/encoded dot path segments, credentials/fragments, default/zero-
 padded ports, IP/numeric-host forms, single-label/trailing-dot hosts, raw Unicode
-and characters requiring WHATWG normalization. Existing punycode labels may be
-used as ASCII. URLs are never rewritten after binding. This is a fail-closed
+and characters requiring WHATWG normalization. All `xn--` punycode labels are refused, including valid A-labels, until an
+exact reviewed WHATWG-compatible IDNA policy is supported. URLs are never rewritten after binding. This is a fail-closed
 subset of the broader JS core HTTPS gate; future host/locator grammar expansion
 requires its own cross-runtime review. The fixed ECB locator remains accepted.
 `testdata/url-grammar-v1.json` records Go/JS acceptance separately: all 22 cases
 were checked against the exact JS consumer above, with no Go-accepted URL rejected
 by JS. No finding was declined. Independent review r2 remains pending.
+
+## Independent review r2 disposition
+
+B1 (staticcheck QF1001) is fixed in its own commit by applying De Morgan's law to
+the character grammar without changing the accepted character set. No lint
+suppression or hook bypass was used.
+
+The residual m1 invalid-punycode mismatch is fixed conservatively: every `xn--`
+DNS label is rejected before binding, including valid punycode labels. This
+narrows the v1 Go profile further without changing the fixed ECB locator. The
+reviewer's expanded 1,012-URL differential corpus is rerun against the exact JS
+consumer; Go-admitted URLs must all pass it unchanged. No findings declined;
+independent review r3 remains pending.

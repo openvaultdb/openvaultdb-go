@@ -2,7 +2,7 @@
  {"url":"https://example.com/original.xml","goAccepted":true,"jsAccepted":true},
  {"url":"https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml","goAccepted":true,"jsAccepted":true},
  {"url":"https://example.com:8443/a%2Fb?x=one%20two","goAccepted":true,"jsAccepted":true},
- {"url":"https://xn--bcher-kva.example/a?x=%27","goAccepted":true,"jsAccepted":true},
+ {"url":"https://xn--bcher-kva.example/a?x=%27","goAccepted":false,"jsAccepted":true},
  {"url":"https://example.com/a/../original.xml","goAccepted":false,"jsAccepted":false},
  {"url":"https://example.com/%2e%2e/original.xml","goAccepted":false,"jsAccepted":false},
  {"url":"https://example.com/a/.%2E/original.xml","goAccepted":false,"jsAccepted":false},

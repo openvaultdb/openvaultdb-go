@@ -66,6 +66,11 @@ func safeURL(s string) error {
 	if !canonicalDNS.MatchString(u.Hostname()) {
 		return fmt.Errorf("unsupported upstream host grammar")
 	}
+	for _, label := range strings.Split(u.Hostname(), ".") {
+		if strings.HasPrefix(label, "xn--") {
+			return fmt.Errorf("unsupported punycode upstream label")
+		}
+	}
 	authority := u.Hostname()
 	if port := u.Port(); port != "" {
 		n, e := strconv.Atoi(port)
