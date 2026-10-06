@@ -356,7 +356,7 @@ func (s *Server) executeQuery(w http.ResponseWriter, r *http.Request, db *core.D
 }
 
 func (s *Server) cacheReadResponse(w http.ResponseWriter, r *http.Request, db *core.Database) {
-	if s.boundedImmutable(db) {
+	if db.NoRetention() || s.boundedImmutable(db) {
 		w.Header().Set("Cache-Control", "no-store")
 		return
 	}

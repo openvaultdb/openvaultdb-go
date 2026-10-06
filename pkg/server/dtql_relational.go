@@ -107,6 +107,11 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	if !ok {
 		return
 	}
+	for _, db := range databases {
+		if !s.guardRetentionRead(w, r, db) {
+			return
+		}
+	}
 	// A database with access policies is not read by a relational document. The
 	// refusal is decided by the databases the document names, before a collection
 	// name is looked at, so no answer says which collections that database declares.
@@ -140,7 +145,7 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 		}
 	}
 	for _, header := range pagingHeaders {
-		if r.Header.Get(header) != "" {
+		if headerPresent(r, header) {
 			writeError(w, http.StatusUnprocessableEntity, "snapshot_unsupported", "a joined result is returned whole: the paging headers are not supported on a relational query")
 			return
 		}
@@ -178,7 +183,7 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	facts := make([]cacheFacts, 0, len(order))
 	for _, id := range order {
 		db := databases[id]
-		facts = append(facts, cacheFacts{TTL: db.Manifest.Database.ReadCacheTTL(), HasAccessPolicies: db.HasAccessPolicies()})
+		facts = append(facts, cacheFacts{TTL: db.Manifest.Database.ReadCacheTTL(), HasAccessPolicies: db.HasAccessPolicies(), NoRetention: db.NoRetention()})
 	}
 	cacheControl := relationalCacheControl(s.readOnly, s.authCfg != nil, r.Method, facts)
 	w.Header().Set("Cache-Control", cacheControl)

@@ -52,6 +52,7 @@ func (e *ModeCompatibilityError) Error() string {
 // Database is one mounted logical database: a DALgo driver plus mode
 // enforcement.
 type Database struct {
+	retention        string // immutable mount capability; never read back from the manifest
 	rights           licenseSnapshot
 	Manifest         *manifest.Manifest
 	db               dal.DB
@@ -131,6 +132,9 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 	if m.ACL != nil && m.ACL.Enabled && len(policies) == 0 && controller == nil {
 		return nil, fmt.Errorf("enabled OpenVaultDB ACL requires loaded policies")
 	}
+	if err := m.ValidateRetention(); err != nil {
+		return nil, err
+	}
 	if err := m.ValidateLicenses(); err != nil {
 		return nil, err
 	}
@@ -152,7 +156,7 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 	if err = checkFieldNames(m); err != nil {
 		return nil, err
 	}
-	d := &Database{Manifest: m, db: db, modes: supportedModes, policyController: controller,
+	d := &Database{Manifest: m, db: db, retention: m.EffectiveRetention(), modes: supportedModes, policyController: controller,
 		names: names, documentEngine: documentEngines[m.Storage.Engine], foldsIdentifiers: foldingEngines[m.Storage.Engine],
 		previewPostgres: previewPostgresQueries()}
 	if err = d.snapshotLicenses(); err != nil {

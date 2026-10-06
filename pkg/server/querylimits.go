@@ -167,6 +167,7 @@ type cacheFacts struct {
 	TTL time.Duration
 	// HasAccessPolicies is true when the database has access policies.
 	HasAccessPolicies bool
+	NoRetention       bool
 }
 
 // relationalCacheControl returns the Cache-Control value for a relational
@@ -181,7 +182,7 @@ func relationalCacheControl(readOnly, authEnabled bool, method string, dbs []cac
 	}
 	smallest := maxCacheTTL
 	for _, db := range dbs {
-		if db.HasAccessPolicies || db.TTL < time.Second || db.TTL > maxCacheTTL || db.TTL%time.Second != 0 {
+		if db.NoRetention || db.HasAccessPolicies || db.TTL < time.Second || db.TTL > maxCacheTTL || db.TTL%time.Second != 0 {
 			return noStore
 		}
 		smallest = min(smallest, db.TTL)

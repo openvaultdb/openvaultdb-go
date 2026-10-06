@@ -230,6 +230,14 @@ func (s *Server) writeHuman(w http.ResponseWriter, r *http.Request, status int, 
 }
 
 func (s *Server) humanDatabasesOrError(w http.ResponseWriter, r *http.Request, includeProviderReferences bool, requestedID string) ([]humanDB, bool) {
+	for _, id := range s.databaseIDs() {
+		if requestedID != "" && id != requestedID {
+			continue
+		}
+		if db := s.getDB(id); db != nil && !s.guardRetentionRead(w, r, db) {
+			return nil, false
+		}
+	}
 	databases, err := s.humanDatabases(r, includeProviderReferences, requestedID)
 	if err != nil {
 		if errors.Is(err, core.ErrDatabaseUnreachable) {

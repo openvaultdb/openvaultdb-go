@@ -66,7 +66,7 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if r.Header.Get("OVDB-Page-Size") != "" || r.Header.Get("OVDB-Page-Token") != "" || r.Header.Get("OVDB-Page-Close") != "" {
+	if hasPagingHeaders(r) {
 		s.handlePagedDTQL(w, r, db, query, doc)
 		return
 	}

@@ -29,6 +29,7 @@ type Server struct {
 	rightsServerID      string
 	serverLicense       *license.Declaration
 	rightsErr           error
+	retentionErr        error
 	version             string
 	readProfiles        map[string]ReadProfile
 	readProfilesByDB    map[*core.Database]ReadProfile
@@ -141,6 +142,12 @@ func New(version string, dbs map[string]*core.Database, opts ...Option) *Server 
 	}
 	s.readProfileErr = s.validateReadProfiles()
 	s.rightsErr = s.validateSourceRights()
+	for _, db := range s.dbs {
+		if err := db.ValidateRetentionCache(); err != nil {
+			s.retentionErr = err
+			break
+		}
+	}
 	s.snapshotDir, s.snapshotDirErr = prepareSnapshotDir()
 	if _, err := rand.Read(s.snapshotKey[:]); err != nil {
 		s.snapshotDirErr = fmt.Errorf("query snapshot token key: %w", err)
@@ -160,6 +167,9 @@ var ErrDatabaseNotMounted = errors.New("database not mounted")
 func (s *Server) Mount(db *core.Database) error {
 	if db == nil {
 		return errors.New("mount: nil database")
+	}
+	if err := db.ValidateRetentionCache(); err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -304,6 +314,12 @@ func (s *Server) inflightFor(db *core.Database) *sync.WaitGroup {
 //  2. Auth (when --auth is set) — Layer-1 token validation
 //  3. Per-handler capability checks — Layer-2
 func (s *Server) Handler() http.Handler {
+	if s.retentionErr != nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-store")
+			writeError(w, 500, "configuration_error", s.retentionErr.Error())
+		})
+	}
 	if s.rightsErr != nil {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "configuration_error", s.rightsErr.Error())
@@ -392,7 +408,7 @@ func (s *Server) Handler() http.Handler {
 	// configured TTL in cacheReadResponse.
 	next := h
 	h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isReadCacheEndpoint(r) {
+		if s.isReadResponseEndpoint(r) {
 			w.Header().Set("Cache-Control", "no-store")
 		}
 		next.ServeHTTP(w, r)
@@ -401,6 +417,25 @@ func (s *Server) Handler() http.Handler {
 		h = corsMiddleware(s.corsCfg, h)
 	}
 	return h
+}
+
+// Default no-retention reads to no-store before authentication, including point
+// reads and metadata, while preserving the established native cache defaults.
+func (s *Server) isReadResponseEndpoint(r *http.Request) bool {
+	if isReadCacheEndpoint(r) {
+		return true
+	}
+	if isMutation(r) {
+		return false
+	}
+	for _, prefix := range []string{"/v1/databases/", "/ovdb/dbs/"} {
+		if strings.HasPrefix(r.URL.Path, prefix) {
+			id := strings.SplitN(strings.TrimPrefix(r.URL.Path, prefix), "/", 2)[0]
+			db := s.getDB(id)
+			return db != nil && db.NoRetention()
+		}
+	}
+	return false
 }
 
 func isReadCacheEndpoint(r *http.Request) bool {
@@ -510,6 +545,9 @@ func (s *Server) db(w http.ResponseWriter, r *http.Request) *core.Database {
 		writeError(w, http.StatusNotFound, "not_found", "database not found: "+id)
 		return nil
 	}
+	if !isMutation(r) && !s.guardRetentionRead(w, r, db) {
+		return nil
+	}
 	return db
 }
 
@@ -598,10 +636,14 @@ func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
 	canQuery := s.advertisesOrdinaryQuery(db)
 	metadata := map[string]any{
 		"id":           db.ID(),
+		"serverId":     s.rightsServerID,
 		"engine":       db.Manifest.Storage.Engine,
 		"schemaMode":   string(db.Manifest.Database.SchemaMode),
 		"collections":  collections,
 		"capabilities": map[string]bool{"read": true, "query": canQuery, "dtql": canQuery, "write": !s.readOnly, "joins": joins, "aggregation": joins},
+	}
+	if db.Retention() != "" {
+		metadata["retention"] = db.Retention()
 	}
 	if db.Manifest.Schemas != nil {
 		// Keep declared field metadata additive to the legacy collection-name list.

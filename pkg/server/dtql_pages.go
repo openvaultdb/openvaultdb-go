@@ -120,6 +120,9 @@ func (s *Server) pageOffset(token, dbID string, queryHash, actorHash [32]byte, p
 
 func (s *Server) handlePagedDTQL(w http.ResponseWriter, r *http.Request, db *core.Database, query dal.StructuredQuery, doc []byte) {
 	w.Header().Set("Cache-Control", "no-store")
+	if refuseRetainedOperation(w, db) || !validPagingHeaders(w, r) {
+		return
+	}
 	if db.HasAccessPolicies() {
 		writeError(w, http.StatusUnprocessableEntity, "snapshot_unsupported", "consistent result paging is unavailable for policy-protected databases")
 		return
@@ -229,6 +232,9 @@ type snapshotBoundError string
 func (e *snapshotBoundError) Error() string { return string(*e) }
 
 func spoolDTQL(ctx context.Context, db *core.Database, query dal.StructuredQuery, dir string, limits SnapshotLimits, metadataBytes int) (path string, size int64, err error) {
+	if db.NoRetention() {
+		return "", 0, errRetentionNotAuthorized
+	}
 	f, err := os.CreateTemp(dir, "snapshot-*")
 	if err != nil {
 		return "", 0, err
@@ -359,6 +365,9 @@ func (s *Server) expireSnapshot(snap *querySnapshot) {
 // signed token remains a successful no-op after release, so clients can retry
 // a close whose 204 response was lost.
 func (s *Server) closeSnapshot(w http.ResponseWriter, token string, db *core.Database, queryHash, actorHash [32]byte, pageSize int) {
+	if refuseRetainedOperation(w, db) {
+		return
+	}
 	id, _, valid := s.pageOffset(token, db.ID(), queryHash, actorHash, pageSize)
 	if !valid {
 		writeError(w, http.StatusBadRequest, "invalid_page_token", "query page token is invalid")
@@ -381,6 +390,9 @@ func (s *Server) closeSnapshot(w http.ResponseWriter, token string, db *core.Dat
 // return the same page. Hold snapshotMu only for lookup and bounded disk read;
 // release it before the network write.
 func (s *Server) serveSnapshotPage(w http.ResponseWriter, token string, db *core.Database, queryHash, actorHash [32]byte, pageSize int) {
+	if refuseRetainedOperation(w, db) {
+		return
+	}
 	parts := strings.Split(token, ".")
 	s.snapshotMu.Lock()
 	var snap *querySnapshot
