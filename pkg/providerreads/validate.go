@@ -79,7 +79,7 @@ func safeURL(s string) error {
 	}
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if c > 127 || !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || strings.ContainsRune("-._~!$&()*+,;=:/?@%", rune(c))) {
+		if c > 127 || ((c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && !strings.ContainsRune("-._~!$&()*+,;=:/?@%", rune(c))) {
 			return fmt.Errorf("unsupported upstream URL character")
 		}
 		if c == '%' {
