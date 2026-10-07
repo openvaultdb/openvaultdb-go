@@ -248,11 +248,27 @@ func (d *Database) checkSourceCollection(ref dal.CollectionRef) error {
 	if ref.Parent() != nil {
 		return fmt.Errorf("%w: collection %q cannot be nested under a record on this database", ErrNotFound, clipName(ref.Name()))
 	}
-	if ref.Schema() != "" {
-		return errUndeclared(ref.Path())
-	}
 	if named := ref.Database(); named != "" && (d.Manifest == nil || named != d.Manifest.Database.ID) {
 		return fmt.Errorf("%w: collection %q of database %q is not declared by this database", ErrNotFound, clipName(ref.Name()), clipName(named))
+	}
+	if d.nativePostgres {
+		if ref.Schema() == "" {
+			return errUndeclared(ref.Path())
+		}
+		if err := validateNativeIdentifier(ref.Schema()); err != nil {
+			return err
+		}
+		if err := validateNativeIdentifier(ref.Name()); err != nil {
+			return err
+		}
+		id, ok := d.ResolveNativePostgresCollection(ref.Schema(), ref.Name())
+		if !ok {
+			return errUndeclared(ref.Path())
+		}
+		return d.GuardCanonicalCollection(id)
+	}
+	if ref.Schema() != "" {
+		return errUndeclared(ref.Path())
 	}
 	return d.GuardCanonicalCollection(ref.Name())
 }

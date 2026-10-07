@@ -179,6 +179,22 @@ storage:
 	}
 }
 
+func TestParse_NativePostgresReadOnlyStrictWithoutDeclaredSchemas(t *testing.T) {
+	yaml := []byte(`
+database: {id: samples, schema_mode: strict}
+storage:
+  engine: postgres
+  postgres: {dsn_env: SAMPLE_DSN, read_only: true}
+`)
+	m, err := manifest.Parse(yaml)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if m.Storage.Postgres == nil || !m.Storage.Postgres.ReadOnly || m.Schemas != nil {
+		t.Fatalf("manifest = %+v, want native read-only flag and no declared schema", m)
+	}
+}
+
 func TestParse_UnknownSchemaMode_Error(t *testing.T) {
 	yaml := []byte(`
 database:

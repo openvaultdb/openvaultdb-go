@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/dal-go/dalgo/dal"
+	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 )
 
 // The walk reads a document the way the profile classifier does, over the same
@@ -310,15 +311,22 @@ func (w *walker) source(source dal.RecordsetSource, path string, depth int) erro
 }
 
 func (w *walker) collection(ref dal.CollectionRef, path string, depth int) error {
-	if ref.Parent() != nil || ref.Schema() != "" {
+	if ref.Parent() != nil {
 		return refuse(path, "only plain root collections are supported")
 	}
-	if !isCollectionName(ref.Name()) {
+	collection := ref.Name()
+	if ref.Schema() != "" {
+		var err error
+		collection, err = schema.NativePostgresCollectionID(ref.Schema(), ref.Name())
+		if err != nil {
+			return refuse(path, "schema-qualified relation name is outside the PostgreSQL identifier contract")
+		}
+	} else if !isCollectionName(ref.Name()) {
 		return refuse(path, "collection name %q is not a plain collection name", clip(ref.Name()))
 	}
 	w.doc.sources = append(w.doc.sources, walkedSource{
 		database:   ref.Database(),
-		collection: ref.Name(),
+		collection: collection,
 		scan:       ref.ScanLimit() != 0 || len(ref.ScanOrders()) != 0,
 	})
 	w.scope[ref.Name()] = true

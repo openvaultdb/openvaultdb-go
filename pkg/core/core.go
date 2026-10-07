@@ -52,8 +52,11 @@ func (e *ModeCompatibilityError) Error() string {
 // Database is one mounted logical database: a DALgo driver plus mode
 // enforcement.
 type Database struct {
-	readOnlyHTTP     bool   // frozen mount capability; no point reads or writes
-	retention        string // immutable mount capability; never read back from the manifest
+	readOnlyHTTP     bool                                     // frozen mount capability; no point reads or writes
+	nativePostgres   bool                                     // native PostgreSQL catalog mount, queries only
+	nativeSources    map[string]schema.NativeCollectionSource // logical ID -> exact physical names
+	nativeIDs        map[nativePostgresTuple]string           // exact physical names -> logical ID
+	retention        string                                   // immutable mount capability; never read back from the manifest
 	rights           licenseSnapshot
 	Manifest         *manifest.Manifest
 	db               dal.DB
@@ -157,12 +160,21 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 	if err != nil {
 		return nil, err
 	}
-	if err = checkFieldNames(m); err != nil {
-		return nil, err
+	nativePostgres := m.Storage.Engine == "postgres" && m.Storage.Postgres != nil && m.Storage.Postgres.ReadOnly
+	if !nativePostgres {
+		if err = checkFieldNames(m); err != nil {
+			return nil, err
+		}
 	}
-	d := &Database{Manifest: m, db: db, retention: m.EffectiveRetention(), readOnlyHTTP: m.Storage.Engine == "http", modes: supportedModes, policyController: controller,
-		names: names, documentEngine: documentEngines[m.Storage.Engine], foldsIdentifiers: foldingEngines[m.Storage.Engine],
+	d := &Database{Manifest: m, db: db, retention: m.EffectiveRetention(), readOnlyHTTP: m.Storage.Engine == "http", nativePostgres: nativePostgres, modes: supportedModes, policyController: controller,
+		names: names, documentEngine: documentEngines[m.Storage.Engine], foldsIdentifiers: foldingEngines[m.Storage.Engine] && !nativePostgres,
 		previewPostgres: previewPostgresQueries()}
+	if nativePostgres {
+		d.nativeSources, d.nativeIDs, err = nativePostgresMappings(m.Schemas)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if err = d.snapshotLicenses(); err != nil {
 		return nil, err
 	}
@@ -187,7 +199,7 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 	}); ok {
 		d.servingKeys, d.sqliteLockWait = source.SQLiteRecordKeys()
 	}
-	if m.Schemas != nil {
+	if m.Schemas != nil && !nativePostgres {
 		ctx := context.Background()
 		names := make([]string, 0, len(m.Schemas.Collections))
 		for name := range m.Schemas.Collections {
@@ -273,8 +285,8 @@ func (d *Database) InferredSnapshot() *inferred.Snapshot {
 // adapter call (GuardKey). The adapter is given the collection's canonical name
 // (CanonicalCollection), whichever spelling the key carries.
 func (d *Database) Get(ctx context.Context, key *record.Key) (map[string]any, error) {
-	if d.readOnlyHTTP {
-		return nil, ErrHTTPOperationUnsupported
+	if d.ReadOnly() {
+		return nil, d.readOnlyOperationError()
 	}
 	if err := d.GuardKey(key); err != nil {
 		return nil, err
@@ -335,8 +347,8 @@ func (d *Database) coerceToSchema(collection string, data map[string]any) map[st
 // collection on a SQL engine before the adapter is called, and gives the adapter
 // the collection's canonical name.
 func (d *Database) Exists(ctx context.Context, key *record.Key) (bool, error) {
-	if d.readOnlyHTTP {
-		return false, ErrHTTPOperationUnsupported
+	if d.ReadOnly() {
+		return false, d.readOnlyOperationError()
 	}
 	if err := d.GuardKey(key); err != nil {
 		return false, err
@@ -356,9 +368,17 @@ func (d *Database) Exists(ctx context.Context, key *record.Key) (bool, error) {
 // declared spelling is the one listed. Every name listed is one the routes that
 // take a collection accept.
 func (d *Database) Collections(ctx context.Context) ([]string, error) {
-	if d.readOnlyHTTP {
+	if d.ReadOnly() {
 		names := make([]string, 0, len(d.names.spellings))
 		for name := range d.names.spellings {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		return names, nil
+	}
+	if d.nativePostgres {
+		names := make([]string, 0, len(d.nativeSources))
+		for name := range d.nativeSources {
 			names = append(names, name)
 		}
 		sort.Strings(names)
@@ -431,6 +451,9 @@ func (d *Database) CollectionForeignKeys(ctx context.Context, collection string)
 		return nil, nil
 	}
 	ref := dal.NewRootCollectionRef(collection, "")
+	if source, ok := d.nativeSources[collection]; ok {
+		ref = dal.NewQualifiedRootCollectionRef(source.Schema, source.Name, "")
+	}
 	def, err := reader.DescribeCollection(ctx, &ref)
 	if err != nil {
 		var unsupported *dbschema.NotSupportedError
@@ -511,8 +534,8 @@ func (d *Database) Apply(ctx context.Context, ops []Op, message string) (int, er
 }
 
 func (d *Database) apply(ctx context.Context, ops []Op, message string) (int, error) {
-	if d.readOnlyHTTP {
-		return 0, ErrHTTPOperationUnsupported
+	if d.ReadOnly() {
+		return 0, d.readOnlyOperationError()
 	}
 	// Refuse the whole batch before the first adapter call: the validation
 	// below reads every key from the driver.

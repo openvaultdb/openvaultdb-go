@@ -9,6 +9,7 @@ import (
 
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/record"
+	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 )
 
 // Shapes no DTQL document can produce. The walk must refuse them rather than
@@ -143,7 +144,6 @@ func TestInspectRefusesShapesNoDocumentProduces(t *testing.T) {
 		{"nil from", exShapeQuery{StructuredQuery: exBase(), hasFrom: true}, "a source is required"},
 		{"nil base", exShapeQuery{StructuredQuery: exBase(), hasFrom: true, from: exNilBase{dal.From(exRef("", "a", ""))}}, "a source is required"},
 		{"nested collection", dal.From(dal.NewCollectionRef("kids", "", parent)).NewQuery().SelectIntoRecord(nil), "only plain root collections"},
-		{"schema-qualified collection", dal.From(dal.NewQualifiedRootCollectionRef("main", "a", "")).NewQuery().SelectIntoRecord(nil), "only plain root collections"},
 		{"collection group", dal.From(dal.NewCollectionGroupRef("g", "")).NewQuery().SelectIntoRecord(nil), "unsupported source"},
 		{"unknown source", dal.From(exUnknownSource{exRef("", "x", "")}).NewQuery().SelectIntoRecord(nil), "unsupported source"},
 		{"pointer to a collection", dal.From(&pointerRef).NewQuery().SelectIntoRecord(nil), "unsupported source"},
@@ -191,6 +191,20 @@ func TestInspectRefusesShapesNoDocumentProduces(t *testing.T) {
 				t.Fatalf("a refused document returned a walk: %+v", doc)
 			}
 		})
+	}
+}
+
+func TestInspectEncodesSchemaQualifiedCollectionAsLogicalID(t *testing.T) {
+	doc, err := inspect(dal.From(dal.NewQualifiedRootCollectionRef("sales data", "Order Details", "")).NewQuery().SelectIntoRecord(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := schema.NativePostgresCollectionID("sales data", "Order Details")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(doc.sources, []walkedSource{{collection: want}}) {
+		t.Fatalf("sources = %+v, want logical collection %q", doc.sources, want)
 	}
 }
 

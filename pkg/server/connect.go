@@ -107,7 +107,7 @@ func (s *Server) handleWellKnown(w http.ResponseWriter, r *http.Request) {
 				"id":           id,
 				"url":          origin + humanDatabasePath(id),
 				"apiUrl":       origin + "/v1/databases/" + url.PathEscape(id),
-				"capabilities": map[string]bool{"read": db == nil || !db.ReadOnlyHTTP(), "query": canQuery, "dtql": canQuery, "write": !s.readOnly && (db == nil || !db.ReadOnlyHTTP()), "joins": joins, "aggregation": joins},
+				"capabilities": map[string]bool{"read": db == nil || !db.ReadOnly(), "query": canQuery, "dtql": canQuery, "write": !s.readOnly && (db == nil || !db.ReadOnly()), "joins": joins, "aggregation": joins},
 			}
 			if db != nil {
 				if db.Retention() != "" {

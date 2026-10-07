@@ -6,6 +6,7 @@ import (
 
 	"github.com/dal-go/dalgo/dal"
 	"github.com/openvaultdb/openvaultdb-go/pkg/manifest"
+	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 )
 
 // ProfileKind names the DTQL profile a query belongs to.
@@ -67,6 +68,10 @@ type ProfileSource struct {
 	Database string
 	// Collection is the root collection name.
 	Collection string
+	// Schema is present for a native PostgreSQL relation source. Collection is
+	// its stable logical ID, while Schema and Name retain its physical names.
+	Schema string
+	Name   string
 	// Alias is the alias the query gives the source, or empty.
 	Alias string
 }
@@ -413,15 +418,19 @@ func (w *profileWalk) collection(ref dal.CollectionRef) error {
 	if ref.Parent() != nil {
 		return w.refuse("parent-source", "only root collections are supported")
 	}
-	// The access layer treats a schema-qualified source as an opaque
-	// resource, so collection policies would not match it.
-	if ref.Schema() != "" {
-		return w.refuse("schema", "schema-qualified sources are not supported")
-	}
 	if ref.ScanLimit() != 0 || len(ref.ScanOrders()) != 0 {
 		return w.refuse("scan", "scan bounds are not supported")
 	}
-	if err := ValidateCollectionName(ref.Name()); err != nil {
+	collection := ref.Name()
+	schemaName, physicalName := "", ""
+	if ref.Schema() != "" {
+		var err error
+		collection, err = schema.NativePostgresCollectionID(ref.Schema(), ref.Name())
+		if err != nil {
+			return w.refuse("collection-name", "schema-qualified relation name is outside the PostgreSQL identifier contract")
+		}
+		schemaName, physicalName = ref.Schema(), ref.Name()
+	} else if err := ValidateCollectionName(ref.Name()); err != nil {
 		return w.refuseWith("collection-name", err)
 	}
 	if database := ref.Database(); database != "" {
@@ -432,7 +441,7 @@ func (w *profileWalk) collection(ref dal.CollectionRef) error {
 	if len(w.sources) >= relationalMaxSources {
 		return w.refuse("source-count", fmt.Sprintf("at most %d sources are supported", relationalMaxSources))
 	}
-	w.sources = append(w.sources, ProfileSource{Database: ref.Database(), Collection: ref.Name(), Alias: ref.Alias()})
+	w.sources = append(w.sources, ProfileSource{Database: ref.Database(), Collection: collection, Schema: schemaName, Name: physicalName, Alias: ref.Alias()})
 	return nil
 }
 

@@ -48,7 +48,7 @@ func postgresNameProblem(name string) string {
 //
 // Validate calls it. A mount calls it again for a manifest that was not validated.
 func (m *Manifest) CheckPostgresNames() error {
-	if m.Storage.Engine != "postgres" || m.Schemas == nil {
+	if m.Storage.Engine != "postgres" || m.Schemas == nil || (m.Storage.Postgres != nil && m.Storage.Postgres.ReadOnly) {
 		return nil
 	}
 	collections := slices.Sorted(maps.Keys(m.Schemas.Collections))

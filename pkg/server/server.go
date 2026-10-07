@@ -658,7 +658,7 @@ func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
 		"engine":       db.Manifest.Storage.Engine,
 		"schemaMode":   string(db.Manifest.Database.SchemaMode),
 		"collections":  collections,
-		"capabilities": map[string]bool{"read": !db.ReadOnlyHTTP(), "query": canQuery, "dtql": canQuery, "write": !s.readOnly && !db.ReadOnlyHTTP(), "joins": joins, "aggregation": joins},
+		"capabilities": map[string]bool{"read": !db.ReadOnly(), "query": canQuery, "dtql": canQuery, "write": !s.readOnly && !db.ReadOnly(), "joins": joins, "aggregation": joins},
 	}
 	if len(db.Manifest.Database.Tags) > 0 {
 		metadata["tags"] = db.Manifest.Database.Tags

@@ -69,6 +69,13 @@ type Field struct {
 	Type     FieldType `yaml:"type" json:"type"`
 	Required bool      `yaml:"required,omitempty" json:"required,omitempty"`
 	Decimal  *Decimal  `yaml:"decimal,omitempty" json:"decimal,omitempty"`
+	// NativeType preserves the source engine type for discovered read-only
+	// schemas whose portable FieldType is necessarily broader.
+	NativeType string `yaml:"native_type,omitempty" json:"nativeType,omitempty"`
+	// PrimaryKey and Nullable are descriptive source metadata. They do not
+	// create record-key semantics or authorize writes.
+	PrimaryKey bool `yaml:"primary_key,omitempty" json:"primaryKey,omitempty"`
+	Nullable   bool `yaml:"nullable,omitempty" json:"nullable,omitempty"`
 }
 
 // Decimal describes an exact decimal value transported and stored as text.
@@ -99,6 +106,16 @@ func (f Field) Validate() error {
 type Collection struct {
 	Fields     map[string]Field `yaml:"fields" json:"fields"`
 	References []Reference      `yaml:"references,omitempty" json:"references,omitempty"`
+	// Source is present on collections dynamically discovered from a native
+	// PostgreSQL read-only mount. Name remains the logical, stable collection ID.
+	Source *NativeCollectionSource `yaml:"source,omitempty" json:"source,omitempty"`
+}
+
+// NativeCollectionSource names a physical source relation without changing the
+// logical collection ID used in OVDB routes and authorization.
+type NativeCollectionSource struct {
+	Schema string `yaml:"schema" json:"schema"`
+	Name   string `yaml:"name" json:"name"`
 }
 
 // Reference describes a declared field relationship to another collection.

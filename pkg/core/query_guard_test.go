@@ -718,10 +718,13 @@ func TestNameWalkerVariantsDifferInTwoPlaces(t *testing.T) {
 		t.Errorf("relational variant, nested null test: %v", err)
 	}
 
-	// Everything else is shared: parent, schema, names, aliases and depth.
+	// Everything else is shared: parent, invalid schema identifiers, names,
+	// aliases and depth. A valid schema-qualified source is now accepted by the
+	// relational classifier and checked against a native PostgreSQL catalog at
+	// execution time.
 	for label, query := range map[string]dal.StructuredQuery{
 		"parent":       selectQuery(fromTree(dal.NewCollectionRef("other", "", record.NewKeyWithID("p", "1"))).NewQuery()),
-		"schema":       selectQuery(fromTree(dal.NewQualifiedRootCollectionRef("s", "other", "")).NewQuery()),
+		"schema":       selectQuery(fromTree(dal.NewQualifiedRootCollectionRef("s\x00", "other", "")).NewQuery()),
 		"name":         selectQuery(fromTree(rootRef("ot\x00her")).NewQuery()),
 		"alias":        selectQuery(fromTree(dal.NewDatabaseCollectionRef("d", "", "other", "a b")).NewQuery()),
 		"unsafe field": selectQuery(fromTree(dal.NewDatabaseCollectionRef("d", "", "other", "")).NewQuery().WhereField("a;b", dal.Equal, 1)),

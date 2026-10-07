@@ -1,0 +1,79 @@
+# Native PostgreSQL read-only mounts
+
+An operator can expose an existing PostgreSQL database as a native, read-only
+OVDB source. This is additive: existing PostgreSQL mounts keep their declared
+collections and write behavior.
+
+```yaml
+database:
+  id: samples
+  schema_mode: strict
+storage:
+  engine: postgres
+  postgres:
+    dsn_env: OVDB_SAMPLES_DSN
+    read_only: true
+```
+
+The environment variable contains the PostgreSQL connection string. It is not
+part of the manifest or API. Use a database role that has only the catalog and
+`SELECT` privileges the mount needs. `read_only: true` is an OVDB capability
+boundary: keyed record reads and every write operation are refused, and opening
+the mount does not create or alter tables. It does not change the privileges of
+the database role.
+
+## Discovery and collection IDs
+
+OVDB discovers supported schemas, tables/views, and fields from PostgreSQL's
+catalog. Database metadata lists logical collection IDs and a `schemas` map.
+Each discovered collection has a `source` object containing its original
+`schema` and relation `name`; fields expose their original names, portable type,
+`nativeType`, nullability, and primary-key metadata. PostgreSQL primary keys are
+descriptive metadata only: they do not become OVDB record IDs.
+
+Native collection IDs use the `pg1_` prefix followed by unpadded URL-safe
+base64 of a tuple made from two big-endian 32-bit byte lengths and the exact
+UTF-8 bytes of the schema and relation names. Length-prefixing makes the tuple
+unambiguous even when either name contains punctuation. Clients should treat
+this as an opaque route ID and use `source.schema` and `source.name` for
+display. The encoding is versioned so its representation can evolve without
+relabeling existing PostgreSQL mounts.
+
+## Structured reads
+
+Use the original physical names in schema-qualified DTQL. OVDB first resolves
+the exact `(schema, name)` pair against the discovered catalog, then passes the
+resolved relation to the PostgreSQL driver. Names are separately quoted by the
+driver; request text is never concatenated into SQL.
+
+```yaml
+from:
+  schema: chinook
+  name: Track
+where:
+  op: '=='
+  left: {field: Composer}
+  right: {value: 'Miles Davis'}
+columns:
+  - {field: TrackId}
+  - {field: Name}
+  - {field: Composer}
+orderBy:
+  - {field: Name}
+limit: 50
+```
+
+Queries use the server's configured relational row, byte, and execution bounds.
+Values are parameterized by the driver. Exact PostgreSQL `NUMERIC` values are
+returned as decimal strings; wide integer and binary values keep their exact
+JSON representations. Temporal and JSON values follow the PostgreSQL driver's
+typed result mapping. Filters, projections, ordering, and other DTQL operations
+are limited to the structured forms supported by the installed DALgo PostgreSQL
+adapter; this mount does not expose arbitrary SQL.
+
+The current source contract is for bounded relational reads. Keyed record
+endpoints and mutation APIs are unsupported. A collection with no primary key
+can still be queried as rows. Composite and keyless tables do not receive a
+synthetic record ID, and this profile does not provide point reads. Names that
+the DTQL field-name validator cannot represent remain visible as catalog
+metadata but cannot be used as query fields.

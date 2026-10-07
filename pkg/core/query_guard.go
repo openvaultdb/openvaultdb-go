@@ -69,7 +69,9 @@ func (d *Database) queryEngine() string {
 // CanQuery reports whether structured queries (/query, /dtql) are allowed on
 // this mount. It is the same allow-list guardQuery enforces, so database
 // metadata can advertise exactly what the guard will accept.
-func (d *Database) CanQuery() bool { return engineCleared(d.queryEngine(), d.previewPostgres) }
+func (d *Database) CanQuery() bool {
+	return d.nativePostgres || engineCleared(d.queryEngine(), d.previewPostgres)
+}
 
 // EngineCanQuery reports whether the storage engine, as a manifest writes it, is
 // cleared for structured queries whatever the environment says: the allow-list
@@ -115,7 +117,7 @@ var quotedNameEngines = map[string]bool{
 
 // fieldRule is the field-name rule of this mount's engine.
 func (d *Database) fieldRule() fieldRule {
-	if quotedNameEngines[d.queryEngine()] {
+	if quotedNameEngines[d.queryEngine()] || d.nativePostgres {
 		return quotedNames
 	}
 	return strictNames
@@ -393,10 +395,17 @@ func (w nameWalker) sources(sources []dal.RecordsetSource, depth int, outer sour
 	for _, source := range sources {
 		switch s := source.(type) {
 		case dal.CollectionRef:
-			if s.Parent() != nil || s.Schema() != "" || (s.Database() != "" && !w.relational) {
+			if s.Parent() != nil || (s.Schema() != "" && !w.relational) || (s.Database() != "" && !w.relational) {
 				return nil, fmt.Errorf("%w: only plain root collections are supported as sources", ErrInvalidDTQL)
 			}
-			if err := ValidateCollectionName(s.Name()); err != nil {
+			if s.Schema() != "" {
+				if err := validateNativeIdentifier(s.Schema()); err != nil {
+					return nil, err
+				}
+				if err := validateNativeIdentifier(s.Name()); err != nil {
+					return nil, err
+				}
+			} else if err := ValidateCollectionName(s.Name()); err != nil {
 				return nil, fmt.Errorf("%w: %v", ErrInvalidDTQL, err)
 			}
 			scope = append(scope, s.Name())

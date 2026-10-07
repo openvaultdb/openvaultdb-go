@@ -90,6 +90,12 @@ type relationalTarget struct {
 // the database of the per-database endpoint, already leased, or nil on
 // /v1/dtql.
 func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, endpoint *core.Database, query dal.StructuredQuery, profile core.Profile) {
+	for _, source := range profile.Sources {
+		if source.Schema != "" && (endpoint == nil || !endpoint.NativePostgresReadOnly()) {
+			writeError(w, http.StatusBadRequest, "invalid_dtql", "schema-qualified sources are supported only on a native PostgreSQL read-only database endpoint")
+			return
+		}
+	}
 	targets, refusal := relationalTargets(profile, endpoint)
 	if refusal != "" {
 		writeError(w, http.StatusBadRequest, "invalid_dtql", refusal)
@@ -323,11 +329,24 @@ func (s *Server) leaseRelationalDatabases(w http.ResponseWriter, r *http.Request
 // enables it.
 func (s *Server) joinEngines() []string {
 	engines := make([]string, 0, len(s.queryLimits.JoinEngines))
+	seen := make(map[string]bool, len(s.queryLimits.JoinEngines)+1)
 	for _, engine := range s.queryLimits.JoinEngines {
-		if engine != core.EngineInGitDBGitHub && s.engineCleared(engine) {
+		if engine != core.EngineInGitDBGitHub && !seen[engine] && s.engineCleared(engine) {
 			engines = append(engines, engine)
+			seen[engine] = true
 		}
 	}
+	// A native PostgreSQL read-only mount opts into this bounded query path in
+	// its manifest. Existing writable/preview PostgreSQL mounts still require
+	// the operator's explicit join-engine setting.
+	s.mu.RLock()
+	for _, db := range s.dbs {
+		if db != nil && db.NativePostgresReadOnly() && db.CanQuery() && !seen["postgres"] {
+			engines = append(engines, "postgres")
+			seen["postgres"] = true
+		}
+	}
+	s.mu.RUnlock()
 	return engines
 }
 

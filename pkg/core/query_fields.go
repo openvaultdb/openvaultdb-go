@@ -144,14 +144,24 @@ func (g fieldGuard) sourceOf(source dal.RecordsetSource) fieldSource {
 		return described
 	}
 	described.collection = ref.Name()
+	if g.db.nativePostgres {
+		if id, ok := g.db.ResolveNativePostgresCollection(ref.Schema(), ref.Name()); ok {
+			described.collection = id
+		}
+	}
 	if g.db.Manifest.Database.SchemaMode != schema.ModeStrict {
 		return described
 	}
-	collection := g.db.schemaCollection(ref.Name())
+	collection := g.db.schemaCollection(described.collection)
 	if collection == nil {
 		return described
 	}
-	described.columns = map[string]struct{}{g.fold("id"): {}}
+	described.columns = make(map[string]struct{}, len(collection.Fields)+1)
+	// Native PostgreSQL exposes the source table as it exists. It has no
+	// DALgo record-key column unless the catalog actually reports one.
+	if !g.db.nativePostgres {
+		described.columns[g.fold("id")] = struct{}{}
+	}
 	for name := range collection.Fields {
 		described.columns[g.fold(name)] = struct{}{}
 	}
