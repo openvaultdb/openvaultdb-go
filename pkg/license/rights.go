@@ -39,20 +39,39 @@ type Notice struct {
 	URL  string `json:"url,omitempty"`
 }
 
+// PublisherHTMLDefinition records reviewed publisher metadata, not returned
+// dataset rows. Page hashes identify the observed HTML; trusted preparation
+// verifies the observations without retaining those pages. This does not grant
+// rights, assert a CSV response shape, or authenticate the configured approver.
+type PublisherHTMLDefinition struct {
+	Format         string   `json:"format"`
+	RegistryURL    string   `json:"registryUrl"`
+	RegistrySHA256 string   `json:"registrySha256"`
+	RegistryBytes  int64    `json:"registryBytes"`
+	TermsURL       string   `json:"termsUrl"`
+	TermsSHA256    string   `json:"termsSha256"`
+	TermsBytes     int64    `json:"termsBytes"`
+	ObservedAt     string   `json:"observedAt"`
+	ResourceURL    string   `json:"resourceUrl"`
+	NativeFields   []string `json:"nativeFields"`
+	RightsScope    string   `json:"rightsScope"`
+}
+
 // SourceRight is a source-data terms inventory entry, not an output license.
 // This reader foundation emits only unpinned author declarations. Publisher
 // evidence must be verified by publication/preparation before attaching pins.
 type SourceRight struct {
-	SourceID         string      `json:"sourceId"`
-	Source           Identity    `json:"source"`
-	Declaration      Declaration `json:"declaration"`
-	DeclarationScope Scope       `json:"declarationScope"`
-	DeclaredAt       Identity    `json:"declaredAt"`
-	EvidenceOrigin   string      `json:"evidenceOrigin"`
-	Pins             []Pin       `json:"pins"`
-	Attribution      *Notice     `json:"attribution,omitempty"`
-	FreeSource       *Notice     `json:"freeSource,omitempty"`
-	Transformations  []string    `json:"transformations"`
+	SourceID                string                   `json:"sourceId"`
+	Source                  Identity                 `json:"source"`
+	Declaration             Declaration              `json:"declaration"`
+	DeclarationScope        Scope                    `json:"declarationScope"`
+	DeclaredAt              Identity                 `json:"declaredAt"`
+	EvidenceOrigin          string                   `json:"evidenceOrigin"`
+	Pins                    []Pin                    `json:"pins"`
+	Attribution             *Notice                  `json:"attribution,omitempty"`
+	FreeSource              *Notice                  `json:"freeSource,omitempty"`
+	Transformations         []string                 `json:"transformations"`
+	PublisherHTMLDefinition *PublisherHTMLDefinition `json:"publisherHtmlDefinition,omitempty"`
 }
 
 // Resolve validates every supplied override. It chooses one whole declaration;

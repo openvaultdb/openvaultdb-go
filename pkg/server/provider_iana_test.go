@@ -115,6 +115,81 @@ func TestIANANativeOperatorQueryAndEvidence(t *testing.T) {
 	}
 }
 
+func TestIANAPublisherHTMLMetadataDistinctFromDiscovery(t *testing.T) {
+	for _, broken := range []string{"", "origin", "registry", "terms", "resource", "fields", "date", "digest", "bytes", "discovery role", "discovery repo", "discovery path"} {
+		t.Run(broken, func(t *testing.T) {
+			original, profile, calls := ianaProviderFixture(t)
+			right := profile.SourceRight
+			right.EvidenceOrigin = "publisher-html-metadata-verified"
+			right.PublisherHTMLDefinition = &license.PublisherHTMLDefinition{
+				Format: "ovdb-iana-publisher-html-definition/1", RegistryURL: "https://www.iana.org/assignments/http-status-codes",
+				RegistrySHA256: strings.Repeat("d", 64), RegistryBytes: 100, TermsURL: manifest.IANALicensingTermsURL,
+				TermsSHA256: strings.Repeat("e", 64), TermsBytes: 200, ObservedAt: "2026-10-07T00:00:00Z",
+				ResourceURL: manifest.IANAHTTPStatusURL, NativeFields: []string{"Value", "Description", "Reference"},
+				RightsScope: "iana-ietf-held-protocol-registry-rights-cc0-excluding-linked-material",
+			}
+			right.Pins = []license.Pin{{Role: "discovery", Repository: "https://github.com/openvaultdb/directory",
+				Revision: strings.Repeat("c", 40), Path: "sources/$records/iana-http-status-codes.yaml", SHA256: strings.Repeat("a", 64), Bytes: 42}}
+			switch broken {
+			case "origin":
+				right.EvidenceOrigin = "publisher-definition-verified"
+			case "registry":
+				right.PublisherHTMLDefinition.RegistryURL += "?x=1"
+			case "terms":
+				right.PublisherHTMLDefinition.TermsURL = "https://example.org/terms"
+			case "resource":
+				right.PublisherHTMLDefinition.ResourceURL += "?x=1"
+			case "fields":
+				right.PublisherHTMLDefinition.NativeFields[0] = "statusCode"
+			case "date":
+				right.PublisherHTMLDefinition.ObservedAt = ""
+			case "digest":
+				right.PublisherHTMLDefinition.RegistrySHA256 = "not-a-digest"
+			case "bytes":
+				right.PublisherHTMLDefinition.TermsBytes = 0
+			case "discovery role":
+				right.Pins[0].Role = "provider"
+			case "discovery repo":
+				right.Pins[0].Repository = "https://github.com/synthetic/provider"
+			case "discovery path":
+				right.Pins[0].Path = "other.yaml"
+			}
+			var err error
+			profile.Binding.DefinitionDigest, err = providerreads.Digest(right.PublisherHTMLDefinition)
+			if err != nil {
+				t.Fatal(err)
+			}
+			profile.Binding.RightsDigest, err = providerreads.RightsDigest(*right)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checked, err := NewChecked("synthetic", map[string]*core.Database{"iana-http-status": original.getDB("iana-http-status")},
+				WithSourceRights("synthetic-operator", nil), WithProviderReadProfiles(map[string]ProviderReadProfile{"iana-http-status": profile}))
+			if broken != "" {
+				if err == nil {
+					checked.CloseSnapshots()
+					t.Fatal("invalid publisher metadata admitted")
+				}
+				if *calls != 0 {
+					t.Fatal("metadata validation read provider")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(checked.CloseSnapshots)
+			// Startup copies the asserted evidence, so later caller mutation cannot
+			// turn the published rights into another field interpretation.
+			right.PublisherHTMLDefinition.NativeFields[0] = "changed"
+			w := retentionRequest(checked.Handler(), http.MethodPost, "/v1/databases/iana-http-status/dtql", "from: {name: rows}\nlimit: 1\n", nil)
+			if w.Code != http.StatusOK || *calls != 1 || !strings.Contains(w.Body.String(), `"publisherHtmlDefinition"`) || strings.Contains(w.Body.String(), `"changed"`) {
+				t.Fatalf("distinct publisher evidence: %d calls=%d", w.Code, *calls)
+			}
+		})
+	}
+}
+
 func TestIANANativeOperatorRefusesBeforeRead(t *testing.T) {
 	s, profile, calls := ianaProviderFixture(t)
 	for name, tc := range map[string]struct {

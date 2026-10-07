@@ -24,11 +24,16 @@ schemas:
 The library permits direct native queries for an application that explicitly
 constructs this fixed mount. The OVDB HTTP server refuses to start with an IANA
 mount unless an independently reviewed `iana-native-operator/1` provider-read
-profile supplies the exact source/resource binding, publisher-definition pin,
+profile supplies the exact source/resource binding, publisher-definition evidence,
 rights notices, and IANA registry terms declaration. That profile permits
 single-collection native JSON queries or DTQL with an explicit limit of 1..50.
 It refuses point reads, writes, paging, aliases, joins, ordering, offsets,
 unknown fields and inferred numeric status codes before source I/O.
+
+Publisher-definition evidence may use the immutable publisher manifest pin, or
+the independently checked official HTML descriptor with a separate Directory
+discovery pin described in [provider read observations](provider-reads.md).
+Directory-authored discovery metadata alone is not publisher verification.
 
 Every admitted execution uses one live GET with no snapshot fallback. The
 response and result are held only in bounded memory for that execution; no
