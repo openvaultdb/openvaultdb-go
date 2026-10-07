@@ -66,16 +66,17 @@ func (s *Server) guardProviderRequest(w http.ResponseWriter, r *http.Request, db
 			(name == "q" || (dtql && name == "parameters"))
 	}
 	var body []byte
-	if r.Method == http.MethodPost {
+	switch r.Method {
+	case http.MethodPost:
 		body, err = io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes))
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		valid = valid && err == nil
-	} else if r.Method == http.MethodGet {
+	case http.MethodGet:
 		valid = valid && len(values["q"]) == 1 && len(values["q"][0]) <= maxQueryRequestBytes
 		if valid {
 			body = []byte(values["q"][0])
 		}
-	} else {
+	default:
 		valid = false
 	}
 	if query {
