@@ -230,6 +230,7 @@ func TestNoRetentionCrossDatabaseContinuationBeforeRead(t *testing.T) {
 	fake := &relFakeExecutor{result: joinexec.Result{}}
 	s := New("test", map[string]*core.Database{"live": db, "native": relFakeMount("native", "sqlite", "1h")}, WithReadOnly(true))
 	s.joinExecute = fake.execute
+	s.joinStreamExecute = legacyJoinStream(fake.execute)
 	t.Cleanup(s.CloseSnapshots)
 	doc := strings.ReplaceAll(strings.ReplaceAll(relFakeAcross, "alpha", "native"), "beta", "live") + "\nsnapshotToken: old\n"
 	assertRetentionRefusal(t, retentionRequest(s.Handler(), "POST", "/v1/dtql", doc, nil))
@@ -254,6 +255,7 @@ func TestNativeContinuationAndTrailingDocumentsStayInvalid(t *testing.T) {
 	fake := &relFakeExecutor{result: joinexec.Result{}}
 	s := New("test", map[string]*core.Database{"live": db}, WithReadOnly(true))
 	s.joinExecute = fake.execute
+	s.joinStreamExecute = legacyJoinStream(fake.execute)
 	t.Cleanup(s.CloseSnapshots)
 	for _, body := range []string{`{"collection":"customers"}junk`, `{"collection":"customers"}{}`} {
 		w := retentionRequest(s.Handler(), "POST", "/v1/databases/live/query", body, nil)
@@ -313,6 +315,7 @@ func TestNoRetentionMixedRelationalQueryGuardsBeforeAdmission(t *testing.T) {
 	fake := &relFakeExecutor{result: joinexec.Result{}}
 	s := New("test", map[string]*core.Database{"live": db, "native": relFakeMount("native", "sqlite", "1h")}, WithReadOnly(true))
 	s.joinExecute = fake.execute
+	s.joinStreamExecute = legacyJoinStream(fake.execute)
 	t.Cleanup(s.CloseSnapshots)
 	db.Manifest.Database.CacheTTL = "1h"
 	doc := strings.ReplaceAll(strings.ReplaceAll(relFakeAcross, "alpha", "native"), "beta", "live")

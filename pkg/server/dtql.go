@@ -79,7 +79,7 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	capture, rightsErr := s.singleRights(db, collection)
-	if rightsErr != nil && db.ReadOnlyHTTP() {
+	if rightsErr != nil && (db.ReadOnlyHTTP() || !db.HasAccessPolicies()) {
 		s.rightsError(w, rightsErr)
 		return
 	}
@@ -88,45 +88,96 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 		s.providerReadError(w, providerErr)
 		return
 	}
-	records, err := db.ExecuteDTQLQuery(ctx, query)
-	if err != nil {
-		err = hiddenAsDenied(db, err)
-		if errors.Is(err, access.ErrAccessDenied) {
-			op := api.Operation{ID: "q1", Action: "query", Resource: az.Resource{DatabaseID: db.ID(), Path: "/" + collection, Table: collection}, ExecutionClass: az.ExecutionDTQL, Query: &api.Query{Format: "dtql-yaml", Text: string(doc)}}
-			s.writeQueryAuthorizationError(w, r, db, op, err)
-			return
-		}
-		s.writeMappedError(w, r, err)
+	stream, clearWriteDeadline, streamErr := newJSONRowStream(w, s.queryLimits.Timeout, wantsQueryErrorStream(r))
+	if streamErr != nil {
+		s.writeInternalError(w, r, "could not start streamed response", streamErr)
 		return
 	}
-	type recordOut struct {
-		Key  string         `json:"key"`
-		Data map[string]any `json:"data,omitempty"`
+	defer clearWriteDeadline()
+	if len(capture.rights) > 0 {
+		stream.maxBytes = core.ResultBufferBytes
 	}
-	out := make([]recordOut, 0, len(records))
-	for _, rec := range records {
+	cacheSet := false
+	writeRecord := func(rec core.Record) error {
+		if !cacheSet {
+			if stream.errorCompletion {
+				w.Header().Set("Cache-Control", "no-store")
+			} else {
+				s.cacheReadResponse(w, r, db)
+			}
+			cacheSet = true
+		}
 		data := rec.Data
 		if db.NativePostgresReadOnly() {
 			collectionSchema := db.Manifest.Schemas.Collection(collection)
 			data = nativePostgresJSONValues(data, nativePostgresFieldTypes(collectionSchema))
 		}
-		out = append(out, recordOut{Key: rec.Key.String(), Data: data})
+		return stream.WriteRow(struct {
+			Key  string         `json:"key"`
+			Data map[string]any `json:"data,omitempty"`
+		}{Key: rec.Key.String(), Data: data})
+	}
+	err = db.StreamDTQLQuery(ctx, query, writeRecord)
+	if err != nil {
+		err = hiddenAsDenied(db, err)
+		if errors.Is(err, access.ErrAccessDenied) {
+			if stream.started {
+				op := api.Operation{ID: "q1", Action: "query", Resource: az.Resource{DatabaseID: db.ID(), Path: "/" + collection, Table: collection}, ExecutionClass: az.ExecutionDTQL, Query: &api.Query{Format: "dtql-yaml", Text: string(doc)}}
+				s.finishStreamErrorOrAbort(w, r, stream, func(w http.ResponseWriter) { s.writeQueryAuthorizationError(w, r, db, op, err) })
+				return
+			}
+			clearWriteDeadline()
+			op := api.Operation{ID: "q1", Action: "query", Resource: az.Resource{DatabaseID: db.ID(), Path: "/" + collection, Table: collection}, ExecutionClass: az.ExecutionDTQL, Query: &api.Query{Format: "dtql-yaml", Text: string(doc)}}
+			s.writeQueryAuthorizationError(w, r, db, op, err)
+			return
+		}
+		if stream.started {
+			s.finishStreamErrorOrAbort(w, r, stream, func(w http.ResponseWriter) { s.writeStreamMappedError(w, r, err) })
+			return
+		}
+		clearWriteDeadline()
+		s.writeMappedError(w, r, err)
+		return
 	}
 	if rightsErr != nil {
+		if stream.started {
+			s.finishStreamErrorOrAbort(w, r, stream, func(w http.ResponseWriter) { s.rightsError(w, rightsErr) })
+			return
+		}
+		clearWriteDeadline()
 		s.rightsError(w, rightsErr)
 		return
 	}
-	s.cacheReadResponse(w, r, db)
-	response := map[string]any{"records": out}
+	if !cacheSet {
+		if stream.errorCompletion {
+			w.Header().Set("Cache-Control", "no-store")
+		} else {
+			s.cacheReadResponse(w, r, db)
+		}
+	}
+	footer := map[string]any{}
 	evidence, providerErr := providerCapture.finish(capture.allUsed())
 	if providerErr != nil {
+		if stream.started {
+			s.finishStreamErrorOrAbort(w, r, stream, func(w http.ResponseWriter) { s.rightsError(w, providerErr) })
+			return
+		}
+		clearWriteDeadline()
 		s.rightsError(w, providerErr)
 		return
 	}
 	if evidence != nil {
-		response["providerReads"] = evidence
+		footer["providerReads"] = evidence
 	}
-	s.writeRightsResult(w, r, response, capture, capture.allUsed(), core.ResultBufferBytes)
+	attachRights(footer, capture.rights, capture.allUsed())
+	if err := stream.Finish(footer); err != nil {
+		if stream.started {
+			s.finishStreamErrorOrAbort(w, r, stream, func(w http.ResponseWriter) { s.writeStreamMappedError(w, r, err) })
+			return
+		}
+		clearWriteDeadline()
+		s.writeMappedError(w, r, err)
+	}
 }
 
 // readDTQLDocument returns the DTQL document of a request: the q parameter of a

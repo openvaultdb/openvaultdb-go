@@ -20,7 +20,9 @@ const (
 	// MaxResultRows is the most rows a result may have.
 	MaxResultRows = 1000
 	// MaxResultBytes is the most JSON-encoded bytes a result may have.
-	MaxResultBytes = 8 << 20
+	MaxResultBytes         = 8 << 20
+	maxColumnMetadataKeys  = 8192
+	maxColumnMetadataBytes = 256 << 10
 )
 
 // Profile is the classification of the document, as the profile classifier of
@@ -57,6 +59,15 @@ type Result struct {
 	// Columns names the columns of the records in the order they were selected.
 	Columns   []string
 	Execution Execution
+}
+
+// StreamResult is the bounded metadata of a streamed result. Records are
+// delivered to the callback passed to ExecuteStream and are never retained by
+// this value.
+type StreamResult struct {
+	Columns      []string
+	Execution    Execution
+	RowsReturned int
 }
 
 // Execution describes how a request ran. It is the execution block of the
@@ -258,36 +269,58 @@ func withClock(now func() time.Time) Option {
 // opts, limits and the ordering of results are as documented on Option,
 // Limits, MaxResultRows and MaxResultBytes.
 func Execute(ctx context.Context, query dal.StructuredQuery, profile Profile, defaultDatabase string, registry Registry, authorize Authorize, limits Limits, opts ...Option) (Result, error) {
+	var records []record.Record
+	streamed, err := ExecuteStream(ctx, query, profile, defaultDatabase, registry, authorize, limits, func(rec record.Record) error {
+		records = append(records, rec)
+		return nil
+	}, opts...)
+	if err != nil {
+		return Result{}, err
+	}
+	if records == nil {
+		records = []record.Record{}
+	}
+	return Result{Records: records, Columns: streamed.Columns, Execution: streamed.Execution}, nil
+}
+
+// ExecuteStream validates, authorises, and executes a relational query while
+// delivering each completed result row as soon as DALgo produces it. The
+// callback runs while the source reader, read transaction, timeout, and
+// admission lease remain active. A callback error stops and closes the read.
+func ExecuteStream(ctx context.Context, query dal.StructuredQuery, profile Profile, defaultDatabase string, registry Registry, authorize Authorize, limits Limits, emit func(record.Record) error, opts ...Option) (StreamResult, error) {
 	cfg := newConfig(opts)
 	started := cfg.now()
+	if emit == nil {
+		return StreamResult{}, fmt.Errorf("%w: a stream callback is required", ErrInvalidDocument)
+	}
 	if registry == nil {
-		return Result{}, fmt.Errorf("%w: a registry is required", ErrInvalidDocument)
+		return StreamResult{}, fmt.Errorf("%w: a registry is required", ErrInvalidDocument)
 	}
 	doc, err := inspectWithNativePostgresFields(query, cfg.allowNativePGFields)
 	if err != nil {
-		return Result{}, err
+		return StreamResult{}, err
 	}
 	if err := checkProfile(doc, profile); err != nil {
-		return Result{}, err
+		return StreamResult{}, err
 	}
 	targets, databases, qualified, err := settle(doc.sources, defaultDatabase)
 	if err != nil {
-		return Result{}, err
+		return StreamResult{}, err
 	}
 	for _, target := range targets {
 		if authorize == nil || !authorize(target.database, target.collection) {
-			return Result{}, &SourceDeniedError{Database: target.database, Collection: target.collection}
+			return StreamResult{}, &SourceDeniedError{Database: target.database, Collection: target.collection}
 		}
 	}
 	sources, err := resolveSources(registry, databases)
 	if err != nil {
-		return Result{}, err
+		return StreamResult{}, err
 	}
 	if err := cfg.checkEngines(databases, sources); err != nil {
-		return Result{}, err
+		return StreamResult{}, err
 	}
 	if err := checkScans(targets, sources); err != nil {
-		return Result{}, err
+		return StreamResult{}, err
 	}
 
 	req := &request{cfg: cfg, query: query, doc: doc, databases: databases, qualified: qualified, sources: sources, authorize: authorize, limits: limits}
@@ -298,31 +331,28 @@ func Execute(ctx context.Context, query dal.StructuredQuery, profile Profile, de
 	if configured, ok := query.(interface{ Money() *dal.MoneyConfig }); ok && configured.Money() != nil {
 		route = RouteInMemory
 	}
-	records, guard, err := req.attempt(ctx, route)
-	if err != nil && route == RouteDatabase && req.retryInMemory(err) {
+	result, emitted, err := req.attemptStream(ctx, route, emit)
+	if err != nil && emitted == 0 && route == RouteDatabase && req.retryInMemory(err) {
 		// The database could not compile the document: it was refused before any row
 		// was read, so nothing was delivered and the guard of the first attempt holds
 		// nothing to carry over. The first attempt has given its slot back.
 		route = RouteInMemory
-		records, guard, err = req.attempt(ctx, route)
+		result, _, err = req.attemptStream(ctx, route, emit)
 	}
 	if err != nil {
-		return Result{}, err
-	}
-	if records == nil {
-		records = []record.Record{}
+		return StreamResult{}, err
 	}
 	execution := Execution{
 		Route:        route,
 		ElapsedMs:    cfg.now().Sub(started).Milliseconds(),
-		RowsReturned: len(records),
+		RowsReturned: result.rows,
 	}
 	if route == RouteDatabase {
 		execution.Sources = databaseSources(targets)
 	} else {
-		execution.Sources = inMemorySources(guard.Stats())
+		execution.Sources = inMemorySources(result.guard.Stats())
 	}
-	return Result{Records: records, Columns: orderedColumns(query, records), Execution: execution}, nil
+	return StreamResult{RowsReturned: result.rows, Columns: orderedColumnsForKeys(query, result.keys), Execution: execution}, nil
 }
 
 // settle gives every source a database. It returns the sources with their
@@ -422,16 +452,19 @@ type request struct {
 	limits    Limits
 }
 
-// attempt reads the document on route: it takes a slot for the route when
-// WithAdmission is set (a *CapacityError when there is none, with nothing read),
-// holds it until the read has ended, and reads under a Guard of its own, so that
-// the budgets, statistics and failure of one attempt never reach the next. It
-// returns the Guard so that the caller can report what the read touched.
-func (q *request) attempt(ctx context.Context, route string) ([]record.Record, *Guard, error) {
+type streamAttemptResult struct {
+	guard    *Guard
+	rows     int
+	keys     map[string]bool
+	keyBytes int
+}
+
+// attemptStream holds admission and the request guard until the reader closes.
+func (q *request) attemptStream(ctx context.Context, route string, emit func(record.Record) error) (streamAttemptResult, int, error) {
 	if q.cfg.admit != nil {
 		release, ok := q.cfg.admit(ctx, route)
 		if !ok {
-			return nil, nil, &CapacityError{Route: route}
+			return streamAttemptResult{}, 0, &CapacityError{Route: route}
 		}
 		if release != nil {
 			defer release()
@@ -441,16 +474,17 @@ func (q *request) attempt(ctx context.Context, route string) ([]record.Record, *
 	ctx, cancel := guard.Context(ctx)
 	defer cancel()
 	r := &run{guard: guard, sources: q.sources, money: hasMoney(q.query)}
-	var (
-		records []record.Record
-		err     error
-	)
+	var result streamAttemptResult
+	var err error
 	if route == RouteDatabase {
-		records, err = r.database(ctx, q.query, q.sources[q.databases[0]])
+		result, err = r.databaseStream(ctx, q.query, q.sources[q.databases[0]], emit)
 	} else {
-		records, err = r.inMemory(ctx, q.query, q.doc, q.databases, q.qualified)
+		var reader dal.RecordsReader
+		reader, err = r.inMemory(ctx, q.query, q.doc, q.databases, q.qualified)
+		result, err = r.consume(ctx, reader, err, RouteInMemory, emit)
 	}
-	return records, guard, err
+	result.guard = guard
+	return result, result.rows, err
 }
 
 // retryInMemory reports whether err, the failure of the database route, is one
@@ -507,40 +541,98 @@ func (r *run) resolve(_ context.Context, database string) (dal.QueryExecutor, er
 	return leaf, nil
 }
 
-// database runs the whole document in one read transaction of source. The
-// result is drained inside the transaction, which ends when the function
-// returns.
-func (r *run) database(ctx context.Context, query dal.StructuredQuery, source Source) ([]record.Record, error) {
-	var (
-		records []record.Record
-		failure error
-		ran     bool
-	)
-	// A source that can say, before a transaction, that it refuses the document is asked
-	// first, so a refused document sends no BEGIN: the refusal is the one the guarded
-	// executor inside the transaction would give, and is classified as that one is.
+// databaseStream emits rows inside ReadTx but reports success only after the
+// transaction callback and the transaction itself have both succeeded.
+func (r *run) databaseStream(ctx context.Context, query dal.StructuredQuery, source Source, emit func(record.Record) error) (streamAttemptResult, error) {
+	var result streamAttemptResult
+	var failure error
+	ran := false
 	if checker, ok := source.(interface{ CheckRead(dal.Query) error }); ok {
 		if err := checker.CheckRead(query); err != nil {
-			return nil, r.guard.Classify(err, RouteDatabase)
+			return result, r.guard.Classify(err, RouteDatabase)
 		}
 	}
 	txErr := source.ReadTx(ctx, func(executor dal.QueryExecutor) error {
 		ran = true
 		reader, err := executor.ExecuteQueryToRecordsReader(ctx, query)
-		records, failure = r.collect(ctx, reader, err, RouteDatabase)
+		result, failure = r.consume(ctx, reader, err, RouteDatabase, emit)
 		return failure
 	})
 	switch {
 	case failure != nil:
-		// Not txErr: a transaction that swallows the function's error must not
-		// turn a failed read into an empty result.
-		return nil, failure
+		return result, failure
 	case txErr != nil:
-		return nil, txErr
+		return result, txErr
 	case !ran:
-		return nil, ErrReadTxSkipped
+		return streamAttemptResult{}, ErrReadTxSkipped
+	default:
+		return result, nil
 	}
-	return records, nil
+}
+
+// consume owns a DALgo reader through successful EOF and Close, then classifies
+// guard, budget, timeout, and callback errors. It retains only the bounded key
+// metadata needed to describe result columns.
+func (r *run) consume(ctx context.Context, reader dal.RecordsReader, openErr error, route string, emit func(record.Record) error) (streamAttemptResult, error) {
+	result := streamAttemptResult{keys: map[string]bool{}}
+	if openErr != nil {
+		if reader != nil {
+			_ = reader.Close()
+		}
+		return result, r.classify(openErr, route)
+	}
+	if reader == nil {
+		return result, r.guard.Classify(ErrNoReader, route)
+	}
+	var bounded dal.RecordsReader = &resultCap{RecordsReader: reader, route: route}
+	if r.money {
+		bounded = &moneyErrorReader{RecordsReader: bounded, guard: r.guard}
+	}
+	var readErr error
+	for {
+		if readErr = ctx.Err(); readErr != nil {
+			break
+		}
+		rec, err := bounded.Next()
+		if err == io.EOF || errors.Is(err, dal.ErrNoMoreRecords) {
+			break
+		}
+		if err != nil {
+			readErr = err
+			break
+		}
+		if data, ok := rec.Data().(map[string]any); ok {
+			for key := range data {
+				if result.keys[key] {
+					continue
+				}
+				if len(result.keys)+1 > maxColumnMetadataKeys || result.keyBytes+len(key) > maxColumnMetadataBytes {
+					readErr = &BudgetError{Name: BudgetResponseBytes, Limit: maxColumnMetadataBytes, Route: route}
+					break
+				}
+				result.keys[key] = true
+				result.keyBytes += len(key)
+			}
+			if readErr != nil {
+				break
+			}
+		}
+		if err := emit(rec); err != nil {
+			readErr = err
+			break
+		}
+		result.rows++
+	}
+	if closeErr := bounded.Close(); readErr == nil {
+		readErr = closeErr
+	}
+	if readErr == nil {
+		readErr = ctx.Err()
+	}
+	if err := r.classify(readErr, route); err != nil {
+		return result, err
+	}
+	return result, nil
 }
 
 // inMemory runs the document above guarded leaves. DALgo's federated executor
@@ -581,7 +673,7 @@ func (r *run) database(ctx context.Context, query dal.StructuredQuery, source So
 // against the lists does not know, and, in a query that does not aggregate, the alias of a
 // field in ORDER BY replaced by the field, so that the answer is sorted the way a SQL
 // database that runs the whole document sorts it.
-func (r *run) inMemory(ctx context.Context, query dal.StructuredQuery, doc document, databases []string, qualified bool) ([]record.Record, error) {
+func (r *run) inMemory(ctx context.Context, query dal.StructuredQuery, doc document, databases []string, qualified bool) (dal.RecordsReader, error) {
 	var (
 		reader dal.RecordsReader
 		err    error
@@ -620,7 +712,7 @@ func (r *run) inMemory(ctx context.Context, query dal.StructuredQuery, doc docum
 	} else {
 		reader, err = dal.ExecuteRecursiveQuery(ctx, router, query)
 	}
-	return r.collect(ctx, reader, err, RouteInMemory)
+	return reader, err
 }
 
 // withDefaultDatabase binds unqualified source references to the single
@@ -693,23 +785,6 @@ func ordersByExpression(query dal.StructuredQuery) bool {
 		}
 	}
 	return false
-}
-
-// collect is the only place a result is read: it drains reader through
-// Guard.Collect, under the result bounds, and classifies whatever DALgo or the
-// reader reported. err is what the call that returned reader returned.
-func (r *run) collect(ctx context.Context, reader dal.RecordsReader, err error, route string) ([]record.Record, error) {
-	if err != nil {
-		return nil, r.classify(err, route)
-	}
-	if reader == nil {
-		return nil, r.guard.Classify(ErrNoReader, route)
-	}
-	var bounded dal.RecordsReader = &resultCap{RecordsReader: reader, route: route}
-	if r.money {
-		bounded = &moneyErrorReader{RecordsReader: bounded, guard: r.guard}
-	}
-	return r.guard.Collect(ctx, bounded, route)
 }
 
 func hasMoney(query dal.StructuredQuery) bool {

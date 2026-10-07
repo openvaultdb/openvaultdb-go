@@ -20,6 +20,7 @@ func TestSourceRightsUnexpectedExecutedSourceFailsBeforeOutput(t *testing.T) {
 	service.joinExecute = func(context.Context, dal.StructuredQuery, joinexec.Profile, string, joinexec.Registry, joinexec.Authorize, joinexec.Limits, ...joinexec.Option) (joinexec.Result, error) {
 		return joinexec.Result{Execution: joinexec.Execution{Sources: []joinexec.ExecutionSource{{Database: "db", Collection: "unexpected"}}}}, nil
 	}
+	service.joinStreamExecute = legacyJoinStream(service.joinExecute)
 	response := profileRequest(service.Handler(), "POST", "/v1/databases/db/dtql", "from: {name: things, alias: t}\ncolumns: [{field: id, source: t}]\n", nil)
 	if response.Code != 422 || strings.Contains(response.Body.String(), "unexpected") || strings.Contains(response.Body.String(), "sourceRights") || strings.Contains(response.Body.String(), "records") {
 		t.Fatal(response.Code, response.Body.String())

@@ -83,15 +83,31 @@ func (q Query) Target() (parent *record.Key, rootCollection string, err error) {
 // the driver. Result keys are full paths from the database root: records of
 // a nested collection carry their parent key.
 func (d *Database) Execute(ctx context.Context, q Query) ([]Record, error) {
-	if d.nativePostgres {
-		return nil, ErrNativePostgresCollectionQueryUnsupported
-	}
-	parentKey, _, err := q.Target()
+	var records []Record
+	err := d.StreamQuery(ctx, q, func(rec Record) error { records = append(records, rec); return nil })
 	if err != nil {
 		return nil, err
 	}
+	return records, nil
+}
+
+// StreamQuery executes the structured collection query used by the legacy
+// /query endpoint. It emits one record at a time; the only buffered case is a
+// keys-only query without ordering, whose existing API contract sorts keys
+// before applying its limit.
+func (d *Database) StreamQuery(ctx context.Context, q Query, emit func(Record) error) error {
+	if emit == nil {
+		return fmt.Errorf("%w: a stream callback is required", ErrInvalidQuery)
+	}
+	if d.nativePostgres {
+		return ErrNativePostgresCollectionQueryUnsupported
+	}
+	parentKey, _, err := q.Target()
+	if err != nil {
+		return err
+	}
 	if err = q.validateFields(d.fieldRule()); err != nil {
-		return nil, err
+		return err
 	}
 	collectionRef := dal.NewRootCollectionRef(q.Collection, "")
 	if parentKey != nil {
@@ -117,7 +133,7 @@ func (d *Database) Execute(ctx context.Context, q Query) ([]Record, error) {
 		case "array-contains-any":
 			builder = builder.WhereArrayContainsAny(f.Field, f.Value)
 		default:
-			return nil, fmt.Errorf("%w: unknown filter op %q", ErrInvalidQuery, f.Op)
+			return fmt.Errorf("%w: unknown filter op %q", ErrInvalidQuery, f.Op)
 		}
 	}
 	for _, ob := range q.OrderBy {
@@ -127,12 +143,8 @@ func (d *Database) Execute(ctx context.Context, q Query) ([]Record, error) {
 			builder = builder.OrderBy(dal.AscendingField(ob.Field))
 		}
 	}
-	// Keys-only queries without explicit ordering must return IDs in sorted
-	// order with the limit applied after sorting (the dalgo end2end contract,
-	// natural for document stores). SQL drivers return insertion order, so
-	// core sorts and limits itself in that case.
-	sortKeysInCore := q.KeysOnly && len(q.OrderBy) == 0
-	if q.Limit > 0 && !sortKeysInCore {
+	sortKeys := q.KeysOnly && len(q.OrderBy) == 0
+	if q.Limit > 0 && !sortKeys {
 		builder = builder.Limit(q.Limit)
 	}
 	var query dal.StructuredQuery
@@ -140,37 +152,38 @@ func (d *Database) Execute(ctx context.Context, q Query) ([]Record, error) {
 		query = builder.SelectKeysOnly(reflect.String)
 	} else {
 		query = builder.SelectIntoRecord(func() record.Record {
-			// Canonical factory shape (matches the dalgo end2end suite):
-			// an incomplete string-ID key — readers fill the ID.
 			return record.NewRecordWithIncompleteKey(q.Collection, reflect.String, map[string]any{})
 		})
 	}
 	if err = d.guardSources(query); err != nil {
-		return nil, err
+		return err
 	}
-	records, err := d.executeDalQuery(ctx, ctx, query, q.Collection, q.KeysOnly)
-	if err != nil {
-		return nil, err
-	}
-	if parentKey != nil {
-		// Some drivers (dalgo2ingitdb) return subcollection keys without
-		// their parent; re-root them so clients get a key that round-trips
-		// through /records.
-		for i := range records {
-			if k := records[i].Key; k.Parent() == nil {
-				records[i].Key = record.NewKeyWithParentAndID(parentKey, k.Collection(), k.ID)
+	if !sortKeys {
+		return d.executeDalQueryStreamOn(ctx, ctx, d.db, query, q.Collection, q.KeysOnly, func(rec Record) error {
+			if parentKey != nil && rec.Key.Parent() == nil {
+				rec.Key = record.NewKeyWithParentAndID(parentKey, rec.Key.Collection(), rec.Key.ID)
 			}
-		}
-	}
-	if sortKeysInCore {
-		sort.Slice(records, func(i, j int) bool {
-			return fmt.Sprintf("%v", records[i].Key.ID) < fmt.Sprintf("%v", records[j].Key.ID)
+			return emit(rec)
 		})
-		if q.Limit > 0 && len(records) > q.Limit {
-			records = records[:q.Limit]
+	}
+	var keys []Record
+	err = d.executeDalQueryStreamOn(ctx, ctx, d.db, query, q.Collection, true, func(rec Record) error { keys = append(keys, rec); return nil })
+	if err != nil {
+		return err
+	}
+	sort.Slice(keys, func(i, j int) bool { return fmt.Sprintf("%v", keys[i].Key.ID) < fmt.Sprintf("%v", keys[j].Key.ID) })
+	if q.Limit > 0 && len(keys) > q.Limit {
+		keys = keys[:q.Limit]
+	}
+	for _, rec := range keys {
+		if parentKey != nil && rec.Key.Parent() == nil {
+			rec.Key = record.NewKeyWithParentAndID(parentKey, rec.Key.Collection(), rec.Key.ID)
+		}
+		if err := emit(rec); err != nil {
+			return err
 		}
 	}
-	return records, nil
+	return nil
 }
 
 // ErrInvalidDTQL identifies invalid or unsupported DTQL query shapes.
@@ -335,26 +348,15 @@ func (d *Database) StreamDTQLSnapshot(ctx context.Context, query dal.StructuredQ
 
 // ExecuteDTQLQuery executes an already parsed query after validating its shape.
 func (d *Database) ExecuteDTQLQuery(ctx context.Context, query dal.StructuredQuery) ([]Record, error) {
-	collection, err := validateDTQLFor(query, d.fieldRule())
+	var records []Record
+	err := d.StreamDTQLQuery(ctx, query, func(rec Record) error {
+		records = append(records, rec)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	if err = d.guardProtectedSources(query); err != nil {
-		return nil, err
-	}
-	if err = d.guardSources(query); err != nil {
-		return nil, err
-	}
-	request := ctx
-	ctx, cancel := context.WithTimeout(ctx, dtqlBudget)
-	defer cancel()
-	return d.executeDalQuery(ctx, request, boundedDTQL{query}, collection, false)
-}
-
-// executeDalQuery reads under ctx, which may be a budget the server gave the read, and
-// decides a failure on request, the context of the request itself (see executeDalQueryOn).
-func (d *Database) executeDalQuery(ctx, request context.Context, query dal.StructuredQuery, collection string, keysOnly bool) ([]Record, error) {
-	return d.executeDalQueryOn(ctx, request, d.db, query, collection, keysOnly)
+	return records, nil
 }
 
 // executeDalQueryOn reads under ctx and answers a failure of the adapter as queryError does
@@ -362,33 +364,77 @@ func (d *Database) executeDalQuery(ctx, request context.Context, query dal.Struc
 // a connection that does not answer ends on that budget, and is the failure of the database
 // whenever the request itself is still alive.
 func (d *Database) executeDalQueryOn(ctx, request context.Context, db dal.DB, query dal.StructuredQuery, collection string, keysOnly bool) ([]Record, error) {
-	if err := d.guardQueryConditions(query); err != nil {
+	var records []Record
+	err := d.executeDalQueryStreamOn(ctx, request, db, query, collection, keysOnly, func(rec Record) error {
+		records = append(records, rec)
+		return nil
+	})
+	if err != nil {
 		return nil, err
+	}
+	return records, nil
+}
+
+// StreamDTQLQuery executes an ordinary single-collection DTQL query and emits
+// rows as DALgo reads them. It preserves the ordinary limit, offset, timeout,
+// field coercion, and result byte bound; callers must treat callback or close
+// errors as a failed result.
+func (d *Database) StreamDTQLQuery(ctx context.Context, query dal.StructuredQuery, emit func(Record) error) error {
+	if emit == nil {
+		return fmt.Errorf("%w: a stream callback is required", ErrInvalidDTQL)
+	}
+	collection, err := validateDTQLFor(query, d.fieldRule())
+	if err != nil {
+		return err
+	}
+	if err = d.guardProtectedSources(query); err != nil {
+		return err
+	}
+	if err = d.guardSources(query); err != nil {
+		return err
+	}
+	request := ctx
+	ctx, cancel := context.WithTimeout(ctx, dtqlBudget)
+	defer cancel()
+	return d.executeDalQueryStreamOn(ctx, request, d.db, boundedDTQL{query}, collection, false, emit)
+}
+
+func (d *Database) executeDalQueryStreamOn(ctx, request context.Context, db dal.DB, query dal.StructuredQuery, collection string, keysOnly bool, emit func(Record) error) (retErr error) {
+	if err := d.guardQueryConditions(query); err != nil {
+		return err
 	}
 	// Single choke point for every structured read: no engine that is not
 	// cleared for queries (see queryEngines) is ever handed one.
 	if err := d.guardQuery(); err != nil {
-		return nil, err
+		return err
 	}
 	reader, err := db.ExecuteQueryToRecordsReader(ctx, query)
-	if err != nil {
-		return nil, d.queryError(request, fmt.Sprintf("failed to query collection %q", clipName(collection)), err)
+	if reader != nil {
+		defer func() {
+			if closeErr := reader.Close(); retErr == nil && closeErr != nil {
+				retErr = d.queryError(request, fmt.Sprintf("failed closing query results for %q", clipName(collection)), closeErr)
+			}
+		}()
 	}
-	defer func() { _ = reader.Close() }()
-	var records []Record
+	if err != nil {
+		return d.queryError(request, fmt.Sprintf("failed to query collection %q", clipName(collection)), err)
+	}
+	if reader == nil {
+		return fmt.Errorf("query returned no records reader")
+	}
 	var bytesRead int
 	for {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return err
 		}
 		rec, nextErr := reader.Next()
 		// dal.ErrNoMoreRecords wraps io.EOF; some drivers (dalgo2sql) return
 		// raw io.EOF — checking io.EOF covers both.
 		if errors.Is(nextErr, io.EOF) {
-			return records, nil
+			return nil
 		}
 		if nextErr != nil {
-			return nil, d.queryError(request, fmt.Sprintf("failed reading query results for %q", clipName(collection)), nextErr)
+			return d.queryError(request, fmt.Sprintf("failed reading query results for %q", clipName(collection)), nextErr)
 		}
 		out := Record{Key: rec.Key()}
 		data, _ := rec.Data().(map[string]any)
@@ -405,17 +451,19 @@ func (d *Database) executeDalQueryOn(ctx, request context.Context, db dal.DB, qu
 			out.Data = d.coerceToSchema(collection, data)
 		}
 		if out.Key == nil || out.Key.ID == nil || fmt.Sprint(out.Key.ID) == "" {
-			return nil, fmt.Errorf("query result has no record key")
+			return fmt.Errorf("query result has no record key")
 		}
 		encoded, err := json.Marshal(out.Data)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		bytesRead += len(encoded) + len(out.Key.String())
 		if bytesRead > ResultBufferBytes {
-			return nil, ErrResultTooLarge
+			return ErrResultTooLarge
 		}
-		records = append(records, out)
+		if err := emit(out); err != nil {
+			return err
+		}
 	}
 }
 

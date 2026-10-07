@@ -32,6 +32,11 @@ func (s *Server) queryProfile() map[string]any {
 		"endpoint": crossDatabaseDTQLPath,
 		"format":   queryFormat,
 		"features": map[string]any{
+			"streaming":          true,
+			"completionField":    "complete",
+			"errorStreamAccept":  queryErrorStreamMediaType,
+			"errorField":         "error",
+			"errorCompletion":    false,
 			"joins":              []string{"inner", "left"},
 			"groupBy":            true,
 			"having":             true,

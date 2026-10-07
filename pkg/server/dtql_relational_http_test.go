@@ -314,6 +314,39 @@ type relHTTPResponse struct {
 	raw    string
 }
 
+type relHTTPPartialResponse struct {
+	status  int
+	raw     string
+	body    map[string]any
+	readErr error
+}
+
+// relHTTPDoPartial preserves the bytes and read error when a streamed handler
+// aborts after committing rows. Tests use it to distinguish an ordinary early
+// refusal from a response that correctly cannot decode as a complete result.
+func relHTTPDoPartial(t *testing.T, host, method, path, token, body string, headers map[string]string) relHTTPPartialResponse {
+	t.Helper()
+	req, err := http.NewRequest(method, host+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, readErr := io.ReadAll(resp.Body)
+	out := relHTTPPartialResponse{status: resp.StatusCode, raw: string(raw), readErr: readErr}
+	_ = json.Unmarshal(raw, &out.body)
+	return out
+}
+
 func relHTTPDo(t *testing.T, host, method, path, token, body string, headers map[string]string) relHTTPResponse {
 	t.Helper()
 	req, err := http.NewRequest(method, host+path, strings.NewReader(body))
@@ -600,8 +633,8 @@ func TestRelationalDTQLOverHTTPAcceptance(t *testing.T) {
 		if resp.status != http.StatusOK {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
-		if len(resp.body) != 1 {
-			t.Fatalf("body has more than records: %s", resp.raw)
+		if len(resp.body) != 2 || resp.body["complete"] != true {
+			t.Fatalf("body has records and a completion footer: %s", resp.raw)
 		}
 		records, _ := resp.body["records"].([]any)
 		first, _ := records[0].(map[string]any)
@@ -1240,8 +1273,8 @@ func TestRelationalDTQLStatusesOverHTTP(t *testing.T) {
 	})
 }
 
-// A query that runs out of its budget is a 422 that names the bound and the
-// limit and returns no rows.
+// A budget failure before the first row is an ordinary 422; after rows have
+// reached the client the response is aborted and cannot decode as success.
 func TestRelationalDTQLBudgetErrorsOverHTTP(t *testing.T) {
 	chinook, countries, big := relHTTPChinook(t, ""), relHTTPCountries(t, ""), relHTTPBig(t)
 	service := server.New("test", map[string]*core.Database{"chinook": chinook, "countries": countries, "big": big},
@@ -1249,21 +1282,27 @@ func TestRelationalDTQLBudgetErrorsOverHTTP(t *testing.T) {
 	defer service.CloseSnapshots()
 	host := httptest.NewServer(service.Handler())
 	defer host.Close()
-	check := func(resp relHTTPResponse, name string, limit float64, route string) {
+	check := func(resp relHTTPPartialResponse, name string, limit float64, route string) {
 		t.Helper()
 		detail, _ := resp.body["error"].(map[string]any)
 		budget, _ := detail["budget"].(map[string]any)
-		if resp.status != http.StatusUnprocessableEntity || resp.errorField("code") != "query_budget_exceeded" || budget["name"] != name || budget["limit"] != limit || budget["route"] != route {
-			t.Fatalf("status %d, want a 422 for %s: %s", resp.status, name, resp.raw)
+		if resp.status == http.StatusUnprocessableEntity {
+			if detail["code"] != "query_budget_exceeded" || budget["name"] != name || budget["limit"] != limit || budget["route"] != route {
+				t.Fatalf("status %d, want a 422 for %s: %s", resp.status, name, resp.raw)
+			}
+			if detail["hint"] == "" || resp.body["records"] != nil || resp.body["execution"] != nil {
+				t.Fatalf("an early budget refusal has a hint and no rows: %s", resp.raw)
+			}
+			return
 		}
-		if detail["hint"] == "" || resp.body["records"] != nil || resp.body["execution"] != nil {
-			t.Fatalf("a budget refusal has a hint and no rows: %s", resp.raw)
+		if resp.status != http.StatusOK || resp.readErr == nil || resp.body["complete"] == true {
+			t.Fatalf("late budget failure must abort an incomplete stream: status %d, read error %v, body %s", resp.status, resp.readErr, resp.raw)
 		}
 	}
 	// Three customers read from a source limited to two rows.
-	check(relHTTPPost(t, host.URL, "/v1/dtql", "", relHTTPCustomerRegions), "source_rows", 2, "in-memory")
+	check(relHTTPDoPartial(t, host.URL, http.MethodPost, "/v1/dtql", "", relHTTPCustomerRegions, nil), "source_rows", 2, "in-memory")
 	// A result of 1001 rows is refused whole, not cut to 1000.
-	check(relHTTPPost(t, host.URL, "/v1/databases/big/dtql", "", "from: {name: N, alias: n}\norderBy: [{field: id, source: n}]\n"), "response_rows", 1000, "database")
+	check(relHTTPDoPartial(t, host.URL, http.MethodPost, "/v1/databases/big/dtql", "", "from: {name: N, alias: n}\norderBy: [{field: id, source: n}]\n", nil), "response_rows", 1000, "database")
 }
 
 // The request timeout is a 504 on both routes, and the server answers the next
