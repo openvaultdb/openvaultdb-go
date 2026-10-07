@@ -55,6 +55,32 @@ If CORS origins are configured, provider opt-in adds `OVDB-Execution-ID` to the
 allowed request headers on that server's independent CORS configuration. It
 preserves the configured origins and leaves non-profile server defaults intact.
 
+`ProviderReadProfile.requestProfile: "ecb-public-free/1"` additionally restricts
+an independently admitted database `ecb`, canonical collection `daily`, resource
+`ecb-daily` and provider `provider:ecb/FxReferenceQuote`. Use the Go constant
+`server.ECBPublicFreeRequestProfile`. Checked startup refuses incompatible
+configuration. The frozen profile applies to every mount of that database
+pointer; a request cannot choose a different policy through a mount alias.
+
+This contract permits only ordinary per-database JSON query and DTQL reads with
+an explicit limit of 1..50. Native string fields `time`, `currency`, `rate` may
+be filtered with `==`, `<`, `<=`, `>`, `>=` or `in`; DTQL also permits AND/OR
+groups and unaliased native field projection. The driver retains its transient
+currency locator when projecting. JSON query has no projection wire field.
+Unknown, duplicate or case-variant options, root qualifiers/aliases, renamed or
+computed columns, ordering, offsets (including zero), cursors, scans, joins,
+subqueries, paging, point/batch/mutation routes and global DTQL use are refused
+before provider I/O. Refusals use `provider_request_unsupported` and no-store;
+malformed documents and invalid execution IDs retain their existing 4xx codes.
+An omitted/zero limit is refused instead of fetching an unbounded result and
+truncating it. Missing execution IDs retain the documented legacy nonce behavior.
+
+The marker leaves unmarked instances' existing behavior intact. It adds no
+account, billing or reservation path and enables no provider mount, source
+activation, retained state or deployment. Synthetic handler tests establish this
+local request contract; they do not establish DataTug paid-account equivalence
+or selected-host/browser acceptance.
+
 Source rights remain the complete frozen normalized inventory. Rights digest is
 SHA-256 of RFC 8785 UTF-8 JSON:
 

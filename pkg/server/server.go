@@ -572,6 +572,9 @@ func (s *Server) db(w http.ResponseWriter, r *http.Request) *core.Database {
 	if db.NoRetention() {
 		w.Header().Set("Cache-Control", "no-store")
 	}
+	if !s.guardProviderRequest(w, r, db) {
+		return nil
+	}
 	if !isMutation(r) && !s.guardRetentionRead(w, r, db) {
 		return nil
 	}
