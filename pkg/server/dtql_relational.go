@@ -114,6 +114,10 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 		return
 	}
 	for _, db := range databases {
+		if s.providerRequestRestricted(db) {
+			refuseProviderRequest(w)
+			return
+		}
 		if !s.guardRetentionRead(w, r, db) {
 			return
 		}

@@ -30,8 +30,10 @@ var errProviderExecutionID = errors.New("OVDB-Execution-ID must have exactly one
 // digest must bind the exact decoder, model/meaning and local recordset mapping.
 // Consumers must advertise Format before this opt-in producer is configured.
 type ProviderReadProfile struct {
-	Collection string
-	Binding    providerreads.Binding
+	// RequestProfile opts this admitted instance into a fixed request contract.
+	RequestProfile string `json:"requestProfile,omitempty"`
+	Collection     string
+	Binding        providerreads.Binding
 	// SourceRight optionally supplies reviewed dynamic-definition notices and
 	// a metadata-only publisher pin. It cannot replace the mounted declaration,
 	// change access/retention, or certify immutable upstream response bytes.
@@ -50,6 +52,9 @@ func (s *Server) validateProviderProfiles() error {
 		db := s.dbs[id]
 		if db == nil || !db.ReadOnlyHTTP() || !db.NoRetention() || s.rightsServerID == "" {
 			return fmt.Errorf("provider profile requires a no-retention HTTP instance and stable rights server")
+		}
+		if err := validateProviderRequestProfile(db, p); err != nil {
+			return err
 		}
 		canonical, ok := db.CanonicalCollection(p.Collection)
 		if !ok || canonical != p.Collection {
