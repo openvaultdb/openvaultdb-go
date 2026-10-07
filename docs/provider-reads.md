@@ -20,18 +20,28 @@ It cannot admit arbitrary URL, decoder, snapshot or cache configuration.
 `ProviderReadProfile.sourceRight` optionally carries an independently reviewed
 dynamic-definition rights record. It preserves the mounted source ID, executor,
 declaration, scope and declared-at identity exactly, adding attribution, the
-original free-resource notice and transformation disclosure. Startup requires
-`publisher-definition-verified` origin and exactly one `provider` pin of metadata:
-an immutable GitHub repository revision and relative manifest path whose SHA-256
-equals the profile's definition digest. Input/body pins are refused. The original
+original free-resource notice and transformation disclosure. The
+`publisher-definition-verified` origin requires exactly one `provider` pin of
+metadata: an immutable GitHub repository revision and relative manifest path
+whose SHA-256 equals the profile's definition digest. The IANA native operator
+profile also accepts `publisher-html-metadata-verified`: its definition digest
+binds the canonical typed `publisherHtmlDefinition` descriptor of independently
+checked official registry HTML and licensing terms. That descriptor records the
+official URLs, observed page hashes and byte bounds, observation time, fixed CSV
+resource URL, native field names and bounded rights scope. A separate immutable
+Directory GitHub pin with role `discovery` identifies the authored discovery
+metadata; its hash is not the publisher definition digest. The two origins and
+their evidence shapes cannot be mixed. Input/body pins are refused. The original
 free-resource link must equal the profile's fixed resource. The IANA native
-operator profile requires this pinned record and the exact registry terms URL;
+operator profile requires this reviewed record and the exact registry terms URL;
 ECB's legacy declaration-only behavior remains available. The complete rights
 digest, text and evidence budgets are validated before requests can run.
 
 The operator must obtain the record through original-object publisher checking
 and independent source/semantic/rights admission. The server does not read Git or
-verify those declarations itself. It detaches profile notices and pin arrays
+verify those declarations itself. The HTML descriptor is reviewed metadata of
+publisher-authored pages, not a stored publisher page or verification of the live
+CSV response. It detaches profile notices, pin arrays and HTML metadata
 before application, uses the same immutable record for discovery and execution
 (including empty output), and preserves it across aliases of the exact mounted
 instance. Omission retains existing declaration-only behavior. This option does
