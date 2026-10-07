@@ -77,11 +77,13 @@ returned as decimal strings; `NUMERIC` without a declared precision advertises
 unbounded decimal metadata rather than an invented precision. PostgreSQL
 `int64`/`uint64` values outside JavaScript's safe-integer range are returned as
 decimal strings; smaller integers keep their JSON number representation.
-JSON/JSONB values preserve their JSON number lexemes on the wire, but a browser's
-ordinary `JSON.parse` may round a nested number above 2^53−1; clients that need
-exact nested JSON numbers must use a lossless JSON parser. Binary values use
-base64 JSON strings. Temporal values follow the PostgreSQL driver's typed
-result mapping. Filters, projections, ordering, and other DTQL operations
+JSON/JSONB columns are emitted as JSON values with their numeric lexemes
+preserved. A browser's ordinary `JSON.parse` may still round a nested number
+above 2^53−1; clients that need exact nested JSON numbers must use a lossless
+JSON parser. Binary values are returned as base64 JSON strings. DATE is encoded
+as `YYYY-MM-DD`, timestamp without time zone as a local timestamp without an
+offset, and timestamp with time zone as a UTC RFC3339 value. Filters,
+projections, ordering, and other DTQL operations
 are limited to the structured forms supported by the installed DALgo PostgreSQL
 adapter; this mount does not expose arbitrary SQL.
 

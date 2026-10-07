@@ -108,8 +108,8 @@ func TestNativePostgresMountUsesExactIdentifiersAndExactNumericValues(t *testing
 		if parseErr != nil || parsed.Query().Get("default_transaction_read_only") != "on" {
 			t.Errorf("DSN = %q, want enforced read-only session parameter (parse error %v)", dsn, parseErr)
 		}
-		if options.IdentifierCase != dalgo2sql.IdentifierCaseExact || !options.ExactNumericValues {
-			t.Errorf("DbOptions = %+v, want exact identifiers and exact numerics", options)
+		if options.IdentifierCase != dalgo2sql.IdentifierCaseExact || !options.ExactNumericValues || !options.PreserveBinaryValues {
+			t.Errorf("DbOptions = %+v, want exact identifiers, exact numerics, and preserved BYTEA values", options)
 		}
 		if len(options.Recordsets) != 0 {
 			t.Errorf("Recordsets = %v, want no provisioned collections", options.Recordsets)

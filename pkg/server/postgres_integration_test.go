@@ -551,12 +551,17 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 		"Total Amount":     `"123456789012345678.120000"`,
 		"Unbounded Amount": `"123.45"`,
 		"Created On":       `"2025-03-04"`,
-		"Payload Data":     `{"n":9007199254740993}`,
 		"Binary Data":      `"AP8Q"`,
 	} {
 		if got := string(data[field]); got != want {
 			t.Errorf("%s = %s, want %s", field, got, want)
 		}
+	}
+	var payload map[string]json.Number
+	payloadDecoder := json.NewDecoder(bytes.NewReader(data["Payload Data"]))
+	payloadDecoder.UseNumber()
+	if err := payloadDecoder.Decode(&payload); err != nil || string(payload["n"]) != "9007199254740993" {
+		t.Errorf("Payload Data = %s, decode error %v; want JSON number lexeme 9007199254740993", data["Payload Data"], err)
 	}
 	keylessDoc := "from: {schema: 'ovdb Native', name: 'Order Events'}\nwhere: {op: '==', left: {field: 'Event Name'}, right: {value: open}}\nlimit: 5\n"
 	keylessRead := relHTTPPost(t, base, "/v1/databases/native/dtql", "", keylessDoc)

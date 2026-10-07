@@ -214,9 +214,16 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	records := make([]relationalRecord, len(result.Records))
 	for i, rec := range result.Records {
 		data := rec.Data()
-		if endpoint != nil && endpoint.NativePostgresReadOnly() {
+		if len(profile.Sources) == 1 {
+			nativeDB := endpoint
+			if sourcedDB := databases[profile.Sources[0].Database]; sourcedDB != nil {
+				nativeDB = sourcedDB
+			}
 			if fields, ok := data.(map[string]any); ok {
-				data = nativePostgresJSONSafeIntegers(fields)
+				if nativeDB != nil && nativeDB.NativePostgresReadOnly() {
+					collection := nativeDB.Manifest.Schemas.Collection(profile.Sources[0].Collection)
+					data = nativePostgresJSONValues(fields, nativePostgresFieldTypes(collection))
+				}
 			}
 		}
 		records[i] = relationalRecord{Data: data}

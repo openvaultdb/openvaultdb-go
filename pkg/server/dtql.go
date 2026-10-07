@@ -99,7 +99,8 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 	for _, rec := range records {
 		data := rec.Data
 		if db.NativePostgresReadOnly() {
-			data = nativePostgresJSONSafeIntegers(data)
+			collectionSchema := db.Manifest.Schemas.Collection(collection)
+			data = nativePostgresJSONValues(data, nativePostgresFieldTypes(collectionSchema))
 		}
 		out = append(out, recordOut{Key: rec.Key.String(), Data: data})
 	}

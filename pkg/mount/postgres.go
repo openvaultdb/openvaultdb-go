@@ -96,6 +96,7 @@ func openPostgresWith(m *manifest.Manifest, open postgresOpener) (dal.DB, []sche
 	if nativeReadOnly {
 		dbOptions.IdentifierCase = dalgo2sql.IdentifierCaseExact
 		dbOptions.ExactNumericValues = true
+		dbOptions.PreserveBinaryValues = true
 		options = append(options, dalgo2postgres.WithIdentifierMode(dalgo2postgres.IdentifierExact))
 	}
 	db, err := open(dsn, dal.NewSchema(nil, nil), dbOptions, options...)
