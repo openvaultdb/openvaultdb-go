@@ -153,9 +153,7 @@ func TestNativePostgresProjectionTypesFollowAliasesJoinsAndSubqueries(t *testing
 		join := dal.NewJoinedSource(conflictRef, dal.JoinInner, dal.NewComparison(
 			dal.NewFieldRef("o", "Status Name"), dal.Equal, dal.NewFieldRef("c", "Status Name"),
 		))
-		query := dal.From(ref("o")).Join(join).NewQuery().SelectColumns(
-			dal.Column{Wildcard: &dal.WildcardProjection{}},
-		)
+		query := dal.From(ref("o")).Join(join).NewQuery().SelectColumns()
 		got := nativePostgresProjectionTypes(query, endpoint, databases)
 		for field, want := range map[string]string{
 			"Created On":   "timestamp with time zone",

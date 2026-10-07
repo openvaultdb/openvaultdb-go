@@ -355,6 +355,33 @@ func TestPostgresIntegration_WritesAndSingleCollectionQueries(t *testing.T) {
 // schema-qualified relation with mixed case and spaces, and confirms the API
 // exposes its original names while querying only through a catalog-resolved
 // logical collection ID.
+func nativePostgresProjectionDocuments() map[string]string {
+	const nativeFilter = "where: {op: '==', left: {field: 'Status Name', source: o}, right: {value: keep}}\n"
+	return map[string]string{
+		"aliased projection": "from: {schema: 'ovdb Native', name: 'Order Details', alias: o}\n" + nativeFilter +
+			"columns: [{field: 'Order ID', source: o, as: order_id}, {field: 'Created On', source: o, as: created}, {field: 'Payload Data', source: o, as: payload}, {field: 'Binary Data', source: o, as: binary}]\nlimit: 5\n",
+		"self-join projection": "from:\n  schema: 'ovdb Native'\n  name: 'Order Details'\n  alias: o\n  joins:\n    - type: inner\n      from: {schema: 'ovdb Native', name: 'Order Details', alias: i}\n      on:\n        - {left: {field: 'Order ID', source: o}, op: '==', right: {field: 'Order ID', source: i}}\n" + nativeFilter +
+			"columns: [{field: 'Order ID', source: o, as: order_id}, {field: 'Created On', source: o, as: created}, {field: 'Payload Data', source: o, as: payload}, {field: 'Binary Data', source: o, as: binary}]\nlimit: 5\n",
+		"derived projection":      "from:\n  query:\n    as: d\n    from: {schema: 'ovdb Native', name: 'Order Details', alias: o}\n    where: {op: '==', left: {field: 'Status Name', source: o}, right: {value: keep}}\n    columns: [{field: 'Order ID', source: o, as: order_id}, {field: 'Created On', source: o, as: created}, {field: 'Payload Data', source: o, as: payload}, {field: 'Binary Data', source: o, as: binary}]\ncolumns: [{field: order_id, source: d, as: order_key}, {field: created, source: d, as: created_at}, {field: payload, source: d, as: payload_json}, {field: binary, source: d, as: blob}]\nlimit: 5\n",
+		"wildcard type collision": "from:\n  schema: 'ovdb Native'\n  name: 'Order Details'\n  alias: o\n  joins:\n    - type: inner\n      from: {schema: 'ovdb Native', name: 'Type Conflict', alias: c}\n      on:\n        - {left: {field: 'Status Name', source: o}, op: '==', right: {field: 'Status Name', source: c}}\nwhere: {op: '==', left: {field: 'Status Name', source: o}, right: {value: keep}}\nlimit: 5\n",
+		"wide integer aggregate":  "from: {schema: 'ovdb Native', name: 'Order Details'}\ncolumns: [{aggregate: {function: max, args: [{field: 'Order ID'}]}, as: max_order_id}]\n",
+	}
+}
+
+func TestNativePostgresProjectionDocumentsParseAndClassifyWithoutLiveDatabase(t *testing.T) {
+	for name, doc := range nativePostgresProjectionDocuments() {
+		t.Run(name, func(t *testing.T) {
+			query, err := core.DeserializeDTQL([]byte(doc))
+			if err != nil {
+				t.Fatalf("native PostgreSQL fixture does not parse: %v\n%s", err, doc)
+			}
+			if _, err := core.ClassifyDTQL(query); err != nil {
+				t.Fatalf("native PostgreSQL fixture does not classify: %v\n%s", err, doc)
+			}
+		})
+	}
+}
+
 func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) {
 	admin := pgITAdmin(t)
 	const physicalSchema = "ovdb Native"
@@ -476,7 +503,7 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 		}
 	}
 
-	base := pgITServe(t, map[string]*core.Database{"native": native})
+	base, logs := pgITServeLogged(t, map[string]*core.Database{"native": native})
 	metadata := relHTTPDo(t, base, http.MethodGet, "/v1/databases/native", "", "", nil)
 	if metadata.status != http.StatusOK {
 		t.Fatalf("GET native metadata: %d %s", metadata.status, metadata.raw)
@@ -581,7 +608,7 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 		t.Helper()
 		resp := relHTTPPost(t, base, "/v1/databases/native/dtql", "", doc)
 		if resp.status != http.StatusOK {
-			t.Fatalf("%s: %d %s", name, resp.status, resp.raw)
+			t.Fatalf("%s: %d %s; server logs: %s", name, resp.status, resp.raw, logs.String())
 		}
 		var projected struct {
 			Records []struct {
@@ -614,16 +641,14 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 			t.Errorf("%s: payload = %s, decode error %v; want JSON number lexeme 9007199254740993", name, row[payloadOutput], err)
 		}
 	}
-	const nativeFilter = "where: {op: '==', left: {field: 'Status Name', source: o}, right: {value: keep}}\n"
-	assertProjectedNativeValues("aliased projection", "from: {schema: 'ovdb Native', name: 'Order Details', alias: o}\n"+nativeFilter+
-		"columns: [{field: 'Order ID', source: o, as: order_id}, {field: 'Created On', source: o, as: created}, {field: 'Payload Data', source: o, as: payload}, {field: 'Binary Data', source: o, as: binary}]\nlimit: 5\n",
+	documents := nativePostgresProjectionDocuments()
+	assertProjectedNativeValues("aliased projection", documents["aliased projection"],
 		map[string]string{"order_id": "Order ID", "created": "Created On", "payload": "Payload Data", "binary": "Binary Data"})
-	assertProjectedNativeValues("self-join projection", "from:\n  schema: 'ovdb Native'\n  name: 'Order Details'\n  alias: o\n  joins:\n    - type: inner\n      from: {schema: 'ovdb Native', name: 'Order Details', alias: i}\n      on:\n        - {left: {field: 'Order ID', source: o}, op: '==', right: {field: 'Order ID', source: i}}\n"+nativeFilter+
-		"columns: [{field: 'Order ID', source: o, as: order_id}, {field: 'Created On', source: o, as: created}, {field: 'Payload Data', source: o, as: payload}, {field: 'Binary Data', source: o, as: binary}]\nlimit: 5\n",
+	assertProjectedNativeValues("self-join projection", documents["self-join projection"],
 		map[string]string{"order_id": "Order ID", "created": "Created On", "payload": "Payload Data", "binary": "Binary Data"})
-	assertProjectedNativeValues("derived projection", "from:\n  query:\n    as: d\n    from: {schema: 'ovdb Native', name: 'Order Details', alias: o}\n    where: {op: '==', left: {field: 'Status Name', source: o}, right: {value: keep}}\n    columns: [{field: 'Order ID', source: o, as: order_id}, {field: 'Created On', source: o, as: created}, {field: 'Payload Data', source: o, as: payload}, {field: 'Binary Data', source: o, as: binary}]\ncolumns: [{field: order_id, source: d, as: order_key}, {field: created, source: d, as: created_at}, {field: payload, source: d, as: payload_json}, {field: binary, source: d, as: blob}]\nlimit: 5\n",
+	assertProjectedNativeValues("derived projection", documents["derived projection"],
 		map[string]string{"order_key": "Order ID", "created_at": "Created On", "payload_json": "Payload Data", "blob": "Binary Data"})
-	wildcardJoin := relHTTPPost(t, base, "/v1/databases/native/dtql", "", "from:\n  schema: 'ovdb Native'\n  name: 'Order Details'\n  alias: o\n  joins:\n    - type: inner\n      from: {schema: 'ovdb Native', name: 'Type Conflict', alias: c}\n      on:\n        - {left: {field: 'Status Name', source: o}, op: '==', right: {field: 'Status Name', source: c}}\nwhere: {op: '==', left: {field: 'Status Name', source: o}, right: {value: keep}}\ncolumns: [{wildcard: {exclude: [none]}}]\nlimit: 5\n")
+	wildcardJoin := relHTTPPost(t, base, "/v1/databases/native/dtql", "", documents["wildcard type collision"])
 	if wildcardJoin.status != http.StatusOK {
 		t.Fatalf("wildcard join with duplicate native field names: %d %s", wildcardJoin.status, wildcardJoin.raw)
 	}
@@ -645,7 +670,7 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 			t.Errorf("rightmost wildcard field %q = %s, want %s from the joined source", field, got, want)
 		}
 	}
-	aggregate := relHTTPPost(t, base, "/v1/databases/native/dtql", "", "from: {schema: 'ovdb Native', name: 'Order Details'}\ncolumns: [{aggregate: {function: max, args: [{field: 'Order ID'}]}, as: max_order_id}]\n")
+	aggregate := relHTTPPost(t, base, "/v1/databases/native/dtql", "", documents["wide integer aggregate"])
 	if aggregate.status != http.StatusOK {
 		t.Fatalf("native wide-integer aggregate: %d %s", aggregate.status, aggregate.raw)
 	}
