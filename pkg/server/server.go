@@ -651,14 +651,15 @@ func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	joins := s.advertisesJoins(db)
-	canQuery := s.advertisesOrdinaryQuery(db)
+	canDTQL := s.advertisesOrdinaryQuery(db)
+	canQuery := canDTQL && db.CanCollectionQuery()
 	metadata := map[string]any{
 		"id":           db.ID(),
 		"serverId":     s.rightsServerID,
 		"engine":       db.Manifest.Storage.Engine,
 		"schemaMode":   string(db.Manifest.Database.SchemaMode),
 		"collections":  collections,
-		"capabilities": map[string]bool{"read": !db.ReadOnly(), "query": canQuery, "dtql": canQuery, "write": !s.readOnly && !db.ReadOnly(), "joins": joins, "aggregation": joins},
+		"capabilities": map[string]bool{"read": !db.ReadOnly(), "query": canQuery, "dtql": canDTQL, "write": !s.readOnly && !db.ReadOnly(), "joins": joins, "aggregation": joins},
 	}
 	if len(db.Manifest.Database.Tags) > 0 {
 		metadata["tags"] = db.Manifest.Database.Tags
@@ -675,7 +676,7 @@ func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
 		// guessing types from sample rows.
 		metadata["schemas"] = db.Manifest.Schemas
 	}
-	if canQuery {
+	if canDTQL {
 		// A mount the guard refuses structured queries on advertises no query
 		// endpoint or format either.
 		endpointID := db.ID()

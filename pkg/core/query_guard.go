@@ -18,6 +18,11 @@ import (
 // the engine name.
 var ErrQueryUnsupported = errors.New("structured queries are not supported on this engine")
 
+// ErrNativePostgresCollectionQueryUnsupported identifies the legacy /query
+// contract, which requires OVDB record keys and declared collection names that
+// a native PostgreSQL catalog mount does not provide.
+var ErrNativePostgresCollectionQueryUnsupported = errors.New("native PostgreSQL mounts support DTQL reads; the collection-key /query contract is unavailable")
+
 // QueryUnsupportedError is the typed refusal of a structured query on an
 // engine that is not yet cleared for queries.
 type QueryUnsupportedError struct {
@@ -66,12 +71,16 @@ func (d *Database) queryEngine() string {
 	return d.Manifest.Storage.Engine
 }
 
-// CanQuery reports whether structured queries (/query, /dtql) are allowed on
-// this mount. It is the same allow-list guardQuery enforces, so database
-// metadata can advertise exactly what the guard will accept.
+// CanQuery reports whether DALgo structured reads are allowed on this mount.
+// Native PostgreSQL supports catalog-backed DTQL reads but not the legacy
+// collection-key /query contract (see CanCollectionQuery).
 func (d *Database) CanQuery() bool {
 	return d.nativePostgres || engineCleared(d.queryEngine(), d.previewPostgres)
 }
+
+// CanCollectionQuery reports whether the legacy /query endpoint can address
+// collections and return OVDB record keys on this mount.
+func (d *Database) CanCollectionQuery() bool { return d.CanQuery() && !d.nativePostgres }
 
 // EngineCanQuery reports whether the storage engine, as a manifest writes it, is
 // cleared for structured queries whatever the environment says: the allow-list

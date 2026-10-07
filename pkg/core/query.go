@@ -83,6 +83,9 @@ func (q Query) Target() (parent *record.Key, rootCollection string, err error) {
 // the driver. Result keys are full paths from the database root: records of
 // a nested collection carry their parent key.
 func (d *Database) Execute(ctx context.Context, q Query) ([]Record, error) {
+	if d.nativePostgres {
+		return nil, ErrNativePostgresCollectionQueryUnsupported
+	}
 	parentKey, _, err := q.Target()
 	if err != nil {
 		return nil, err

@@ -25,6 +25,11 @@ mount does not create or alter tables. The session setting is defense in depth;
 least-privilege database grants remain necessary, especially for views or
 functions owned by another role.
 
+Database metadata advertises `capabilities.dtql: true` and
+`capabilities.query: false`. Native mounts support the catalog-backed DTQL
+read surface; the legacy `/query` endpoint requires OVDB record keys and is
+answered with `501 query_unsupported`.
+
 ## Discovery and collection IDs
 
 OVDB discovers supported schemas, tables/views, and fields from PostgreSQL's

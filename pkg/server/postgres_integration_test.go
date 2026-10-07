@@ -468,8 +468,10 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 		t.Fatalf("GET native metadata: %d %s", metadata.status, metadata.raw)
 	}
 	var described struct {
-		Collections  []string        `json:"collections"`
-		Capabilities map[string]bool `json:"capabilities"`
+		Collections  []string          `json:"collections"`
+		Capabilities map[string]bool   `json:"capabilities"`
+		Endpoints    map[string]string `json:"endpoints"`
+		QueryFormat  string            `json:"queryFormat"`
 		Schemas      struct {
 			Collections map[string]struct {
 				Source struct {
@@ -491,12 +493,16 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 	if err := json.Unmarshal([]byte(metadata.raw), &described); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(described.Collections, collections) || described.Capabilities["read"] || !described.Capabilities["query"] || described.Capabilities["write"] {
+	if !reflect.DeepEqual(described.Collections, collections) || described.Capabilities["read"] || described.Capabilities["query"] || !described.Capabilities["dtql"] || described.Capabilities["write"] || described.Endpoints["dtql"] == "" || described.QueryFormat == "" {
 		t.Fatalf("native metadata capabilities/IDs = %+v, collections=%q", described.Capabilities, described.Collections)
 	}
 	collection := described.Schemas.Collections[id]
 	if collection.Source.Schema != physicalSchema || collection.Source.Name != physicalTable || collection.Fields["Order ID"].NativeType != "bigint" || !collection.Fields["Order ID"].PrimaryKey {
 		t.Fatalf("native schema metadata = %+v", collection)
+	}
+	unsupportedQuery := relHTTPDo(t, base, http.MethodPost, "/v1/databases/native/query", "", `{"collection":"`+id+`"}`, map[string]string{"Content-Type": "application/json"})
+	if unsupportedQuery.status != http.StatusNotImplemented || unsupportedQuery.errorField("code") != "query_unsupported" {
+		t.Fatalf("native collection-key query: %d %s, want explicit 501 query_unsupported", unsupportedQuery.status, unsupportedQuery.raw)
 	}
 	unbounded := collection.Fields["Unbounded Amount"].Decimal
 	if collection.Fields["Unbounded Amount"].NativeType != "numeric" || unbounded == nil || !unbounded.Unbounded || unbounded.Precision != 0 || unbounded.Scale != 0 {

@@ -43,8 +43,8 @@ func nativePostgresCoreFixture(t *testing.T) (*Database, *namesRecordingDB, stri
 
 func TestNativePostgresOpenIsReadOnlyAndDoesNotProvision(t *testing.T) {
 	db, driver, id := nativePostgresCoreFixture(t)
-	if !db.NativePostgresReadOnly() || !db.ReadOnly() || !db.CanQuery() || EngineCanQuery("postgres") {
-		t.Fatalf("capabilities: native=%v readonly=%v query=%v engineQuery=%v", db.NativePostgresReadOnly(), db.ReadOnly(), db.CanQuery(), EngineCanQuery("postgres"))
+	if !db.NativePostgresReadOnly() || !db.ReadOnly() || !db.CanQuery() || db.CanCollectionQuery() || EngineCanQuery("postgres") {
+		t.Fatalf("capabilities: native=%v readonly=%v query=%v collectionQuery=%v engineQuery=%v", db.NativePostgresReadOnly(), db.ReadOnly(), db.CanQuery(), db.CanCollectionQuery(), EngineCanQuery("postgres"))
 	}
 	if len(driver.created) != 0 {
 		t.Fatalf("native mount provisioned collections: %v", driver.created)
@@ -61,6 +61,16 @@ func TestNativePostgresOpenIsReadOnlyAndDoesNotProvision(t *testing.T) {
 	}
 	if _, ok := db.ResolveNativePostgresCollection("public", "Order Details"); ok {
 		t.Fatal("resolved a collection from a different schema")
+	}
+}
+
+func TestNativePostgresCollectionQueryIsExplicitlyUnsupported(t *testing.T) {
+	db, driver, id := nativePostgresCoreFixture(t)
+	if _, err := db.Execute(context.Background(), Query{Collection: id}); !errors.Is(err, ErrNativePostgresCollectionQueryUnsupported) {
+		t.Fatalf("Execute error = %v, want native collection-query refusal", err)
+	}
+	if driver.queries != 0 || len(driver.seen) != 0 || driver.transactions != 0 {
+		t.Fatalf("collection query reached DAL: queryCalls=%d keys=%v transactions=%d", driver.queries, driver.seen, driver.transactions)
 	}
 }
 
