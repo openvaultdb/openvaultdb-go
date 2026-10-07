@@ -190,6 +190,9 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	if engines := s.joinEngines(); len(engines) > 0 {
 		opts = append(opts, joinexec.WithJoinEngines(engines...))
 	}
+	if endpoint != nil && endpoint.NativePostgresReadOnly() {
+		opts = append(opts, joinexec.WithNativePostgresFields())
+	}
 	if engines := s.nativeEngines(); len(engines) > 0 {
 		opts = append(opts, joinexec.WithNativeEngines(engines...))
 	}
@@ -210,7 +213,13 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	}
 	records := make([]relationalRecord, len(result.Records))
 	for i, rec := range result.Records {
-		records[i] = relationalRecord{Data: rec.Data()}
+		data := rec.Data()
+		if endpoint != nil && endpoint.NativePostgresReadOnly() {
+			if fields, ok := data.(map[string]any); ok {
+				data = nativePostgresJSONSafeIntegers(fields)
+			}
+		}
+		records[i] = relationalRecord{Data: data}
 	}
 	if len(capture.rights) == 0 {
 		writeJSON(w, http.StatusOK, relationalResponse{Records: records, Columns: result.Columns, Execution: result.Execution})

@@ -45,11 +45,12 @@ func (nativeCatalogFixture) DescribeCollection(_ context.Context, ref *dal.Colle
 	precision := &dbschema.Precision{Total: 18, Scale: 4}
 	return &dbschema.CollectionDef{
 		Name:       ref.Name(),
-		Fields:     []dbschema.FieldDef{{Name: "Order ID", Type: dbschema.Int}, {Name: "Amount", Type: dbschema.Decimal, Precision: precision}, {Name: "Created At", Type: dbschema.Time, Nullable: true}},
+		Fields:     []dbschema.FieldDef{{Name: "Order ID", Type: dbschema.Int}, {Name: "Amount", Type: dbschema.Decimal, Precision: precision}, {Name: "Unbounded Amount", Type: dbschema.Decimal}, {Name: "Created At", Type: dbschema.Time, Nullable: true}},
 		PrimaryKey: []dal.FieldName{"Order ID"},
 		SourceDefinition: &dbschema.SourceDefinition{Dialect: "postgres", Columns: []dbschema.SourceColumnDef{
 			{Name: "Order ID", DeclaredType: "bigint", NotNull: true, PrimaryKeyPosition: 1},
 			{Name: "Amount", DeclaredType: "numeric(18,4)"},
+			{Name: "Unbounded Amount", DeclaredType: "numeric"},
 			{Name: "Created At", DeclaredType: "timestamp without time zone"},
 		}},
 	}, nil
@@ -84,6 +85,10 @@ func TestDiscoverNativePostgresSchemasPreservesPhysicalNamesAndTypes(t *testing.
 	amount := collection.Fields["Amount"]
 	if amount.Type != schema.TypeDecimal || amount.NativeType != "numeric(18,4)" || amount.Decimal == nil || *amount.Decimal != (schema.Decimal{Precision: 18, Scale: 4, Storage: "text"}) {
 		t.Errorf("decimal metadata = %+v", amount)
+	}
+	unbounded := collection.Fields["Unbounded Amount"]
+	if unbounded.Type != schema.TypeDecimal || unbounded.NativeType != "numeric" || unbounded.Decimal == nil || *unbounded.Decimal != (schema.Decimal{Unbounded: true, Storage: "text"}) {
+		t.Errorf("unbounded decimal metadata = %+v", unbounded)
 	}
 	if created := collection.Fields["Created At"]; created.Type != schema.TypeString || created.NativeType != "timestamp without time zone" || !created.Nullable {
 		t.Errorf("temporal metadata = %+v", created)

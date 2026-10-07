@@ -250,14 +250,14 @@ func discoverNativePostgresSchemas(ctx context.Context, catalog nativePostgresCa
 				}
 				mapped := schema.Field{Type: nativePostgresFieldType(field.Type), NativeType: nativePostgresDeclaredType(def.SourceDefinition, name), PrimaryKey: primary[name], Nullable: field.Nullable, Required: !field.Nullable}
 				if field.Type == dbschema.Decimal {
-					precision, scale := 1000, 0 // unbounded PostgreSQL NUMERIC
+					decimal := schema.Decimal{Storage: "text", Unbounded: true}
 					if field.Precision != nil && field.Precision.Total > 0 && field.Precision.Total <= 1000 {
-						precision, scale = field.Precision.Total, field.Precision.Scale
+						precision, scale := field.Precision.Total, field.Precision.Scale
+						if scale >= 0 && scale <= precision {
+							decimal.Precision, decimal.Scale, decimal.Unbounded = precision, scale, false
+						}
 					}
-					if scale < 0 || scale > precision {
-						scale = 0
-					}
-					mapped.Decimal = &schema.Decimal{Precision: precision, Scale: scale, Storage: "text"}
+					mapped.Decimal = &decimal
 				}
 				collection.Fields[name] = mapped
 			}

@@ -79,9 +79,12 @@ type Field struct {
 }
 
 // Decimal describes an exact decimal value transported and stored as text.
+// Unbounded means the source does not declare a maximum precision or scale;
+// Precision and Scale are then both zero rather than guessed.
 type Decimal struct {
 	Precision int    `yaml:"precision" json:"precision"`
 	Scale     int    `yaml:"scale" json:"scale"`
+	Unbounded bool   `yaml:"unbounded,omitempty" json:"unbounded,omitempty"`
 	Storage   string `yaml:"storage" json:"storage"`
 }
 
@@ -93,7 +96,11 @@ func (f Field) Validate() error {
 		if f.Decimal == nil {
 			return fmt.Errorf("decimal fields require decimal precision, scale and storage metadata")
 		}
-		if f.Decimal.Precision < 1 || f.Decimal.Precision > 1000 || f.Decimal.Scale < 0 || f.Decimal.Scale > f.Decimal.Precision || f.Decimal.Storage != "text" {
+		if f.Decimal.Unbounded {
+			if f.Decimal.Precision != 0 || f.Decimal.Scale != 0 || f.Decimal.Storage != "text" {
+				return fmt.Errorf("unbounded decimal metadata requires zero precision and scale, and storage text")
+			}
+		} else if f.Decimal.Precision < 1 || f.Decimal.Precision > 1000 || f.Decimal.Scale < 0 || f.Decimal.Scale > f.Decimal.Precision || f.Decimal.Storage != "text" {
 			return fmt.Errorf("decimal metadata requires precision 1..1000, scale 0..precision, and storage text")
 		}
 	} else if f.Decimal != nil {
@@ -271,12 +278,16 @@ func validDecimalText(value string, precision, scale int) bool {
 	if value == "" || strings.TrimSpace(value) != value {
 		return false
 	}
+	unbounded := precision == 0 && scale == 0
+	if unbounded && (value == "NaN" || value == "Infinity" || value == "-Infinity") {
+		return true
+	}
 	signless := value
 	if signless[0] == '-' || signless[0] == '+' {
 		signless = signless[1:]
 	}
 	parts := strings.Split(signless, ".")
-	if len(parts) > 2 || (parts[0] == "" && (len(parts) == 1 || parts[1] == "")) || (len(parts) == 2 && len(parts[1]) > scale) {
+	if len(parts) > 2 || (parts[0] == "" && (len(parts) == 1 || parts[1] == "")) || (!unbounded && len(parts) == 2 && len(parts[1]) > scale) {
 		return false
 	}
 	for _, part := range parts {
@@ -288,6 +299,9 @@ func validDecimalText(value string, precision, scale int) bool {
 				return false
 			}
 		}
+	}
+	if unbounded {
+		return true
 	}
 	integerDigits := strings.TrimLeft(parts[0], "0")
 	if integerDigits == "" {

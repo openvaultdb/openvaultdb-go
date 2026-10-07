@@ -101,10 +101,11 @@ type Admit func(ctx context.Context, route string) (release func(), ok bool)
 
 // config is what the options set.
 type config struct {
-	joinEngines   map[string]bool
-	nativeEngines map[string]bool
-	now           func() time.Time
-	admit         Admit
+	joinEngines         map[string]bool
+	nativeEngines       map[string]bool
+	allowNativePGFields bool
+	now                 func() time.Time
+	admit               Admit
 }
 
 // Option configures Execute.
@@ -153,6 +154,14 @@ func WithNativeEngines(engines ...string) Option {
 			c.nativeEngines = set
 		}
 	}
+}
+
+// WithNativePostgresFields allows exact quoted field names for a native
+// PostgreSQL read-only endpoint. The source's CheckRead and field-list guards
+// still require each field to exist in that mounted catalog. Callers must only
+// set this option when every source belongs to that native PostgreSQL mount.
+func WithNativePostgresFields() Option {
+	return func(c *config) { c.allowNativePGFields = true }
 }
 
 // WithAdmission makes Execute ask admit for a slot once it knows the route and
@@ -235,11 +244,11 @@ func withClock(now func() time.Time) Option {
 // that still holds a parameter (a parameter is bound before a document runs, and
 // DALgo's join evaluates none), and refuses a document whose conditions and
 // expressions nest more than 64 levels. A field name must pass the strict rule
-// (core.ValidateFieldName) whatever the route and the engine. The classifier of
-// pkg/core applies a wider quoted-name rule to the field names of a relational
-// document, so a name such as "zip code" classifies and Execute then refuses it
-// with ErrInvalidDocument. What only the classifier checks, and Execute does not
-// repeat, is the format of a database id, the limit and offset bounds, money,
+// (core.ValidateFieldName), except when WithNativePostgresFields is used for a
+// single native PostgreSQL endpoint. That opt-in admits the same bounded quoted
+// names as the source's exact catalog guard; other routes remain strict. What
+// only the classifier checks, and Execute does not repeat, is the format of a
+// database id, the limit and offset bounds, money,
 // cursors, the join types, the number of sources, how many levels of subquery
 // nest (four), the refusal of every scan clause (Execute accepts one on a source
 // without access policies and reads such a document in memory), and the sixteen
@@ -254,7 +263,7 @@ func Execute(ctx context.Context, query dal.StructuredQuery, profile Profile, de
 	if registry == nil {
 		return Result{}, fmt.Errorf("%w: a registry is required", ErrInvalidDocument)
 	}
-	doc, err := inspect(query)
+	doc, err := inspectWithNativePostgresFields(query, cfg.allowNativePGFields)
 	if err != nil {
 		return Result{}, err
 	}

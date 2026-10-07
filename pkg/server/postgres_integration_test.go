@@ -372,6 +372,7 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 		`CREATE TABLE "ovdb Native"."Order Details" (
 			"Order ID" bigint PRIMARY KEY,
 			"Total Amount" numeric(24,6) NOT NULL,
+			"Unbounded Amount" numeric NOT NULL,
 			"Created On" date NOT NULL,
 			"Status Name" text NOT NULL,
 			"Payload Data" jsonb NOT NULL,
@@ -385,17 +386,19 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 			"Event Name" text NOT NULL,
 			"Description Text" text NOT NULL
 		)`,
-		`INSERT INTO "ovdb Native"."Order Details" ("Order ID", "Total Amount", "Created On", "Status Name", "Payload Data", "Binary Data") VALUES (
+		`INSERT INTO "ovdb Native"."Order Details" ("Order ID", "Total Amount", "Unbounded Amount", "Created On", "Status Name", "Payload Data", "Binary Data") VALUES (
 			9007199254740993,
 			123456789012345678.120000,
+			123.45,
 			DATE '2025-03-04',
 			'keep',
 			'{"n":9007199254740993}'::jsonb,
 			decode('00ff10', 'hex')
 		)`,
-		`INSERT INTO "ovdb Native"."Order Details" ("Order ID", "Total Amount", "Created On", "Status Name", "Payload Data", "Binary Data") VALUES (
+		`INSERT INTO "ovdb Native"."Order Details" ("Order ID", "Total Amount", "Unbounded Amount", "Created On", "Status Name", "Payload Data", "Binary Data") VALUES (
 			9007199254740994,
 			1.000000,
+			1.25,
 			DATE '2025-03-05',
 			'skip',
 			'{"n":1}'::jsonb,
@@ -476,6 +479,11 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 				Fields map[string]struct {
 					NativeType string `json:"nativeType"`
 					PrimaryKey bool   `json:"primaryKey"`
+					Decimal    *struct {
+						Precision int  `json:"precision"`
+						Scale     int  `json:"scale"`
+						Unbounded bool `json:"unbounded"`
+					} `json:"decimal"`
 				} `json:"fields"`
 			} `json:"collections"`
 		} `json:"schemas"`
@@ -489,6 +497,10 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 	collection := described.Schemas.Collections[id]
 	if collection.Source.Schema != physicalSchema || collection.Source.Name != physicalTable || collection.Fields["Order ID"].NativeType != "bigint" || !collection.Fields["Order ID"].PrimaryKey {
 		t.Fatalf("native schema metadata = %+v", collection)
+	}
+	unbounded := collection.Fields["Unbounded Amount"].Decimal
+	if collection.Fields["Unbounded Amount"].NativeType != "numeric" || unbounded == nil || !unbounded.Unbounded || unbounded.Precision != 0 || unbounded.Scale != 0 {
+		t.Fatalf("unbounded numeric metadata = %+v", collection.Fields["Unbounded Amount"])
 	}
 	for field, wantType := range map[string]string{
 		"Created On":         "date",
@@ -529,11 +541,12 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 	}
 	data := result.Records[0].Data
 	for field, want := range map[string]string{
-		"Order ID":     "9007199254740993",
-		"Total Amount": `"123456789012345678.120000"`,
-		"Created On":   `"2025-03-04"`,
-		"Payload Data": `{"n":9007199254740993}`,
-		"Binary Data":  `"AP8Q"`,
+		"Order ID":         `"9007199254740993"`,
+		"Total Amount":     `"123456789012345678.120000"`,
+		"Unbounded Amount": `"123.45"`,
+		"Created On":       `"2025-03-04"`,
+		"Payload Data":     `{"n":9007199254740993}`,
+		"Binary Data":      `"AP8Q"`,
 	} {
 		if got := string(data[field]); got != want {
 			t.Errorf("%s = %s, want %s", field, got, want)

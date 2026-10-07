@@ -125,6 +125,26 @@ func TestInspectFindsScanBoundsAndSubqueriesNowhereElse(t *testing.T) {
 	}
 }
 
+func TestNativePostgresFieldNamesAreAnOptInAndRemainBounded(t *testing.T) {
+	query := exWithColumn(dal.NewFieldRef("", "Status Name"))
+	if _, err := inspect(query); !errors.Is(err, ErrInvalidDocument) {
+		t.Fatalf("default inspect error = %v, want strict-name refusal", err)
+	}
+	if _, err := inspectWithNativePostgresFields(query, true); err != nil {
+		t.Fatalf("native PostgreSQL inspect: %v", err)
+	}
+	for _, name := range []string{"", " leading", "trailing ", `bad"name`, "bad;name", "bad\\name", "bad\x00name", strings.Repeat("x", 257)} {
+		if validNativePostgresFieldName(name) {
+			t.Errorf("validNativePostgresFieldName(%q) = true, want false", name)
+		}
+	}
+	for _, name := range []string{"Status Name", "Order-ID", "naïve name", "a--b"} {
+		if !validNativePostgresFieldName(name) {
+			t.Errorf("validNativePostgresFieldName(%q) = false, want true", name)
+		}
+	}
+}
+
 func TestInspectRefusesShapesNoDocumentProduces(t *testing.T) {
 	field := dal.NewFieldRef("", "id")
 	parent := record.NewKeyWithID("p", "1")

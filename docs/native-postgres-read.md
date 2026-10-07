@@ -68,9 +68,15 @@ limit: 50
 
 Queries use the server's configured relational row, byte, and execution bounds.
 Values are parameterized by the driver. Exact PostgreSQL `NUMERIC` values are
-returned as decimal strings; wide integer and binary values keep their exact
-JSON representations. Temporal and JSON values follow the PostgreSQL driver's
-typed result mapping. Filters, projections, ordering, and other DTQL operations
+returned as decimal strings; `NUMERIC` without a declared precision advertises
+unbounded decimal metadata rather than an invented precision. PostgreSQL
+`int64`/`uint64` values outside JavaScript's safe-integer range are returned as
+decimal strings; smaller integers keep their JSON number representation.
+JSON/JSONB values preserve their JSON number lexemes on the wire, but a browser's
+ordinary `JSON.parse` may round a nested number above 2^53−1; clients that need
+exact nested JSON numbers must use a lossless JSON parser. Binary values use
+base64 JSON strings. Temporal values follow the PostgreSQL driver's typed
+result mapping. Filters, projections, ordering, and other DTQL operations
 are limited to the structured forms supported by the installed DALgo PostgreSQL
 adapter; this mount does not expose arbitrary SQL.
 
@@ -78,5 +84,7 @@ The current source contract is for bounded relational reads. Keyed record
 endpoints and mutation APIs are unsupported. A collection with no primary key
 can still be queried as rows. Composite and keyless tables do not receive a
 synthetic record ID, and this profile does not provide point reads. Names that
-the DTQL field-name validator cannot represent remain visible as catalog
-metadata but cannot be used as query fields.
+are safely representable as quoted PostgreSQL field names, including spaces,
+can be used in relational DTQL; the exact discovered field catalog is still
+checked before the query reaches the driver. Names that violate that quoted-name
+rule remain visible as metadata but cannot be used as query fields.
