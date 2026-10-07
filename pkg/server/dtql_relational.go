@@ -314,14 +314,6 @@ func readableCollection(db *core.Database, collection string) bool {
 	return !declared || canonical == collection
 }
 
-// relationalResponse is the body of a relational answer: rows without keys, the
-// columns in the order the document selects them, and how the request ran.
-type relationalResponse struct {
-	Records   []relationalRecord `json:"records"`
-	Columns   []string           `json:"columns"`
-	Execution joinexec.Execution `json:"execution"`
-}
-
 type relationalRecord struct {
 	Data any `json:"data"`
 }
