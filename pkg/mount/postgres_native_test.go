@@ -2,7 +2,9 @@ package mount
 
 import (
 	"context"
+	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/dal-go/dalgo/dal"
@@ -23,7 +25,17 @@ func (nativeCatalogFixture) ListSchemaCollections(_ context.Context, schemaName 
 	if schemaName == "public" {
 		return []dal.CollectionRef{dal.NewQualifiedRootCollectionRef("sales data", "ignored", "")}, nil
 	}
-	return []dal.CollectionRef{dal.NewQualifiedRootCollectionRef("sales data", "Order Details", "")}, nil
+	return []dal.CollectionRef{
+		dal.NewQualifiedRootCollectionRef("sales data", "Order Details", ""),
+		dal.NewQualifiedRootCollectionRef("sales data", "Insert Only", ""),
+	}, nil
+}
+
+func (nativeCatalogFixture) SelectableRelations(_ context.Context, schemaName string) (map[string]bool, error) {
+	if schemaName == "public" {
+		return map[string]bool{"ignored": false}, nil
+	}
+	return map[string]bool{"Order Details": true, "Insert Only": false}, nil
 }
 
 func (nativeCatalogFixture) DescribeCollection(_ context.Context, ref *dal.CollectionRef) (*dbschema.CollectionDef, error) {
@@ -44,7 +56,7 @@ func (nativeCatalogFixture) DescribeCollection(_ context.Context, ref *dal.Colle
 }
 
 func TestDiscoverNativePostgresSchemasPreservesPhysicalNamesAndTypes(t *testing.T) {
-	got, err := discoverNativePostgresSchemas(context.Background(), nativeCatalogFixture{})
+	got, err := discoverNativePostgresSchemas(context.Background(), nativeCatalogFixture{}, nativeCatalogFixture{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,6 +66,13 @@ func TestDiscoverNativePostgresSchemasPreservesPhysicalNamesAndTypes(t *testing.
 	}
 	if len(got.Collections) != 1 {
 		t.Fatalf("collections = %d, want one", len(got.Collections))
+	}
+	insertOnlyID, err := schema.NativePostgresCollectionID("sales data", "Insert Only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := got.Collections[insertOnlyID]; exists {
+		t.Fatal("relation without SELECT privilege was exposed as a queryable collection")
 	}
 	collection := got.Collections[id]
 	if collection.Source == nil || collection.Source.Schema != "sales data" || collection.Source.Name != "Order Details" {
@@ -80,8 +99,9 @@ func TestNativePostgresMountUsesExactIdentifiersAndExactNumericValues(t *testing
 	var called bool
 	_, _, err := openPostgresWith(m, func(dsn string, _ dal.Schema, options dalgo2sql.DbOptions, postgresOptions ...dalgo2postgres.Option) (*dalgo2postgres.Database, error) {
 		called = true
-		if dsn != "postgres://readonly:secret@db.example.test:5432/samples" {
-			t.Errorf("DSN changed: %q", dsn)
+		parsed, parseErr := url.Parse(dsn)
+		if parseErr != nil || parsed.Query().Get("default_transaction_read_only") != "on" {
+			t.Errorf("DSN = %q, want enforced read-only session parameter (parse error %v)", dsn, parseErr)
 		}
 		if options.IdentifierCase != dalgo2sql.IdentifierCaseExact || !options.ExactNumericValues {
 			t.Errorf("DbOptions = %+v, want exact identifiers and exact numerics", options)
@@ -99,8 +119,45 @@ func TestNativePostgresMountUsesExactIdentifiersAndExactNumericValues(t *testing
 	}
 }
 
+func TestPostgresReadOnlyDSNEnforcesSettingForURLAndKeywordForms(t *testing.T) {
+	for _, tc := range []struct{ name, dsn string }{
+		{"url", "postgres://reader:p%40ss@db.example.test/samples?sslmode=require&default_transaction_read_only=off"},
+		{"keyword", "host=db.example.test user=reader password='p ss' dbname=samples default_transaction_read_only=off"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := postgresReadOnlyDSN(tc.dsn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(tc.name, "url") {
+				parsed, err := url.Parse(got)
+				if err != nil || parsed.Query().Get("default_transaction_read_only") != "on" {
+					t.Fatalf("dsn = %q, parse error %v", got, err)
+				}
+				if parsed.User.Username() != "reader" || parsed.Query().Get("sslmode") != "require" {
+					t.Fatalf("other URL settings changed: %q", got)
+				}
+			} else if !strings.HasSuffix(got, "default_transaction_read_only='on'") || !strings.Contains(got, "password='p ss'") {
+				t.Fatalf("keyword DSN = %q", got)
+			}
+		})
+	}
+}
+
+func TestPostgresReadOnlyDSNRejectsOptionsOverrides(t *testing.T) {
+	for _, dsn := range []string{
+		"postgres://reader@db.example.test/samples?options=-cdefault_transaction_read_only%3Doff",
+		"host=db.example.test user=reader dbname=samples options='-c default_transaction_read_only=off'",
+	} {
+		got, err := postgresReadOnlyDSN(dsn)
+		if err == nil || got != "" || strings.Contains(err.Error(), "reader") || strings.Contains(err.Error(), "db.example") {
+			t.Errorf("postgresReadOnlyDSN(%q) = %q, %v; want safe refusal", dsn, got, err)
+		}
+	}
+}
+
 func TestNativePostgresDiscoveryUsesStableLogicalID(t *testing.T) {
-	schemas, err := discoverNativePostgresSchemas(context.Background(), nativeCatalogFixture{})
+	schemas, err := discoverNativePostgresSchemas(context.Background(), nativeCatalogFixture{}, nativeCatalogFixture{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -364,19 +364,28 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 	}
 	t.Cleanup(func() { _, _ = admin.Exec(`DROP SCHEMA IF EXISTS "ovdb Native" CASCADE`) })
 	for _, statement := range []string{
+		`CREATE SEQUENCE "ovdb Native"."side effect seq"`,
+		`CREATE FUNCTION "ovdb Native"."mutating read"() RETURNS bigint
+			LANGUAGE SQL VOLATILE AS $$ SELECT nextval('"ovdb Native"."side effect seq"') $$`,
+		`CREATE VIEW "ovdb Native"."Mutation Attempt" AS
+			SELECT "ovdb Native"."mutating read"() AS "Next Value"`,
 		`CREATE TABLE "ovdb Native"."Order Details" (
 			"Order ID" bigint PRIMARY KEY,
 			"Total Amount" numeric(24,6) NOT NULL,
 			"Created On" date NOT NULL,
 			"Status Name" text NOT NULL,
 			"Payload Data" jsonb NOT NULL,
-			"Binary Data" bytea NOT NULL
+			"Binary Data" bytea NOT NULL,
+			"Time Value" time,
+			"Time TZ Value" timetz,
+			"Timestamp Value" timestamp,
+			"Timestamp TZ Value" timestamptz
 		)`,
 		`CREATE TABLE "ovdb Native"."Order Events" (
 			"Event Name" text NOT NULL,
 			"Description Text" text NOT NULL
 		)`,
-		`INSERT INTO "ovdb Native"."Order Details" VALUES (
+		`INSERT INTO "ovdb Native"."Order Details" ("Order ID", "Total Amount", "Created On", "Status Name", "Payload Data", "Binary Data") VALUES (
 			9007199254740993,
 			123456789012345678.120000,
 			DATE '2025-03-04',
@@ -384,7 +393,7 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 			'{"n":9007199254740993}'::jsonb,
 			decode('00ff10', 'hex')
 		)`,
-		`INSERT INTO "ovdb Native"."Order Details" VALUES (
+		`INSERT INTO "ovdb Native"."Order Details" ("Order ID", "Total Amount", "Created On", "Status Name", "Payload Data", "Binary Data") VALUES (
 			9007199254740994,
 			1.000000,
 			DATE '2025-03-05',
@@ -428,19 +437,23 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	mutationViewID, err := schema.NativePostgresCollectionID(physicalSchema, "Mutation Attempt")
+	if err != nil {
+		t.Fatal(err)
+	}
 	canaryID, err := schema.NativePostgresCollectionID("public", "ovdb_canary")
 	if err != nil {
 		t.Fatal(err)
 	}
 	collections, err := native.Collections(t.Context())
-	if err != nil || len(collections) != 3 {
-		t.Fatalf("collections = %q, %v; want the two native relations and public canary", collections, err)
+	if err != nil || len(collections) != 4 {
+		t.Fatalf("collections = %q, %v; want the two native tables, side-effect view, and public canary", collections, err)
 	}
 	collectionIDs := make(map[string]bool, len(collections))
 	for _, collectionID := range collections {
 		collectionIDs[collectionID] = true
 	}
-	for _, wantID := range []string{id, eventID, canaryID} {
+	for _, wantID := range []string{id, eventID, mutationViewID, canaryID} {
 		if !collectionIDs[wantID] {
 			t.Errorf("discovered collections %q do not include %q", collections, wantID)
 		}
@@ -476,6 +489,17 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 	collection := described.Schemas.Collections[id]
 	if collection.Source.Schema != physicalSchema || collection.Source.Name != physicalTable || collection.Fields["Order ID"].NativeType != "bigint" || !collection.Fields["Order ID"].PrimaryKey {
 		t.Fatalf("native schema metadata = %+v", collection)
+	}
+	for field, wantType := range map[string]string{
+		"Created On":         "date",
+		"Time Value":         "time without time zone",
+		"Time TZ Value":      "time with time zone",
+		"Timestamp Value":    "timestamp without time zone",
+		"Timestamp TZ Value": "timestamp with time zone",
+	} {
+		if got := collection.Fields[field].NativeType; got != wantType {
+			t.Errorf("native type for %q = %q, want %q", field, got, wantType)
+		}
 	}
 	eventCollection := described.Schemas.Collections[eventID]
 	if eventCollection.Source.Schema != physicalSchema || eventCollection.Source.Name != "Order Events" || len(eventCollection.Fields) != 2 {
@@ -530,6 +554,65 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 	}
 	if len(keylessResult.Records) != 2 {
 		t.Fatalf("keyless query returned %d rows, want both duplicate rows: %s", len(keylessResult.Records), keylessRead.raw)
+	}
+	var beforeValue int64
+	var beforeCalled bool
+	if err := admin.QueryRow(`SELECT last_value, is_called FROM "ovdb Native"."side effect seq"`).Scan(&beforeValue, &beforeCalled); err != nil {
+		t.Fatal(err)
+	}
+	mutationRead := relHTTPPost(t, base, "/v1/databases/native/dtql", "", "from: {schema: 'ovdb Native', name: 'Mutation Attempt'}\nlimit: 1\n")
+	if mutationRead.status < http.StatusBadRequest {
+		t.Fatalf("volatile view unexpectedly succeeded in native read-only mount: %d %s", mutationRead.status, mutationRead.raw)
+	}
+	var afterValue int64
+	var afterCalled bool
+	if err := admin.QueryRow(`SELECT last_value, is_called FROM "ovdb Native"."side effect seq"`).Scan(&afterValue, &afterCalled); err != nil {
+		t.Fatal(err)
+	}
+	if beforeValue != afterValue || beforeCalled != afterCalled {
+		t.Fatalf("volatile view changed sequence state: before=(%d,%v) after=(%d,%v)", beforeValue, beforeCalled, afterValue, afterCalled)
+	}
+	const restrictedRole = `"ovdb native insert reader"`
+	if _, err := admin.Exec(`CREATE ROLE ` + restrictedRole + ` LOGIN PASSWORD 'test-only-password'`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := admin.Exec(`DROP OWNED BY ` + restrictedRole); err != nil {
+			t.Errorf("drop privileges owned by test role: %v", err)
+		}
+		if _, err := admin.Exec(`DROP ROLE IF EXISTS ` + restrictedRole); err != nil {
+			t.Errorf("drop test role: %v", err)
+		}
+	})
+	for _, grant := range []string{
+		`GRANT USAGE ON SCHEMA "ovdb Native" TO ` + restrictedRole,
+		`GRANT SELECT ON "ovdb Native"."Order Events" TO ` + restrictedRole,
+		`GRANT INSERT ON "ovdb Native"."Order Details" TO ` + restrictedRole,
+	} {
+		if _, err := admin.Exec(grant); err != nil {
+			t.Fatal(err)
+		}
+	}
+	restrictedURL, err := url.Parse(os.Getenv(pgITDSNEnv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restrictedURL.User = url.UserPassword("ovdb native insert reader", "test-only-password")
+	restrictedQuery := restrictedURL.Query()
+	restrictedQuery.Set("application_name", "ovdb-it-select-visibility")
+	restrictedURL.RawQuery = restrictedQuery.Encode()
+	t.Setenv(pgITMountDSNEnv, restrictedURL.String())
+	restricted, err := mount.File(path)
+	if err != nil {
+		t.Fatalf("mount SELECT-restricted role: %v", err)
+	}
+	t.Cleanup(func() { _ = restricted.Close() })
+	restrictedCollections, err := restricted.Collections(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(restrictedCollections, []string{eventID}) {
+		t.Fatalf("SELECT-restricted role collections = %q, want only %q", restrictedCollections, eventID)
 	}
 	write := relHTTPDo(t, base, http.MethodPost, "/v1/databases/native/records/"+url.PathEscape(id)+"/new", "", `{"Status Name":"write"}`, map[string]string{"Content-Type": "application/json"})
 	if write.status < http.StatusBadRequest {

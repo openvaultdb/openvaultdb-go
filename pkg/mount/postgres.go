@@ -2,8 +2,10 @@ package mount
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -14,6 +16,8 @@ import (
 	"github.com/dal-go/dalgo/dbschema"
 	"github.com/dal-go/dalgo2postgres"
 	"github.com/dal-go/dalgo2sql"
+	"github.com/jackc/pgx/v5"
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/manifest"
 	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
@@ -59,6 +63,13 @@ func openPostgresWith(m *manifest.Manifest, open postgresOpener) (dal.DB, []sche
 	if dsn == "" {
 		return nil, nil, fmt.Errorf("postgres DSN not set: expected connection string in $%s", envVar)
 	}
+	if nativeReadOnly {
+		var err error
+		dsn, err = postgresReadOnlyDSN(dsn)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
 	recordsets := map[string]*dalgo2sql.Recordset{}
 	if !nativeReadOnly && m.Schemas != nil {
 		names := make([]string, 0, len(m.Schemas.Collections))
@@ -102,15 +113,57 @@ func openPostgresWith(m *manifest.Manifest, open postgresOpener) (dal.DB, []sche
 			return nil, nil, errors.New("PostgreSQL driver does not provide native schema discovery")
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		nativeSchemas, err := discoverNativePostgresSchemas(ctx, catalog)
+		visibilityDB, openErr := sql.Open("pgx", dsn)
+		if openErr != nil {
+			cancel()
+			_ = db.Close()
+			return nil, nil, errors.New("could not check PostgreSQL read privileges")
+		}
+		nativeSchemas, err := discoverNativePostgresSchemas(ctx, catalog, postgresSelectVisibility{db: visibilityDB})
+		closeErr := visibilityDB.Close()
 		cancel()
 		if err != nil {
 			_ = db.Close()
 			return nil, nil, fmt.Errorf("failed to discover native PostgreSQL schema: %w", err)
 		}
+		if closeErr != nil {
+			_ = db.Close()
+			return nil, nil, errors.New("could not finish checking PostgreSQL read privileges")
+		}
 		m.Schemas = nativeSchemas
 	}
 	return db, []schema.Mode{schema.ModeStrict}, nil
+}
+
+// postgresReadOnlyDSN forces the PostgreSQL session default to read-only for a
+// native read-only mount. This protects structured SELECTs that invoke volatile
+// functions or read views, even when the configured role has broader grants.
+// The caller's other connection settings remain intact. PostgreSQL's `options`
+// parameter can override startup settings, so it is refused for this profile.
+func postgresReadOnlyDSN(dsn string) (string, error) {
+	config, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		// The adapter below reports connection-string errors without exposing the
+		// DSN. Keep this early check equally non-disclosing.
+		return "", errors.New("native read-only PostgreSQL mounts require a valid PostgreSQL connection string")
+	}
+	if strings.TrimSpace(config.RuntimeParams["options"]) != "" {
+		return "", errors.New("native read-only PostgreSQL mounts do not support the PostgreSQL options connection parameter")
+	}
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		parsed, err := url.Parse(dsn)
+		if err != nil {
+			return "", errors.New("native read-only PostgreSQL mounts require a valid PostgreSQL connection string")
+		}
+		query := parsed.Query()
+		query.Set("default_transaction_read_only", "on")
+		parsed.RawQuery = query.Encode()
+		return parsed.String(), nil
+	}
+	// pgx's keyword/value parser keeps the last occurrence of a setting. Appending
+	// the enforced value therefore overrides an earlier `off` without rewriting
+	// or re-encoding credentials and connection settings.
+	return dsn + " default_transaction_read_only='on'", nil
 }
 
 type nativePostgresCatalog interface {
@@ -119,22 +172,60 @@ type nativePostgresCatalog interface {
 	DescribeCollection(context.Context, *dal.CollectionRef) (*dbschema.CollectionDef, error)
 }
 
+type nativePostgresSelectVisibility interface {
+	SelectableRelations(context.Context, string) (map[string]bool, error)
+}
+
+type postgresSelectVisibility struct{ db *sql.DB }
+
+func (v postgresSelectVisibility) SelectableRelations(ctx context.Context, schemaName string) (map[string]bool, error) {
+	rows, err := v.db.QueryContext(ctx, `
+		SELECT c.relname, has_table_privilege(current_user, c.oid, 'SELECT')
+		FROM pg_catalog.pg_class AS c
+		JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+		WHERE n.nspname = $1 AND c.relkind IN ('r', 'p', 'v', 'm', 'f')`, schemaName)
+	if err != nil {
+		return nil, errors.New("could not check PostgreSQL relation read privileges")
+	}
+	defer func() { _ = rows.Close() }()
+	selectable := make(map[string]bool)
+	for rows.Next() {
+		var relation string
+		var canSelect bool
+		if err := rows.Scan(&relation, &canSelect); err != nil {
+			return nil, errors.New("could not read PostgreSQL relation privileges")
+		}
+		selectable[relation] = canSelect
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errors.New("could not read PostgreSQL relation privileges")
+	}
+	return selectable, nil
+}
+
 // discoverNativePostgresSchemas maps the provider catalog into the public
 // logical schema while retaining exact physical names separately. It never
 // uses those names to build SQL; structured queries pass the tuple to DALgo.
-func discoverNativePostgresSchemas(ctx context.Context, catalog nativePostgresCatalog) (*schema.Schemas, error) {
+func discoverNativePostgresSchemas(ctx context.Context, catalog nativePostgresCatalog, visibility nativePostgresSelectVisibility) (*schema.Schemas, error) {
 	schemas, err := catalog.ListSchemas(ctx)
 	if err != nil {
 		return nil, errors.New("could not list PostgreSQL schemas")
 	}
 	result := &schema.Schemas{Collections: map[string]schema.Collection{}}
 	for _, schemaName := range schemas {
+		selectable, err := visibility.SelectableRelations(ctx, schemaName)
+		if err != nil {
+			return nil, errors.New("could not check PostgreSQL relation read privileges")
+		}
 		refs, err := catalog.ListSchemaCollections(ctx, schemaName)
 		if err != nil {
 			return nil, errors.New("could not list PostgreSQL relations")
 		}
 		for _, ref := range refs {
 			if ref.Schema() != schemaName || ref.Parent() != nil || ref.Name() == "" {
+				continue
+			}
+			if !selectable[ref.Name()] {
 				continue
 			}
 			id, err := schema.NativePostgresCollectionID(schemaName, ref.Name())

@@ -17,10 +17,13 @@ storage:
 
 The environment variable contains the PostgreSQL connection string. It is not
 part of the manifest or API. Use a database role that has only the catalog and
-`SELECT` privileges the mount needs. `read_only: true` is an OVDB capability
-boundary: keyed record reads and every write operation are refused, and opening
-the mount does not create or alter tables. It does not change the privileges of
-the database role.
+`SELECT` privileges the mount needs. OVDB starts native read-only sessions with
+`default_transaction_read_only=on`, refuses the `options` connection parameter
+that could override it, and only advertises relations for which the role has
+`SELECT`. Keyed record reads and every write API are refused, and opening the
+mount does not create or alter tables. The session setting is defense in depth;
+least-privilege database grants remain necessary, especially for views or
+functions owned by another role.
 
 ## Discovery and collection IDs
 
