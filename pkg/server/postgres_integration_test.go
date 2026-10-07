@@ -386,6 +386,12 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 			"Event Name" text NOT NULL,
 			"Description Text" text NOT NULL
 		)`,
+		`CREATE TABLE "ovdb Native"."Type Conflict" (
+			"Status Name" text NOT NULL,
+			"Created On" timestamptz NOT NULL,
+			"Payload Data" text NOT NULL,
+			"Binary Data" text NOT NULL
+		)`,
 		`INSERT INTO "ovdb Native"."Order Details" ("Order ID", "Total Amount", "Unbounded Amount", "Created On", "Status Name", "Payload Data", "Binary Data") VALUES (
 			9007199254740993,
 			123456789012345678.120000,
@@ -405,6 +411,7 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 			decode('01', 'hex')
 		)`,
 		`INSERT INTO "ovdb Native"."Order Events" VALUES ('open', 'same'), ('open', 'same')`,
+		`INSERT INTO "ovdb Native"."Type Conflict" VALUES ('keep', TIMESTAMPTZ '2025-03-04 09:30:00+01', '{"n":3}', 'text bytes')`,
 	} {
 		if _, err := admin.Exec(statement); err != nil {
 			t.Fatal(err)
@@ -449,14 +456,21 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 		t.Fatal(err)
 	}
 	collections, err := native.Collections(t.Context())
-	if err != nil || len(collections) != 4 {
-		t.Fatalf("collections = %q, %v; want the two native tables, side-effect view, and public canary", collections, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflictID, err := schema.NativePostgresCollectionID(physicalSchema, "Type Conflict")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err != nil || len(collections) != 5 {
+		t.Fatalf("collections = %q, %v; want three native tables, side-effect view, and public canary", collections, err)
 	}
 	collectionIDs := make(map[string]bool, len(collections))
 	for _, collectionID := range collections {
 		collectionIDs[collectionID] = true
 	}
-	for _, wantID := range []string{id, eventID, mutationViewID, canaryID} {
+	for _, wantID := range []string{id, eventID, conflictID, mutationViewID, canaryID} {
 		if !collectionIDs[wantID] {
 			t.Errorf("discovered collections %q do not include %q", collections, wantID)
 		}
@@ -562,6 +576,91 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 	payloadDecoder.UseNumber()
 	if err := payloadDecoder.Decode(&payload); err != nil || string(payload["n"]) != "9007199254740993" {
 		t.Errorf("Payload Data = %s, decode error %v; want JSON number lexeme 9007199254740993", data["Payload Data"], err)
+	}
+	assertProjectedNativeValues := func(name, doc string, outputNames map[string]string) {
+		t.Helper()
+		resp := relHTTPPost(t, base, "/v1/databases/native/dtql", "", doc)
+		if resp.status != http.StatusOK {
+			t.Fatalf("%s: %d %s", name, resp.status, resp.raw)
+		}
+		var projected struct {
+			Records []struct {
+				Data map[string]json.RawMessage `json:"data"`
+			} `json:"records"`
+		}
+		if err := json.Unmarshal([]byte(resp.raw), &projected); err != nil {
+			t.Fatalf("%s: decode response: %v: %s", name, err, resp.raw)
+		}
+		if len(projected.Records) != 1 {
+			t.Fatalf("%s: records = %d, want one: %s", name, len(projected.Records), resp.raw)
+		}
+		row := projected.Records[0].Data
+		for outputName, sourceField := range outputNames {
+			if got, want := string(row[outputName]), string(data[sourceField]); got != want {
+				t.Errorf("%s: %s = %s, want source %s value %s", name, outputName, got, sourceField, want)
+			}
+		}
+		payloadOutput := ""
+		for outputName, sourceField := range outputNames {
+			if sourceField == "Payload Data" {
+				payloadOutput = outputName
+				break
+			}
+		}
+		var decoded map[string]json.Number
+		decoder := json.NewDecoder(bytes.NewReader(row[payloadOutput]))
+		decoder.UseNumber()
+		if err := decoder.Decode(&decoded); err != nil || string(decoded["n"]) != "9007199254740993" {
+			t.Errorf("%s: payload = %s, decode error %v; want JSON number lexeme 9007199254740993", name, row[payloadOutput], err)
+		}
+	}
+	const nativeFilter = "where: {op: '==', left: {field: 'Status Name', source: o}, right: {value: keep}}\n"
+	assertProjectedNativeValues("aliased projection", "from: {schema: 'ovdb Native', name: 'Order Details', alias: o}\n"+nativeFilter+
+		"columns: [{field: 'Order ID', source: o, as: order_id}, {field: 'Created On', source: o, as: created}, {field: 'Payload Data', source: o, as: payload}, {field: 'Binary Data', source: o, as: binary}]\nlimit: 5\n",
+		map[string]string{"order_id": "Order ID", "created": "Created On", "payload": "Payload Data", "binary": "Binary Data"})
+	assertProjectedNativeValues("self-join projection", "from:\n  schema: 'ovdb Native'\n  name: 'Order Details'\n  alias: o\n  joins:\n    - type: inner\n      from: {schema: 'ovdb Native', name: 'Order Details', alias: i}\n      on:\n        - {left: {field: 'Order ID', source: o}, op: '==', right: {field: 'Order ID', source: i}}\n"+nativeFilter+
+		"columns: [{field: 'Order ID', source: o, as: order_id}, {field: 'Created On', source: o, as: created}, {field: 'Payload Data', source: o, as: payload}, {field: 'Binary Data', source: o, as: binary}]\nlimit: 5\n",
+		map[string]string{"order_id": "Order ID", "created": "Created On", "payload": "Payload Data", "binary": "Binary Data"})
+	assertProjectedNativeValues("derived projection", "from:\n  query:\n    as: d\n    from: {schema: 'ovdb Native', name: 'Order Details', alias: o}\n    "+strings.ReplaceAll(nativeFilter, "\n", "\n    ")+
+		"    columns: [{field: 'Order ID', source: o, as: order_id}, {field: 'Created On', source: o, as: created}, {field: 'Payload Data', source: o, as: payload}, {field: 'Binary Data', source: o, as: binary}]\n"+
+		"columns: [{field: order_id, source: d, as: order_key}, {field: created, source: d, as: created_at}, {field: payload, source: d, as: payload_json}, {field: binary, source: d, as: blob}]\nlimit: 5\n",
+		map[string]string{"order_key": "Order ID", "created_at": "Created On", "payload_json": "Payload Data", "blob": "Binary Data"})
+	wildcardJoin := relHTTPPost(t, base, "/v1/databases/native/dtql", "", "from:\n  schema: 'ovdb Native'\n  name: 'Order Details'\n  alias: o\n  joins:\n    - type: inner\n      from: {schema: 'ovdb Native', name: 'Type Conflict', alias: c}\n      on:\n        - {left: {field: 'Status Name', source: o}, op: '==', right: {field: 'Status Name', source: c}}\nwhere: {op: '==', left: {field: 'Status Name', source: o}, right: {value: keep}}\ncolumns: [{wildcard: {exclude: [none]}}]\nlimit: 5\n")
+	if wildcardJoin.status != http.StatusOK {
+		t.Fatalf("wildcard join with duplicate native field names: %d %s", wildcardJoin.status, wildcardJoin.raw)
+	}
+	var wildcardResult struct {
+		Records []struct {
+			Data map[string]json.RawMessage `json:"data"`
+		} `json:"records"`
+	}
+	if err := json.Unmarshal([]byte(wildcardJoin.raw), &wildcardResult); err != nil || len(wildcardResult.Records) != 1 {
+		t.Fatalf("wildcard join result: decode=%v records=%d body=%s", err, len(wildcardResult.Records), wildcardJoin.raw)
+	}
+	wildcardData := wildcardResult.Records[0].Data
+	for field, want := range map[string]string{
+		"Created On":   `"2025-03-04T08:30:00Z"`,
+		"Payload Data": `"{\"n\":3}"`,
+		"Binary Data":  `"text bytes"`,
+	} {
+		if got := string(wildcardData[field]); got != want {
+			t.Errorf("rightmost wildcard field %q = %s, want %s from the joined source", field, got, want)
+		}
+	}
+	aggregate := relHTTPPost(t, base, "/v1/databases/native/dtql", "", "from: {schema: 'ovdb Native', name: 'Order Details'}\ncolumns: [{aggregate: {function: max, args: [{field: 'Order ID'}]}, as: max_order_id}]\n")
+	if aggregate.status != http.StatusOK {
+		t.Fatalf("native wide-integer aggregate: %d %s", aggregate.status, aggregate.raw)
+	}
+	var aggregateResult struct {
+		Records []struct {
+			Data map[string]json.RawMessage `json:"data"`
+		} `json:"records"`
+	}
+	if err := json.Unmarshal([]byte(aggregate.raw), &aggregateResult); err != nil || len(aggregateResult.Records) != 1 {
+		t.Fatalf("native aggregate result: decode=%v records=%d body=%s", err, len(aggregateResult.Records), aggregate.raw)
+	}
+	if got, want := string(aggregateResult.Records[0].Data["max_order_id"]), `"9007199254740994"`; got != want {
+		t.Errorf("native max(Order ID) = %s, want JS-safe decimal string %s", got, want)
 	}
 	keylessDoc := "from: {schema: 'ovdb Native', name: 'Order Events'}\nwhere: {op: '==', left: {field: 'Event Name'}, right: {value: open}}\nlimit: 5\n"
 	keylessRead := relHTTPPost(t, base, "/v1/databases/native/dtql", "", keylessDoc)

@@ -5,6 +5,11 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/dal-go/dalgo/dal"
+	"github.com/openvaultdb/openvaultdb-go/pkg/core"
+	"github.com/openvaultdb/openvaultdb-go/pkg/manifest"
+	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 )
 
 func TestNativePostgresJSONSafeIntegers(t *testing.T) {
@@ -32,6 +37,23 @@ func TestNativePostgresJSONSafeIntegers(t *testing.T) {
 	}
 	if !reflect.DeepEqual(input["wideSigned"], int64(maxJavaScriptSafeInteger+1)) {
 		t.Fatal("conversion modified the source row")
+	}
+}
+
+func TestNativePostgresJSONSafeIntegersCoverScalarAndTypedArrayResults(t *testing.T) {
+	if got := nativePostgresJSONSafeValue(int64(9007199254740993)); got != "9007199254740993" {
+		t.Fatalf("unsafe scalar int64 = %#v, want decimal string", got)
+	}
+	if got := nativePostgresJSONSafeValue(uint64(9007199254740993)); got != "9007199254740993" {
+		t.Fatalf("unsafe scalar uint64 = %#v, want decimal string", got)
+	}
+	got := nativePostgresJSONSafeValue([]int64{1, 9007199254740993}).([]any)
+	if !reflect.DeepEqual(got, []any{int64(1), "9007199254740993"}) {
+		t.Fatalf("typed integer array = %#v", got)
+	}
+	raw := json.RawMessage(`{"n":9007199254740993}`)
+	if got := nativePostgresJSONSafeValue(raw); !reflect.DeepEqual(got, raw) {
+		t.Fatalf("raw JSON was changed: %#v", got)
 	}
 }
 
@@ -85,4 +107,111 @@ func TestNativePostgresJSONValuesEmitValidatedJSONDocuments(t *testing.T) {
 	if got["bad_json"] != "not json" || got["plain_text"] != input["plain_text"] {
 		t.Fatalf("non-JSON values were changed: %#v", got)
 	}
+}
+
+func TestNativePostgresProjectionTypesFollowAliasesJoinsAndSubqueries(t *testing.T) {
+	db := nativePostgresProjectionTestDatabase(t)
+	endpoint := db
+	databases := map[string]*core.Database{"samples": db}
+	ref := func(alias string) dal.CollectionRef {
+		return dal.NewDatabaseCollectionRef("samples", "sales data", "Order Details", alias)
+	}
+	columns := []dal.Column{
+		{Expression: dal.NewFieldRef("o", "Order ID"), Alias: "order_id"},
+		{Expression: dal.NewFieldRef("o", "Created On"), Alias: "created"},
+		{Expression: dal.NewFieldRef("o", "Payload Data"), Alias: "payload"},
+	}
+	t.Run("aliased direct projection", func(t *testing.T) {
+		query := dal.From(ref("o")).NewQuery().SelectColumns(columns...)
+		if got, want := nativePostgresProjectionTypes(query, endpoint, databases), map[string]string{"order_id": "bigint", "created": "date", "payload": "jsonb"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("projection types = %#v, want %#v", got, want)
+		}
+	})
+	t.Run("multi-source self-join projection", func(t *testing.T) {
+		join := dal.NewJoinedSource(ref("i"), dal.JoinInner, dal.NewComparison(dal.NewFieldRef("o", "Order ID"), dal.Equal, dal.NewFieldRef("i", "Order ID")))
+		query := dal.From(ref("o")).Join(join).NewQuery().SelectColumns(columns...)
+		if got, want := nativePostgresProjectionTypes(query, endpoint, databases), map[string]string{"order_id": "bigint", "created": "date", "payload": "jsonb"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("join projection types = %#v, want %#v", got, want)
+		}
+	})
+	t.Run("derived and scalar subquery projection", func(t *testing.T) {
+		inner := dal.From(ref("o")).NewQuery().SelectColumns(columns...)
+		derived := dal.NewQuerySource(inner, "d")
+		scalarInner := dal.From(ref("o")).NewQuery().SelectColumns(
+			dal.Column{Expression: dal.NewFieldRef("o", "Created On"), Alias: "scalar_created"},
+		)
+		query := dal.From(derived).NewQuery().SelectColumns(
+			dal.Column{Expression: dal.NewFieldRef("d", "created"), Alias: "created_at"},
+			dal.Column{Expression: dal.NewQueryExpression(scalarInner, "scalar_created"), Alias: "scalar_date"},
+		)
+		if got, want := nativePostgresProjectionTypes(query, endpoint, databases), map[string]string{"created_at": "date", "scalar_date": "date"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("derived projection types = %#v, want %#v", got, want)
+		}
+	})
+	t.Run("rightmost wildcard field matches DALgo merge precedence", func(t *testing.T) {
+		conflictRef := dal.NewDatabaseCollectionRef("samples", "sales data", "Type Conflict", "c")
+		join := dal.NewJoinedSource(conflictRef, dal.JoinInner, dal.NewComparison(
+			dal.NewFieldRef("o", "Status Name"), dal.Equal, dal.NewFieldRef("c", "Status Name"),
+		))
+		query := dal.From(ref("o")).Join(join).NewQuery().SelectColumns(
+			dal.Column{Wildcard: &dal.WildcardProjection{}},
+		)
+		got := nativePostgresProjectionTypes(query, endpoint, databases)
+		for field, want := range map[string]string{
+			"Created On":   "timestamp with time zone",
+			"Payload Data": "text",
+			"Binary Data":  "text",
+		} {
+			if got[field] != want {
+				t.Errorf("wildcard type for duplicate field %q = %q, want rightmost source type %q", field, got[field], want)
+			}
+		}
+		row := nativePostgresJSONValues(map[string]any{
+			"Created On": time.Date(2025, 3, 4, 9, 30, 0, 0, time.FixedZone("UTC+1", 3600)),
+		}, got)
+		if got, want := row["Created On"], "2025-03-04T08:30:00Z"; got != want {
+			t.Errorf("rightmost timestamptz value = %#v, want %q", got, want)
+		}
+	})
+}
+
+func nativePostgresProjectionTestDatabase(t *testing.T) *core.Database {
+	t.Helper()
+	id, err := schema.NativePostgresCollectionID("sales data", "Order Details")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflictID, err := schema.NativePostgresCollectionID("sales data", "Type Conflict")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := &manifest.Manifest{
+		Database: manifest.Database{ID: "samples", SchemaMode: schema.ModeStrict},
+		Storage:  manifest.Storage{Engine: "postgres", Postgres: &manifest.PostgresOptions{ReadOnly: true}},
+		Schemas: &schema.Schemas{Collections: map[string]schema.Collection{
+			id: {
+				Source: &schema.NativeCollectionSource{Schema: "sales data", Name: "Order Details"},
+				Fields: map[string]schema.Field{
+					"Order ID":     {Type: schema.TypeInteger, NativeType: "bigint"},
+					"Created On":   {Type: schema.TypeString, NativeType: "date"},
+					"Payload Data": {Type: schema.TypeString, NativeType: "jsonb"},
+				},
+			},
+			conflictID: {
+				Source: &schema.NativeCollectionSource{Schema: "sales data", Name: "Type Conflict"},
+				Fields: map[string]schema.Field{
+					"Status Name":  {Type: schema.TypeString, NativeType: "text"},
+					"Created On":   {Type: schema.TypeString, NativeType: "timestamp with time zone"},
+					"Payload Data": {Type: schema.TypeString, NativeType: "text"},
+					"Binary Data":  {Type: schema.TypeString, NativeType: "text"},
+				},
+			},
+		}},
+	}
+	db, err := core.Open(manifest, nil, []schema.Mode{schema.ModeStrict}, t.TempDir()+"/inferred.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
 }

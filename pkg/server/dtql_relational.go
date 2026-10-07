@@ -211,19 +211,26 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	if cacheControl != "no-store" {
 		w.Header().Add("Vary", strings.Join(pagingHeaders, ", "))
 	}
+	nativePostgres := false
+	for _, source := range profile.Sources {
+		db := endpoint
+		if source.Database != "" {
+			db = databases[source.Database]
+		}
+		if db != nil && db.NativePostgresReadOnly() {
+			nativePostgres = true
+			break
+		}
+	}
+	nativeTypes := nativePostgresProjectionTypes(query, endpoint, databases)
 	records := make([]relationalRecord, len(result.Records))
 	for i, rec := range result.Records {
 		data := rec.Data()
-		if len(profile.Sources) == 1 {
-			nativeDB := endpoint
-			if sourcedDB := databases[profile.Sources[0].Database]; sourcedDB != nil {
-				nativeDB = sourcedDB
-			}
+		if nativePostgres {
 			if fields, ok := data.(map[string]any); ok {
-				if nativeDB != nil && nativeDB.NativePostgresReadOnly() {
-					collection := nativeDB.Manifest.Schemas.Collection(profile.Sources[0].Collection)
-					data = nativePostgresJSONValues(fields, nativePostgresFieldTypes(collection))
-				}
+				data = nativePostgresJSONValues(fields, nativeTypes)
+			} else {
+				data = nativePostgresJSONSafeValue(data)
 			}
 		}
 		records[i] = relationalRecord{Data: data}
