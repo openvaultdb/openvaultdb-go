@@ -2,10 +2,14 @@ package mount
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/url"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/dalgo/dbschema"
@@ -96,6 +100,7 @@ func TestDiscoverNativePostgresSchemasPreservesPhysicalNamesAndTypes(t *testing.
 }
 
 type excludedRelationCatalogFixture struct {
+	mu        sync.Mutex
 	described []schema.NativeCollectionSource
 }
 
@@ -115,6 +120,8 @@ func (*excludedRelationCatalogFixture) SelectableRelations(_ context.Context, sc
 }
 
 func (f *excludedRelationCatalogFixture) DescribeCollection(_ context.Context, ref *dal.CollectionRef) (*dbschema.CollectionDef, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.described = append(f.described, schema.NativeCollectionSource{Schema: ref.Schema(), Name: ref.Name()})
 	return &dbschema.CollectionDef{Name: ref.Name(), Fields: []dbschema.FieldDef{{Name: "Name", Type: dbschema.String}}}, nil
 }
@@ -146,6 +153,216 @@ func TestNativePostgresRelationExclusionIsQualifiedAndAppliedBeforeDescription(t
 		if described == (schema.NativeCollectionSource{Schema: "demodb", Name: "_import_manifest"}) {
 			t.Fatal("excluded relation was described by the provider catalog")
 		}
+	}
+}
+
+type concurrentNativeCatalogFixture struct {
+	refs      []dal.CollectionRef
+	started   chan string
+	release   <-chan struct{}
+	failName  string
+	failErr   error
+	failGate  <-chan struct{}
+	mu        sync.Mutex
+	active    int
+	maxActive int
+	cancelled int
+}
+
+func newConcurrentNativeCatalogFixture(count int, release <-chan struct{}) *concurrentNativeCatalogFixture {
+	f := &concurrentNativeCatalogFixture{started: make(chan string, count), release: release}
+	for i := range count {
+		f.refs = append(f.refs, dal.NewQualifiedRootCollectionRef("sales", fmt.Sprintf("relation-%02d", i), ""))
+	}
+	return f
+}
+
+func (f *concurrentNativeCatalogFixture) ListSchemas(context.Context) ([]string, error) {
+	return []string{"sales"}, nil
+}
+
+func (f *concurrentNativeCatalogFixture) ListSchemaCollections(context.Context, string) ([]dal.CollectionRef, error) {
+	return f.refs, nil
+}
+
+func (f *concurrentNativeCatalogFixture) SelectableRelations(context.Context, string) (map[string]bool, error) {
+	selectable := make(map[string]bool, len(f.refs))
+	for _, ref := range f.refs {
+		selectable[ref.Name()] = true
+	}
+	return selectable, nil
+}
+
+func (f *concurrentNativeCatalogFixture) DescribeCollection(ctx context.Context, ref *dal.CollectionRef) (*dbschema.CollectionDef, error) {
+	f.mu.Lock()
+	f.active++
+	if f.active > f.maxActive {
+		f.maxActive = f.active
+	}
+	f.mu.Unlock()
+	defer func() {
+		f.mu.Lock()
+		f.active--
+		f.mu.Unlock()
+	}()
+	f.started <- ref.Name()
+	if ref.Name() == f.failName {
+		if f.failGate != nil {
+			select {
+			case <-f.failGate:
+			case <-ctx.Done():
+				f.mu.Lock()
+				f.cancelled++
+				f.mu.Unlock()
+				return nil, ctx.Err()
+			}
+		}
+		return nil, f.failErr
+	}
+	select {
+	case <-f.release:
+		return &dbschema.CollectionDef{Name: ref.Name(), Fields: []dbschema.FieldDef{{Name: "Name", Type: dbschema.String}}}, nil
+	case <-ctx.Done():
+		f.mu.Lock()
+		f.cancelled++
+		f.mu.Unlock()
+		return nil, ctx.Err()
+	}
+}
+
+func TestDiscoverNativePostgresDescriptionsUseBoundedConcurrencyAndPreserveInventory(t *testing.T) {
+	const relationCount = nativePostgresDescribeConcurrency + 3
+	release := make(chan struct{})
+	catalog := newConcurrentNativeCatalogFixture(relationCount, release)
+	type result struct {
+		schemas *schema.Schemas
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		got, err := discoverNativePostgresSchemas(context.Background(), catalog, catalog)
+		done <- result{schemas: got, err: err}
+	}()
+
+	for range nativePostgresDescribeConcurrency {
+		select {
+		case <-catalog.started:
+		case <-time.After(time.Second):
+			t.Fatal("discovery did not start the configured number of parallel descriptions")
+		}
+	}
+	select {
+	case relation := <-catalog.started:
+		t.Fatalf("description concurrency exceeded %d; started %s", nativePostgresDescribeConcurrency, relation)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(release)
+
+	var got result
+	select {
+	case got = <-done:
+	case <-time.After(time.Second):
+		t.Fatal("discovery did not finish after releasing descriptions")
+	}
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	catalog.mu.Lock()
+	maxActive := catalog.maxActive
+	catalog.mu.Unlock()
+	if maxActive != nativePostgresDescribeConcurrency {
+		t.Fatalf("maximum concurrent descriptions = %d, want %d", maxActive, nativePostgresDescribeConcurrency)
+	}
+	if len(got.schemas.Collections) != relationCount {
+		t.Fatalf("discovered collection count = %d, want %d", len(got.schemas.Collections), relationCount)
+	}
+	for _, ref := range catalog.refs {
+		id, err := schema.NativePostgresCollectionID(ref.Schema(), ref.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		collection, ok := got.schemas.Collections[id]
+		if !ok || collection.Source == nil || collection.Source.Schema != ref.Schema() || collection.Source.Name != ref.Name() {
+			t.Errorf("relation %q.%q was not returned in its original position mapping: %+v", ref.Schema(), ref.Name(), collection)
+		}
+	}
+}
+
+func TestDiscoverNativePostgresDescriptionFailureCancelsWorkersAndPreservesCause(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	failGate := make(chan struct{})
+	const databaseError = "private-driver-error-marker"
+	cause := errors.New(databaseError)
+	catalog := newConcurrentNativeCatalogFixture(nativePostgresDescribeConcurrency*2, release)
+	catalog.failName = catalog.refs[nativePostgresDescribeConcurrency-1].Name()
+	catalog.failErr = cause
+	catalog.failGate = failGate
+	type result struct {
+		schemas *schema.Schemas
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		got, err := discoverNativePostgresSchemas(context.Background(), catalog, catalog)
+		done <- result{schemas: got, err: err}
+	}()
+	for range nativePostgresDescribeConcurrency {
+		select {
+		case <-catalog.started:
+		case <-time.After(time.Second):
+			t.Fatal("discovery did not start the configured workers before failure")
+		}
+	}
+	close(failGate)
+	var got result
+	select {
+	case got = <-done:
+	case <-time.After(time.Second):
+		t.Fatal("discovery did not return after canceling workers")
+	}
+	if got.err == nil || got.schemas != nil {
+		t.Fatalf("discovery = %v, %v; want no partial catalogue and an error", got.schemas, got.err)
+	}
+	if !errors.Is(got.err, cause) {
+		t.Fatalf("discovery error does not preserve the provider cause: %v", got.err)
+	}
+	if errors.Is(got.err, context.DeadlineExceeded) {
+		t.Fatalf("provider error was mislabeled as a deadline: %v", got.err)
+	}
+	if strings.Contains(got.err.Error(), databaseError) || !strings.Contains(got.err.Error(), `"sales"."relation-03"`) {
+		t.Fatalf("discovery error is not safely contextualized: %v", got.err)
+	}
+	catalog.mu.Lock()
+	cancelled, maxActive := catalog.cancelled, catalog.maxActive
+	catalog.mu.Unlock()
+	if cancelled == 0 {
+		t.Fatal("an error did not cancel in-flight relation descriptions")
+	}
+	if maxActive > nativePostgresDescribeConcurrency {
+		t.Fatalf("maximum concurrent descriptions = %d, exceeds bound %d", maxActive, nativePostgresDescribeConcurrency)
+	}
+}
+
+func TestDiscoverNativePostgresDeadlineErrorPreservesErrorsIs(t *testing.T) {
+	release := make(chan struct{})
+	catalog := newConcurrentNativeCatalogFixture(1, release)
+	catalog.failName = catalog.refs[0].Name()
+	catalog.failErr = context.DeadlineExceeded
+	_, err := discoverNativePostgresSchemas(context.Background(), catalog, catalog)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("discovery deadline error = %v, want errors.Is(context.DeadlineExceeded)", err)
+	}
+}
+
+func TestDiscoverNativePostgresDeadlineRemainsDiscoverable(t *testing.T) {
+	release := make(chan struct{})
+	catalog := newConcurrentNativeCatalogFixture(nativePostgresDescribeConcurrency, release)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := discoverNativePostgresSchemas(ctx, catalog, catalog)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled discovery error = %v, want errors.Is(context.Canceled)", err)
 	}
 }
 

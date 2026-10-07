@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -190,6 +191,36 @@ type nativePostgresSelectVisibility interface {
 	SelectableRelations(context.Context, string) (map[string]bool, error)
 }
 
+// Native catalog descriptions run concurrently because each relation requires
+// several metadata round trips. Keep the pool small and fixed so broad schemas
+// fit the mount's single discovery deadline without creating one connection per
+// relation.
+const nativePostgresDescribeConcurrency = 4
+
+type nativePostgresRelation struct {
+	schema string
+	ref    dal.CollectionRef
+	id     string
+}
+
+type nativePostgresDescribeResult struct {
+	definition *dbschema.CollectionDef
+	err        error
+	skipped    bool
+}
+
+type nativePostgresDescribeError struct {
+	schema   string
+	relation string
+	cause    error
+}
+
+func (e *nativePostgresDescribeError) Error() string {
+	return fmt.Sprintf("could not describe PostgreSQL relation %q.%q", e.schema, e.relation)
+}
+
+func (e *nativePostgresDescribeError) Unwrap() error { return e.cause }
+
 type postgresSelectVisibility struct{ db *sql.DB }
 
 func (v postgresSelectVisibility) SelectableRelations(ctx context.Context, schemaName string) (map[string]bool, error) {
@@ -229,7 +260,7 @@ func discoverNativePostgresSchemasExcluding(ctx context.Context, catalog nativeP
 	if err != nil {
 		return nil, errors.New("could not list PostgreSQL schemas")
 	}
-	result := &schema.Schemas{Collections: map[string]schema.Collection{}}
+	var relations []nativePostgresRelation
 	for _, schemaName := range schemas {
 		selectable, err := visibility.SelectableRelations(ctx, schemaName)
 		if err != nil {
@@ -255,43 +286,129 @@ func discoverNativePostgresSchemasExcluding(ctx context.Context, catalog nativeP
 				// route contract. Skip those relations rather than normalizing them.
 				continue
 			}
-			def, err := catalog.DescribeCollection(ctx, &ref)
-			if err != nil || def == nil {
-				return nil, errors.New("could not describe a PostgreSQL relation")
-			}
-			collection := schema.Collection{Source: &schema.NativeCollectionSource{Schema: schemaName, Name: ref.Name()}, Fields: map[string]schema.Field{}}
-			primary := make(map[string]bool, len(def.PrimaryKey))
-			for _, field := range def.PrimaryKey {
-				primary[string(field)] = true
-			}
-			for _, field := range def.Fields {
-				name := string(field.Name)
-				if name == "" || !utf8.ValidString(name) || strings.IndexByte(name, 0) >= 0 || len(name) > 63 {
-					return nil, errors.New("PostgreSQL relation has a column outside the native name contract")
-				}
-				mapped := schema.Field{Type: nativePostgresFieldType(field.Type), NativeType: nativePostgresDeclaredType(def.SourceDefinition, name), PrimaryKey: primary[name], Nullable: field.Nullable, Required: !field.Nullable}
-				if field.Type == dbschema.Decimal {
-					decimal := schema.Decimal{Storage: "text", Unbounded: true}
-					if field.Precision != nil && field.Precision.Total > 0 && field.Precision.Total <= 1000 {
-						precision, scale := field.Precision.Total, field.Precision.Scale
-						if scale >= 0 && scale <= precision {
-							decimal.Precision, decimal.Scale, decimal.Unbounded = precision, scale, false
-						}
-					}
-					mapped.Decimal = &decimal
-				}
-				collection.Fields[name] = mapped
-			}
-			if len(collection.Fields) == 0 {
-				continue
-			}
-			result.Collections[id] = collection
+			relations = append(relations, nativePostgresRelation{schema: schemaName, ref: ref, id: id})
 		}
+	}
+	definitions, err := describeNativePostgresRelations(ctx, catalog, relations)
+	if err != nil {
+		return nil, err
+	}
+	result := &schema.Schemas{Collections: make(map[string]schema.Collection, len(relations))}
+	for i, relation := range relations {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("native PostgreSQL discovery deadline ended: %w", err)
+		}
+		def := definitions[i]
+		collection := schema.Collection{Source: &schema.NativeCollectionSource{Schema: relation.schema, Name: relation.ref.Name()}, Fields: map[string]schema.Field{}}
+		primary := make(map[string]bool, len(def.PrimaryKey))
+		for _, field := range def.PrimaryKey {
+			primary[string(field)] = true
+		}
+		for _, field := range def.Fields {
+			name := string(field.Name)
+			if name == "" || !utf8.ValidString(name) || strings.IndexByte(name, 0) >= 0 || len(name) > 63 {
+				return nil, errors.New("PostgreSQL relation has a column outside the native name contract")
+			}
+			mapped := schema.Field{Type: nativePostgresFieldType(field.Type), NativeType: nativePostgresDeclaredType(def.SourceDefinition, name), PrimaryKey: primary[name], Nullable: field.Nullable, Required: !field.Nullable}
+			if field.Type == dbschema.Decimal {
+				decimal := schema.Decimal{Storage: "text", Unbounded: true}
+				if field.Precision != nil && field.Precision.Total > 0 && field.Precision.Total <= 1000 {
+					precision, scale := field.Precision.Total, field.Precision.Scale
+					if scale >= 0 && scale <= precision {
+						decimal.Precision, decimal.Scale, decimal.Unbounded = precision, scale, false
+					}
+				}
+				mapped.Decimal = &decimal
+			}
+			collection.Fields[name] = mapped
+		}
+		if len(collection.Fields) == 0 {
+			continue
+		}
+		result.Collections[relation.id] = collection
 	}
 	if len(result.Collections) == 0 {
 		return nil, errors.New("no supported PostgreSQL relations were discovered")
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("native PostgreSQL discovery deadline ended: %w", err)
+	}
 	return result, nil
+}
+
+func describeNativePostgresRelations(ctx context.Context, catalog nativePostgresCatalog, relations []nativePostgresRelation) ([]*dbschema.CollectionDef, error) {
+	if len(relations) == 0 {
+		return nil, nil
+	}
+	workerCount := min(len(relations), nativePostgresDescribeConcurrency)
+	discoveryCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make([]nativePostgresDescribeResult, len(relations))
+	jobs := make(chan int, len(relations))
+	for i := range relations {
+		jobs <- i
+	}
+	close(jobs)
+
+	var workers sync.WaitGroup
+	var failureMu sync.Mutex
+	firstFailureIndex := -1
+	workers.Add(workerCount)
+	for range workerCount {
+		go func() {
+			defer workers.Done()
+			for index := range jobs {
+				if err := discoveryCtx.Err(); err != nil {
+					results[index] = nativePostgresDescribeResult{err: &nativePostgresDescribeError{schema: relations[index].schema, relation: relations[index].ref.Name(), cause: err}, skipped: true}
+					continue
+				}
+				definition, err := catalog.DescribeCollection(discoveryCtx, &relations[index].ref)
+				if err == nil && definition == nil {
+					err = errors.New("provider returned no collection definition")
+				}
+				if err != nil {
+					failureMu.Lock()
+					internalCancellation := ctx.Err() == nil && errors.Is(err, context.Canceled) && firstFailureIndex >= 0
+					failureMu.Unlock()
+					if internalCancellation {
+						results[index] = nativePostgresDescribeResult{err: &nativePostgresDescribeError{schema: relations[index].schema, relation: relations[index].ref.Name(), cause: err}, skipped: true}
+						continue
+					}
+					results[index] = nativePostgresDescribeResult{err: &nativePostgresDescribeError{schema: relations[index].schema, relation: relations[index].ref.Name(), cause: err}}
+					failureMu.Lock()
+					if firstFailureIndex < 0 {
+						firstFailureIndex = index
+					}
+					failureMu.Unlock()
+					cancel()
+					continue
+				}
+				results[index].definition = definition
+			}
+		}()
+	}
+	workers.Wait()
+	failureMu.Lock()
+	firstFailure := firstFailureIndex
+	failureMu.Unlock()
+	if firstFailure >= 0 {
+		return nil, results[firstFailure].err
+	}
+
+	definitions := make([]*dbschema.CollectionDef, len(relations))
+	for i, result := range results {
+		if result.err != nil {
+			if result.skipped && errors.Is(result.err, context.Canceled) && ctx.Err() == nil {
+				continue
+			}
+			return nil, result.err
+		}
+		definitions[i] = result.definition
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("native PostgreSQL discovery deadline ended: %w", err)
+	}
+	return definitions, nil
 }
 
 func nativePostgresFieldType(sourceType dbschema.Type) schema.FieldType {
