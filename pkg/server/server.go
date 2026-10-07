@@ -324,6 +324,17 @@ func (s *Server) inflightFor(db *core.Database) *sync.WaitGroup {
 //  2. Auth (when --auth is set) — Layer-1 token validation
 //  3. Per-handler capability checks — Layer-2
 func (s *Server) Handler() http.Handler {
+	next := s.handler()
+	logger := s.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(&jsonResponseWriter{ResponseWriter: w, logger: logger, ctx: r.Context()}, r)
+	})
+}
+
+func (s *Server) handler() http.Handler {
 	if s.providerProfileErr != nil {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Cache-Control", "no-store")
@@ -718,5 +729,30 @@ func (s *Server) handleInferredSchema(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		// Headers may already be committed and a writer may have sent part of
+		// the response. A second response cannot repair it. Acknowledge once
+		// without logging either the payload or arbitrary encoder/writer text.
+		if reporter, ok := w.(interface{ acknowledgeJSONFailure() }); ok {
+			reporter.acknowledgeJSONFailure()
+		} else {
+			slog.Error("JSON response write failed")
+		}
+	}
 }
+
+// jsonResponseWriter carries the configured producer logger to the shared JSON
+// helper, including configuration refusals before ordinary middleware runs.
+// It does not cancel a caller-owned context or claim delivery acknowledgement.
+type jsonResponseWriter struct {
+	http.ResponseWriter
+	logger *slog.Logger
+	ctx    context.Context
+}
+
+func (w *jsonResponseWriter) acknowledgeJSONFailure() {
+	w.logger.ErrorContext(w.ctx, "JSON response write failed")
+}
+
+// Unwrap preserves ResponseController access to the underlying connection.
+func (w *jsonResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
