@@ -28,18 +28,6 @@ import (
 // test can make the open fail the way a driver does.
 type postgresOpener func(dsn string, schema dal.Schema, opts dalgo2sql.DbOptions, options ...dalgo2postgres.Option) (*dalgo2postgres.Database, error)
 
-// openPostgres opens a PostgreSQL database through the dal-go dalgo2postgres
-// driver (pgx, pure Go). The DSN — which carries credentials — is read from
-// the environment variable named by storage.postgres.dsn_env (default
-// OVDB_POSTGRES_DSN); manifests never carry secrets (see docs/threat-model.md).
-//
-// Strict mode only in MVP, like SQLite: records map to relational tables (id
-// primary-key column + one column per declared field). Partial/schemaless via
-// a JSONB document column is on the roadmap.
-func openPostgres(m *manifest.Manifest) (dal.DB, []schema.Mode, error) {
-	return openPostgresWith(m, dalgo2postgres.NewDatabaseWithOptions)
-}
-
 // openPostgresWithExcludedRelations opens a PostgreSQL mount while omitting
 // exact schema/relation pairs from native read-only discovery. Exclusions are
 // deliberately supplied by the mounting consumer, not stored in a manifest,
@@ -48,7 +36,7 @@ func openPostgresWithExcludedRelations(m *manifest.Manifest, excluded []schema.N
 	return openPostgresWithExclusions(m, dalgo2postgres.NewDatabaseWithOptions, excluded)
 }
 
-// openPostgresWith is openPostgres with the function that opens the connection.
+// openPostgresWith is openPostgresWithExclusions with no excluded relations.
 // An error from it is not returned or wrapped (see postgresOpenError).
 func openPostgresWith(m *manifest.Manifest, open postgresOpener) (dal.DB, []schema.Mode, error) {
 	return openPostgresWithExclusions(m, open, nil)
