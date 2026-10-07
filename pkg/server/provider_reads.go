@@ -84,7 +84,7 @@ func (s *Server) validateProviderProfiles() error {
 	// execution path. Every IANA server alias must resolve to the closed native
 	// operator profile and its checked rights/binding before any route starts.
 	for _, db := range s.dbs {
-		if db.Manifest.Storage.HTTP != nil && db.Manifest.Storage.HTTP.Profile == manifest.HTTPProfileIANAHTTPStatus &&
+		if db.HTTPProfile() == manifest.HTTPProfileIANAHTTPStatus &&
 			s.providerProfilesByDB[db].RequestProfile != IANANativeOperatorRequestProfile {
 			return fmt.Errorf("IANA HTTP mount requires admitted native operator profile")
 		}

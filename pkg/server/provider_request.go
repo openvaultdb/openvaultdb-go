@@ -26,7 +26,7 @@ func validateProviderRequestProfile(db *core.Database, p ProviderReadProfile) er
 	if db.Manifest.Storage.HTTP == nil {
 		return fmt.Errorf("incompatible provider request profile")
 	}
-	if p.RequestProfile == "" && db.Manifest.Storage.HTTP.Profile != manifest.HTTPProfileIANAHTTPStatus {
+	if p.RequestProfile == "" && db.HTTPProfile() != manifest.HTTPProfileIANAHTTPStatus {
 		return nil
 	}
 	if db.Manifest.Storage.HTTP.Collection != p.Collection {
@@ -35,12 +35,12 @@ func validateProviderRequestProfile(db *core.Database, p ProviderReadProfile) er
 	switch p.RequestProfile {
 	case ECBPublicFreeRequestProfile:
 		if db.ID() != "ecb" || p.Collection != "daily" || p.Binding.ResourceID != "ecb-daily" ||
-			p.Binding.ProviderSourceID != "provider:ecb/FxReferenceQuote" || db.Manifest.Storage.HTTP.Profile != manifest.HTTPProfileECBDaily {
+			p.Binding.ProviderSourceID != "provider:ecb/FxReferenceQuote" || db.HTTPProfile() != manifest.HTTPProfileECBDaily {
 			return fmt.Errorf("incompatible provider request profile")
 		}
 	case IANANativeOperatorRequestProfile:
 		if db.ID() != "iana-http-status" || p.Collection != "rows" || p.Binding.ResourceID != "iana-http-status-codes" ||
-			p.Binding.ProviderSourceID != "provider:iana/HttpStatusRegistryRow" || db.Manifest.Storage.HTTP.Profile != manifest.HTTPProfileIANAHTTPStatus {
+			p.Binding.ProviderSourceID != "provider:iana/HttpStatusRegistryRow" || db.HTTPProfile() != manifest.HTTPProfileIANAHTTPStatus {
 			return fmt.Errorf("incompatible provider request profile")
 		}
 	default:

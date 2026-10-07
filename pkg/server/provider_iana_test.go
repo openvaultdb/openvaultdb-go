@@ -185,3 +185,53 @@ func TestIANANativeOperatorRequestProfileFrozenAfterManifestMutation(t *testing.
 		t.Fatalf("mutable manifest changed admitted IANA request contract: %d %s reads=%d", w.Code, w.Body, *calls)
 	}
 }
+
+func TestIANANativeOperatorRejectsUnadmittedRuntimeMount(t *testing.T) {
+	admitted, _, calls := ianaProviderFixture(t)
+	db := admitted.getDB("iana-http-status")
+	fresh, err := NewChecked("synthetic", nil, WithSourceRights("synthetic-operator", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fresh.CloseSnapshots)
+	if err = fresh.Mount(db); err == nil || *calls != 0 {
+		t.Fatal("runtime Mount admitted IANA without a provider profile", err, *calls)
+	}
+	db.Manifest.Storage.HTTP.Profile = manifest.HTTPProfileECBDaily
+	db.Manifest.Database.ID = "renamed-after-open"
+	if db.HTTPProfile() != manifest.HTTPProfileIANAHTTPStatus || fresh.Mount(db) == nil || *calls != 0 {
+		t.Fatal("mutable manifest bypassed IANA runtime admission")
+	}
+	w := retentionRequest(fresh.Handler(), http.MethodPost, "/v1/databases/iana-http-status/query", `{"collection":"rows","limit":1}`, nil)
+	if w.Code != http.StatusNotFound || *calls != 0 {
+		t.Fatalf("rejected IANA runtime mount became routable: %d %s reads=%d", w.Code, w.Body, *calls)
+	}
+}
+
+func TestIANANativeOperatorRejectsBorrowedMapInsertion(t *testing.T) {
+	admitted, _, calls := ianaProviderFixture(t)
+	incoming := map[string]*core.Database{}
+	fresh, err := NewChecked("synthetic", incoming)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fresh.CloseSnapshots)
+	incoming["iana-http-status"] = admitted.getDB("iana-http-status")
+	w := retentionRequest(fresh.Handler(), http.MethodPost, "/v1/databases/iana-http-status/query", `{"collection":"rows","limit":1}`, nil)
+	if w.Code != http.StatusNotFound || *calls != 0 {
+		t.Fatalf("caller map inserted unadmitted IANA mount: %d %s reads=%d", w.Code, w.Body, *calls)
+	}
+}
+
+func TestIANANativeOperatorRejectsManifestMutationBeforeStartup(t *testing.T) {
+	admitted, _, calls := ianaProviderFixture(t)
+	db := admitted.getDB("iana-http-status")
+	db.Manifest.Storage.HTTP.Profile = manifest.HTTPProfileECBDaily
+	fresh, err := NewChecked("synthetic", map[string]*core.Database{"iana-http-status": db}, WithSourceRights("synthetic-operator", nil))
+	if fresh != nil {
+		fresh.CloseSnapshots()
+	}
+	if db.HTTPProfile() != manifest.HTTPProfileIANAHTTPStatus || err == nil || *calls != 0 {
+		t.Fatal("mutable manifest bypassed IANA startup admission", err, *calls)
+	}
+}

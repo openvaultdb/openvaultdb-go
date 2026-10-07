@@ -55,7 +55,7 @@ func (s *Server) validateDynamicProviderRight(db *core.Database, profile Provide
 	}
 	base, err := db.SourceRight(s.rightsServerID, s.serverLicense, profile.Collection)
 	freeSourceURL := manifest.ECBDailyURL
-	if db.Manifest.Storage.HTTP != nil && db.Manifest.Storage.HTTP.Profile == manifest.HTTPProfileIANAHTTPStatus {
+	if db.HTTPProfile() == manifest.HTTPProfileIANAHTTPStatus {
 		freeSourceURL = manifest.IANAHTTPStatusURL
 	}
 	if err != nil || base == nil || right.SourceID != base.SourceID || right.Source != base.Source ||
