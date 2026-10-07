@@ -2,15 +2,20 @@ package server
 
 import (
 	"encoding/json"
+	"net/http"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/dal-go/dalgo/dal"
+	"github.com/dal-go/record"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
+	"github.com/openvaultdb/openvaultdb-go/pkg/joinexec"
 	"github.com/openvaultdb/openvaultdb-go/pkg/manifest"
 	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 )
+
+type nativePostgresWireRow map[string]any
 
 func TestNativePostgresJSONSafeIntegers(t *testing.T) {
 	input := map[string]any{
@@ -86,6 +91,19 @@ func TestNativePostgresJSONValuesPreserveTemporalTypes(t *testing.T) {
 	}
 	if !reflect.DeepEqual(input["date"], instant) {
 		t.Fatal("conversion modified the source row")
+	}
+}
+
+func TestNativePostgresJSONValueMapsNamedRowMaps(t *testing.T) {
+	type row map[string]any
+	input := row{
+		"order_key":  int64(9007199254740993),
+		"created_at": time.Date(2025, time.March, 4, 0, 0, 0, 0, time.UTC),
+	}
+	got := nativePostgresJSONValue(input, map[string]string{"created_at": "date"})
+	want := map[string]any{"order_key": "9007199254740993", "created_at": "2025-03-04"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("nativePostgresJSONValue() = %#v, want %#v", got, want)
 	}
 }
 
@@ -171,6 +189,69 @@ func TestNativePostgresProjectionTypesFollowAliasesJoinsAndSubqueries(t *testing
 			t.Errorf("rightmost timestamptz value = %#v, want %q", got, want)
 		}
 	})
+}
+
+func TestNativePostgresProjectionTypesFollowParsedDerivedDocuments(t *testing.T) {
+	db := nativePostgresProjectionTestDatabase(t)
+	query, err := core.DeserializeDTQL([]byte(`from:
+  query:
+    as: d
+    from: {schema: 'sales data', name: 'Order Details', alias: o}
+    columns: [{field: 'Order ID', source: o, as: order_id}, {field: 'Created On', source: o, as: created}]
+columns: [{field: order_id, source: d, as: order_key}, {field: created, source: d, as: created_at}]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := nativePostgresProjectionTypes(query, db, map[string]*core.Database{"samples": db})
+	want := map[string]string{"order_key": "bigint", "created_at": "date"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parsed derived projection types = %#v, want %#v", got, want)
+	}
+}
+
+func TestNativePostgresDerivedHTTPResponseMapsNamedRowValues(t *testing.T) {
+	db := nativePostgresProjectionTestDatabase(t)
+	const document = `from:
+  query:
+    as: d
+    from: {schema: 'sales data', name: 'Order Details', alias: o}
+    columns: [{field: 'Order ID', source: o, as: order_id}, {field: 'Created On', source: o, as: created}]
+columns: [{field: order_id, source: d, as: order_key}, {field: created, source: d, as: created_at}]
+`
+	id, err := schema.NativePostgresCollectionID("sales data", "Order Details")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &relFakeExecutor{result: joinexec.Result{
+		Records: []record.Record{record.NewRecordWithoutKey(nativePostgresWireRow{
+			"order_key":  int64(9007199254740993),
+			"created_at": time.Date(2025, time.March, 4, 0, 0, 0, 0, time.UTC),
+		})},
+		Columns:   []string{"order_key", "created_at"},
+		Execution: joinexec.Execution{Route: joinexec.RouteInMemory, Sources: []joinexec.ExecutionSource{{Database: "samples", Collection: id}}},
+	}}
+	_, host := relFakeServer(t, fake, []*core.Database{db})
+	response := relFakeDo(t, host, http.MethodPost, "/v1/databases/samples/dtql", "", document, nil)
+	if response.status != http.StatusOK {
+		t.Fatalf("derived relational response: %d %s", response.status, response.raw)
+	}
+	var body struct {
+		Records []struct {
+			Data map[string]json.RawMessage `json:"data"`
+		} `json:"records"`
+	}
+	if err := json.Unmarshal([]byte(response.raw), &body); err != nil || len(body.Records) != 1 {
+		t.Fatalf("decode derived response: err=%v records=%d body=%s", err, len(body.Records), response.raw)
+	}
+	for field, want := range map[string]string{
+		"order_key":  `"9007199254740993"`,
+		"created_at": `"2025-03-04"`,
+	} {
+		if got := string(body.Records[0].Data[field]); got != want {
+			t.Errorf("derived %s = %s, want %s", field, got, want)
+		}
+	}
 }
 
 func nativePostgresProjectionTestDatabase(t *testing.T) *core.Database {

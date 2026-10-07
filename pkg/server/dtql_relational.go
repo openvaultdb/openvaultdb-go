@@ -227,11 +227,7 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	for i, rec := range result.Records {
 		data := rec.Data()
 		if nativePostgres {
-			if fields, ok := data.(map[string]any); ok {
-				data = nativePostgresJSONValues(fields, nativeTypes)
-			} else {
-				data = nativePostgresJSONSafeValue(data)
-			}
+			data = nativePostgresJSONValue(data, nativeTypes)
 		}
 		records[i] = relationalRecord{Data: data}
 	}

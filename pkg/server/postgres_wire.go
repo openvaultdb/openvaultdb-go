@@ -113,6 +113,29 @@ func nativePostgresJSONValues(fields map[string]any, nativeTypes map[string]stri
 	return out
 }
 
+func nativePostgresJSONValue(value any, nativeTypes map[string]string) any {
+	if fields, ok := nativePostgresStringMap(value); ok {
+		return nativePostgresJSONValues(fields, nativeTypes)
+	}
+	return nativePostgresJSONSafeValue(value)
+}
+
+func nativePostgresStringMap(value any) (map[string]any, bool) {
+	if fields, ok := value.(map[string]any); ok {
+		return fields, true
+	}
+	reflected := reflect.ValueOf(value)
+	if !reflected.IsValid() || reflected.Kind() != reflect.Map || reflected.Type().Key().Kind() != reflect.String {
+		return nil, false
+	}
+	fields := make(map[string]any, reflected.Len())
+	iterator := reflected.MapRange()
+	for iterator.Next() {
+		fields[iterator.Key().String()] = iterator.Value().Interface()
+	}
+	return fields, true
+}
+
 func nativePostgresFieldTypes(collection *schema.Collection) map[string]string {
 	if collection == nil {
 		return nil
