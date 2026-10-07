@@ -97,7 +97,12 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]recordOut, 0, len(records))
 	for _, rec := range records {
-		out = append(out, recordOut{Key: rec.Key.String(), Data: rec.Data})
+		data := rec.Data
+		if db.NativePostgresReadOnly() {
+			collectionSchema := db.Manifest.Schemas.Collection(collection)
+			data = nativePostgresJSONValues(data, nativePostgresFieldTypes(collectionSchema))
+		}
+		out = append(out, recordOut{Key: rec.Key.String(), Data: data})
 	}
 	if rightsErr != nil {
 		s.rightsError(w, rightsErr)

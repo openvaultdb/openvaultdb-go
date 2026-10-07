@@ -113,6 +113,10 @@ type PostgresOptions struct {
 	// postgres://user:pass@host:5432/db?sslmode=require. Validate accepts only a
 	// variable name (see ValidEnvVarName).
 	DSNEnv string `yaml:"dsn_env,omitempty" json:"dsnEnv,omitempty"`
+	// ReadOnly enables additive native discovery of PostgreSQL relations. The
+	// mount introspects the catalog, never provisions schema, and exposes only
+	// bounded structured reads; existing manifests default to false.
+	ReadOnly bool `yaml:"read_only,omitempty" json:"readOnly,omitempty"`
 }
 
 // DSNEnvVar returns the env var name holding the DSN, with the default applied.
@@ -531,7 +535,7 @@ func (m *Manifest) Validate() error {
 	if err := m.CheckPostgresNames(); err != nil {
 		return err
 	}
-	if m.Database.SchemaMode == schema.ModeStrict {
+	if m.Database.SchemaMode == schema.ModeStrict && (m.Storage.Engine != "postgres" || m.Storage.Postgres == nil || !m.Storage.Postgres.ReadOnly) {
 		if m.Schemas == nil || len(m.Schemas.Collections) == 0 {
 			return fmt.Errorf("schema_mode 'strict' requires schemas.collections to declare at least one collection")
 		}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/record"
+	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 )
 
 func newSource(id string, exec dal.QueryExecutor) *fakeSource {
@@ -380,6 +382,54 @@ func TestLeafRefusesSchemaQualifiedAndNestedCollections(t *testing.T) {
 				t.Fatal("a refused source reached the executor")
 			}
 		})
+	}
+}
+
+type nativeReadOnlyFakeSource struct{ *fakeSource }
+
+func (nativeReadOnlyFakeSource) NativePostgresReadOnly() bool { return true }
+
+func TestLeafAuthorizesNativePostgresSchemaSourcesByLogicalCollectionID(t *testing.T) {
+	physical := dal.NewQualifiedRootCollectionRef("sales data", "Order Details", "")
+	id, err := schema.NativePostgresCollectionID("sales data", "Order Details")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := &fakeExecutor{rows: map[string][]record.Record{"Order Details": makeRows("Order Details", 1, "x")}}
+	source := nativeReadOnlyFakeSource{fakeSource: newSource("db", exec)}
+	var authorized []string
+	guard := NewGuard(func(database, collection string) bool {
+		authorized = append(authorized, database+"/"+collection)
+		return database == "db" && collection == id
+	}, Limits{})
+	query := dal.From(physical).NewQuery().SelectIntoRecord(nil)
+	reader, err := guard.Leaf(source).ExecuteQueryToRecordsReader(context.Background(), query)
+	if err != nil {
+		t.Fatalf("native schema-qualified read: %v", err)
+	}
+	if n, err := drain(t, reader); err != nil || n != 1 {
+		t.Fatalf("read returned %d records, %v", n, err)
+	}
+	if !reflect.DeepEqual(authorized, []string{"db/" + id}) {
+		t.Fatalf("authorization received %v, want logical collection ID %q", authorized, id)
+	}
+	stats := guard.Stats()
+	if len(stats) != 1 || stats[0].Collection != id {
+		t.Fatalf("source stats = %+v, want logical collection ID %q", stats, id)
+	}
+
+	deniedExec := &fakeExecutor{rows: map[string][]record.Record{"Order Details": makeRows("Order Details", 1, "x")}}
+	denied := NewGuard(func(_, _ string) bool { return false }, Limits{})
+	if _, err := denied.Leaf(nativeReadOnlyFakeSource{fakeSource: newSource("db", deniedExec)}).ExecuteQueryToRecordsReader(context.Background(), query); err == nil {
+		t.Fatal("denied native read succeeded")
+	} else {
+		var denied *SourceDeniedError
+		if !errors.As(err, &denied) || denied.Collection != id {
+			t.Fatalf("denied native read: %v, want denial of %q", err, id)
+		}
+	}
+	if deniedExec.queryCalls != 0 {
+		t.Fatal("a denied native source reached the executor")
 	}
 }
 

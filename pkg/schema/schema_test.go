@@ -156,10 +156,33 @@ func TestDecimalPrecisionScaleBoundaries(t *testing.T) {
 	}
 }
 
+func TestUnboundedDecimalMetadataDoesNotInventPrecisionOrScale(t *testing.T) {
+	field := schema.Field{Type: schema.TypeDecimal, Decimal: &schema.Decimal{Storage: "text", Unbounded: true}}
+	collection := &schema.Collection{Fields: map[string]schema.Field{"amount": field}}
+	if err := field.Validate(); err != nil {
+		t.Fatalf("unbounded decimal metadata: %v", err)
+	}
+	if err := (&schema.Schemas{Collections: map[string]schema.Collection{"orders": *collection}}).Validate(); err != nil {
+		t.Fatalf("unbounded decimal schema: %v", err)
+	}
+	for _, value := range []string{"123", "123.4500000000000000000001", ".5", "1.", "NaN", "Infinity", "-Infinity", strings.Repeat("9", 1001)} {
+		if err := schema.ValidateRecord(schema.ModeStrict, "orders", collection, map[string]any{"amount": value}); err != nil {
+			t.Errorf("unbounded decimal rejected %q: %v", value, err)
+		}
+	}
+	for _, value := range []string{"", " 1", "1e3", "NaN "} {
+		if err := schema.ValidateRecord(schema.ModeStrict, "orders", collection, map[string]any{"amount": value}); err == nil {
+			t.Errorf("unbounded decimal accepted invalid text %q", value)
+		}
+	}
+}
+
 func TestDecimalFieldMetadataMustBeCompleteAndConsistent(t *testing.T) {
 	for _, field := range []schema.Field{
 		{Type: schema.TypeDecimal},
 		{Type: schema.TypeDecimal, Decimal: &schema.Decimal{Precision: 5, Scale: 6, Storage: "text"}},
+		{Type: schema.TypeDecimal, Decimal: &schema.Decimal{Precision: 1, Unbounded: true, Storage: "text"}},
+		{Type: schema.TypeDecimal, Decimal: &schema.Decimal{Storage: "text"}},
 		{Type: schema.TypeDecimal, Decimal: &schema.Decimal{Precision: 5, Scale: 2, Storage: "real"}},
 		{Type: schema.TypeString, Decimal: &schema.Decimal{Precision: 5, Scale: 2, Storage: "text"}},
 	} {

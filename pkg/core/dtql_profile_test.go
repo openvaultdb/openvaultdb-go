@@ -10,6 +10,7 @@ import (
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/dalgo/dtql"
 	"github.com/dal-go/record"
+	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 )
 
 func mustDeserialize(t *testing.T, doc string) dal.StructuredQuery {
@@ -318,15 +319,6 @@ func TestClassifyDTQLRefusals(t *testing.T) {
 		rule string
 		path string
 	}{
-		{"schema on the root", "from: {schema: main, name: Customer, alias: c}\n", "schema", "from"},
-		{"schema on a joined source", `
-from:
-  name: a
-  alias: a
-  joins:
-    - from: {schema: main, name: b, alias: b}
-      on: [{left: {field: id, source: a}, op: '==', right: {field: id, source: b}}]
-`, "schema", "from.joins[0].from"},
 		{"scan on the root", "from: {name: a, scan: {limit: 5, orderBy: [{field: id}]}}\n", "scan", "from"},
 		{"money in a subquery", `
 from: {name: a, alias: a}
@@ -480,7 +472,6 @@ func TestClassifyDTQLRefusesShapesDTQLCannotProduce(t *testing.T) {
 		{"collection group", buildQuery(dal.From(dal.NewCollectionGroupRef("g", ""))).SelectIntoRecordset(), "collection-group", "from"},
 		{"unknown source type", buildQuery(dal.From(unknownSource{rootRef("x")})).SelectIntoRecordset(), "source-shape", "from"},
 		{"pointer to a derived source", buildQuery(dal.From(ptrQuerySource(nestedQuery()))).SelectIntoRecordset(), "source-shape", "from"},
-		{"qualified root", buildQuery(dal.From(dal.NewQualifiedRootCollectionRef("main", "a", ""))).SelectIntoRecordset(), "schema", "from"},
 		{"scan source", buildQuery(dal.From(dal.NewRootCollectionRef("a", "").WithScan(5, dal.AscendingField("id")))).SelectIntoRecordset(), "scan", "from"},
 		{"right join", joined(rootRef("b"), dal.JoinRight), "join-type", "from.joins[0]"},
 		{"full join", joined(rootRef("b"), dal.JoinFull), "join-type", "from.joins[0]"},
@@ -755,11 +746,12 @@ func TestClassifyDTQLCollectionNameRefusalKeepsBothSentinels(t *testing.T) {
 			t.Errorf("%q: err = %v, want it to wrap ErrInvalidKey as well", name, err)
 		}
 	}
-	// A refusal that is not about a key stays a DTQL refusal only.
+	// A schema-qualified source receives the stable logical ID used for
+	// collection authorization and catalog routes.
 	profile, err := ClassifyDTQL(mustDeserialize(t, "from: {schema: s, name: a, alias: a}\n"))
-	assertRefusal(t, profile, err, "schema", "from")
-	if errors.Is(err, ErrInvalidKey) {
-		t.Errorf("a schema refusal must not be an invalid key: %v", err)
+	wantID, idErr := schema.NativePostgresCollectionID("s", "a")
+	if err != nil || idErr != nil || profile.Kind != ProfileRelational || profile.Sources[0].Collection != wantID {
+		t.Fatalf("schema-qualified profile = %+v, %v; want logical collection %q", profile, err, wantID)
 	}
 }
 
@@ -769,8 +761,9 @@ func TestClassifyDTQLCollectionNameRefusalKeepsBothSentinels(t *testing.T) {
 // document with no subquery is classified as relational when it enables money;
 // a subquery in its WHERE, which ParseDTQL accepts, adds nesting deeper than
 // the subquery cap, more sources than the source cap, scan bounds on a nested
-// source and money in a nested query. (A schema-qualified root, a scan root and
-// a database on the root are refused by ParseDTQL too.)
+// source and money in a nested query. (A schema-qualified root is accepted by
+// the relational classifier for native PostgreSQL mounts but not the
+// single-collection ParseDTQL profile.)
 func TestClassifyDTQLRefusesWhatParseDTQLAccepts(t *testing.T) {
 	const moneyConfig = "money: {minorUnitScale: 2, divisionScale: 4, rounding: halfEven}"
 	// nestedExists is a root whose WHERE holds a chain of EXISTS subqueries,
@@ -822,9 +815,11 @@ func TestClassifyDTQLRefusesWhatParseDTQLAccepts(t *testing.T) {
 			t.Errorf("%s: ClassifyDTQL: %+v, %v", name, profile, err)
 		}
 	}
+	if profile, err := ClassifyDTQL(mustDeserialize(t, "from: {schema: main, name: a}\n")); err != nil || profile.Kind != ProfileRelational {
+		t.Errorf("schema-qualified root classification = %+v, %v", profile, err)
+	}
 	for label, doc := range map[string]string{
-		"schema-qualified root": "from: {schema: main, name: a}\n",
-		"scan root":             "from: {name: a, scan: {limit: 5, orderBy: [{field: id}]}}\n",
+		"scan root": "from: {name: a, scan: {limit: 5, orderBy: [{field: id}]}}\n",
 	} {
 		if _, _, err := ParseDTQL([]byte(doc)); !errors.Is(err, ErrInvalidDTQL) {
 			t.Errorf("%s: ParseDTQL err = %v", label, err)

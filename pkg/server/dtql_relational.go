@@ -90,6 +90,12 @@ type relationalTarget struct {
 // the database of the per-database endpoint, already leased, or nil on
 // /v1/dtql.
 func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, endpoint *core.Database, query dal.StructuredQuery, profile core.Profile) {
+	for _, source := range profile.Sources {
+		if source.Schema != "" && (endpoint == nil || !endpoint.NativePostgresReadOnly()) {
+			writeError(w, http.StatusBadRequest, "invalid_dtql", "schema-qualified sources are supported only on a native PostgreSQL read-only database endpoint")
+			return
+		}
+	}
 	targets, refusal := relationalTargets(profile, endpoint)
 	if refusal != "" {
 		writeError(w, http.StatusBadRequest, "invalid_dtql", refusal)
@@ -184,6 +190,9 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	if engines := s.joinEngines(); len(engines) > 0 {
 		opts = append(opts, joinexec.WithJoinEngines(engines...))
 	}
+	if endpoint != nil && endpoint.NativePostgresReadOnly() {
+		opts = append(opts, joinexec.WithNativePostgresFields())
+	}
 	if engines := s.nativeEngines(); len(engines) > 0 {
 		opts = append(opts, joinexec.WithNativeEngines(engines...))
 	}
@@ -202,9 +211,25 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	if cacheControl != "no-store" {
 		w.Header().Add("Vary", strings.Join(pagingHeaders, ", "))
 	}
+	nativePostgres := false
+	for _, source := range profile.Sources {
+		db := endpoint
+		if source.Database != "" {
+			db = databases[source.Database]
+		}
+		if db != nil && db.NativePostgresReadOnly() {
+			nativePostgres = true
+			break
+		}
+	}
+	nativeTypes := nativePostgresProjectionTypes(query, endpoint, databases)
 	records := make([]relationalRecord, len(result.Records))
 	for i, rec := range result.Records {
-		records[i] = relationalRecord{Data: rec.Data()}
+		data := rec.Data()
+		if nativePostgres {
+			data = nativePostgresJSONValue(data, nativeTypes)
+		}
+		records[i] = relationalRecord{Data: data}
 	}
 	if len(capture.rights) == 0 {
 		writeJSON(w, http.StatusOK, relationalResponse{Records: records, Columns: result.Columns, Execution: result.Execution})
@@ -323,11 +348,24 @@ func (s *Server) leaseRelationalDatabases(w http.ResponseWriter, r *http.Request
 // enables it.
 func (s *Server) joinEngines() []string {
 	engines := make([]string, 0, len(s.queryLimits.JoinEngines))
+	seen := make(map[string]bool, len(s.queryLimits.JoinEngines)+1)
 	for _, engine := range s.queryLimits.JoinEngines {
-		if engine != core.EngineInGitDBGitHub && s.engineCleared(engine) {
+		if engine != core.EngineInGitDBGitHub && !seen[engine] && s.engineCleared(engine) {
 			engines = append(engines, engine)
+			seen[engine] = true
 		}
 	}
+	// A native PostgreSQL read-only mount opts into this bounded query path in
+	// its manifest. Existing writable/preview PostgreSQL mounts still require
+	// the operator's explicit join-engine setting.
+	s.mu.RLock()
+	for _, db := range s.dbs {
+		if db != nil && db.NativePostgresReadOnly() && db.CanQuery() && !seen["postgres"] {
+			engines = append(engines, "postgres")
+			seen["postgres"] = true
+		}
+	}
+	s.mu.RUnlock()
 	return engines
 }
 

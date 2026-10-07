@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/dal-go/dalgo/dal"
+	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 )
 
 // The walk reads a document the way the profile classifier does, over the same
@@ -127,13 +129,18 @@ type walker struct {
 	qualifiers  []string
 	// nest is the number of conditions and expressions being walked above the
 	// node in hand, across subqueries.
-	nest int
+	nest                      int
+	allowNativePostgresFields bool
 }
 
 // inspect walks query and checks its names. The returned document is empty
 // when it returns an error.
 func inspect(query dal.StructuredQuery) (document, error) {
-	w := &walker{scope: map[string]bool{}}
+	return inspectWithNativePostgresFields(query, false)
+}
+
+func inspectWithNativePostgresFields(query dal.StructuredQuery, allowNativePostgresFields bool) (document, error) {
+	w := &walker{scope: map[string]bool{}, allowNativePostgresFields: allowNativePostgresFields}
 	if err := w.query(query, "$", 0); err != nil {
 		return document{}, err
 	}
@@ -310,15 +317,22 @@ func (w *walker) source(source dal.RecordsetSource, path string, depth int) erro
 }
 
 func (w *walker) collection(ref dal.CollectionRef, path string, depth int) error {
-	if ref.Parent() != nil || ref.Schema() != "" {
+	if ref.Parent() != nil {
 		return refuse(path, "only plain root collections are supported")
 	}
-	if !isCollectionName(ref.Name()) {
+	collection := ref.Name()
+	if ref.Schema() != "" {
+		var err error
+		collection, err = schema.NativePostgresCollectionID(ref.Schema(), ref.Name())
+		if err != nil {
+			return refuse(path, "schema-qualified relation name is outside the PostgreSQL identifier contract")
+		}
+	} else if !isCollectionName(ref.Name()) {
 		return refuse(path, "collection name %q is not a plain collection name", clip(ref.Name()))
 	}
 	w.doc.sources = append(w.doc.sources, walkedSource{
 		database:   ref.Database(),
-		collection: ref.Name(),
+		collection: collection,
 		scan:       ref.ScanLimit() != 0 || len(ref.ScanOrders()) != 0,
 	})
 	w.scope[ref.Name()] = true
@@ -468,7 +482,8 @@ func (w *walker) expressionNode(expression dal.Expression, path string, depth in
 // source of it.
 func (w *walker) checkNames() error {
 	for _, name := range w.fields {
-		if len(name) > maxNameLen || !fieldNameRe.MatchString(name) || strings.Contains(name, "--") {
+		plain := len(name) <= maxNameLen && fieldNameRe.MatchString(name) && !strings.Contains(name, "--")
+		if !plain && (!w.allowNativePostgresFields || !validNativePostgresFieldName(name)) {
 			return refuse("$", "field name %q is not a plain field name", clip(name))
 		}
 	}
@@ -483,6 +498,31 @@ func (w *walker) checkNames() error {
 		}
 	}
 	return nil
+}
+
+// validNativePostgresFieldName mirrors core's quoted physical-field rule. It
+// only controls syntactic admission here; the native source's exact catalog
+// field guard still rejects names the selected relation does not contain.
+func validNativePostgresFieldName(name string) bool {
+	if len(name) == 0 || len(name) > 256 || !utf8.ValidString(name) {
+		return false
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) || r == '"' || r == '\'' || r == '`' || r == '\\' || r == ';' {
+			return false
+		}
+	}
+	for _, segment := range strings.Split(name, ".") {
+		if segment == "" {
+			return false
+		}
+		first, _ := utf8.DecodeRuneInString(segment)
+		last, _ := utf8.DecodeLastRuneInString(segment)
+		if unicode.IsSpace(first) || unicode.IsSpace(last) {
+			return false
+		}
+	}
+	return true
 }
 
 func isIdentifier(name string) bool {

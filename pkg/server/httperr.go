@@ -93,6 +93,8 @@ func writeMappedError(w http.ResponseWriter, err error) (internal bool) {
 		writeError(w, http.StatusUnprocessableEntity, "query_unsupported", core.ErrQueryNotRunnable.Error())
 	case errors.Is(err, core.ErrQueryUnsupported):
 		writeError(w, http.StatusNotImplemented, "query_unsupported", err.Error())
+	case errors.Is(err, core.ErrNativePostgresCollectionQueryUnsupported):
+		writeError(w, http.StatusNotImplemented, "query_unsupported", err.Error())
 	case errors.Is(err, core.ErrProtectedSingleSource):
 		// The shape of the query decides this, not the collections it names, so
 		// the message is the error's own: it names none.

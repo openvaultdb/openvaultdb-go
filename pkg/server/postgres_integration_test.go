@@ -19,6 +19,7 @@ import (
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 	"github.com/openvaultdb/openvaultdb-go/pkg/mount"
+	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 	"github.com/openvaultdb/openvaultdb-go/pkg/server"
 )
 
@@ -345,6 +346,423 @@ func TestPostgresIntegration_WritesAndSingleCollectionQueries(t *testing.T) {
 				t.Fatalf("names = %v, want %v", names, c.wantNames)
 			}
 		})
+	}
+	pgITCanary(t, admin)
+}
+
+// TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows exercises the
+// additive native catalog profile against PostgreSQL itself. It uses a
+// schema-qualified relation with mixed case and spaces, and confirms the API
+// exposes its original names while querying only through a catalog-resolved
+// logical collection ID.
+func nativePostgresProjectionDocuments() map[string]string {
+	const nativeFilter = "where: {op: '==', left: {field: 'Status Name', source: o}, right: {value: keep}}\n"
+	return map[string]string{
+		"aliased projection": "from: {schema: 'ovdb Native', name: 'Order Details', alias: o}\n" + nativeFilter +
+			"columns: [{field: 'Order ID', source: o, as: order_id}, {field: 'Created On', source: o, as: created}, {field: 'Payload Data', source: o, as: payload}, {field: 'Binary Data', source: o, as: binary}]\nlimit: 5\n",
+		"self-join projection": "from:\n  schema: 'ovdb Native'\n  name: 'Order Details'\n  alias: o\n  joins:\n    - type: inner\n      from: {schema: 'ovdb Native', name: 'Order Details', alias: i}\n      on:\n        - {left: {field: 'Order ID', source: o}, op: '==', right: {field: 'Order ID', source: i}}\n" + nativeFilter +
+			"columns: [{field: 'Order ID', source: o, as: order_id}, {field: 'Created On', source: o, as: created}, {field: 'Payload Data', source: o, as: payload}, {field: 'Binary Data', source: o, as: binary}]\nlimit: 5\n",
+		"derived projection":      "from:\n  query:\n    as: d\n    from: {schema: 'ovdb Native', name: 'Order Details', alias: o}\n    where: {op: '==', left: {field: 'Status Name', source: o}, right: {value: keep}}\n    columns: [{field: 'Order ID', source: o, as: order_id}, {field: 'Created On', source: o, as: created}, {field: 'Payload Data', source: o, as: payload}, {field: 'Binary Data', source: o, as: binary}]\ncolumns: [{field: order_id, source: d, as: order_key}, {field: created, source: d, as: created_at}, {field: payload, source: d, as: payload_json}, {field: binary, source: d, as: blob}]\nlimit: 5\n",
+		"wildcard type collision": "from:\n  schema: 'ovdb Native'\n  name: 'Order Details'\n  alias: o\n  joins:\n    - type: inner\n      from: {schema: 'ovdb Native', name: 'Type Conflict', alias: c}\n      on:\n        - {left: {field: 'Status Name', source: o}, op: '==', right: {field: 'Status Name', source: c}}\nwhere: {op: '==', left: {field: 'Status Name', source: o}, right: {value: keep}}\nlimit: 5\n",
+		"wide integer aggregate":  "from: {schema: 'ovdb Native', name: 'Order Details'}\ncolumns: [{aggregate: {function: max, args: [{field: 'Order ID'}]}, as: max_order_id}]\n",
+	}
+}
+
+func TestNativePostgresProjectionDocumentsParseAndClassifyWithoutLiveDatabase(t *testing.T) {
+	for name, doc := range nativePostgresProjectionDocuments() {
+		t.Run(name, func(t *testing.T) {
+			query, err := core.DeserializeDTQL([]byte(doc))
+			if err != nil {
+				t.Fatalf("native PostgreSQL fixture does not parse: %v\n%s", err, doc)
+			}
+			if _, err := core.ClassifyDTQL(query); err != nil {
+				t.Fatalf("native PostgreSQL fixture does not classify: %v\n%s", err, doc)
+			}
+		})
+	}
+}
+
+func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) {
+	admin := pgITAdmin(t)
+	const physicalSchema = "ovdb Native"
+	const physicalTable = "Order Details"
+	if _, err := admin.Exec(`CREATE SCHEMA "ovdb Native"`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = admin.Exec(`DROP SCHEMA IF EXISTS "ovdb Native" CASCADE`) })
+	for _, statement := range []string{
+		`CREATE SEQUENCE "ovdb Native"."side effect seq"`,
+		`CREATE FUNCTION "ovdb Native"."mutating read"() RETURNS bigint
+			LANGUAGE SQL VOLATILE AS $$ SELECT nextval('"ovdb Native"."side effect seq"') $$`,
+		`CREATE VIEW "ovdb Native"."Mutation Attempt" AS
+			SELECT "ovdb Native"."mutating read"() AS "Next Value"`,
+		`CREATE TABLE "ovdb Native"."Order Details" (
+			"Order ID" bigint PRIMARY KEY,
+			"Total Amount" numeric(24,6) NOT NULL,
+			"Unbounded Amount" numeric NOT NULL,
+			"Created On" date NOT NULL,
+			"Status Name" text NOT NULL,
+			"Payload Data" jsonb NOT NULL,
+			"Binary Data" bytea NOT NULL,
+			"Time Value" time,
+			"Time TZ Value" timetz,
+			"Timestamp Value" timestamp,
+			"Timestamp TZ Value" timestamptz
+		)`,
+		`CREATE TABLE "ovdb Native"."Order Events" (
+			"Event Name" text NOT NULL,
+			"Description Text" text NOT NULL
+		)`,
+		`CREATE TABLE "ovdb Native"."Type Conflict" (
+			"Status Name" text NOT NULL,
+			"Created On" timestamptz NOT NULL,
+			"Payload Data" text NOT NULL,
+			"Binary Data" text NOT NULL
+		)`,
+		`INSERT INTO "ovdb Native"."Order Details" ("Order ID", "Total Amount", "Unbounded Amount", "Created On", "Status Name", "Payload Data", "Binary Data") VALUES (
+			9007199254740993,
+			123456789012345678.120000,
+			123.45,
+			DATE '2025-03-04',
+			'keep',
+			'{"n":9007199254740993}'::jsonb,
+			decode('00ff10', 'hex')
+		)`,
+		`INSERT INTO "ovdb Native"."Order Details" ("Order ID", "Total Amount", "Unbounded Amount", "Created On", "Status Name", "Payload Data", "Binary Data") VALUES (
+			9007199254740994,
+			1.000000,
+			1.25,
+			DATE '2025-03-05',
+			'skip',
+			'{"n":1}'::jsonb,
+			decode('01', 'hex')
+		)`,
+		`INSERT INTO "ovdb Native"."Order Events" VALUES ('open', 'same'), ('open', 'same')`,
+		`INSERT INTO "ovdb Native"."Type Conflict" VALUES ('keep', TIMESTAMPTZ '2025-03-04 09:30:00+01', '{"n":3}', 'text bytes')`,
+	} {
+		if _, err := admin.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	u, err := url.Parse(os.Getenv(pgITDSNEnv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := u.Query()
+	query.Set("application_name", "ovdb-it-native-read")
+	u.RawQuery = query.Encode()
+	t.Setenv(pgITMountDSNEnv, u.String())
+	dir := t.TempDir()
+	path := filepath.Join(dir, "native.yaml")
+	manifest := "database: {id: native, schema_mode: strict}\nstorage: {engine: postgres, postgres: {dsn_env: " + pgITMountDSNEnv + ", read_only: true}}\n"
+	if err := os.WriteFile(path, []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	native, err := mount.File(path)
+	if err != nil {
+		t.Fatalf("mount native read-only PostgreSQL: %v", err)
+	}
+	t.Cleanup(func() { _ = native.Close() })
+	if !native.CanQuery() || !native.ReadOnly() {
+		t.Fatalf("native capabilities: query=%v readonly=%v", native.CanQuery(), native.ReadOnly())
+	}
+	id, err := schema.NativePostgresCollectionID(physicalSchema, physicalTable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventID, err := schema.NativePostgresCollectionID(physicalSchema, "Order Events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutationViewID, err := schema.NativePostgresCollectionID(physicalSchema, "Mutation Attempt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	canaryID, err := schema.NativePostgresCollectionID("public", "ovdb_canary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	collections, err := native.Collections(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflictID, err := schema.NativePostgresCollectionID(physicalSchema, "Type Conflict")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err != nil || len(collections) != 5 {
+		t.Fatalf("collections = %q, %v; want three native tables, side-effect view, and public canary", collections, err)
+	}
+	collectionIDs := make(map[string]bool, len(collections))
+	for _, collectionID := range collections {
+		collectionIDs[collectionID] = true
+	}
+	for _, wantID := range []string{id, eventID, conflictID, mutationViewID, canaryID} {
+		if !collectionIDs[wantID] {
+			t.Errorf("discovered collections %q do not include %q", collections, wantID)
+		}
+	}
+
+	base, logs := pgITServeLogged(t, map[string]*core.Database{"native": native})
+	metadata := relHTTPDo(t, base, http.MethodGet, "/v1/databases/native", "", "", nil)
+	if metadata.status != http.StatusOK {
+		t.Fatalf("GET native metadata: %d %s", metadata.status, metadata.raw)
+	}
+	var described struct {
+		Collections  []string          `json:"collections"`
+		Capabilities map[string]bool   `json:"capabilities"`
+		Endpoints    map[string]string `json:"endpoints"`
+		QueryFormat  string            `json:"queryFormat"`
+		Schemas      struct {
+			Collections map[string]struct {
+				Source struct {
+					Schema string `json:"schema"`
+					Name   string `json:"name"`
+				} `json:"source"`
+				Fields map[string]struct {
+					NativeType string `json:"nativeType"`
+					PrimaryKey bool   `json:"primaryKey"`
+					Decimal    *struct {
+						Precision int  `json:"precision"`
+						Scale     int  `json:"scale"`
+						Unbounded bool `json:"unbounded"`
+					} `json:"decimal"`
+				} `json:"fields"`
+			} `json:"collections"`
+		} `json:"schemas"`
+	}
+	if err := json.Unmarshal([]byte(metadata.raw), &described); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(described.Collections, collections) || described.Capabilities["read"] || described.Capabilities["query"] || !described.Capabilities["dtql"] || described.Capabilities["write"] || described.Endpoints["dtql"] == "" || described.QueryFormat == "" {
+		t.Fatalf("native metadata capabilities/IDs = %+v, collections=%q", described.Capabilities, described.Collections)
+	}
+	collection := described.Schemas.Collections[id]
+	if collection.Source.Schema != physicalSchema || collection.Source.Name != physicalTable || collection.Fields["Order ID"].NativeType != "bigint" || !collection.Fields["Order ID"].PrimaryKey {
+		t.Fatalf("native schema metadata = %+v", collection)
+	}
+	unsupportedQuery := relHTTPDo(t, base, http.MethodPost, "/v1/databases/native/query", "", `{"collection":"`+id+`"}`, map[string]string{"Content-Type": "application/json"})
+	if unsupportedQuery.status != http.StatusNotImplemented || unsupportedQuery.errorField("code") != "query_unsupported" {
+		t.Fatalf("native collection-key query: %d %s, want explicit 501 query_unsupported", unsupportedQuery.status, unsupportedQuery.raw)
+	}
+	unbounded := collection.Fields["Unbounded Amount"].Decimal
+	if collection.Fields["Unbounded Amount"].NativeType != "numeric" || unbounded == nil || !unbounded.Unbounded || unbounded.Precision != 0 || unbounded.Scale != 0 {
+		t.Fatalf("unbounded numeric metadata = %+v", collection.Fields["Unbounded Amount"])
+	}
+	for field, wantType := range map[string]string{
+		"Created On":         "date",
+		"Time Value":         "time without time zone",
+		"Time TZ Value":      "time with time zone",
+		"Timestamp Value":    "timestamp without time zone",
+		"Timestamp TZ Value": "timestamp with time zone",
+	} {
+		if got := collection.Fields[field].NativeType; got != wantType {
+			t.Errorf("native type for %q = %q, want %q", field, got, wantType)
+		}
+	}
+	eventCollection := described.Schemas.Collections[eventID]
+	if eventCollection.Source.Schema != physicalSchema || eventCollection.Source.Name != "Order Events" || len(eventCollection.Fields) != 2 {
+		t.Fatalf("native keyless schema metadata = %+v", eventCollection)
+	}
+	for field, metadata := range eventCollection.Fields {
+		if metadata.PrimaryKey {
+			t.Errorf("keyless relation field %q unexpectedly has primary-key metadata", field)
+		}
+	}
+
+	doc := "from: {schema: 'ovdb Native', name: 'Order Details'}\nwhere: {op: '==', left: {field: 'Status Name'}, right: {value: keep}}\nlimit: 5\n"
+	read := relHTTPPost(t, base, "/v1/databases/native/dtql", "", doc)
+	if read.status != http.StatusOK {
+		t.Fatalf("filtered native read: %d %s", read.status, read.raw)
+	}
+	var result struct {
+		Records []struct {
+			Data map[string]json.RawMessage `json:"data"`
+		} `json:"records"`
+	}
+	if err := json.Unmarshal([]byte(read.raw), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Records) != 1 {
+		t.Fatalf("filtered records = %d, want one: %s", len(result.Records), read.raw)
+	}
+	data := result.Records[0].Data
+	for field, want := range map[string]string{
+		"Order ID":         `"9007199254740993"`,
+		"Total Amount":     `"123456789012345678.120000"`,
+		"Unbounded Amount": `"123.45"`,
+		"Created On":       `"2025-03-04"`,
+		"Binary Data":      `"AP8Q"`,
+	} {
+		if got := string(data[field]); got != want {
+			t.Errorf("%s = %s, want %s", field, got, want)
+		}
+	}
+	var payload map[string]json.Number
+	payloadDecoder := json.NewDecoder(bytes.NewReader(data["Payload Data"]))
+	payloadDecoder.UseNumber()
+	if err := payloadDecoder.Decode(&payload); err != nil || string(payload["n"]) != "9007199254740993" {
+		t.Errorf("Payload Data = %s, decode error %v; want JSON number lexeme 9007199254740993", data["Payload Data"], err)
+	}
+	assertProjectedNativeValues := func(name, doc string, outputNames map[string]string) {
+		t.Helper()
+		resp := relHTTPPost(t, base, "/v1/databases/native/dtql", "", doc)
+		if resp.status != http.StatusOK {
+			t.Fatalf("%s: %d %s; server logs: %s", name, resp.status, resp.raw, logs.String())
+		}
+		var projected struct {
+			Records []struct {
+				Data map[string]json.RawMessage `json:"data"`
+			} `json:"records"`
+		}
+		if err := json.Unmarshal([]byte(resp.raw), &projected); err != nil {
+			t.Fatalf("%s: decode response: %v: %s", name, err, resp.raw)
+		}
+		if len(projected.Records) != 1 {
+			t.Fatalf("%s: records = %d, want one: %s", name, len(projected.Records), resp.raw)
+		}
+		row := projected.Records[0].Data
+		for outputName, sourceField := range outputNames {
+			if got, want := string(row[outputName]), string(data[sourceField]); got != want {
+				t.Errorf("%s: %s = %s, want source %s value %s", name, outputName, got, sourceField, want)
+			}
+		}
+		payloadOutput := ""
+		for outputName, sourceField := range outputNames {
+			if sourceField == "Payload Data" {
+				payloadOutput = outputName
+				break
+			}
+		}
+		var decoded map[string]json.Number
+		decoder := json.NewDecoder(bytes.NewReader(row[payloadOutput]))
+		decoder.UseNumber()
+		if err := decoder.Decode(&decoded); err != nil || string(decoded["n"]) != "9007199254740993" {
+			t.Errorf("%s: payload = %s, decode error %v; want JSON number lexeme 9007199254740993", name, row[payloadOutput], err)
+		}
+	}
+	documents := nativePostgresProjectionDocuments()
+	assertProjectedNativeValues("aliased projection", documents["aliased projection"],
+		map[string]string{"order_id": "Order ID", "created": "Created On", "payload": "Payload Data", "binary": "Binary Data"})
+	assertProjectedNativeValues("self-join projection", documents["self-join projection"],
+		map[string]string{"order_id": "Order ID", "created": "Created On", "payload": "Payload Data", "binary": "Binary Data"})
+	assertProjectedNativeValues("derived projection", documents["derived projection"],
+		map[string]string{"order_key": "Order ID", "created_at": "Created On", "payload_json": "Payload Data", "blob": "Binary Data"})
+	wildcardJoin := relHTTPPost(t, base, "/v1/databases/native/dtql", "", documents["wildcard type collision"])
+	if wildcardJoin.status != http.StatusOK {
+		t.Fatalf("wildcard join with duplicate native field names: %d %s", wildcardJoin.status, wildcardJoin.raw)
+	}
+	var wildcardResult struct {
+		Records []struct {
+			Data map[string]json.RawMessage `json:"data"`
+		} `json:"records"`
+	}
+	if err := json.Unmarshal([]byte(wildcardJoin.raw), &wildcardResult); err != nil || len(wildcardResult.Records) != 1 {
+		t.Fatalf("wildcard join result: decode=%v records=%d body=%s", err, len(wildcardResult.Records), wildcardJoin.raw)
+	}
+	wildcardData := wildcardResult.Records[0].Data
+	for field, want := range map[string]string{
+		"Created On":   `"2025-03-04T08:30:00Z"`,
+		"Payload Data": `"{\"n\":3}"`,
+		"Binary Data":  `"text bytes"`,
+	} {
+		if got := string(wildcardData[field]); got != want {
+			t.Errorf("rightmost wildcard field %q = %s, want %s from the joined source", field, got, want)
+		}
+	}
+	aggregate := relHTTPPost(t, base, "/v1/databases/native/dtql", "", documents["wide integer aggregate"])
+	if aggregate.status != http.StatusOK {
+		t.Fatalf("native wide-integer aggregate: %d %s", aggregate.status, aggregate.raw)
+	}
+	var aggregateResult struct {
+		Records []struct {
+			Data map[string]json.RawMessage `json:"data"`
+		} `json:"records"`
+	}
+	if err := json.Unmarshal([]byte(aggregate.raw), &aggregateResult); err != nil || len(aggregateResult.Records) != 1 {
+		t.Fatalf("native aggregate result: decode=%v records=%d body=%s", err, len(aggregateResult.Records), aggregate.raw)
+	}
+	if got, want := string(aggregateResult.Records[0].Data["max_order_id"]), `"9007199254740994"`; got != want {
+		t.Errorf("native max(Order ID) = %s, want JS-safe decimal string %s", got, want)
+	}
+	keylessDoc := "from: {schema: 'ovdb Native', name: 'Order Events'}\nwhere: {op: '==', left: {field: 'Event Name'}, right: {value: open}}\nlimit: 5\n"
+	keylessRead := relHTTPPost(t, base, "/v1/databases/native/dtql", "", keylessDoc)
+	if keylessRead.status != http.StatusOK {
+		t.Fatalf("bounded keyless read: %d %s", keylessRead.status, keylessRead.raw)
+	}
+	var keylessResult struct {
+		Records []struct {
+			Data map[string]json.RawMessage `json:"data"`
+		} `json:"records"`
+	}
+	if err := json.Unmarshal([]byte(keylessRead.raw), &keylessResult); err != nil {
+		t.Fatal(err)
+	}
+	if len(keylessResult.Records) != 2 {
+		t.Fatalf("keyless query returned %d rows, want both duplicate rows: %s", len(keylessResult.Records), keylessRead.raw)
+	}
+	var beforeValue int64
+	var beforeCalled bool
+	if err := admin.QueryRow(`SELECT last_value, is_called FROM "ovdb Native"."side effect seq"`).Scan(&beforeValue, &beforeCalled); err != nil {
+		t.Fatal(err)
+	}
+	mutationRead := relHTTPPost(t, base, "/v1/databases/native/dtql", "", "from: {schema: 'ovdb Native', name: 'Mutation Attempt'}\nlimit: 1\n")
+	if mutationRead.status < http.StatusBadRequest {
+		t.Fatalf("volatile view unexpectedly succeeded in native read-only mount: %d %s", mutationRead.status, mutationRead.raw)
+	}
+	var afterValue int64
+	var afterCalled bool
+	if err := admin.QueryRow(`SELECT last_value, is_called FROM "ovdb Native"."side effect seq"`).Scan(&afterValue, &afterCalled); err != nil {
+		t.Fatal(err)
+	}
+	if beforeValue != afterValue || beforeCalled != afterCalled {
+		t.Fatalf("volatile view changed sequence state: before=(%d,%v) after=(%d,%v)", beforeValue, beforeCalled, afterValue, afterCalled)
+	}
+	const restrictedRole = `"ovdb native insert reader"`
+	if _, err := admin.Exec(`CREATE ROLE ` + restrictedRole + ` LOGIN PASSWORD 'test-only-password'`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := admin.Exec(`DROP OWNED BY ` + restrictedRole); err != nil {
+			t.Errorf("drop privileges owned by test role: %v", err)
+		}
+		if _, err := admin.Exec(`DROP ROLE IF EXISTS ` + restrictedRole); err != nil {
+			t.Errorf("drop test role: %v", err)
+		}
+	})
+	for _, grant := range []string{
+		`GRANT USAGE ON SCHEMA "ovdb Native" TO ` + restrictedRole,
+		`GRANT SELECT ON "ovdb Native"."Order Events" TO ` + restrictedRole,
+		`GRANT INSERT ON "ovdb Native"."Order Details" TO ` + restrictedRole,
+	} {
+		if _, err := admin.Exec(grant); err != nil {
+			t.Fatal(err)
+		}
+	}
+	restrictedURL, err := url.Parse(os.Getenv(pgITDSNEnv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restrictedURL.User = url.UserPassword("ovdb native insert reader", "test-only-password")
+	restrictedQuery := restrictedURL.Query()
+	restrictedQuery.Set("application_name", "ovdb-it-select-visibility")
+	restrictedURL.RawQuery = restrictedQuery.Encode()
+	t.Setenv(pgITMountDSNEnv, restrictedURL.String())
+	restricted, err := mount.File(path)
+	if err != nil {
+		t.Fatalf("mount SELECT-restricted role: %v", err)
+	}
+	t.Cleanup(func() { _ = restricted.Close() })
+	restrictedCollections, err := restricted.Collections(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(restrictedCollections, []string{eventID}) {
+		t.Fatalf("SELECT-restricted role collections = %q, want only %q", restrictedCollections, eventID)
+	}
+	write := relHTTPDo(t, base, http.MethodPost, "/v1/databases/native/records/"+url.PathEscape(id)+"/new", "", `{"Status Name":"write"}`, map[string]string{"Content-Type": "application/json"})
+	if write.status < http.StatusBadRequest {
+		t.Fatalf("native keyed write unexpectedly succeeded: %d %s", write.status, write.raw)
 	}
 	pgITCanary(t, admin)
 }

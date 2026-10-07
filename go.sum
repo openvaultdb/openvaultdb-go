@@ -24,8 +24,8 @@ github.com/cncf/xds/go v0.0.0-20260202195803-dba9d589def2 h1:aBangftG7EVZoUb69Os
 github.com/cncf/xds/go v0.0.0-20260202195803-dba9d589def2/go.mod h1:qwXFYgsP6T7XnJtbKlf1HP8AjxZZyzxMmc+Lq5GjlU4=
 github.com/cockroachdb/cockroach-go/v2 v2.2.0 h1:/5znzg5n373N/3ESjHF5SMLxiW4RKB05Ql//KWfeTFs=
 github.com/cockroachdb/cockroach-go/v2 v2.2.0/go.mod h1:u3MiKYGupPPjkn3ozknpMUpxPaNLTFWAya419/zv6eI=
-github.com/dal-go/dalgo v0.90.2 h1:t/rbIlZyGdZzfAtVUJYdSZgC9av0zKiXwXCHaSl7KU4=
-github.com/dal-go/dalgo v0.90.2/go.mod h1:Pvqn4YCOqLxKeim0M/0wzGDwtuaZKi18TRdaZ3PCS3c=
+github.com/dal-go/dalgo v0.93.0 h1:jcigrWhdgkOJjf9LFLvDAqrsVzxHtpVEZH7oLhV6b7I=
+github.com/dal-go/dalgo v0.93.0/go.mod h1:Pvqn4YCOqLxKeim0M/0wzGDwtuaZKi18TRdaZ3PCS3c=
 github.com/dal-go/dalgo2firestore v0.10.3 h1:AQSFCh0T+mao61lg2flJYqgbU/lpWIQ6bUYr89Drf04=
 github.com/dal-go/dalgo2firestore v0.10.3/go.mod h1:qWHAAOz9AVKdseFVQaaaoIUtzZFxFnQnzMUqaPTavTA=
 github.com/dal-go/dalgo2http v0.3.0 h1:WmbHDrGqcpS1zfrY45xMTLc6VbUrTcpjDHYfGAbZYVA=
@@ -34,10 +34,10 @@ github.com/dal-go/dalgo2mysql v0.2.2 h1:RLilKnl+6FBncKQ6SThVumNifwvNX0KBn0GccZe8
 github.com/dal-go/dalgo2mysql v0.2.2/go.mod h1:R4gD1rMSghwfw06inlSMKW/AnJGvyiQqydLIciKp+PI=
 github.com/dal-go/dalgo2openvaultdb v0.3.3 h1:mY2SZvIiDy6Fl/ay49ewrl1qpawVmtvK/FFj4OOdyi8=
 github.com/dal-go/dalgo2openvaultdb v0.3.3/go.mod h1:k6tjqcjBckCHFuYfN0sh76cd3kvf6KCW7UcUz1sOTEE=
-github.com/dal-go/dalgo2postgres v0.6.3 h1:k4EmGykdFX8Up76Ew+29oV+9T0ZObiYteSx+nYLhpRo=
-github.com/dal-go/dalgo2postgres v0.6.3/go.mod h1:VI3RByiuEElbh4pyX9A2s0fXZd6QOPQ22feFske5XD8=
-github.com/dal-go/dalgo2sql v0.27.0 h1:ppBA0qyAjdWMr4qZ6JUlPIE+3+yt8+m9I6TY8IQAoMc=
-github.com/dal-go/dalgo2sql v0.27.0/go.mod h1:TsbNshPBVEsnUNb6c8+xym/fZZc+D5HKY9iX8Ncxf1I=
+github.com/dal-go/dalgo2postgres v0.8.0 h1:VoXWCeLl4fv3FtuEhU9XH2B6+M84zZIYkQT3MaI+WAE=
+github.com/dal-go/dalgo2postgres v0.8.0/go.mod h1:dLvoQfhAFUe1m3uA+8k906jYZK/f84Js5MSsyn+vc1Y=
+github.com/dal-go/dalgo2sql v0.29.0 h1:qoHJJKyDhfNW+KZHSwtjGbahIEHy7VizFsxY2igCAxk=
+github.com/dal-go/dalgo2sql v0.29.0/go.mod h1:TsbNshPBVEsnUNb6c8+xym/fZZc+D5HKY9iX8Ncxf1I=
 github.com/dal-go/dalgo2sqlite v0.2.3 h1:iev3CYdLE5F+ejnIdv9SZZmzSaaCj70E3ulrIJMDI1Y=
 github.com/dal-go/dalgo2sqlite v0.2.3/go.mod h1:P9k6p7FcAUVKfrrCs7y8YQRead/B5zTe8q9nFoXQPZ0=
 github.com/dal-go/record v0.1.4 h1:21IJNlUASNw9TytcB5V5a2jHQKa1pycr//dGvj8zNH8=

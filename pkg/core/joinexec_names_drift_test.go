@@ -28,10 +28,9 @@ import (
 // table that carries one is a document the two answer differently on purpose.
 const (
 	// differenceFieldNames: the classifier applies the wider quoted-name rule
-	// (validateQuotedFieldName) to the field names of a relational document. The
-	// walk applies the strict rule (ValidateFieldName) on every route, so Execute
-	// refuses a field name that only the wider rule accepts. The document
-	// classifies and does not run.
+	// (validateQuotedFieldName) to relational fields. Execute remains strict by
+	// default; only the native PostgreSQL read-only endpoint opts into the wider
+	// rule, where exact catalog validation still applies.
 	differenceFieldNames = "field names: the classifier applies the wider quoted-name rule, the walk keeps the strict rule and refuses what only the wider rule accepts"
 	// differenceQualifierScope: the classifier scopes a field qualifier to its own
 	// query and the queries around it; the walk scopes it to the whole document.

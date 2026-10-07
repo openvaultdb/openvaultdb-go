@@ -328,6 +328,10 @@ func (s *Server) executeQuery(w http.ResponseWriter, r *http.Request, db *core.D
 	if !s.authorize(w, r, db.ID(), auth.CapRecordsRead, scope) {
 		return
 	}
+	if db.NativePostgresReadOnly() {
+		writeError(w, http.StatusNotImplemented, "query_unsupported", core.ErrNativePostgresCollectionQueryUnsupported.Error())
+		return
+	}
 	if s.boundedImmutable(db) {
 		writeError(w, http.StatusUnprocessableEntity, "read_profile_unsupported", "immutable lookup pages require the guarded ordinary DTQL route")
 		return

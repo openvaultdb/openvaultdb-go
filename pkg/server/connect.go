@@ -101,13 +101,14 @@ func (s *Server) handleWellKnown(w http.ResponseWriter, r *http.Request) {
 		databases := make([]map[string]any, 0)
 		for _, id := range s.databaseIDs() {
 			db := s.getDB(id)
-			canQuery := s.advertisesOrdinaryQuery(db)
+			canDTQL := s.advertisesOrdinaryQuery(db)
+			canQuery := canDTQL && db != nil && db.CanCollectionQuery()
 			joins := db != nil && s.advertisesJoins(db)
 			entry := map[string]any{
 				"id":           id,
 				"url":          origin + humanDatabasePath(id),
 				"apiUrl":       origin + "/v1/databases/" + url.PathEscape(id),
-				"capabilities": map[string]bool{"read": db == nil || !db.ReadOnlyHTTP(), "query": canQuery, "dtql": canQuery, "write": !s.readOnly && (db == nil || !db.ReadOnlyHTTP()), "joins": joins, "aggregation": joins},
+				"capabilities": map[string]bool{"read": db == nil || !db.ReadOnly(), "query": canQuery, "dtql": canDTQL, "write": !s.readOnly && (db == nil || !db.ReadOnly()), "joins": joins, "aggregation": joins},
 			}
 			if db != nil {
 				if db.Retention() != "" {

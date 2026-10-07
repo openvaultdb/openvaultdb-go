@@ -370,11 +370,13 @@ exist (the tree writer commits onto it). Conformance runs when
 
 The `postgres` and `mysql` engines connect to managed cloud databases — Amazon
 RDS & Aurora, Azure Database for PostgreSQL/MySQL, Google Cloud SQL — by
-pointing the DSN env var at the cloud endpoint with TLS. Key reads and writes
-of declared collections work. Structured queries (`/query`, `/dtql`) are refused with HTTP 501
-`query_unsupported` on these engines, and their database metadata advertises
-`query: false` and `dtql: false` and publishes no query endpoint or format,
-until the reviewed query compiler lands.
+pointing the DSN env var at the cloud endpoint with TLS. Existing PostgreSQL
+and MySQL mounts retain their declared-collection behavior; structured queries
+remain refused on them unless the PostgreSQL mount explicitly opts into the
+additive native read-only profile. That profile discovers schema-qualified
+PostgreSQL relations, serves bounded structured reads, and refuses keyed reads
+and writes. See [native PostgreSQL read-only mounts](docs/native-postgres-read.md)
+for its manifest and query contract. MySQL structured queries remain refused.
 
 ## MVP boundaries
 

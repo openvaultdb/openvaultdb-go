@@ -11,6 +11,8 @@ import (
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/dalgo/recordset"
 	"github.com/dal-go/record"
+
+	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 )
 
 var (
@@ -37,17 +39,29 @@ func (l *leaf) resolve(source dal.RecordsetSource) (string, error) {
 	if !ok {
 		return "", l.guard.fail(fmt.Errorf("%w: %T is not a collection", ErrNotSingleSource, source))
 	}
-	if ref.Schema() != "" || ref.Parent() != nil {
+	if ref.Parent() != nil {
 		return "", l.guard.fail(fmt.Errorf("%w: %q", ErrUnsupportedSource, ref.Path()))
+	}
+	collection := ref.Name()
+	if ref.Schema() != "" {
+		native, ok := l.src.(interface{ NativePostgresReadOnly() bool })
+		if !ok || !native.NativePostgresReadOnly() {
+			return "", l.guard.fail(fmt.Errorf("%w: %q", ErrUnsupportedSource, ref.Path()))
+		}
+		var err error
+		collection, err = schema.NativePostgresCollectionID(ref.Schema(), ref.Name())
+		if err != nil {
+			return "", l.guard.fail(fmt.Errorf("%w: %q", ErrUnsupportedSource, ref.Path()))
+		}
 	}
 	database := l.src.ID()
 	if named := ref.Database(); named != "" && named != database {
-		return "", l.guard.fail(&SourceDeniedError{Database: named, Collection: ref.Name()})
+		return "", l.guard.fail(&SourceDeniedError{Database: named, Collection: collection})
 	}
-	if l.guard.authorize == nil || !l.guard.authorize(database, ref.Name()) {
-		return "", l.guard.fail(&SourceDeniedError{Database: database, Collection: ref.Name()})
+	if l.guard.authorize == nil || !l.guard.authorize(database, collection) {
+		return "", l.guard.fail(&SourceDeniedError{Database: database, Collection: collection})
 	}
-	return ref.Name(), nil
+	return collection, nil
 }
 
 // failSource records err, the source's own error, as the request failure. The

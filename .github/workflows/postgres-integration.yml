@@ -93,7 +93,8 @@ jobs:
             ServerIsTheVersionTheLegNames \
             OrderOverAColumnWithAnUnvalidatedNotNullConstraint \
             NamesOver63BytesAreA400AndNoStatementIsSent \
-            ManifestNamesAreCheckedBeforeProvisioning; do
+            ManifestNamesAreCheckedBeforeProvisioning \
+            NativeReadOnlyCatalogAndFilteredRows; do
             if ! grep -qE "^--- PASS: TestPostgresIntegration_${name} " /tmp/gotest.log; then
               echo "::error::TestPostgresIntegration_${name} did not report PASS"
               exit 1
