@@ -40,9 +40,10 @@ var (
 	// source, because only those can be authorised one collection at a time.
 	ErrNotSingleSource = errors.New("joinexec: a source read must be a plain query over one collection")
 
-	// ErrUnsupportedSource is returned for a collection the request profile
-	// does not allow: schema-qualified or nested under a parent key. Their
-	// names cannot be matched against collection grants or policies.
+	// ErrUnsupportedSource is returned for a schema-qualified collection on a
+	// source that does not explicitly support native PostgreSQL reads, or a
+	// collection nested under a parent key. Native PostgreSQL refs are converted
+	// to the same logical collection IDs used by request profiles and grants.
 	ErrUnsupportedSource = errors.New("joinexec: schema-qualified and nested collections are not supported")
 
 	// ErrRecordsetUnsupported is returned by the recordset read path, which is

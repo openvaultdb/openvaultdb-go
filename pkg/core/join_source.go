@@ -272,9 +272,9 @@ func (g guardedQueryExecutor) JoinFields(ctx context.Context, source dal.Records
 // equality and reads it by its dotted path, so a path inside such a field
 // (address.city) would be refused by a list of the top-level names, and the
 // collection supplies none, as a partial database does. The source must be a plain
-// root collection of this database (one that no schema, parent record or other
-// database qualifies) that the manifest declares, under whichever spelling it
-// declares it.
+// root collection of this database that the manifest declares. A native
+// PostgreSQL source resolves its exact physical schema and relation to the stable
+// logical collection ID before looking up declared fields.
 //
 // The manifest keeps the fields of a collection in a map, which has no order, so
 // the order is the one the mount provisions the collection's columns in
@@ -283,7 +283,7 @@ func (g guardedQueryExecutor) JoinFields(ctx context.Context, source dal.Records
 // document engine holds only the declared fields in a record, by name.
 func (d *Database) declaredJoinFields(source dal.RecordsetSource) []string {
 	ref, ok := source.(dal.CollectionRef)
-	if !ok || ref.Parent() != nil || ref.Schema() != "" {
+	if !ok || ref.Parent() != nil {
 		return nil
 	}
 	if named := ref.Database(); named != "" && named != d.Manifest.Database.ID {
@@ -292,7 +292,17 @@ func (d *Database) declaredJoinFields(source dal.RecordsetSource) []string {
 	if d.Manifest.Database.SchemaMode != schema.ModeStrict {
 		return nil
 	}
-	collection := d.schemaCollection(ref.Name())
+	collectionID := ref.Name()
+	if ref.Schema() != "" {
+		var found bool
+		collectionID, found = d.ResolveNativePostgresCollection(ref.Schema(), ref.Name())
+		if !found {
+			return nil
+		}
+	} else if d.nativePostgres {
+		return nil
+	}
+	collection := d.schemaCollection(collectionID)
 	if collection == nil || len(collection.Fields) == 0 {
 		return nil
 	}

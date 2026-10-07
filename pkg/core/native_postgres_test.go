@@ -107,6 +107,29 @@ func TestNativePostgresGuardAllowsOnlyCatalogMappedQualifiedReads(t *testing.T) 
 	}
 }
 
+func TestNativePostgresDeclaredJoinFieldsResolveQualifiedSource(t *testing.T) {
+	db, _, id := nativePostgresCoreFixture(t)
+	provider, ok := db.Executor().(dal.JoinFieldsProvider)
+	if !ok {
+		t.Fatal("database executor must provide join fields")
+	}
+	ref := dal.NewQualifiedRootCollectionRef("sales data", "Order Details", "orders")
+	fields, err := provider.JoinFields(context.Background(), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(fields, []string{"Order ID", "Total Amount"}) {
+		t.Fatalf("join fields = %q, want declared fields for %q", fields, id)
+	}
+	unknown := dal.NewQualifiedRootCollectionRef("sales data", "Not Listed", "x")
+	if fields := db.declaredJoinFields(unknown); fields != nil {
+		t.Fatalf("unknown native source fields = %v; want no fields", fields)
+	}
+	if fields := db.declaredJoinFields(dal.NewRootCollectionRef(id, "x")); fields != nil {
+		t.Fatalf("unqualified native logical ID fields = %v; want no fields", fields)
+	}
+}
+
 func TestNativePostgresKeyedAndMutationAPIsRefuseBeforeDriver(t *testing.T) {
 	db, driver, id := nativePostgresCoreFixture(t)
 	key := record.NewKeyWithID(id, "1")
