@@ -39,6 +39,21 @@ func nativePostgresJSONSafeValue(value any) any {
 		if n > uint64(maxJavaScriptSafeInteger) {
 			return strconv.FormatUint(n, 10)
 		}
+	case json.Number:
+		text := n.String()
+		if !nativePostgresIntegerLexeme(text) {
+			return value
+		}
+		if signed, err := strconv.ParseInt(text, 10, 64); err == nil {
+			if signed < -maxJavaScriptSafeInteger || signed > maxJavaScriptSafeInteger {
+				return text
+			}
+			return value
+		}
+		if unsigned, err := strconv.ParseUint(text, 10, 64); err == nil && unsigned <= uint64(maxJavaScriptSafeInteger) {
+			return value
+		}
+		return text
 	case json.RawMessage, []byte:
 		// Raw JSON is kept byte-for-byte so its number lexemes and shape
 		// remain intact. Binary values are base64-encoded by encoding/json.
@@ -70,6 +85,25 @@ func nativePostgresJSONSafeValue(value any) any {
 	return out
 }
 
+func nativePostgresIntegerLexeme(text string) bool {
+	if text == "" {
+		return false
+	}
+	start := 0
+	if text[0] == '-' {
+		start = 1
+	}
+	if start == len(text) {
+		return false
+	}
+	for i := start; i < len(text); i++ {
+		if text[i] < '0' || text[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // nativePostgresJSONValues applies the native scalar wire mapping using the
 // discovered field metadata. PostgreSQL's driver exposes temporal fields as
 // time.Time, whose default JSON encoding adds an offset even to DATE and
@@ -94,20 +128,40 @@ func nativePostgresJSONValues(fields map[string]any, nativeTypes map[string]stri
 			continue
 		}
 		t, ok := value.(time.Time)
+		if ok {
+			switch nativeType {
+			case "date":
+				out[name] = t.Format("2006-01-02")
+			case "time without time zone":
+				out[name] = t.Format("15:04:05.999999999")
+			case "time with time zone":
+				out[name] = t.Format("15:04:05.999999999Z07:00")
+			case "timestamp without time zone":
+				out[name] = t.Format("2006-01-02T15:04:05.999999999")
+			case "timestamp with time zone":
+				out[name] = t.UTC().Format(time.RFC3339Nano)
+			}
+			continue
+		}
+		text, ok := value.(string)
 		if !ok {
+			continue
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, text)
+		if err != nil {
 			continue
 		}
 		switch nativeType {
 		case "date":
-			out[name] = t.Format("2006-01-02")
+			out[name] = parsed.Format("2006-01-02")
 		case "time without time zone":
-			out[name] = t.Format("15:04:05.999999999")
+			out[name] = parsed.Format("15:04:05.999999999")
 		case "time with time zone":
-			out[name] = t.Format("15:04:05.999999999Z07:00")
+			out[name] = parsed.Format("15:04:05.999999999Z07:00")
 		case "timestamp without time zone":
-			out[name] = t.Format("2006-01-02T15:04:05.999999999")
+			out[name] = parsed.Format("2006-01-02T15:04:05.999999999")
 		case "timestamp with time zone":
-			out[name] = t.UTC().Format(time.RFC3339Nano)
+			out[name] = parsed.UTC().Format(time.RFC3339Nano)
 		}
 	}
 	return out

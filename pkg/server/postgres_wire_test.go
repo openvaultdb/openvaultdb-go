@@ -56,6 +56,20 @@ func TestNativePostgresJSONSafeIntegersCoverScalarAndTypedArrayResults(t *testin
 	if !reflect.DeepEqual(got, []any{int64(1), "9007199254740993"}) {
 		t.Fatalf("typed integer array = %#v", got)
 	}
+	for _, tc := range []struct {
+		input json.Number
+		want  any
+	}{
+		{json.Number("9007199254740993"), "9007199254740993"},
+		{json.Number("9007199254740991"), json.Number("9007199254740991")},
+		{json.Number("123.45"), json.Number("123.45")},
+		{json.Number("1e20"), json.Number("1e20")},
+		{json.Number("18446744073709551616"), "18446744073709551616"},
+	} {
+		if got := nativePostgresJSONSafeValue(tc.input); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("json.Number %q = %#v, want %#v", tc.input, got, tc.want)
+		}
+	}
 	raw := json.RawMessage(`{"n":9007199254740993}`)
 	if got := nativePostgresJSONSafeValue(raw); !reflect.DeepEqual(got, raw) {
 		t.Fatalf("raw JSON was changed: %#v", got)
@@ -97,8 +111,8 @@ func TestNativePostgresJSONValuesPreserveTemporalTypes(t *testing.T) {
 func TestNativePostgresJSONValueMapsNamedRowMaps(t *testing.T) {
 	type row map[string]any
 	input := row{
-		"order_key":  int64(9007199254740993),
-		"created_at": time.Date(2025, time.March, 4, 0, 0, 0, 0, time.UTC),
+		"order_key":  json.Number("9007199254740993"),
+		"created_at": "2025-03-04T00:00:00Z",
 	}
 	got := nativePostgresJSONValue(input, map[string]string{"created_at": "date"})
 	want := map[string]any{"order_key": "9007199254740993", "created_at": "2025-03-04"}
