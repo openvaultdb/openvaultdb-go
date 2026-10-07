@@ -28,26 +28,39 @@ import (
 // test can make the open fail the way a driver does.
 type postgresOpener func(dsn string, schema dal.Schema, opts dalgo2sql.DbOptions, options ...dalgo2postgres.Option) (*dalgo2postgres.Database, error)
 
-// openPostgres opens a PostgreSQL database through the dal-go dalgo2postgres
-// driver (pgx, pure Go). The DSN — which carries credentials — is read from
-// the environment variable named by storage.postgres.dsn_env (default
-// OVDB_POSTGRES_DSN); manifests never carry secrets (see docs/threat-model.md).
-//
-// Strict mode only in MVP, like SQLite: records map to relational tables (id
-// primary-key column + one column per declared field). Partial/schemaless via
-// a JSONB document column is on the roadmap.
-func openPostgres(m *manifest.Manifest) (dal.DB, []schema.Mode, error) {
-	return openPostgresWith(m, dalgo2postgres.NewDatabaseWithOptions)
+// openPostgresWithExcludedRelations opens a PostgreSQL mount while omitting
+// exact schema/relation pairs from native read-only discovery. Exclusions are
+// deliberately supplied by the mounting consumer, not stored in a manifest,
+// so the generic mount keeps its existing expose-all default.
+func openPostgresWithExcludedRelations(m *manifest.Manifest, excluded []schema.NativeCollectionSource) (dal.DB, []schema.Mode, error) {
+	return openPostgresWithExclusions(m, dalgo2postgres.NewDatabaseWithOptions, excluded)
 }
 
-// openPostgresWith is openPostgres with the function that opens the connection.
+// openPostgresWith is openPostgresWithExclusions with no excluded relations.
 // An error from it is not returned or wrapped (see postgresOpenError).
 func openPostgresWith(m *manifest.Manifest, open postgresOpener) (dal.DB, []schema.Mode, error) {
+	return openPostgresWithExclusions(m, open, nil)
+}
+
+func openPostgresWithExclusions(m *manifest.Manifest, open postgresOpener, excluded []schema.NativeCollectionSource) (dal.DB, []schema.Mode, error) {
 	// A name the database cannot keep whole is refused before the environment is read
 	// and before any connection is made, so that nothing is created for the entries
 	// before it (the collections are provisioned one by one when the database opens).
 	// manifest.Validate refuses it already; this is for a manifest that was not validated.
 	nativeReadOnly := m.Storage.Postgres != nil && m.Storage.Postgres.ReadOnly
+	if len(excluded) > 0 && !nativeReadOnly {
+		return nil, nil, errors.New("native PostgreSQL relation exclusions require a read-only native mount")
+	}
+	excludedRelations := make(map[schema.NativeCollectionSource]struct{}, len(excluded))
+	for _, relation := range excluded {
+		if _, err := schema.NativePostgresCollectionID(relation.Schema, relation.Name); err != nil {
+			return nil, nil, errors.New("native PostgreSQL relation exclusion has an invalid schema or relation name")
+		}
+		if _, exists := excludedRelations[relation]; exists {
+			return nil, nil, errors.New("native PostgreSQL relation exclusions contain a duplicate pair")
+		}
+		excludedRelations[relation] = struct{}{}
+	}
 	if !nativeReadOnly {
 		if err := m.CheckPostgresNames(); err != nil {
 			return nil, nil, err
@@ -120,7 +133,7 @@ func openPostgresWith(m *manifest.Manifest, open postgresOpener) (dal.DB, []sche
 			_ = db.Close()
 			return nil, nil, errors.New("could not check PostgreSQL read privileges")
 		}
-		nativeSchemas, err := discoverNativePostgresSchemas(ctx, catalog, postgresSelectVisibility{db: visibilityDB})
+		nativeSchemas, err := discoverNativePostgresSchemasExcluding(ctx, catalog, postgresSelectVisibility{db: visibilityDB}, excludedRelations)
 		closeErr := visibilityDB.Close()
 		cancel()
 		if err != nil {
@@ -208,6 +221,10 @@ func (v postgresSelectVisibility) SelectableRelations(ctx context.Context, schem
 // logical schema while retaining exact physical names separately. It never
 // uses those names to build SQL; structured queries pass the tuple to DALgo.
 func discoverNativePostgresSchemas(ctx context.Context, catalog nativePostgresCatalog, visibility nativePostgresSelectVisibility) (*schema.Schemas, error) {
+	return discoverNativePostgresSchemasExcluding(ctx, catalog, visibility, nil)
+}
+
+func discoverNativePostgresSchemasExcluding(ctx context.Context, catalog nativePostgresCatalog, visibility nativePostgresSelectVisibility, excluded map[schema.NativeCollectionSource]struct{}) (*schema.Schemas, error) {
 	schemas, err := catalog.ListSchemas(ctx)
 	if err != nil {
 		return nil, errors.New("could not list PostgreSQL schemas")
@@ -224,6 +241,9 @@ func discoverNativePostgresSchemas(ctx context.Context, catalog nativePostgresCa
 		}
 		for _, ref := range refs {
 			if ref.Schema() != schemaName || ref.Parent() != nil || ref.Name() == "" {
+				continue
+			}
+			if _, omit := excluded[schema.NativeCollectionSource{Schema: schemaName, Name: ref.Name()}]; omit {
 				continue
 			}
 			if !selectable[ref.Name()] {

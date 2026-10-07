@@ -107,6 +107,30 @@ func TestNativePostgresGuardAllowsOnlyCatalogMappedQualifiedReads(t *testing.T) 
 	}
 }
 
+func TestNativePostgresExcludedRelationCannotBeGuessedOrQueried(t *testing.T) {
+	db, driver, _ := nativePostgresCoreFixture(t)
+	excludedID, err := schema.NativePostgresCollectionID("sales data", "_import_manifest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := db.NativePostgresSource(excludedID); ok {
+		t.Fatalf("guessed excluded collection ID %q resolved to a physical source", excludedID)
+	}
+	if _, ok := db.ResolveNativePostgresCollection("sales data", "_import_manifest"); ok {
+		t.Fatal("qualified excluded source resolved to a collection ID")
+	}
+	query, err := dtql.Deserialize([]byte("from: {schema: 'sales data', name: _import_manifest}\nlimit: 5\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Executor().ExecuteQueryToRecordsReader(context.Background(), query); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("excluded-source query error = %v, want ErrNotFound", err)
+	}
+	if driver.queries != 0 || driver.transactions != 0 {
+		t.Fatalf("excluded-source query reached provider: queries=%d transactions=%d", driver.queries, driver.transactions)
+	}
+}
+
 func TestNativePostgresDeclaredJoinFieldsResolveQualifiedSource(t *testing.T) {
 	db, _, id := nativePostgresCoreFixture(t)
 	provider, ok := db.Executor().(dal.JoinFieldsProvider)

@@ -767,6 +767,87 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 	pgITCanary(t, admin)
 }
 
+func TestPostgresIntegration_NativeRelationExclusionHidesDescriptorAndQueryLookup(t *testing.T) {
+	admin := pgITAdmin(t)
+	const physicalSchema = "ovdb exclusion"
+	if _, err := admin.Exec(`CREATE SCHEMA "ovdb exclusion"`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = admin.Exec(`DROP SCHEMA IF EXISTS "ovdb exclusion" CASCADE`) })
+	for _, statement := range []string{
+		`CREATE TABLE "ovdb exclusion"."_import_manifest" ("source" text NOT NULL)`,
+		`INSERT INTO "ovdb exclusion"."_import_manifest" VALUES ('internal')`,
+		`CREATE TABLE "ovdb exclusion"."Visible Data" ("value" text NOT NULL)`,
+		`INSERT INTO "ovdb exclusion"."Visible Data" VALUES ('public')`,
+	} {
+		if _, err := admin.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	u, err := url.Parse(os.Getenv(pgITDSNEnv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := u.Query()
+	query.Set("application_name", "ovdb-it-native-exclusion")
+	u.RawQuery = query.Encode()
+	t.Setenv(pgITMountDSNEnv, u.String())
+	dir := t.TempDir()
+	path := filepath.Join(dir, "native-exclusion.yaml")
+	contents := "database: {id: native-exclusion, schema_mode: strict}\nstorage: {engine: postgres, postgres: {dsn_env: " + pgITMountDSNEnv + ", read_only: true}}\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	native, err := mount.FileWithOptions(path, mount.Options{ExcludedNativePostgresRelations: []schema.NativeCollectionSource{{Schema: physicalSchema, Name: "_import_manifest"}}})
+	if err != nil {
+		t.Fatalf("mount native PostgreSQL with consumer relation exclusion: %v", err)
+	}
+	t.Cleanup(func() { _ = native.Close() })
+	hiddenID, err := schema.NativePostgresCollectionID(physicalSchema, "_import_manifest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	visibleID, err := schema.NativePostgresCollectionID(physicalSchema, "Visible Data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := native.NativePostgresSource(hiddenID); ok {
+		t.Fatalf("guessed excluded collection ID %q resolved to a source", hiddenID)
+	}
+	if _, ok := native.ResolveNativePostgresCollection(physicalSchema, "_import_manifest"); ok {
+		t.Fatal("excluded physical relation resolved to a collection")
+	}
+	collections, err := native.Collections(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	collectionIDs := make(map[string]struct{}, len(collections))
+	for _, collectionID := range collections {
+		collectionIDs[collectionID] = struct{}{}
+	}
+	if _, ok := collectionIDs[hiddenID]; ok {
+		t.Fatalf("discovered collections = %q, includes excluded ID %q", collections, hiddenID)
+	}
+	if _, ok := collectionIDs[visibleID]; !ok {
+		t.Fatalf("discovered collections = %q, missing visible fixture ID %q", collections, visibleID)
+	}
+	base, _ := pgITServeLogged(t, map[string]*core.Database{"native-exclusion": native})
+	metadata := relHTTPDo(t, base, http.MethodGet, "/v1/databases/native-exclusion", "", "", nil)
+	if metadata.status != http.StatusOK || strings.Contains(metadata.raw, "_import_manifest") || strings.Contains(metadata.raw, hiddenID) || !strings.Contains(metadata.raw, "Visible Data") {
+		t.Fatalf("native descriptor = %d %s; want visible table and no excluded relation", metadata.status, metadata.raw)
+	}
+	hiddenQuery := "from: {schema: 'ovdb exclusion', name: _import_manifest}\ncolumns: [{field: source}]\nlimit: 5\n"
+	refused := relHTTPPost(t, base, "/v1/databases/native-exclusion/dtql", "", hiddenQuery)
+	if refused.status != http.StatusNotFound || refused.errorField("code") != "not_found" {
+		t.Fatalf("excluded relation query = %d %s, want 404 not_found", refused.status, refused.raw)
+	}
+	visibleQuery := "from: {schema: 'ovdb exclusion', name: 'Visible Data'}\ncolumns: [{field: value}]\nlimit: 5\n"
+	accepted := relHTTPPost(t, base, "/v1/databases/native-exclusion/dtql", "", visibleQuery)
+	if accepted.status != http.StatusOK || !strings.Contains(accepted.raw, `"public"`) {
+		t.Fatalf("visible relation query = %d %s, want its public row", accepted.status, accepted.raw)
+	}
+}
+
 // The documents of the relational tests. DB names the database of every source.
 const (
 	pgITJoin = `from:

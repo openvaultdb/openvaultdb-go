@@ -6,6 +6,7 @@ package mount
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -36,6 +37,15 @@ type Options struct {
 	// inGitDB folder (see ensureGitIdentity), so mounting leaves .git/config
 	// untouched. Commits then rely on the host's own git identity.
 	SkipGitIdentity bool
+
+	// ExcludedNativePostgresRelations omits exact schema/relation pairs from a
+	// native read-only PostgreSQL mount's discovered schema. The default is to
+	// expose every SELECT-readable relation. This is an opt-in consumer boundary:
+	// excluded relations are absent from both discovery and the core's physical
+	// collection mapping, so a caller cannot recover them by guessing an encoded
+	// collection ID. A non-empty list is rejected for non-PostgreSQL engines and
+	// non-native PostgreSQL mounts.
+	ExcludedNativePostgresRelations []schema.NativeCollectionSource
 }
 
 // File mounts one database from a manifest file. Relative storage paths are
@@ -52,6 +62,9 @@ func FileWithOptions(manifestPath string, opts Options) (*core.Database, error) 
 	m, err := manifest.Load(manifestPath)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", manifestPath, err)
+	}
+	if len(opts.ExcludedNativePostgresRelations) > 0 && m.Storage.Engine != "postgres" {
+		return nil, errors.New("native PostgreSQL relation exclusions require a PostgreSQL manifest")
 	}
 	baseDir := filepath.Dir(manifestPath)
 	var policies []access.Policy
@@ -131,7 +144,7 @@ func FileWithOptions(manifestPath string, opts Options) (*core.Database, error) 
 		// lives next to the manifest.
 		cataloguePath = filepath.Join(baseDir, m.Database.ID+".inferred.json")
 	case "postgres":
-		if db, modes, err = openPostgres(m); err != nil {
+		if db, modes, err = openPostgresWithExcludedRelations(m, opts.ExcludedNativePostgresRelations); err != nil {
 			return nil, fmt.Errorf("%s: %w", manifestPath, err)
 		}
 		cataloguePath = filepath.Join(baseDir, m.Database.ID+".inferred.json")
