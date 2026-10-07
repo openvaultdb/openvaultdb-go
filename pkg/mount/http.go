@@ -17,15 +17,21 @@ func openHTTP(m *manifest.Manifest, client *http.Client) (dal.DB, []schema.Mode,
 	if err := m.ValidateHTTP(); err != nil {
 		return nil, nil, err
 	}
+	collection := dalgo2http.Collection{Name: m.Storage.HTTP.Collection, Timeout: 10 * time.Second, ClientSideFilter: true}
+	switch m.Storage.HTTP.Profile {
+	case manifest.HTTPProfileECBDaily:
+		collection.URLTemplate = manifest.ECBDailyURL
+		collection.Decoder = dalgo2http.DecoderECBEuroFXRef
+		collection.KeyField = "currency"
+	case manifest.HTTPProfileIANAHTTPStatus:
+		collection.URLTemplate = manifest.IANAHTTPStatusURL
+		collection.Method = dalgo2http.MethodGET
+		collection.Decoder = dalgo2http.DecoderStrictCSV3
+		collection.KeyField = "Value" // Query transport only; no point-read or scalar-code promise.
+	}
 	db, err := dalgo2http.NewDB(dalgo2http.Config{
 		Mode: dalgo2http.ModeLive, Client: client,
-		Collections: []dalgo2http.Collection{{
-			Name:        m.Storage.HTTP.Collection,
-			URLTemplate: manifest.ECBDailyURL,
-			Decoder:     dalgo2http.DecoderECBEuroFXRef,
-			KeyField:    "currency", Timeout: 10 * time.Second,
-			ClientSideFilter: true,
-		}},
+		Collections: []dalgo2http.Collection{collection},
 	})
 	return db, []schema.Mode{schema.ModeStrict}, err
 }

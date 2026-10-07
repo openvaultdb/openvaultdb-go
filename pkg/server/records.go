@@ -318,8 +318,8 @@ func decodeQuery(w http.ResponseWriter, r *http.Request, q *core.Query) error {
 }
 
 func (s *Server) executeQuery(w http.ResponseWriter, r *http.Request, db *core.Database, q core.Query) {
-	if s.providerRequestRestricted(db) && !validProviderQuery(db, q) {
-		refuseProviderRequest(w)
+	if s.providerRequestRestricted(db) && !validProviderQuery(db, q, s.providerProfilesByDB[db].RequestProfile) {
+		refuseProviderRequest(w, s.providerProfilesByDB[db].RequestProfile)
 		return
 	}
 	// A subcollection query is scoped by its parent's root collection, not by

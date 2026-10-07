@@ -7,13 +7,16 @@ import (
 )
 
 const (
-	HTTPProfileECBDaily = "ecb-daily/1"
-	ECBDailyURL         = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
+	HTTPProfileECBDaily       = "ecb-daily/1"
+	ECBDailyURL               = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
+	HTTPProfileIANAHTTPStatus = "iana-http-status/1"
+	IANAHTTPStatusURL         = "https://www.iana.org/assignments/http-status-codes/http-status-codes-1.csv"
+	IANALicensingTermsURL     = "https://www.iana.org/help/licensing-terms"
 )
 
 // HTTPOptions selects an immutable public resource profile, never an arbitrary
 // proxy URL, cache, snapshot store or executable decoder. Collection is its
-// local recordset name; native ECB fields remain time, currency and rate.
+// local recordset name; each closed profile fixes its native field names.
 type HTTPOptions struct {
 	Profile    string `yaml:"profile" json:"profile"`
 	Collection string `yaml:"collection" json:"collection"`
@@ -28,8 +31,17 @@ func (m *Manifest) ValidateHTTP() error {
 		return nil
 	}
 	o := m.Storage.HTTP
-	if o == nil || o.Profile != HTTPProfileECBDaily || o.Collection == "" {
-		return fmt.Errorf("storage.http requires profile ecb-daily/1 and a collection name")
+	if o == nil || o.Collection == "" {
+		return fmt.Errorf("storage.http requires a fixed profile and collection name")
+	}
+	var nativeFields []string
+	switch o.Profile {
+	case HTTPProfileECBDaily:
+		nativeFields = []string{"time", "currency", "rate"}
+	case HTTPProfileIANAHTTPStatus:
+		nativeFields = []string{"Value", "Description", "Reference"}
+	default:
+		return fmt.Errorf("unsupported storage.http profile %q", o.Profile)
 	}
 	if m.Storage.Path != "" || m.Storage.InGitDB != nil || m.Storage.SQLite != nil || m.Storage.Firestore != nil || m.Storage.Postgres != nil || m.Storage.MySQL != nil {
 		return fmt.Errorf("http sources cannot configure local storage or other engines")
@@ -39,12 +51,18 @@ func (m *Manifest) ValidateHTTP() error {
 	}
 	c, ok := m.Schemas.Collections[o.Collection]
 	if !ok || len(c.Fields) != 3 || len(c.References) != 0 {
-		return fmt.Errorf("ECB collection must declare only native time, currency and rate fields")
+		return fmt.Errorf("HTTP collection must declare only its three native fields")
 	}
-	for _, name := range []string{"time", "currency", "rate"} {
+	if o.Profile == HTTPProfileIANAHTTPStatus && c.Source != nil {
+		return fmt.Errorf("IANA native rows cannot declare a physical source override")
+	}
+	for _, name := range nativeFields {
 		f, ok := c.Fields[name]
 		if !ok || f.Type != schema.TypeString || f.Decimal != nil {
-			return fmt.Errorf("ECB native field %s must have string type", name)
+			return fmt.Errorf("HTTP native field %s must have string type", name)
+		}
+		if o.Profile == HTTPProfileIANAHTTPStatus && f != (schema.Field{Type: schema.TypeString}) {
+			return fmt.Errorf("IANA native field %s cannot declare inferred key, nullability or source type", name)
 		}
 	}
 	return m.ValidateRetention()

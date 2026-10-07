@@ -8,7 +8,7 @@ require (
 	cloud.google.com/go/firestore v1.24.0
 	github.com/dal-go/dalgo v0.93.0
 	github.com/dal-go/dalgo2firestore v0.10.3
-	github.com/dal-go/dalgo2http v0.3.0
+	github.com/dal-go/dalgo2http v0.4.0
 	github.com/dal-go/dalgo2mysql v0.2.2
 	github.com/dal-go/dalgo2postgres v0.9.1
 	github.com/dal-go/record v0.1.4

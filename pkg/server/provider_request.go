@@ -20,28 +20,46 @@ import (
 // ECBPublicFreeRequestProfile is an opt-in contract for an independently
 // admitted ECB daily instance. It grants no admission, activation or entitlement.
 const ECBPublicFreeRequestProfile = "ecb-public-free/1"
+const IANANativeOperatorRequestProfile = "iana-native-operator/1"
 
 func validateProviderRequestProfile(db *core.Database, p ProviderReadProfile) error {
-	if p.RequestProfile == "" {
+	if db.Manifest.Storage.HTTP == nil {
+		return fmt.Errorf("incompatible provider request profile")
+	}
+	if p.RequestProfile == "" && db.Manifest.Storage.HTTP.Profile != manifest.HTTPProfileIANAHTTPStatus {
 		return nil
 	}
-	if p.RequestProfile != ECBPublicFreeRequestProfile || db.ID() != "ecb" ||
-		p.Collection != "daily" || p.Binding.ResourceID != "ecb-daily" ||
-		p.Binding.ProviderSourceID != "provider:ecb/FxReferenceQuote" ||
-		db.Manifest.Storage.HTTP == nil || db.Manifest.Storage.HTTP.Profile != manifest.HTTPProfileECBDaily ||
-		db.Manifest.Storage.HTTP.Collection != p.Collection {
+	if db.Manifest.Storage.HTTP.Collection != p.Collection {
+		return fmt.Errorf("incompatible provider request profile")
+	}
+	switch p.RequestProfile {
+	case ECBPublicFreeRequestProfile:
+		if db.ID() != "ecb" || p.Collection != "daily" || p.Binding.ResourceID != "ecb-daily" ||
+			p.Binding.ProviderSourceID != "provider:ecb/FxReferenceQuote" || db.Manifest.Storage.HTTP.Profile != manifest.HTTPProfileECBDaily {
+			return fmt.Errorf("incompatible provider request profile")
+		}
+	case IANANativeOperatorRequestProfile:
+		if db.ID() != "iana-http-status" || p.Collection != "rows" || p.Binding.ResourceID != "iana-http-status-codes" ||
+			p.Binding.ProviderSourceID != "provider:iana/HttpStatusRegistryRow" || db.Manifest.Storage.HTTP.Profile != manifest.HTTPProfileIANAHTTPStatus {
+			return fmt.Errorf("incompatible provider request profile")
+		}
+	default:
 		return fmt.Errorf("incompatible provider request profile")
 	}
 	return db.Manifest.ValidateHTTP()
 }
 
 func (s *Server) providerRequestRestricted(db *core.Database) bool {
-	return s.providerProfilesByDB[db].RequestProfile == ECBPublicFreeRequestProfile
+	return s.providerProfilesByDB[db].RequestProfile != ""
 }
 
-func refuseProviderRequest(w http.ResponseWriter) {
+func refuseProviderRequest(w http.ResponseWriter, requestProfile string) {
 	w.Header().Set("Cache-Control", "no-store")
-	writeError(w, http.StatusUnprocessableEntity, "provider_request_unsupported", "ECB public queries require native daily fields and an explicit limit of 1..50")
+	message := "ECB public queries require native daily fields and an explicit limit of 1..50"
+	if requestProfile == IANANativeOperatorRequestProfile {
+		message = "IANA operator queries require native registry fields and an explicit limit of 1..50"
+	}
+	writeError(w, http.StatusUnprocessableEntity, "provider_request_unsupported", message)
 }
 
 // Check original wire intent before decoders can erase duplicates, aliases or
@@ -50,10 +68,11 @@ func (s *Server) guardProviderRequest(w http.ResponseWriter, r *http.Request, db
 	if !s.providerRequestRestricted(db) {
 		return true
 	}
+	requestProfile := s.providerProfilesByDB[db].RequestProfile
 	path := r.URL.Path
 	query, dtql := strings.HasSuffix(path, "/query"), strings.HasSuffix(path, "/dtql")
 	if strings.HasSuffix(path, "/read") || strings.Contains(path, "/records/") || strings.HasSuffix(path, "/batch") {
-		refuseProviderRequest(w)
+		refuseProviderRequest(w, requestProfile)
 		return false
 	}
 	if !query && !dtql {
@@ -89,7 +108,7 @@ func (s *Server) guardProviderRequest(w http.ResponseWriter, r *http.Request, db
 		valid = valid && json.Valid([]byte(raw[0])) && providerWireNode([]byte(raw[0])) != nil
 	}
 	if !valid {
-		refuseProviderRequest(w)
+		refuseProviderRequest(w, requestProfile)
 	}
 	return valid
 }
@@ -219,8 +238,18 @@ func validProviderConditionWire(node *yaml.Node) bool {
 	return true
 }
 
-func providerNativeField(field string) bool {
+func providerNativeField(requestProfile, field string) bool {
+	if requestProfile == IANANativeOperatorRequestProfile {
+		return field == "Value" || field == "Description" || field == "Reference"
+	}
 	return field == "time" || field == "currency" || field == "rate"
+}
+
+func providerCollection(requestProfile string) string {
+	if requestProfile == IANANativeOperatorRequestProfile {
+		return "rows"
+	}
+	return "daily"
 }
 
 func providerNativeValue(op string, value any) bool {
@@ -240,20 +269,20 @@ func providerNativeValue(op string, value any) bool {
 	return stringValue && slices.Contains([]string{"==", "<", "<=", ">", ">="}, op)
 }
 
-func validProviderQuery(db *core.Database, q core.Query) bool {
+func validProviderQuery(db *core.Database, q core.Query, requestProfile string) bool {
 	canonical, declared := db.CanonicalCollection(q.Collection)
-	if !declared || canonical != "daily" || q.Parent != "" || q.KeysOnly || len(q.OrderBy) != 0 || q.Limit < 1 || q.Limit > 50 {
+	if !declared || canonical != providerCollection(requestProfile) || q.Parent != "" || q.KeysOnly || len(q.OrderBy) != 0 || q.Limit < 1 || q.Limit > 50 {
 		return false
 	}
 	for _, f := range q.Where {
-		if !providerNativeField(f.Field) || !providerNativeValue(f.Op, f.Value) {
+		if !providerNativeField(requestProfile, f.Field) || !providerNativeValue(f.Op, f.Value) {
 			return false
 		}
 	}
 	return true
 }
 
-func validProviderDTQL(db *core.Database, q dal.StructuredQuery, profile core.Profile) bool {
+func validProviderDTQL(db *core.Database, q dal.StructuredQuery, profile core.Profile, requestProfile string) bool {
 	if profile.Kind == core.ProfileRelational || q.Limit() < 1 || q.Limit() > 50 || q.Offset() != 0 || len(q.OrderBy()) != 0 {
 		return false
 	}
@@ -262,19 +291,19 @@ func validProviderDTQL(db *core.Database, q dal.StructuredQuery, profile core.Pr
 		return false
 	}
 	canonical, declared := db.CanonicalCollection(source.Name())
-	if !declared || canonical != "daily" || source.Parent() != nil || source.Alias() != "" || source.Database() != "" || source.Schema() != "" || source.ScanLimit() != 0 || len(source.ScanOrders()) != 0 {
+	if !declared || canonical != providerCollection(requestProfile) || source.Parent() != nil || source.Alias() != "" || source.Database() != "" || source.Schema() != "" || source.ScanLimit() != 0 || len(source.ScanOrders()) != 0 {
 		return false
 	}
 	for _, col := range q.Columns() {
 		field, ok := col.Expression.(dal.FieldRef)
-		if !ok || col.Alias != "" || field.Source() != "" || !providerNativeField(field.Name()) {
+		if !ok || col.Alias != "" || field.Source() != "" || !providerNativeField(requestProfile, field.Name()) {
 			return false
 		}
 	}
-	return validProviderCondition(q.Where())
+	return validProviderCondition(requestProfile, q.Where())
 }
 
-func validProviderCondition(condition dal.Condition) bool {
+func validProviderCondition(requestProfile string, condition dal.Condition) bool {
 	switch c := condition.(type) {
 	case nil:
 		return true
@@ -283,14 +312,14 @@ func validProviderCondition(condition dal.Condition) bool {
 			return false
 		}
 		for _, child := range c.Conditions() {
-			if !validProviderCondition(child) {
+			if !validProviderCondition(requestProfile, child) {
 				return false
 			}
 		}
 		return len(c.Conditions()) != 0
 	case dal.Comparison:
 		field, ok := c.Left.(dal.FieldRef)
-		if !ok || field.Source() != "" || !providerNativeField(field.Name()) {
+		if !ok || field.Source() != "" || !providerNativeField(requestProfile, field.Name()) {
 			return false
 		}
 		switch value := c.Right.(type) {

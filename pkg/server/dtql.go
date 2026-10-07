@@ -43,7 +43,7 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.providerRequestRestricted(db) && !validProviderDTQLWire(doc) {
-		refuseProviderRequest(w)
+		refuseProviderRequest(w, s.providerProfilesByDB[db].RequestProfile)
 		return
 	}
 	doc = withoutOwnDatabase(withoutDefaultSchema(doc, db.Engine()), db.ID())
@@ -55,8 +55,8 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 		s.writeMappedError(w, r, clippedError{err})
 		return
 	}
-	if s.providerRequestRestricted(db) && !validProviderDTQL(db, query, profile) {
-		refuseProviderRequest(w)
+	if s.providerRequestRestricted(db) && !validProviderDTQL(db, query, profile, s.providerProfilesByDB[db].RequestProfile) {
+		refuseProviderRequest(w, s.providerProfilesByDB[db].RequestProfile)
 		return
 	}
 	if profile.Kind == core.ProfileRelational {

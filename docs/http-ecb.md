@@ -1,7 +1,8 @@
 # Live ECB HTTP mount
 
-`storage.engine: http` currently admits only the fixed `ecb-daily/1` resource
-profile. It uses the published `dalgo2http` adapter and its `ecb-eurofxref/1`
+`storage.engine: http` admits closed ECB and IANA resource profiles; this page
+describes `ecb-daily/1`. The IANA profile is documented in [http-iana.md](http-iana.md).
+ECB uses the published `dalgo2http` adapter and its `ecb-eurofxref/1`
 decoder to read `https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml`.
 Manifests cannot supply alternate URLs, credentials, headers, transforms,
 snapshot stores or cache settings. Each query reads one bounded live response:

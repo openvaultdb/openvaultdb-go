@@ -80,6 +80,15 @@ func (s *Server) validateProviderProfiles() error {
 			return err
 		}
 	}
+	// A library mount alone is transport capability, not an admitted server
+	// execution path. Every IANA server alias must resolve to the closed native
+	// operator profile and its checked rights/binding before any route starts.
+	for _, db := range s.dbs {
+		if db.Manifest.Storage.HTTP != nil && db.Manifest.Storage.HTTP.Profile == manifest.HTTPProfileIANAHTTPStatus &&
+			s.providerProfilesByDB[db].RequestProfile != IANANativeOperatorRequestProfile {
+			return fmt.Errorf("IANA HTTP mount requires admitted native operator profile")
+		}
+	}
 	if len(s.providerProfilesByDB) > 0 && s.corsCfg != nil {
 		cfg, err := s.corsCfg.WithHeaders([]string{ProviderExecutionIDHeader}, nil)
 		if err != nil {
@@ -90,7 +99,11 @@ func (s *Server) validateProviderProfiles() error {
 	return nil
 }
 func (s *Server) providerPlan(p ProviderReadProfile, capture rightsCapture, id string) providerreads.Plan {
-	return providerreads.Plan{Execution: providerreads.Execution{ID: id, Mode: "proxy", ExecutorID: s.rightsServerID}, Bindings: []providerreads.Binding{p.Binding}, Requests: []providerreads.Request{{ResourceID: p.Binding.ResourceID, Method: "GET", UpstreamURL: manifest.ECBDailyURL, Params: map[string]any{}}}, SourceRights: capture.rights, MaxReads: new(1), MaxMetadataBytes: providerreads.MaxMetadataBytes}
+	upstreamURL := manifest.ECBDailyURL
+	if p.RequestProfile == IANANativeOperatorRequestProfile {
+		upstreamURL = manifest.IANAHTTPStatusURL
+	}
+	return providerreads.Plan{Execution: providerreads.Execution{ID: id, Mode: "proxy", ExecutorID: s.rightsServerID}, Bindings: []providerreads.Binding{p.Binding}, Requests: []providerreads.Request{{ResourceID: p.Binding.ResourceID, Method: "GET", UpstreamURL: upstreamURL, Params: map[string]any{}}}, SourceRights: capture.rights, MaxReads: new(1), MaxMetadataBytes: providerreads.MaxMetadataBytes}
 }
 
 type providerCapture struct {
@@ -129,7 +142,13 @@ func (s *Server) beginProviderRead(r *http.Request, db *core.Database, collectio
 		if pc.err != nil {
 			return
 		}
-		if o.Source != dalgo2http.SourceLive || o.Collection != collection || o.Decoder != dalgo2http.DecoderECBEuroFXRef || o.BaseCurrency != "EUR" || o.ReferenceDate == "" || o.FetchedAt.IsZero() || o.Bytes > 2<<20 {
+		valid := o.Source == dalgo2http.SourceLive && o.Collection == collection && !o.FetchedAt.IsZero()
+		if p.RequestProfile == IANANativeOperatorRequestProfile {
+			valid = valid && o.Decoder == dalgo2http.DecoderStrictCSV3 && o.BaseCurrency == "" && o.ReferenceDate == "" && o.Bytes <= 64<<10
+		} else {
+			valid = valid && o.Decoder == dalgo2http.DecoderECBEuroFXRef && o.BaseCurrency == "EUR" && o.ReferenceDate != "" && o.Bytes <= 2<<20
+		}
+		if !valid {
 			pc.err = fmt.Errorf("provider transport observation mismatch")
 			return
 		}
