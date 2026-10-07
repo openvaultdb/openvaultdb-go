@@ -95,6 +95,93 @@ func TestDiscoverNativePostgresSchemasPreservesPhysicalNamesAndTypes(t *testing.
 	}
 }
 
+type excludedRelationCatalogFixture struct {
+	described []schema.NativeCollectionSource
+}
+
+func (f *excludedRelationCatalogFixture) ListSchemas(context.Context) ([]string, error) {
+	return []string{"demodb", "other"}, nil
+}
+
+func (*excludedRelationCatalogFixture) ListSchemaCollections(_ context.Context, schemaName string) ([]dal.CollectionRef, error) {
+	return []dal.CollectionRef{
+		dal.NewQualifiedRootCollectionRef(schemaName, "_import_manifest", ""),
+		dal.NewQualifiedRootCollectionRef(schemaName, "Artist", ""),
+	}, nil
+}
+
+func (*excludedRelationCatalogFixture) SelectableRelations(_ context.Context, schemaName string) (map[string]bool, error) {
+	return map[string]bool{"_import_manifest": true, "Artist": true}, nil
+}
+
+func (f *excludedRelationCatalogFixture) DescribeCollection(_ context.Context, ref *dal.CollectionRef) (*dbschema.CollectionDef, error) {
+	f.described = append(f.described, schema.NativeCollectionSource{Schema: ref.Schema(), Name: ref.Name()})
+	return &dbschema.CollectionDef{Name: ref.Name(), Fields: []dbschema.FieldDef{{Name: "Name", Type: dbschema.String}}}, nil
+}
+
+func TestNativePostgresRelationExclusionIsQualifiedAndAppliedBeforeDescription(t *testing.T) {
+	catalog := &excludedRelationCatalogFixture{}
+	all, err := discoverNativePostgresSchemas(context.Background(), catalog, catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestID, _ := schema.NativePostgresCollectionID("demodb", "_import_manifest")
+	otherManifestID, _ := schema.NativePostgresCollectionID("other", "_import_manifest")
+	if _, exists := all.Collections[manifestID]; !exists {
+		t.Fatal("default discovery must continue to expose every selectable relation")
+	}
+	catalog.described = nil
+	exclusions := map[schema.NativeCollectionSource]struct{}{{Schema: "demodb", Name: "_import_manifest"}: {}}
+	filtered, err := discoverNativePostgresSchemasExcluding(context.Background(), catalog, catalog, exclusions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := filtered.Collections[manifestID]; exists {
+		t.Fatal("excluded relation appeared in the discovered schema")
+	}
+	if _, exists := filtered.Collections[otherManifestID]; !exists {
+		t.Fatal("exclusion must match the exact schema and relation pair")
+	}
+	for _, described := range catalog.described {
+		if described == (schema.NativeCollectionSource{Schema: "demodb", Name: "_import_manifest"}) {
+			t.Fatal("excluded relation was described by the provider catalog")
+		}
+	}
+}
+
+func TestNativePostgresExclusionsAreValidatedBeforeOpening(t *testing.T) {
+	m := &manifest.Manifest{
+		Database: manifest.Database{ID: "samples"},
+		Storage:  manifest.Storage{Engine: "postgres", Postgres: &manifest.PostgresOptions{DSNEnv: "TEST_EXCLUSION_DSN", ReadOnly: true}},
+	}
+	called := false
+	open := func(string, dal.Schema, dalgo2sql.DbOptions, ...dalgo2postgres.Option) (*dalgo2postgres.Database, error) {
+		called = true
+		return nil, errStopOpening
+	}
+	for name, exclusions := range map[string][]schema.NativeCollectionSource{
+		"invalid name":   {{Schema: "public", Name: "bad\x00name"}},
+		"duplicate pair": {{Schema: "public", Name: "hidden"}, {Schema: "public", Name: "hidden"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := openPostgresWithExclusions(m, open, exclusions)
+			if err == nil {
+				t.Fatal("expected exclusions to be rejected")
+			}
+		})
+	}
+	notReadOnly := &manifest.Manifest{
+		Database: manifest.Database{ID: "samples"},
+		Storage:  manifest.Storage{Engine: "postgres", Postgres: &manifest.PostgresOptions{DSNEnv: "TEST_EXCLUSION_DSN"}},
+	}
+	if _, _, err := openPostgresWithExclusions(notReadOnly, open, []schema.NativeCollectionSource{{Schema: "public", Name: "hidden"}}); err == nil {
+		t.Fatal("expected relation exclusions on a non-native mount to be rejected")
+	}
+	if called {
+		t.Fatal("invalid exclusions reached the PostgreSQL opener")
+	}
+}
+
 func TestNativePostgresMountUsesExactIdentifiersAndExactNumericValues(t *testing.T) {
 	t.Setenv("TEST_NATIVE_PG_DSN", "postgres://readonly:secret@db.example.test:5432/samples")
 	m := &manifest.Manifest{

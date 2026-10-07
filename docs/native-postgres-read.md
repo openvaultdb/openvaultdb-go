@@ -47,6 +47,27 @@ this as an opaque route ID and use `source.schema` and `source.name` for
 display. The encoding is versioned so its representation can evolve without
 relabeling existing PostgreSQL mounts.
 
+## Consumer-scoped relation exclusions
+
+A mounting consumer can omit exact schema/relation pairs without changing the
+manifest or the default discovery behavior:
+
+```go
+db, err := mount.FileWithOptions(manifestPath, mount.Options{
+	ExcludedNativePostgresRelations: []schema.NativeCollectionSource{
+		{Schema: "demodb", Name: "_import_manifest"},
+	},
+})
+```
+
+The filter applies only to native read-only PostgreSQL mounts. The omitted
+relation is not described or included in database metadata, and its encoded
+collection ID and schema-qualified DTQL source are both rejected before the
+provider query. Matching is exact and schema-qualified; a same-named relation
+in another schema remains available. An empty exclusion list preserves the
+existing expose-all behavior. Consumers should keep their exclusions narrowly
+scoped to their own internal or provenance relations.
+
 ## Structured reads
 
 Use the original physical names in schema-qualified DTQL. OVDB first resolves
