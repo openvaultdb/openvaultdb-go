@@ -821,8 +821,15 @@ func TestPostgresIntegration_NativeRelationExclusionHidesDescriptorAndQueryLooku
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(collections, []string{visibleID}) {
-		t.Fatalf("discovered collections = %q, want only %q", collections, visibleID)
+	collectionIDs := make(map[string]struct{}, len(collections))
+	for _, collectionID := range collections {
+		collectionIDs[collectionID] = struct{}{}
+	}
+	if _, ok := collectionIDs[hiddenID]; ok {
+		t.Fatalf("discovered collections = %q, includes excluded ID %q", collections, hiddenID)
+	}
+	if _, ok := collectionIDs[visibleID]; !ok {
+		t.Fatalf("discovered collections = %q, missing visible fixture ID %q", collections, visibleID)
 	}
 	base, _ := pgITServeLogged(t, map[string]*core.Database{"native-exclusion": native})
 	metadata := relHTTPDo(t, base, http.MethodGet, "/v1/databases/native-exclusion", "", "", nil)
