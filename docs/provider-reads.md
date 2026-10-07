@@ -24,7 +24,9 @@ original free-resource notice and transformation disclosure. Startup requires
 `publisher-definition-verified` origin and exactly one `provider` pin of metadata:
 an immutable GitHub repository revision and relative manifest path whose SHA-256
 equals the profile's definition digest. Input/body pins are refused. The original
-free-resource link must equal the fixed daily resource. The complete rights
+free-resource link must equal the profile's fixed resource. The IANA native
+operator profile requires this pinned record and the exact registry terms URL;
+ECB's legacy declaration-only behavior remains available. The complete rights
 digest, text and evidence budgets are validated before requests can run.
 
 The operator must obtain the record through original-object publisher checking

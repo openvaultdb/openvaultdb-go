@@ -22,6 +22,7 @@ import (
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 	"github.com/openvaultdb/openvaultdb-go/pkg/joinexec"
 	"github.com/openvaultdb/openvaultdb-go/pkg/license"
+	"github.com/openvaultdb/openvaultdb-go/pkg/manifest"
 	"github.com/openvaultdb/openvaultdb-go/pkg/providerreads"
 )
 
@@ -141,9 +142,9 @@ func New(version string, dbs map[string]*core.Database, opts ...Option) *Server 
 	if s.queryGate == nil {
 		s.setQueryLimits(DefaultQueryLimits())
 	}
-	if len(s.readProfiles) > 0 || s.rightsServerID != "" {
-		s.dbs = maps.Clone(s.dbs)
-	}
+	// The caller owns its map. Every admission check and later runtime mount
+	// must operate on this server's private inventory, even without options.
+	s.dbs = maps.Clone(s.dbs)
 	s.readProfileErr = s.validateReadProfiles()
 	s.rightsErr = s.validateSourceRights()
 	s.providerProfileErr = s.validateProviderProfiles()
@@ -183,6 +184,10 @@ func (s *Server) Mount(db *core.Database) error {
 	}
 	if _, configured := s.providerProfiles[db.ID()]; configured {
 		return fmt.Errorf("provider profile requires startup admission of the exact instance")
+	}
+	if db.HTTPProfile() == manifest.HTTPProfileIANAHTTPStatus &&
+		s.providerProfilesByDB[db].RequestProfile != IANANativeOperatorRequestProfile {
+		return fmt.Errorf("IANA HTTP mount requires startup admission of the exact instance")
 	}
 	if s.retiringProfileDBs[db] {
 		return errors.New("profile-bound instance is retiring or closed; mount a new instance")

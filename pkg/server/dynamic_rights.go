@@ -46,15 +46,23 @@ func cloneProviderProfiles(profiles map[string]ProviderReadProfile) map[string]P
 // validates exact binding, not Git authenticity, semantics or legal clearance.
 func (s *Server) validateDynamicProviderRight(db *core.Database, profile ProviderReadProfile) error {
 	right := profile.SourceRight
+	if profile.RequestProfile == IANANativeOperatorRequestProfile &&
+		(right == nil || right.Declaration.URL != manifest.IANALicensingTermsURL) {
+		return fmt.Errorf("IANA operator profile requires pinned publisher definition and exact registry terms")
+	}
 	if right == nil {
 		return nil
 	}
 	base, err := db.SourceRight(s.rightsServerID, s.serverLicense, profile.Collection)
+	freeSourceURL := manifest.ECBDailyURL
+	if db.HTTPProfile() == manifest.HTTPProfileIANAHTTPStatus {
+		freeSourceURL = manifest.IANAHTTPStatusURL
+	}
 	if err != nil || base == nil || right.SourceID != base.SourceID || right.Source != base.Source ||
 		right.DeclaredAt != base.DeclaredAt || right.DeclarationScope != base.DeclarationScope ||
 		right.Declaration.Legacy() || right.Declaration != base.Declaration ||
 		right.EvidenceOrigin != "publisher-definition-verified" || len(right.Pins) != 1 ||
-		right.Attribution == nil || right.FreeSource == nil || right.FreeSource.URL != manifest.ECBDailyURL ||
+		right.Attribution == nil || right.FreeSource == nil || right.FreeSource.URL != freeSourceURL ||
 		len(right.Transformations) == 0 {
 		return fmt.Errorf("dynamic provider rights must preserve mounted identity/terms and complete definition notices")
 	}

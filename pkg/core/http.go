@@ -17,6 +17,10 @@ var ErrNativePostgresOperationUnsupported = fmt.Errorf("%w: native PostgreSQL mo
 // source supports bounded queries, but not keyed reads, writes or DDL.
 func (d *Database) ReadOnlyHTTP() bool { return d.readOnlyHTTP }
 
+// HTTPProfile is captured when the mount opens; editing exported Manifest
+// metadata cannot change the source profile used by server admission guards.
+func (d *Database) HTTPProfile() string { return d.httpProfile }
+
 // ReadOnly reports mounts that expose neither keyed record reads nor writes.
 func (d *Database) ReadOnly() bool { return d.readOnlyHTTP || d.nativePostgres }
 

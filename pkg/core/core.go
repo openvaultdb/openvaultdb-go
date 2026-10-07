@@ -53,6 +53,7 @@ func (e *ModeCompatibilityError) Error() string {
 // enforcement.
 type Database struct {
 	readOnlyHTTP     bool                                     // frozen mount capability; no point reads or writes
+	httpProfile      string                                   // frozen fixed resource profile; public Manifest may later mutate
 	nativePostgres   bool                                     // native PostgreSQL catalog mount, queries only
 	nativeSources    map[string]schema.NativeCollectionSource // logical ID -> exact physical names
 	nativeIDs        map[nativePostgresTuple]string           // exact physical names -> logical ID
@@ -166,7 +167,11 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 			return nil, err
 		}
 	}
-	d := &Database{Manifest: m, db: db, retention: m.EffectiveRetention(), readOnlyHTTP: m.Storage.Engine == "http", nativePostgres: nativePostgres, modes: supportedModes, policyController: controller,
+	httpProfile := ""
+	if m.Storage.Engine == "http" {
+		httpProfile = m.Storage.HTTP.Profile // ValidateHTTP above requires this value.
+	}
+	d := &Database{Manifest: m, db: db, retention: m.EffectiveRetention(), readOnlyHTTP: m.Storage.Engine == "http", httpProfile: httpProfile, nativePostgres: nativePostgres, modes: supportedModes, policyController: controller,
 		names: names, documentEngine: documentEngines[m.Storage.Engine], foldsIdentifiers: foldingEngines[m.Storage.Engine] && !nativePostgres,
 		previewPostgres: previewPostgresQueries()}
 	if nativePostgres {
