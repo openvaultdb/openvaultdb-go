@@ -106,6 +106,11 @@ func TestWellKnownQueryBlockStatesTheProfileAsData(t *testing.T) {
 	features := discoveryObject(t, query, "features")
 	want := map[string]any{
 		"joins":              []any{"inner", "left"},
+		"streaming":          true,
+		"completionField":    "complete",
+		"errorStreamAccept":  queryErrorStreamMediaType,
+		"errorField":         "error",
+		"errorCompletion":    false,
 		"groupBy":            true,
 		"having":             true,
 		"aggregates":         []any{"count", "sum", "avg", "min", "max"},

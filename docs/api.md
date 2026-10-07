@@ -132,7 +132,7 @@ GET /v1/databases
 → 200 {"databases":[{"id":"sneat-dev","engine":"ingitdb","schemaMode":"schemaless"}, ...]}
 
 GET /v1/databases/{db}
-→ 200 {"id":"...","serverId":"...","retention":"none","engine":"...","schemaMode":"...","collections":["..."],"schemas":{"collections":{"...":{"fields":{"...":{"type":"decimal","decimal":{"precision":19,"scale":4,"storage":"text"}}}}}},"capabilities":{"read":true,"query":true,"dtql":true,"write":true,"joins":true,"aggregation":true}}   // declared collections and optional declared field metadata
+→ 200 {"id":"...","serverId":"...","retention":"none","engine":"...","schemaMode":"...","collections":["..."],"schemas":{"collections":{"...":{"fields":{"...":{"type":"decimal","decimal":{"precision":19,"scale":4,"storage":"text"}}}}}},"capabilities":{"read":true,"query":true,"dtql":true,"dtqlStreaming":true,"dtqlStreamingErrors":true,"write":true,"joins":true,"aggregation":true}}   // declared collections and optional declared field metadata
 
 GET /v1/databases/{db}/inferred-schema
 → 200 inferred schema catalogue JSON (see pkg/inferred); 404 for strict databases
@@ -405,10 +405,10 @@ body:
   "limit":   10,                                                          // optional, 0 = no limit
   "keysOnly": false
 }
-→ 200 {"records":[{"key":"contacts/c1","data":{...}}, ...]}               // data omitted when keysOnly
+→ 200 {"records":[{"key":"contacts/c1","data":{...}}, ...],"complete":true}  // data omitted when keysOnly
 
 GET /v1/databases/{db}/query?q=<percent-encoded-JSON-query>
-→ 200 {"records":[{"key":"contacts/c1","data":{...}}, ...]}
+→ 200 {"records":[{"key":"contacts/c1","data":{...}}, ...],"complete":true}
 ```
 
 The `q` value is the same JSON object accepted by `POST /query`, URL-encoded
@@ -557,10 +557,10 @@ ordering return IDs sorted (limit applied after sorting), matching document-stor
 
 ```
 POST /v1/databases/{db}/dtql        body: a DTQL-YAML document (max 1 MiB)
-→ 200 {"records":[{"key":"...","data":{...}}, ...]}
+→ 200 {"records":[{"key":"...","data":{...}}, ...],"complete":true}
 
 GET /v1/databases/{db}/dtql?q=<percent-encoded-DTQL-YAML>&parameters=<percent-encoded-JSON-object>
-→ 200 {"records":[{"key":"...","data":{...}}, ...]}
+→ 200 {"records":[{"key":"...","data":{...}}, ...],"complete":true}
 ```
 
 `parameters` is optional. GET accepts one `q` and at most one `parameters`
@@ -694,7 +694,9 @@ server does, from the configuration it runs with:
         "joins": true,
         "query": true,
         "read": true,
-        "write": true
+        "write": true,
+        "dtqlStreaming": true,
+        "dtqlStreamingErrors": true
       },
       "id": "chinook",
       "url": "http://localhost:8080/ovdb/dbs/chinook"
@@ -707,7 +709,9 @@ server does, from the configuration it runs with:
         "joins": true,
         "query": true,
         "read": true,
-        "write": true
+        "write": true,
+        "dtqlStreaming": true,
+        "dtqlStreamingErrors": true
       },
       "id": "countries",
       "url": "http://localhost:8080/ovdb/dbs/countries"
@@ -720,7 +724,9 @@ server does, from the configuration it runs with:
         "joins": false,
         "query": true,
         "read": true,
-        "write": true
+        "write": true,
+        "dtqlStreaming": true,
+        "dtqlStreamingErrors": true
       },
       "id": "crm",
       "url": "http://localhost:8080/ovdb/dbs/crm"
@@ -733,7 +739,9 @@ server does, from the configuration it runs with:
         "joins": false,
         "query": true,
         "read": true,
-        "write": true
+        "write": true,
+        "dtqlStreaming": true,
+        "dtqlStreamingErrors": true
       },
       "id": "events",
       "url": "http://localhost:8080/ovdb/dbs/events"
@@ -762,7 +770,12 @@ server does, from the configuration it runs with:
       ],
       "protectedDatabases": false,
       "subqueries": true,
-      "windowFunctions": false
+      "windowFunctions": false,
+      "streaming": true,
+      "completionField": "complete",
+      "errorStreamAccept": "application/vnd.openvaultdb.query-stream+json",
+      "errorField": "error",
+      "errorCompletion": false
     },
     "format": "dtql-yaml+json",
     "joinEngines": [
@@ -795,6 +808,15 @@ server does, from the configuration it runs with:
   profile, see [Launch limits](#launch-limits)); `crossDatabase` is true (one document may read
   several mounted databases); `externalSources`, `windowFunctions` and `protectedDatabases` are
   false (see [Launch limits](#launch-limits)); `fieldNames` is `plain`.
+- `streaming`: DTQL and structured `/query` responses send rows as the DALgo reader produces
+  them. Every successful response ends with `"complete": true`; clients should accept only a
+  fully decoded object with that field.
+- Late stream errors normally abort the JSON response, which leaves it invalid rather than
+  resembling a successful partial result. A client that wants a readable error after rows have
+  arrived may opt in with `Accept: application/vnd.openvaultdb.query-stream+json`. That response
+  uses the same rows-first object and ends with `"error": {"code": ..., "message": ...}` and
+  `"complete": false`; it omits success-only execution, columns, and rights metadata. Errors
+  before the first row keep their ordinary mapped HTTP status and `application/json` body.
 - `limits`: what one request may ask for, each value the one the server enforces. `timeoutMs`,
   `maxSourceRows` and `maxSourceBytes` are the server's configuration (`QueryLimits`);
   `maxResultRows` and `maxResultBytes` bound the answer. `maxRequestBytes` is the most bytes of the
@@ -822,7 +844,8 @@ Each database in the list (listed when auth is off) and the metadata of a databa
 `aggregation`, in the `capabilities` map beside `read`, `query`, `dtql` and `write`. They are true
 when a relational document that names the database is not refused for the database itself: its
 engine is in `joinEngines`, it has no access policies and it is not a GitHub-backed inGitDB
-mount. The value comes from the check the
+mount. `dtqlStreaming` and `dtqlStreamingErrors` advertise streamed query responses and the
+opt-in error-footer protocol. The value comes from the check the
 relational handler applies to the request, so a client that reads `joins: true` is not refused by
 the database it names.
 
@@ -840,7 +863,9 @@ Tags do not grant access or select a storage engine.
     "joins": true,
     "query": true,
     "read": true,
-    "write": true
+    "write": true,
+    "dtqlStreaming": true,
+    "dtqlStreamingErrors": true
   },
   "collections": [
     "Customer",
@@ -858,16 +883,28 @@ Tags do not grant access or select a storage engine.
     "collections": {
       "Customer": {
         "fields": {
-          "country": {"type": "string"},
-          "id": {"type": "string"},
-          "name": {"type": "string"}
+          "country": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
         }
       },
       "Invoice": {
         "fields": {
-          "customer_id": {"type": "string"},
-          "id": {"type": "string"},
-          "total": {"type": "string"}
+          "customer_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "total": {
+            "type": "string"
+          }
         }
       }
     }
@@ -905,26 +942,6 @@ columns:
 ```
 ```json
 {
-  "columns": [
-    "id",
-    "customer_name",
-    "total"
-  ],
-  "execution": {
-    "elapsedMs": 0,
-    "route": "database",
-    "rowsReturned": 5,
-    "sources": [
-      {
-        "collection": "Invoice",
-        "database": "chinook"
-      },
-      {
-        "collection": "Customer",
-        "database": "chinook"
-      }
-    ]
-  },
   "records": [
     {
       "data": {
@@ -961,11 +978,32 @@ columns:
         "total": 8
       }
     }
-  ]
+  ],
+  "columns": [
+    "id",
+    "customer_name",
+    "total"
+  ],
+  "execution": {
+    "elapsedMs": 0,
+    "route": "database",
+    "rowsReturned": 5,
+    "sources": [
+      {
+        "collection": "Invoice",
+        "database": "chinook"
+      },
+      {
+        "collection": "Customer",
+        "database": "chinook"
+      }
+    ]
+  },
+  "complete": true
 }
 ```
 
-The answer is `{"records": [{"data": {...}}], "columns": [...], "execution": {...}}`:
+The answer is `{"records": [{"data": {...}}], "columns": [...], "execution": {...}, "complete": true}`:
 
 - `records` holds the rows. A relational row carries **no record key**, only `data`.
 - `columns` names the columns in the order the document selects them.
@@ -1001,25 +1039,6 @@ columns:
 ```
 ```json
 {
-  "columns": [
-    "country",
-    "revenue"
-  ],
-  "execution": {
-    "elapsedMs": 0,
-    "route": "database",
-    "rowsReturned": 3,
-    "sources": [
-      {
-        "collection": "Invoice",
-        "database": "chinook"
-      },
-      {
-        "collection": "Customer",
-        "database": "chinook"
-      }
-    ]
-  },
   "records": [
     {
       "data": {
@@ -1039,7 +1058,27 @@ columns:
         "revenue": 5
       }
     }
-  ]
+  ],
+  "columns": [
+    "country",
+    "revenue"
+  ],
+  "execution": {
+    "elapsedMs": 0,
+    "route": "database",
+    "rowsReturned": 3,
+    "sources": [
+      {
+        "collection": "Invoice",
+        "database": "chinook"
+      },
+      {
+        "collection": "Customer",
+        "database": "chinook"
+      }
+    ]
+  },
+  "complete": true
 }
 ```
 
@@ -1065,25 +1104,6 @@ columns:
 ```
 ```json
 {
-  "columns": [
-    "name",
-    "invoices"
-  ],
-  "execution": {
-    "elapsedMs": 0,
-    "route": "database",
-    "rowsReturned": 3,
-    "sources": [
-      {
-        "collection": "Customer",
-        "database": "chinook"
-      },
-      {
-        "collection": "Invoice",
-        "database": "chinook"
-      }
-    ]
-  },
   "records": [
     {
       "data": {
@@ -1103,7 +1123,27 @@ columns:
         "name": "Grace"
       }
     }
-  ]
+  ],
+  "columns": [
+    "name",
+    "invoices"
+  ],
+  "execution": {
+    "elapsedMs": 0,
+    "route": "database",
+    "rowsReturned": 3,
+    "sources": [
+      {
+        "collection": "Customer",
+        "database": "chinook"
+      },
+      {
+        "collection": "Invoice",
+        "database": "chinook"
+      }
+    ]
+  },
+  "complete": true
 }
 ```
 
@@ -1131,28 +1171,6 @@ columns:
 ```
 ```json
 {
-  "columns": [
-    "id"
-  ],
-  "execution": {
-    "elapsedMs": 0,
-    "route": "in-memory",
-    "rowsReturned": 5,
-    "sources": [
-      {
-        "collection": "Invoice",
-        "database": "chinook",
-        "elapsedMs": 0,
-        "rows": 5
-      },
-      {
-        "collection": "Customer",
-        "database": "chinook",
-        "elapsedMs": 0,
-        "rows": 10
-      }
-    ]
-  },
   "records": [
     {
       "data": {
@@ -1179,7 +1197,30 @@ columns:
         "id": "i5"
       }
     }
-  ]
+  ],
+  "columns": [
+    "id"
+  ],
+  "execution": {
+    "elapsedMs": 0,
+    "route": "in-memory",
+    "rowsReturned": 5,
+    "sources": [
+      {
+        "collection": "Invoice",
+        "database": "chinook",
+        "elapsedMs": 0,
+        "rows": 5
+      },
+      {
+        "collection": "Customer",
+        "database": "chinook",
+        "elapsedMs": 0,
+        "rows": 10
+      }
+    ]
+  },
+  "complete": true
 }
 ```
 
@@ -1211,29 +1252,6 @@ columns:
 ```
 ```json
 {
-  "columns": [
-    "id",
-    "name"
-  ],
-  "execution": {
-    "elapsedMs": 0,
-    "route": "in-memory",
-    "rowsReturned": 5,
-    "sources": [
-      {
-        "collection": "Invoice",
-        "database": "chinook",
-        "elapsedMs": 0,
-        "rows": 5
-      },
-      {
-        "collection": "Customer",
-        "database": "chinook",
-        "elapsedMs": 0,
-        "rows": 15
-      }
-    ]
-  },
   "records": [
     {
       "data": {
@@ -1265,7 +1283,31 @@ columns:
         "name": "Edsger"
       }
     }
-  ]
+  ],
+  "columns": [
+    "id",
+    "name"
+  ],
+  "execution": {
+    "elapsedMs": 0,
+    "route": "in-memory",
+    "rowsReturned": 5,
+    "sources": [
+      {
+        "collection": "Invoice",
+        "database": "chinook",
+        "elapsedMs": 0,
+        "rows": 5
+      },
+      {
+        "collection": "Customer",
+        "database": "chinook",
+        "elapsedMs": 0,
+        "rows": 15
+      }
+    ]
+  },
+  "complete": true
 }
 ```
 
@@ -1293,6 +1335,29 @@ columns:
 ```
 ```json
 {
+  "records": [
+    {
+      "data": {
+        "country": "United Kingdom",
+        "customer": "Ada",
+        "region": "Europe"
+      }
+    },
+    {
+      "data": {
+        "country": "Netherlands",
+        "customer": "Edsger",
+        "region": "Europe"
+      }
+    },
+    {
+      "data": {
+        "country": "United States",
+        "customer": "Grace",
+        "region": "Americas"
+      }
+    }
+  ],
   "columns": [
     "customer",
     "country",
@@ -1317,29 +1382,7 @@ columns:
       }
     ]
   },
-  "records": [
-    {
-      "data": {
-        "country": "United Kingdom",
-        "customer": "Ada",
-        "region": "Europe"
-      }
-    },
-    {
-      "data": {
-        "country": "Netherlands",
-        "customer": "Edsger",
-        "region": "Europe"
-      }
-    },
-    {
-      "data": {
-        "country": "United States",
-        "customer": "Grace",
-        "region": "Americas"
-      }
-    }
-  ]
+  "complete": true
 }
 ```
 
@@ -1524,6 +1567,26 @@ columns:
 ```
 ```json
 {
+  "records": [
+    {
+      "data": {
+        "label": "Grace",
+        "region": "Americas"
+      }
+    },
+    {
+      "data": {
+        "label": "Edsger",
+        "region": "Europe"
+      }
+    },
+    {
+      "data": {
+        "label": "Ada",
+        "region": "Europe"
+      }
+    }
+  ],
   "columns": [
     "label",
     "region"
@@ -1547,26 +1610,7 @@ columns:
       }
     ]
   },
-  "records": [
-    {
-      "data": {
-        "label": "Grace",
-        "region": "Americas"
-      }
-    },
-    {
-      "data": {
-        "label": "Edsger",
-        "region": "Europe"
-      }
-    },
-    {
-      "data": {
-        "label": "Ada",
-        "region": "Europe"
-      }
-    }
-  ]
+  "complete": true
 }
 ```
 

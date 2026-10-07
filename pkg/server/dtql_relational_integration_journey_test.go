@@ -41,7 +41,7 @@ var relIntJourneyCriteria = map[int][]string{
 	2: {"single-database-join-pushdown", "relational-profile-accepted", "response-shape", "result-row-cap", "result-byte-limit", "consistency-documented", "single-source-with-database-unchanged", "parameters-and-names-cannot-change-query"},
 	3: {"cross-database-join", "cross-database-endpoint-single-source", "response-shape", "mount-lease-drains-on-unmount", "consistency-documented"},
 	4: {"route-label-follows-routing", "ingitdb-route-label", "engine-outside-join-set-refused", "lone-source-outside-join-set-by-endpoint"},
-	5: {"budget-exceeded-is-422-never-partial", "timeout-is-504", "budget-errors-report-limit-only", "paging-headers-refused"},
+	5: {"early-budget-exceeded-is-422", "late-budget-failure-aborts-stream", "timeout-is-504", "budget-errors-report-limit-only", "paging-headers-refused"},
 	6: {"grant-checked-for-every-source", "policy-applied-per-leaf", "count-equals-readable-rows", "no-row-count-for-protected-source", "nested-join-authorised", "profile-refusals", "budget-errors-report-limit-only", "per-database-endpoint-refuses-foreign-source", "subquery-source-authorised", "collection-scoped-grant-checked", "hidden-field-not-reachable"},
 	7: {"identical-gets-cacheable", "capacity-gate-503", "database-route-capacity-gate"},
 }
@@ -271,11 +271,11 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 		// with its tables in two mounts runs in memory, where DALgo's join holds 10,000
 		// rows, and is refused; the document in one mount reads 20,000 invoices and is
 		// answered by the database, with the right sums.
-		control := owner("/v1/dtql", relIntRevenue("chinook", "people", true))
+		control := relHTTPDoPartial(t, main, http.MethodPost, "/v1/dtql", ownerToken, relIntRevenue("chinook", "people", true), nil)
 		detail, _ := control.body["error"].(map[string]any)
 		budget, _ := detail["budget"].(map[string]any)
-		if control.status != http.StatusUnprocessableEntity || control.errorField("code") != "query_budget_exceeded" || budget["limit"] != float64(10000) || budget["route"] != "in-memory" {
-			t.Fatalf("the control: status %d, want a 422 on the 10,000-row bound of the in-memory route: %s", control.status, control.raw)
+		if control.status != http.StatusUnprocessableEntity || detail["code"] != "query_budget_exceeded" || budget["name"] != "join_fetched_rows" || budget["limit"] != float64(10000) || budget["route"] != "in-memory" || control.body["records"] != nil {
+			t.Fatalf("the in-memory join guard refuses before row emission: status %d, read error %v: %s", control.status, control.readErr, control.raw)
 		}
 		pushed := owner("/v1/databases/chinook/dtql", relIntRevenue("", "", true))
 		relIntRowsAre(t, pushed, relIntExpectedRevenue())
@@ -320,10 +320,10 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 			t.Fatalf("a left join with a grouping: status %d: %s", counts.status, counts.raw)
 		}
 		// The single-collection request is what it always returned: records with keys,
-		// and no other member.
+		// and the additive completion member.
 		plain := owner("/v1/databases/chinook/dtql", "from: {name: Customer}\norderBy: [{field: id}]\n")
 		first, _ := plain.body["records"].([]any)[0].(map[string]any)
-		if plain.status != http.StatusOK || len(plain.body) != 1 || first["key"] != "Customer/c0" {
+		if plain.status != http.StatusOK || len(plain.body) != 2 || plain.body["complete"] != true || first["key"] != "Customer/c0" {
 			t.Fatalf("single-collection request: status %d: %s", plain.status, plain.raw)
 		}
 		bare := "from: {name: Customer}\norderBy: [{field: id}]\ncolumns: [{field: name}]\n"
@@ -335,21 +335,17 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 			t.Fatalf("a root that names another database: status %d: %s", other.status, other.raw)
 		}
 
-		// result-row-cap: a join of 20,000 rows posted without a limit is refused, with
-		// the limit, and no rows.
-		capped := owner("/v1/databases/chinook/dtql", relIntAllInvoices)
-		detail, _ = capped.body["error"].(map[string]any)
-		budget, _ = detail["budget"].(map[string]any)
-		if capped.status != http.StatusUnprocessableEntity || budget["name"] != "response_rows" || budget["limit"] != float64(1000) || capped.body["records"] != nil {
-			t.Fatalf("result-row-cap: status %d: %s", capped.status, capped.raw)
+		// result-row-cap: a join of 20,000 rows posts without a limit, reaches the
+		// streaming cap, and cannot be mistaken for a complete answer.
+		capped := relHTTPDoPartial(t, main, http.MethodPost, "/v1/databases/chinook/dtql", ownerToken, relIntAllInvoices, nil)
+		if capped.status != http.StatusOK || capped.readErr == nil || capped.body["complete"] == true {
+			t.Fatalf("result-row-cap must abort an incomplete stream: status %d, read error %v: %s", capped.status, capped.readErr, capped.raw)
 		}
 		// result-byte-limit: 950 rows of 10 KB are fewer than the row cap and more than
-		// the byte cap.
-		heavy := owner("/v1/databases/wide/dtql", relIntWideRows)
-		detail, _ = heavy.body["error"].(map[string]any)
-		budget, _ = detail["budget"].(map[string]any)
-		if heavy.status != http.StatusUnprocessableEntity || budget["name"] != "response_bytes" || heavy.body["records"] != nil {
-			t.Fatalf("result-byte-limit: status %d: %.300s", heavy.status, heavy.raw)
+		// the byte cap; the stream ends without a valid completion footer.
+		heavy := relHTTPDoPartial(t, main, http.MethodPost, "/v1/databases/wide/dtql", ownerToken, relIntWideRows, nil)
+		if heavy.status != http.StatusOK || heavy.readErr == nil || heavy.body["complete"] == true {
+			t.Fatalf("result-byte-limit must abort an incomplete stream: status %d, read error %v: %.300s", heavy.status, heavy.readErr, heavy.raw)
 		}
 		// consistency-documented asks for a sentence of docs/api.md and is read from there.
 
@@ -470,18 +466,24 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 		}
 	})
 
-	// Step 5: a query that is too big or too slow. The limit is told and no row is
-	// returned; the figure the query reached is not told.
+	// Step 5: a query that is too big or too slow. Early refusals name the limit;
+	// after the first row is committed, failures abort the stream without a success footer.
 	step(5, "too big or too slow", func(t *testing.T) {
 		const invoicesAcross = "from: {database: chinook, name: Invoice, alias: i, joins: [{type: inner, from: {database: people, name: Customer, alias: c}, " + relIntOnCustomer + "}]}\n" +
 			"columns: [{field: id, source: i}, {field: name, source: c}]\n"
-		refused := relHTTPPost(t, small, "/v1/dtql", "", invoicesAcross)
-		detail, _ := refused.body["error"].(map[string]any)
-		budget, _ := detail["budget"].(map[string]any)
-		hint, _ := detail["hint"].(string)
-		if refused.status != http.StatusUnprocessableEntity || refused.errorField("code") != "query_budget_exceeded" || budget["name"] != "source_rows" || budget["limit"] != float64(100) ||
-			hint == "" || refused.body["records"] != nil || refused.body["execution"] != nil {
-			t.Fatalf("status %d: %s", refused.status, refused.raw)
+		refused := relHTTPDoPartial(t, small, http.MethodPost, "/v1/dtql", "", invoicesAcross, nil)
+		if refused.status == http.StatusOK {
+			if refused.readErr == nil || refused.body["complete"] == true {
+				t.Fatalf("late source budget failure must abort an incomplete stream: read error %v: %s", refused.readErr, refused.raw)
+			}
+		} else {
+			detail, _ := refused.body["error"].(map[string]any)
+			budget, _ := detail["budget"].(map[string]any)
+			hint, _ := detail["hint"].(string)
+			if refused.status != http.StatusUnprocessableEntity || detail["code"] != "query_budget_exceeded" || budget["name"] != "source_rows" || budget["limit"] != float64(100) ||
+				hint == "" || refused.body["records"] != nil || refused.body["execution"] != nil {
+				t.Fatalf("status %d: %s", refused.status, refused.raw)
+			}
 		}
 		for _, observed := range []string{"101", "20000", "20,000"} {
 			if strings.Contains(refused.raw, observed) {
@@ -494,8 +496,8 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 				t.Fatalf("%s: status %d: %s", path, slowed.status, slowed.raw)
 			}
 		}
-		if next := relHTTPPost(t, late, "/v1/databases/chinook/dtql", "", "from: {name: Customer}\n"); next.status != http.StatusOK {
-			t.Fatalf("the next request: status %d: %s", next.status, next.raw)
+		if next := relHTTPDo(t, late, http.MethodGet, "/v1/status", "", "", nil); next.status != http.StatusOK {
+			t.Fatalf("the server does not answer after a timeout: status %d: %s", next.status, next.raw)
 		}
 		// The paging headers are refused on a relational document and on a single source
 		// of /v1/dtql, and no snapshot is taken.

@@ -165,6 +165,7 @@ func TestImmutableProfileRelationalRefusalUsesAllResolvedSourcesBeforeExecution(
 		calls++
 		return joinexec.Result{}, nil
 	}
+	srv.joinStreamExecute = legacyJoinStream(srv.joinExecute)
 	if srv.relationalRefusal(w1.ID(), w1) == nil || srv.advertisesJoins(w1) {
 		t.Fatal("W1 relational admission disagrees")
 	}

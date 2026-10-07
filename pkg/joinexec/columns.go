@@ -29,6 +29,10 @@ func orderedColumns(query dal.StructuredQuery, records []record.Record) []string
 			}
 		}
 	}
+	return orderedColumnsForKeys(query, keys)
+}
+
+func orderedColumnsForKeys(query dal.StructuredQuery, keys map[string]bool) []string {
 	sorted := make([]string, 0, len(keys))
 	for key := range keys {
 		sorted = append(sorted, key)

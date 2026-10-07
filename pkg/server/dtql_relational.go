@@ -11,6 +11,7 @@ import (
 
 	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/dalgo/dal"
+	"github.com/dal-go/record"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
@@ -45,6 +46,7 @@ import (
 // joinExecuteFunc is the signature of joinexec.Execute: the seam the handler
 // runs a relational document through.
 type joinExecuteFunc func(ctx context.Context, query dal.StructuredQuery, profile joinexec.Profile, defaultDatabase string, registry joinexec.Registry, authorize joinexec.Authorize, limits joinexec.Limits, opts ...joinexec.Option) (joinexec.Result, error)
+type joinStreamExecuteFunc func(ctx context.Context, query dal.StructuredQuery, profile joinexec.Profile, defaultDatabase string, registry joinexec.Registry, authorize joinexec.Authorize, limits joinexec.Limits, emit func(record.Record) error, opts ...joinexec.Option) (joinexec.StreamResult, error)
 
 // maxEchoLen is the most bytes of a name from the request an error body repeats.
 // A name can be as long as the request body, and an error is not the place to
@@ -200,20 +202,30 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	if engines := s.nativeEngines(); len(engines) > 0 {
 		opts = append(opts, joinexec.WithNativeEngines(engines...))
 	}
-	result, err := s.joinExecute(r.Context(), query, joinProfile(profile), defaultDatabase, leasedRegistry(databases), allowed, limits, opts...)
-	if err != nil {
-		s.writeRelationalError(w, r, err)
-		return
-	}
 	facts := make([]cacheFacts, 0, len(order))
 	for _, id := range order {
 		db := databases[id]
 		facts = append(facts, cacheFacts{TTL: db.Manifest.Database.ReadCacheTTL(), HasAccessPolicies: db.HasAccessPolicies(), NoRetention: db.NoRetention()})
 	}
 	cacheControl := relationalCacheControl(s.readOnly, s.authCfg != nil, r.Method, facts)
-	w.Header().Set("Cache-Control", cacheControl)
-	if cacheControl != "no-store" {
-		w.Header().Add("Vary", strings.Join(pagingHeaders, ", "))
+	stream, clearWriteDeadline, streamErr := newJSONRowStream(w, s.queryLimits.Timeout, wantsQueryErrorStream(r))
+	if streamErr != nil {
+		s.writeInternalError(w, r, "could not start streamed response", streamErr)
+		return
+	}
+	defer clearWriteDeadline()
+	if len(capture.rights) > 0 {
+		stream.maxBytes = joinexec.MaxResultBytes
+	}
+	setCache := func() {
+		if stream.errorCompletion {
+			w.Header().Set("Cache-Control", "no-store")
+			return
+		}
+		w.Header().Set("Cache-Control", cacheControl)
+		if cacheControl != "no-store" {
+			w.Header().Add("Vary", strings.Join(pagingHeaders, ", "))
+		}
 	}
 	nativePostgres := false
 	for _, source := range profile.Sources {
@@ -227,16 +239,38 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 		}
 	}
 	nativeTypes := nativePostgresProjectionTypes(query, endpoint, databases)
-	records := make([]relationalRecord, len(result.Records))
-	for i, rec := range result.Records {
+	result, err := s.joinStreamExecute(r.Context(), query, joinProfile(profile), defaultDatabase, leasedRegistry(databases), allowed, limits, func(rec record.Record) error {
+		if !stream.started {
+			setCache()
+		}
 		data := rec.Data()
 		if nativePostgres {
 			data = nativePostgresJSONValue(data, nativeTypes)
 		}
-		records[i] = relationalRecord{Data: data}
+		return stream.WriteRow(relationalRecord{Data: data})
+	}, opts...)
+	if err != nil {
+		if stream.started {
+			s.finishStreamErrorOrAbort(w, r, stream, func(w http.ResponseWriter) { s.writeRelationalStreamError(w, r, err) })
+			return
+		}
+		clearWriteDeadline()
+		s.writeRelationalError(w, r, err)
+		return
 	}
+	if !stream.started {
+		setCache()
+	}
+	footer := map[string]any{"columns": result.Columns, "execution": result.Execution}
 	if len(capture.rights) == 0 {
-		writeJSON(w, http.StatusOK, relationalResponse{Records: records, Columns: result.Columns, Execution: result.Execution})
+		if err := stream.Finish(footer); err != nil {
+			if stream.started {
+				s.finishStreamErrorOrAbort(w, r, stream, func(w http.ResponseWriter) { s.writeRelationalStreamError(w, r, err) })
+				return
+			}
+			clearWriteDeadline()
+			s.writeRelationalError(w, r, err)
+		}
 		return
 	}
 	usedIDs := make([]string, 0, len(result.Execution.Sources))
@@ -245,11 +279,23 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	}
 	used, err := capture.used(usedIDs)
 	if err != nil {
+		if stream.started {
+			s.finishStreamErrorOrAbort(w, r, stream, func(w http.ResponseWriter) { s.rightsError(w, err) })
+			return
+		}
+		clearWriteDeadline()
 		s.rightsError(w, err)
 		return
 	}
-	response := map[string]any{"records": records, "columns": result.Columns, "execution": result.Execution}
-	s.writeRightsResult(w, r, response, capture, used, joinexec.MaxResultBytes)
+	attachRights(footer, capture.rights, used)
+	if err := stream.Finish(footer); err != nil {
+		if stream.started {
+			s.finishStreamErrorOrAbort(w, r, stream, func(w http.ResponseWriter) { s.writeRelationalStreamError(w, r, err) })
+			return
+		}
+		clearWriteDeadline()
+		s.writeRelationalError(w, r, err)
+	}
 }
 
 // readableCollection reports whether a relational document may name collection of
@@ -266,14 +312,6 @@ func readableCollection(db *core.Database, collection string) bool {
 	}
 	canonical, declared := db.CanonicalCollection(collection)
 	return !declared || canonical == collection
-}
-
-// relationalResponse is the body of a relational answer: rows without keys, the
-// columns in the order the document selects them, and how the request ran.
-type relationalResponse struct {
-	Records   []relationalRecord `json:"records"`
-	Columns   []string           `json:"columns"`
-	Execution joinexec.Execution `json:"execution"`
 }
 
 type relationalRecord struct {
@@ -557,6 +595,14 @@ func writeBudgetRefusal(w http.ResponseWriter, budget *joinexec.BudgetError, hin
 // more of the request than a bounded name; an error nothing here knows is the
 // generic mapping of the server, a 500 that is logged.
 func (s *Server) writeRelationalError(w http.ResponseWriter, r *http.Request, err error) {
+	s.writeRelationalErrorMode(w, r, err, true)
+}
+
+func (s *Server) writeRelationalStreamError(w http.ResponseWriter, r *http.Request, err error) {
+	s.writeRelationalErrorMode(w, r, err, false)
+}
+
+func (s *Server) writeRelationalErrorMode(w http.ResponseWriter, r *http.Request, err error, logInternal bool) {
 	var (
 		capacity     *joinexec.CapacityError
 		budget       *joinexec.BudgetError
@@ -597,7 +643,12 @@ func (s *Server) writeRelationalError(w http.ResponseWriter, r *http.Request, er
 	case errors.Is(err, joinexec.ErrProfileMismatch):
 		// The classifier and the executor's walk disagree about a document the
 		// classifier passed: a defect of the server, not a mistake of the caller.
-		s.writeInternalError(w, r, "internal server error", err)
+		if logInternal {
+			s.writeInternalError(w, r, "internal server error", err)
+		} else {
+			writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+			s.logStreamFailure(r)
+		}
 	case errors.Is(err, joinexec.ErrInvalidDocument), errors.Is(err, joinexec.ErrSourceWithoutDatabase):
 		writeError(w, http.StatusBadRequest, "invalid_dtql", clipText(err.Error(), maxEchoText))
 	case isUnsupportedConditionError(err):
@@ -607,7 +658,15 @@ func (s *Server) writeRelationalError(w http.ResponseWriter, r *http.Request, er
 			writeError(w, http.StatusBadRequest, "invalid_dtql", fmt.Sprintf("the database has no column %q", clipName(column)))
 			return
 		}
-		s.writeMappedError(w, r, clippedError{err})
+		if writeMappedError(w, clippedError{err}) {
+			if logInternal {
+				s.logInternal(r, err)
+			} else {
+				s.logStreamFailure(r)
+			}
+		} else {
+			s.logUnreachable(r, err)
+		}
 	}
 }
 

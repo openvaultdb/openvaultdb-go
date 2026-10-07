@@ -136,6 +136,21 @@ func (s *Server) writeMappedError(w http.ResponseWriter, r *http.Request, err er
 	s.logUnreachable(r, err)
 }
 
+// writeStreamMappedError keeps the API's error mapping but avoids putting a
+// raw driver error into logs after a streamed response has started.
+func (s *Server) writeStreamMappedError(w http.ResponseWriter, r *http.Request, err error) {
+	if writeMappedError(w, err) {
+		s.logStreamFailure(r)
+		return
+	}
+	s.logUnreachable(r, err)
+}
+
+func (s *Server) logStreamFailure(r *http.Request) {
+	s.logger.WarnContext(r.Context(), "query response stream failed",
+		slog.String("method", r.Method), slog.String("path", r.URL.Path))
+}
+
 // logUnreachable records, when err says a mount's database server cannot be reached,
 // which mount it was and the adapter's fixed sentence for the failure. It holds only
 // the method, the route path, the ID of the mount and that sentence: nothing of the

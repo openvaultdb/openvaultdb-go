@@ -128,6 +128,7 @@ func relFakeServer(t *testing.T, fake *relFakeExecutor, mounts []*core.Database,
 	}
 	service := New("test", dbs, opts...)
 	service.joinExecute = fake.execute
+	service.joinStreamExecute = legacyJoinStream(fake.execute)
 	t.Cleanup(service.CloseSnapshots)
 	host := httptest.NewServer(service.Handler())
 	t.Cleanup(host.Close)
@@ -516,7 +517,7 @@ func TestRelationalHandlerHandsTheExecutorTheLeasedDatabasesAndTheLimits(t *test
 	if resp.status != 200 {
 		t.Fatalf("status %d: %s", resp.status, resp.raw)
 	}
-	want := `{"records":[{"data":{"id":1}}],"columns":["id"],"execution":{"route":"database","elapsedMs":0,"rowsReturned":1,"sources":[{"database":"alpha","collection":"orders"}]}}`
+	want := `{"records":[{"data":{"id":1}}],"columns":["id"],"complete":true,"execution":{"route":"database","elapsedMs":0,"rowsReturned":1,"sources":[{"database":"alpha","collection":"orders"}]}}`
 	if strings.TrimSpace(resp.raw) != want {
 		t.Fatalf("body = %s\nwant %s", resp.raw, want)
 	}
@@ -849,7 +850,7 @@ func TestRelationalHandlerCacheHeaderFollowsTheSmallestTTLOfTheDatabasesRead(t *
 	if resp.header.Get("Cache-Control") != "public, max-age=120, s-maxage=120" {
 		t.Fatalf("Cache-Control %q", resp.header.Get("Cache-Control"))
 	}
-	if resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", relFakeAcross, nil); resp.header.Get("Cache-Control") != "no-store" || resp.header.Get("Vary") != "" {
+	if resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", relFakeAcross, nil); resp.header.Get("Cache-Control") != "no-store" || !strings.Contains(resp.header.Get("Vary"), "Accept") {
 		t.Fatalf("POST: Cache-Control %q Vary %q", resp.header.Get("Cache-Control"), resp.header.Get("Vary"))
 	}
 }

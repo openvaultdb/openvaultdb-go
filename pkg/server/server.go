@@ -72,7 +72,8 @@ type Server struct {
 	queryGate           *queryGate
 	// joinExecute runs a relational document. It is joinexec.Execute; tests of
 	// the handler replace it to drive every status the handler maps.
-	joinExecute joinExecuteFunc
+	joinExecute       joinExecuteFunc
+	joinStreamExecute joinStreamExecuteFunc
 }
 
 // Option configures the Server.
@@ -135,7 +136,7 @@ func New(version string, dbs map[string]*core.Database, opts ...Option) *Server 
 	if dbs == nil {
 		dbs = map[string]*core.Database{}
 	}
-	s := &Server{version: version, dbs: dbs, inflight: map[*core.Database]*sync.WaitGroup{}, accessInstance: "local", logger: slog.Default(), snapshotLimits: DefaultSnapshotLimits(), joinExecute: joinexec.Execute}
+	s := &Server{version: version, dbs: dbs, inflight: map[*core.Database]*sync.WaitGroup{}, accessInstance: "local", logger: slog.Default(), snapshotLimits: DefaultSnapshotLimits(), joinExecute: joinexec.Execute, joinStreamExecute: joinexec.ExecuteStream}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -678,7 +679,7 @@ func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
 		"engine":       db.Manifest.Storage.Engine,
 		"schemaMode":   string(db.Manifest.Database.SchemaMode),
 		"collections":  collections,
-		"capabilities": map[string]bool{"read": !db.ReadOnly(), "query": canQuery, "dtql": canDTQL, "write": !s.readOnly && !db.ReadOnly(), "joins": joins, "aggregation": joins},
+		"capabilities": map[string]bool{"read": !db.ReadOnly(), "query": canQuery, "dtql": canDTQL, "dtqlStreaming": canDTQL, "dtqlStreamingErrors": canDTQL, "write": !s.readOnly && !db.ReadOnly(), "joins": joins, "aggregation": joins},
 	}
 	if len(db.Manifest.Database.Tags) > 0 {
 		metadata["tags"] = db.Manifest.Database.Tags
