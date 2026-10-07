@@ -138,7 +138,7 @@ func nativePostgresProjectionTypes(query dal.StructuredQuery, endpoint *core.Dat
 	}
 	var orderedSources []projectionSource
 	sources := map[string]map[string]string{}
-	addSource := func(source dal.RecordsetSource) {}
+	var addSource func(dal.RecordsetSource)
 	var addFrom func(dal.FromSource)
 	addSource = func(source dal.RecordsetSource) {
 		if source == nil {
