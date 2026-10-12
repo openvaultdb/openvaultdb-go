@@ -20,6 +20,9 @@ import (
 
 const MaxRequestBytes = 1 << 20
 
+// ExecutionTugQL is the canonical execution class for TugQL operations.
+const ExecutionTugQL authorization.ExecutionClass = "tugql"
+
 type Query struct {
 	Format     string         `json:"format"`
 	Text       string         `json:"text"`
@@ -315,7 +318,7 @@ func (o *Operation) Normalize(database string) error {
 		columns[fieldKey(field)] = true
 	}
 	switch o.ExecutionClass {
-	case authorization.ExecutionDTQL, authorization.ExecutionNativeSQL, authorization.ExecutionNativeGraphQL:
+	case ExecutionTugQL, authorization.ExecutionDTQL, authorization.ExecutionNativeSQL, authorization.ExecutionNativeGraphQL:
 		if o.Callable != nil {
 			return fmt.Errorf("callable requires stored_procedure")
 		}

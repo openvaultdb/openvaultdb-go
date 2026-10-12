@@ -197,7 +197,8 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 // isProtectedUpdate reports whether r is a PATCH of a protected operation (the
 // authorization API's update), not the update list of the plain records route.
 func isProtectedUpdate(r *http.Request) bool {
-	return r.Method == http.MethodPatch && strings.Split(r.Header.Get("Content-Type"), ";")[0] == "application/vnd.dtql.operation+json"
+	ct := strings.Split(r.Header.Get("Content-Type"), ";")[0]
+	return r.Method == http.MethodPatch && (ct == "application/vnd.tugql.operation+json" || ct == "application/vnd.dtql.operation+json")
 }
 
 func (s *Server) readRecord(w http.ResponseWriter, r *http.Request, db *core.Database, key *record.Key) {

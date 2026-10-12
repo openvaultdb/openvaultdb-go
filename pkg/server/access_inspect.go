@@ -22,8 +22,10 @@ import (
 
 var errProtectedUnsupported = errors.New("protected operation unsupported")
 
+const executionTugQL = az.ExecutionClass("tugql")
+
 func protectedOperation(op api.Operation) (access.ProtectedOperation, error) {
-	if op.ExecutionClass != az.ExecutionDTQL || op.Resource.RowID == "" {
+	if (op.ExecutionClass != executionTugQL && op.ExecutionClass != az.ExecutionDTQL) || op.Resource.RowID == "" {
 		return access.ProtectedOperation{}, errProtectedUnsupported
 	}
 	key := record.NewKeyWithID(op.Resource.Table, op.Resource.RowID)

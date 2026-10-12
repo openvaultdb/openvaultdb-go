@@ -23,6 +23,9 @@ import (
 // databases. The per-database endpoint takes the others.
 const crossDatabaseDTQLPath = "/v1/dtql"
 
+// crossDatabaseTugQLPath is the canonical endpoint for cross-database TugQL queries.
+const crossDatabaseTugQLPath = "/v1/tugql"
+
 // handleDTQL authenticates a bounded DTQL query and executes it through the
 // mounted database's secured DALgo handle. A document is classified once, after
 // the two qualifiers of its root source that name what the endpoint supplies are
