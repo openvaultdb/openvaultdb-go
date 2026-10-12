@@ -388,6 +388,10 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /v1/databases/{db}/dtql", s.handleDTQL)
 	mux.HandleFunc("POST /v1/dtql", s.handleCrossDatabaseDTQL)
 	mux.HandleFunc("GET /v1/dtql", s.handleCrossDatabaseDTQL)
+	mux.HandleFunc("POST /v1/databases/{db}/tugql", s.handleDTQL)
+	mux.HandleFunc("GET /v1/databases/{db}/tugql", s.handleDTQL)
+	mux.HandleFunc("POST /v1/tugql", s.handleCrossDatabaseDTQL)
+	mux.HandleFunc("GET /v1/tugql", s.handleCrossDatabaseDTQL)
 	mux.HandleFunc("POST /v1/databases/{db}/access/evaluate", s.handleAccessEvaluate)
 	mux.HandleFunc("POST /v1/databases/{db}/access/evidence", s.handleAccessEvidence)
 	mux.HandleFunc("GET /v1/databases/{db}/access/layers", s.handleAccessLayers)
@@ -472,11 +476,11 @@ func isReadCacheEndpoint(r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
 	}
-	if r.URL.Path == crossDatabaseDTQLPath {
+	if r.URL.Path == crossDatabaseDTQLPath || r.URL.Path == crossDatabaseTugQLPath {
 		return true
 	}
 	return strings.HasPrefix(r.URL.Path, "/v1/databases/") &&
-		(strings.HasSuffix(r.URL.Path, "/read") || strings.HasSuffix(r.URL.Path, "/query") || strings.HasSuffix(r.URL.Path, "/dtql"))
+		(strings.HasSuffix(r.URL.Path, "/read") || strings.HasSuffix(r.URL.Path, "/query") || strings.HasSuffix(r.URL.Path, "/dtql") || strings.HasSuffix(r.URL.Path, "/tugql"))
 }
 
 // isMutation identifies every mounted route that persists data or changes

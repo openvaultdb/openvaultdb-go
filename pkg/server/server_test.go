@@ -852,6 +852,27 @@ func TestDTQL(t *testing.T) {
 		}
 	})
 
+	t.Run("ValidTugQL", func(t *testing.T) {
+		tugqlURL := base + "/v1/databases/testdb/tugql"
+		doc := "from:\n  name: widgets\n"
+		req, err := http.NewRequest(http.MethodPost, tugqlURL, strings.NewReader(doc))
+		if err != nil {
+			t.Fatalf("http.NewRequest: %v", err)
+		}
+		req.Header.Set("Content-Type", "text/plain")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("do: %v", err)
+		}
+		mustStatus(t, resp, http.StatusOK)
+		var body map[string]any
+		decodeJSON(t, resp, &body)
+		records, ok := body["records"].([]any)
+		if !ok || len(records) == 0 {
+			t.Fatalf("TugQL: expected at least 1 record in results: %v", body)
+		}
+	})
+
 	t.Run("InvalidDTQL_Error", func(t *testing.T) {
 		// Send clearly invalid YAML that the DTQL parser must reject.
 		badDTQL := "garbage: ::invalid::\n"
