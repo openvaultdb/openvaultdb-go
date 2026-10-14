@@ -1034,6 +1034,9 @@ The answer is `{"records": [{"data": {...}}], "columns": [...], "execution": {..
   the collections read, with the rows each delivered and its read time on the `in-memory` route
   (the fields are absent where the database ran the document). `elapsedMs` includes the wait for
   a slot of the concurrency gate.
+- `warnings`, when present, lists advice about the answer that does not make it wrong. A native
+  PostgreSQL database warns of an `offset` without an `orderBy` (see
+  [native-postgres-read.md](native-postgres-read.md#paging)).
 
 An answer holds at most 1000 rows and 8 MiB; a larger result is refused (`422
 query_budget_exceeded`), never cut short. The paging headers of the snapshot protocol are refused

@@ -2,7 +2,6 @@ package joinexec
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -864,7 +863,7 @@ func (c *resultCap) Next() (record.Record, error) {
 	default:
 		return nil, err
 	}
-	encoded, err := json.Marshal(rec.Data())
+	encoded, err := encodeRow(rec.Data())
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrRowNotEncodable, err)
 	}

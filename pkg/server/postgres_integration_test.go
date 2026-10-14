@@ -458,6 +458,8 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 	if err := os.WriteFile(path, []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// The CI server has no TLS and is on localhost, which needs none: mount.File
+	// mounts it as it did before verified TLS was required of remote hosts.
 	native, err := mount.File(path)
 	if err != nil {
 		t.Fatalf("mount native read-only PostgreSQL: %v", err)

@@ -117,6 +117,11 @@ type PostgresOptions struct {
 	// mount introspects the catalog, never provisions schema, and exposes only
 	// bounded structured reads; existing manifests default to false.
 	ReadOnly bool `yaml:"read_only,omitempty" json:"readOnly,omitempty"`
+	// InsecureTransport lets a native read-only mount reach a remote server
+	// without a verified TLS connection (docs/native-postgres-read.md). Loopback
+	// and Unix-socket hosts never need it. It is meant for local development; the
+	// mount logs a warning whenever it is set.
+	InsecureTransport bool `yaml:"insecure_transport,omitempty" json:"-"`
 }
 
 // DSNEnvVar returns the env var name holding the DSN, with the default applied.

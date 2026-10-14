@@ -2,7 +2,6 @@ package joinexec
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -200,7 +199,7 @@ func (r *countingReader) Next() (record.Record, error) {
 		}
 		return nil, withoutEOFChain(r.leaf.failSource(r.collection, err))
 	}
-	encoded, err := json.Marshal(rec.Data())
+	encoded, err := encodeRow(rec.Data())
 	if err != nil {
 		r.finish()
 		return nil, g.fail(fmt.Errorf("%w: %q.%q: %v", ErrRowNotEncodable, r.leaf.src.ID(), r.collection, err))

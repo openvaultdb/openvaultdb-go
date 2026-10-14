@@ -97,12 +97,14 @@ func (d *Database) GuardKey(key *record.Key) error {
 // included. Document engines keep their own rule: any collection that passes
 // ValidateCollectionName. The error wraps ErrNotFound. A collection name longer than the
 // engine's server keeps in a name (63 bytes on PostgreSQL, see nameLimits) is refused first
-// with an error that wraps ErrInvalidKey, declared or not.
+// with an error that wraps ErrInvalidKey, declared or not, except the opaque collection ID
+// of a native PostgreSQL mount, whose source names were checked instead
+// (collectionNameTooLong).
 func (d *Database) GuardCollection(name string) error {
 	if d.isDocumentEngine() {
 		return nil
 	}
-	if d.nameTooLong(name) {
+	if d.collectionNameTooLong(name) {
 		return d.errCollectionNameTooLong()
 	}
 	if _, ok := d.names.canonical[name]; ok {
@@ -126,7 +128,7 @@ func (d *Database) GuardCanonicalCollection(name string) error {
 	if d.isDocumentEngine() {
 		return nil
 	}
-	if d.nameTooLong(name) {
+	if d.collectionNameTooLong(name) {
 		return d.errCollectionNameTooLong()
 	}
 	if canonical, declared := d.CanonicalCollection(name); declared && canonical == name {
