@@ -3,6 +3,7 @@ package server_test
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -71,6 +72,8 @@ func pgITHardeningSchema(t *testing.T, admin *sql.DB) {
 		`CREATE VIEW ` + quotedSchema + `."flip session default" AS SELECT
 			set_config('default_transaction_read_only', 'off', false) AS flipped`,
 		`CREATE VIEW ` + quotedSchema + `."slow view" AS SELECT pg_sleep(3)::text AS slept`,
+		`CREATE TABLE ` + quotedSchema + `."int matrix" (s smallint, i integer, b bigint)`,
+		`INSERT INTO ` + quotedSchema + `."int matrix" VALUES (1, 1, 1), (2, 2, 2), (3, 3, 3), (4, 4, 4)`,
 		`CREATE TABLE ` + quotedSchema + `."fk parent" (id bigint PRIMARY KEY)`,
 		`CREATE TABLE ` + quotedSchema + `."fk child" (id bigint PRIMARY KEY, parent_id bigint CONSTRAINT "child to parent" REFERENCES ` + quotedSchema + `."fk parent" (id))`,
 	} {
@@ -311,5 +314,53 @@ func TestPostgresIntegration_NativeRoleMustBeReadOnlyWhenRequired(t *testing.T) 
 				t.Fatalf("refusal = %v, want it to say the role may write", err)
 			}
 		})
+	}
+}
+
+// Every operator against each integer type, with a fraction, a number beyond the
+// type's range, a boolean and text. A value that only an equality could compare
+// wrongly (no rows instead of an error) is refused; an order comparison is
+// answered with the rows PostgreSQL's numeric comparison selects.
+func TestPostgresIntegration_NativeIntegerComparisonsByOperator(t *testing.T) {
+	admin := pgITAdmin(t)
+	pgITHardeningSchema(t, admin)
+	native, err := pgITNativeMount(t, "operators", os.Getenv(pgITDSNEnv), mount.Options{})
+	if err != nil {
+		t.Fatalf("mount: %v", err)
+	}
+	base, _ := pgITServeLogged(t, map[string]*core.Database{"operators": native})
+	from := map[string]string{"schema": pgITLongSchema, "name": "int matrix"}
+	beyond := map[string]any{"s": 40000, "i": json.Number("3000000000"), "b": json.Number("1180591620717411303424")}
+	const refused = -1
+	// An integer above 2^53 travels as its digits in text, which PostgreSQL parses as
+	// the column's type: a smallint or integer column cannot hold it (a 400).
+	exactBeyond := map[string]int{"s": refused, "i": refused, "b": 0}
+	for _, column := range []string{"s", "i", "b"} {
+		for _, tc := range []struct {
+			op    string
+			value any
+			rows  int // refused for a 400
+		}{
+			{"==", 1.5, refused}, {"==", beyond[column], refused}, {"==", true, refused}, {"==", "abc", refused}, {"==", 2, 1}, {"==", 2.0, 1}, {"==", "2", 1},
+			{"In", []any{1, 1.5}, refused}, {"In", []any{1, beyond[column]}, refused}, {"In", []any{1, 2}, 2},
+			{"NotIn", []any{1, 1.5}, refused}, {"NotIn", []any{1, 2}, 2},
+			{">", 1.5, 3}, {">=", 1.5, 3}, {"<", 1.5, 1}, {"<=", 1.5, 1}, {"<", 2, 1},
+			{"<", beyond[column], 4}, {">", beyond[column], 0}, {"<=", beyond[column], 4}, {">=", beyond[column], 0},
+			{">", true, refused}, {"<", "abc", refused}, {">", "2", 2}, {"<", "99999999999999999999999", refused}, {">", json.Number("9007199254740993"), exactBeyond[column]},
+		} {
+			right := map[string]any{"value": tc.value}
+			if values, ok := tc.value.([]any); ok {
+				right = map[string]any{"values": values}
+			}
+			where := map[string]any{"op": tc.op, "left": map[string]any{"field": column}, "right": right}
+			response := pgITDTQL(t, base, "operators", map[string]any{"from": from, "where": where}, nil)
+			label := fmt.Sprintf("%s %s %v", column, tc.op, tc.value)
+			switch {
+			case tc.rows == refused && response.status != http.StatusBadRequest:
+				t.Errorf("%s: %d %s, want 400", label, response.status, response.raw)
+			case tc.rows != refused && (response.status != http.StatusOK || len(response.rows(t)) != tc.rows):
+				t.Errorf("%s: %d %s, want %d rows", label, response.status, response.raw, tc.rows)
+			}
+		}
 	}
 }

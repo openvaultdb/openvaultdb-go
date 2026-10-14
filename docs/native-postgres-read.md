@@ -144,12 +144,19 @@ adapter; this mount does not expose arbitrary SQL.
   compared exactly: OVDB passes its digits to PostgreSQL as text, which parses
   them as the column's type. A large ID can therefore be sent as a JSON number or
   as a string, with the same result.
-- On a `smallint`, `integer` or `bigint` column a value must be a whole number
-  the column can hold. A fraction (`1.5`), a number outside the column's range
-  (`2^70`, or `40000` on a smallint), and a boolean are refused with
-  `400 invalid_dtql`, as text that is not an integer (`'abc'`, `'1e3'`) already
-  is by PostgreSQL. PostgreSQL would otherwise compare such a value as a numeric
-  and silently return no rows.
+- On a `smallint`, `integer` or `bigint` column compared with `==`, `In` or
+  `NotIn`, a value must be a whole number the column can hold. A fraction
+  (`1.5`), a number outside the column's range (`2^70`, or `40000` on a
+  smallint), and a boolean are refused with `400 invalid_dtql`, as text that is
+  not an integer (`'abc'`, `'1e3'`) already is by PostgreSQL. PostgreSQL would
+  otherwise compare such a value as a numeric and silently match no row (or, for
+  `NotIn`, every row).
+- An order comparison (`<`, `<=`, `>`, `>=`) on an integer column accepts a
+  fraction or a number beyond the column's range and answers with the rows
+  PostgreSQL's numeric comparison selects (`small < 40000` is every row,
+  `id > 1.5` starts at 2). A boolean is refused. An integer above 2^53 is sent as
+  text (above), so compared with a `smallint` or `integer` column, which cannot
+  hold it, it is a 400.
 - A `bytea` column cannot be compared with a value: the column is returned as
   base64 text, and comparing it with that text would compare the bytes with the
   bytes of the text. Such a filter is refused with `400 invalid_dtql`. A bytea

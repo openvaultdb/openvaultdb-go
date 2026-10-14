@@ -23,10 +23,12 @@ var nativeIntegerRanges = map[string]struct{ low, high int64 }{
 // a value that PostgreSQL would answer with no rows instead of an error, so that
 // every value a column cannot hold is the same 400 invalid_dtql:
 //
-//   - on a smallint, integer or bigint column, a number that is not a whole number,
-//     or is outside the range of the column, and a boolean. PostgreSQL compares a
-//     bigint with 1.5 as numerics and finds nothing, while it refuses 'abc'; a text
-//     value is left to PostgreSQL, which refuses one that is not an integer.
+//   - on a smallint, integer or bigint column compared by ==, In or NotIn, a number
+//     that is not a whole number, or is outside the range of the column, and a
+//     boolean. PostgreSQL compares a bigint with 1.5 as numerics and finds nothing,
+//     while it refuses 'abc'; a text value is left to PostgreSQL, which refuses one
+//     that is not an integer. An order comparison (<, <=, >, >=) with such a number
+//     is a correct numeric comparison and is allowed; a boolean is refused.
 //   - on a bytea column, any value: the column is returned as base64 text, and a
 //     comparison with that text would compare bytes with the bytes of the text.
 //
@@ -50,6 +52,17 @@ func (w fieldWalk) nativeValue(c dal.Comparison) error {
 	if !integer {
 		return nil
 	}
+	if !equalityOperators[c.Operator] {
+		// An order comparison with a fraction or a number beyond the column's range
+		// is answered correctly: PostgreSQL compares them as numerics. Only a value
+		// that is no number at all is refused.
+		for _, item := range value {
+			if _, isBool := item.(bool); isBool {
+				return fmt.Errorf("%w: field %q is a %s column, and a boolean cannot be compared with it", ErrInvalidDTQL, clipName(field.Name()), nativeType)
+			}
+		}
+		return nil
+	}
 	for _, item := range value {
 		if !nativeIntegerValue(item, limits.low, limits.high) {
 			return fmt.Errorf("%w: field %q is a %s column, and a value compared with it must be a whole number it can hold", ErrInvalidDTQL, clipName(field.Name()), nativeType)
@@ -57,6 +70,10 @@ func (w fieldWalk) nativeValue(c dal.Comparison) error {
 	}
 	return nil
 }
+
+// equalityOperators are the comparisons whose answer to a value an integer column
+// cannot hold is silently no row (==, In) or every row (NotIn).
+var equalityOperators = map[dal.Operator]bool{dal.Equal: true, dal.In: true, dal.NotIn: true}
 
 // fieldAndValue returns the field of a comparison whose other side is a value,
 // and the values: one for a constant, each item for an array.
