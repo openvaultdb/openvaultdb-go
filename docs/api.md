@@ -132,7 +132,7 @@ GET /v1/databases
 → 200 {"databases":[{"id":"sneat-dev","engine":"ingitdb","schemaMode":"schemaless"}, ...]}
 
 GET /v1/databases/{db}
-→ 200 {"id":"...","serverId":"...","retention":"none","engine":"...","schemaMode":"...","collections":["..."],"schemas":{"collections":{"...":{"fields":{"...":{"type":"decimal","decimal":{"precision":19,"scale":4,"storage":"text"}}}}}},"capabilities":{"read":true,"query":true,"dtql":true,"dtqlStreaming":true,"dtqlStreamingErrors":true,"write":true,"joins":true,"aggregation":true}}   // declared collections and optional declared field metadata
+→ 200 {"id":"...","serverId":"...","retention":"none","engine":"...","schemaMode":"...","collections":["..."],"schemas":{"collections":{"...":{"fields":{"...":{"type":"decimal","decimal":{"precision":19,"scale":4,"storage":"text"}}}}}},"capabilities":{"read":true,"query":true,"dtql":true,"dtqlStreaming":true,"dtqlStreamingErrors":true,"write":true,"delete":true,"reset":false,"persistent":true,"joins":true,"aggregation":true}}   // declared collections and optional declared field metadata
 
 GET /v1/databases/{db}/inferred-schema
 → 200 inferred schema catalogue JSON (see pkg/inferred); 404 for strict databases
@@ -695,6 +695,9 @@ server does, from the configuration it runs with:
         "query": true,
         "read": true,
         "write": true,
+        "delete": true,
+        "reset": false,
+        "persistent": true,
         "dtqlStreaming": true,
         "dtqlStreamingErrors": true
       },
@@ -710,6 +713,9 @@ server does, from the configuration it runs with:
         "query": true,
         "read": true,
         "write": true,
+        "delete": true,
+        "reset": false,
+        "persistent": true,
         "dtqlStreaming": true,
         "dtqlStreamingErrors": true
       },
@@ -725,6 +731,9 @@ server does, from the configuration it runs with:
         "query": true,
         "read": true,
         "write": true,
+        "delete": true,
+        "reset": false,
+        "persistent": true,
         "dtqlStreaming": true,
         "dtqlStreamingErrors": true
       },
@@ -740,6 +749,9 @@ server does, from the configuration it runs with:
         "query": true,
         "read": true,
         "write": true,
+        "delete": true,
+        "reset": false,
+        "persistent": true,
         "dtqlStreaming": true,
         "dtqlStreamingErrors": true
       },
@@ -841,11 +853,16 @@ source read or snapshot admission. Native databases with the legacy default poli
 
 Each database in the list (listed when auth is off) and the metadata of a database
 (`GET /v1/databases/{db}`, the way to read it when auth is on) carry two booleans, `joins` and
-`aggregation`, in the `capabilities` map beside `read`, `query`, `dtql` and `write`. They are true
+`aggregation`, in the `capabilities` map beside `read`, `query`, `dtql`, `write` and `delete`. They are true
 when a relational document that names the database is not refused for the database itself: its
 engine is in `joinEngines`, it has no access policies and it is not a GitHub-backed inGitDB
 mount. `dtqlStreaming` and `dtqlStreamingErrors` advertise streamed query responses and the
-opt-in error-footer protocol. The value comes from the check the
+opt-in error-footer protocol. The same map states four more
+flags about the database. `read` is true for every served database: reading does not depend on
+whether the mount is read-only, so a native PostgreSQL or HTTP source that can be queried reports
+`read: true`. `write` and `delete` carry one value and are false when the server runs with
+`--read-only` or the mount is read-only, so a native PostgreSQL mount reports them false. `reset` is
+`false` for a server-hosted database and `persistent` is `true`, as the data outlives the process. The value comes from the check the
 relational handler applies to the request, so a client that reads `joins: true` is not refused by
 the database it names.
 
@@ -864,6 +881,9 @@ Tags do not grant access or select a storage engine.
     "query": true,
     "read": true,
     "write": true,
+    "delete": true,
+    "reset": false,
+    "persistent": true,
     "dtqlStreaming": true,
     "dtqlStreamingErrors": true
   },
