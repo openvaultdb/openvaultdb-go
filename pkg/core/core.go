@@ -290,7 +290,7 @@ func (d *Database) InferredSnapshot() *inferred.Snapshot {
 // adapter call (GuardKey). The adapter is given the collection's canonical name
 // (CanonicalCollection), whichever spelling the key carries.
 func (d *Database) Get(ctx context.Context, key *record.Key) (map[string]any, error) {
-	if d.ReadOnly() {
+	if !d.KeyedRecordReadsServed() {
 		return nil, d.readOnlyOperationError()
 	}
 	if err := d.GuardKey(key); err != nil {
@@ -352,7 +352,7 @@ func (d *Database) coerceToSchema(collection string, data map[string]any) map[st
 // collection on a SQL engine before the adapter is called, and gives the adapter
 // the collection's canonical name.
 func (d *Database) Exists(ctx context.Context, key *record.Key) (bool, error) {
-	if d.ReadOnly() {
+	if !d.KeyedRecordReadsServed() {
 		return false, d.readOnlyOperationError()
 	}
 	if err := d.GuardKey(key); err != nil {

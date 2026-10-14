@@ -858,11 +858,13 @@ when a relational document that names the database is not refused for the databa
 engine is in `joinEngines`, it has no access policies and it is not a GitHub-backed inGitDB
 mount. `dtqlStreaming` and `dtqlStreamingErrors` advertise streamed query responses and the
 opt-in error-footer protocol. The same map states four more
-flags about the database. `read` is true for every served database: reading does not depend on
-whether the mount is read-only, so a native PostgreSQL or HTTP source that can be queried reports
-`read: true`. `write` and `delete` carry one value and are false when the server runs with
-`--read-only` or the mount is read-only, so a native PostgreSQL mount reports them false. `reset` is
-`false` for a server-hosted database and `persistent` is `true`, as the data outlives the process. The value comes from the check the
+flags. `read` is true when keyed record reads (`Get`, `Exists`) are served. A read-only mount, a
+native PostgreSQL or HTTP source, refuses them, so it reports `read: false`. `query` and `dtql` are
+the query surface and do not depend on `read`: a read-only mount that can be queried reports
+`dtql: true` while `read` stays `false`. Clients browse or search such a database through `query` and
+`dtql`, and must not gate browsing on `read`. `write` and `delete` carry one value: they are false
+when the server runs with `--read-only` or the mount is read-only. `reset` is `false` for a
+server-hosted database, and `persistent` is `true`, as the data outlives the process. The value comes from the check the
 relational handler applies to the request, so a client that reads `joins: true` is not refused by
 the database it names.
 

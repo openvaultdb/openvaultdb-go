@@ -6,19 +6,19 @@ import "github.com/openvaultdb/openvaultdb-go/pkg/core"
 // metadata of GET /v1/databases/{db} and each entry of /.well-known/openvaultdb.
 // A nil database is described as the server lists it when it has none.
 //
-// read is true for every served database: reading does not depend on ReadOnly(),
-// which only says that the mount accepts no writes, and a read-only mount (an
-// HTTP source or a native PostgreSQL mount) is queried like any other. write and
-// delete are the same flag, false under a server-wide read-only switch or for a
-// read-only mount. reset is always false for a server-hosted database, and
-// persistent is always true.
+// read is whether keyed record reads are served (core.Database.KeyedRecordReadsServed):
+// false for a read-only mount, which refuses Get and Exists. Clients browse through
+// query and dtql, not through read. write and delete are the same flag, false under
+// a server-wide read-only switch or for a read-only mount. reset is always false for
+// a server-hosted database, and persistent is always true.
 func (s *Server) databaseCapabilities(db *core.Database) map[string]bool {
 	canDTQL := s.advertisesOrdinaryQuery(db)
 	canQuery := canDTQL && db.CanCollectionQuery()
 	joins := db != nil && s.advertisesJoins(db)
-	writable := !s.readOnly && (db == nil || !db.ReadOnly())
+	keyed := db == nil || db.KeyedRecordReadsServed()
+	writable := !s.readOnly && keyed
 	return map[string]bool{
-		"read":                true,
+		"read":                keyed,
 		"query":               canQuery,
 		"dtql":                canDTQL,
 		"dtqlStreaming":       canDTQL,

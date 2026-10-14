@@ -63,7 +63,7 @@ func TestLiveHTTPSourceEndpoints(t *testing.T) {
 	}
 	for _, path := range []string{"/v1/databases/ecb", "/.well-known/openvaultdb"} {
 		w := retentionRequest(handler, "GET", path, "", nil)
-		if w.Code != 200 || !strings.Contains(w.Body.String(), `"read":true`) || !strings.Contains(w.Body.String(), `"write":false`) || !strings.Contains(w.Body.String(), `"delete":false`) || !strings.Contains(w.Body.String(), `"query":true`) || !strings.Contains(w.Body.String(), `"joins":false`) {
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `"read":false`) || !strings.Contains(w.Body.String(), `"write":false`) || !strings.Contains(w.Body.String(), `"delete":false`) || !strings.Contains(w.Body.String(), `"query":true`) || !strings.Contains(w.Body.String(), `"joins":false`) {
 			t.Fatalf("metadata: %d %s", w.Code, w.Body)
 		}
 	}
