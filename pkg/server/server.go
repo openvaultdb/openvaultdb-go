@@ -674,16 +674,14 @@ func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	joins := s.advertisesJoins(db)
 	canDTQL := s.advertisesOrdinaryQuery(db)
-	canQuery := canDTQL && db.CanCollectionQuery()
 	metadata := map[string]any{
 		"id":           db.ID(),
 		"serverId":     s.rightsServerID,
 		"engine":       db.Manifest.Storage.Engine,
 		"schemaMode":   string(db.Manifest.Database.SchemaMode),
 		"collections":  collections,
-		"capabilities": map[string]bool{"read": !db.ReadOnly(), "query": canQuery, "dtql": canDTQL, "dtqlStreaming": canDTQL, "dtqlStreamingErrors": canDTQL, "write": !s.readOnly && !db.ReadOnly(), "joins": joins, "aggregation": joins},
+		"capabilities": s.databaseCapabilities(db),
 	}
 	if len(db.Manifest.Database.Tags) > 0 {
 		metadata["tags"] = db.Manifest.Database.Tags

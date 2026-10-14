@@ -24,6 +24,11 @@ func (d *Database) HTTPProfile() string { return d.httpProfile }
 // ReadOnly reports mounts that expose neither keyed record reads nor writes.
 func (d *Database) ReadOnly() bool { return d.readOnlyHTTP || d.nativePostgres }
 
+// KeyedRecordReadsServed reports whether keyed record reads (Get, Exists) are
+// served. It is the predicate those methods check, so the capability that
+// advertises keyed reads cannot drift from what they do.
+func (d *Database) KeyedRecordReadsServed() bool { return !d.ReadOnly() }
+
 func (d *Database) readOnlyOperationError() error {
 	if d.nativePostgres {
 		return ErrNativePostgresOperationUnsupported
