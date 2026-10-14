@@ -270,35 +270,68 @@ func TestPostgresIntegration_NativeRoleMustBeReadOnlyWhenRequired(t *testing.T) 
 	required := mount.Options{RequireReadOnlyNativePostgresRole: true}
 
 	// The administration role of the test server is a superuser.
-	if _, err := pgITNativeMount(t, "as-admin", os.Getenv(pgITDSNEnv), required); err == nil || !strings.Contains(err.Error(), "superuser") {
+	if _, err := pgITNativeMount(t, "as-admin", os.Getenv(pgITDSNEnv), required); err == nil || !strings.Contains(err.Error(), "SUPERUSER") {
 		t.Fatalf("superuser mount error = %v, want a superuser refusal", err)
 	}
 	if _, err := pgITNativeMount(t, "as-admin-unchecked", os.Getenv(pgITDSNEnv), mount.Options{}); err != nil {
 		t.Fatalf("without the option the superuser mounts as before: %v", err)
 	}
 
+	// {ROLE} stands for the quoted role under test, {SCHEMA} for the schema, {TABLE} for the
+	// long table. Each case is refused for one reason only.
 	for _, tc := range []struct {
-		role   string
-		grants []string
-		refuse bool
+		role       string
+		attributes string
+		setup      []string
+		want       string // a part of the refusal; empty when the role mounts
 	}{
-		{role: "ovdb select only", grants: []string{`GRANT SELECT ON ALL TABLES IN SCHEMA ` + quotedSchema}},
-		{role: "ovdb select insert", grants: []string{`GRANT SELECT, INSERT ON ` + quotedTable}, refuse: true},
-		{role: "ovdb select truncate", grants: []string{`GRANT SELECT, TRUNCATE ON ` + quotedTable}, refuse: true},
-		{role: "ovdb column update", grants: []string{`GRANT SELECT ON ` + quotedTable, `GRANT UPDATE (note) ON ` + quotedTable}, refuse: true},
+		{role: "ovdb select only", setup: []string{`GRANT SELECT ON ALL TABLES IN SCHEMA {SCHEMA} TO {ROLE}`}},
+		{role: "ovdb select insert", setup: []string{`GRANT SELECT, INSERT ON {TABLE} TO {ROLE}`}, want: "may write"},
+		{role: "ovdb select truncate", setup: []string{`GRANT SELECT, TRUNCATE ON {TABLE} TO {ROLE}`}, want: "may write"},
+		{role: "ovdb select trigger", setup: []string{`GRANT SELECT, TRIGGER ON {TABLE} TO {ROLE}`}, want: "may write"},
+		{role: "ovdb select references", setup: []string{`GRANT SELECT, REFERENCES ON {TABLE} TO {ROLE}`}, want: "may write"},
+		{role: "ovdb column update", setup: []string{`GRANT SELECT ON {TABLE} TO {ROLE}`, `GRANT UPDATE (note) ON {TABLE} TO {ROLE}`}, want: "may write"},
+		{role: "ovdb public insert", setup: []string{`GRANT SELECT ON {TABLE} TO {ROLE}`, `GRANT INSERT ON {TABLE} TO PUBLIC`}, want: "may write"},
+		{role: "ovdb noinherit owner member", attributes: "NOINHERIT", setup: []string{
+			`CREATE ROLE "ovdb owner role" NOLOGIN`,
+			`ALTER TABLE {TABLE} OWNER TO "ovdb owner role"`,
+			`GRANT SELECT ON {TABLE} TO {ROLE}`,
+			`GRANT "ovdb owner role" TO {ROLE}`,
+		}, want: `owns relation`},
+		{role: "ovdb write all data", attributes: "NOINHERIT", setup: []string{`GRANT SELECT ON {TABLE} TO {ROLE}`, `GRANT pg_write_all_data TO {ROLE}`}, want: "pg_write_all_data"},
+		{role: "ovdb server program", setup: []string{`GRANT SELECT ON {TABLE} TO {ROLE}`, `GRANT pg_execute_server_program TO {ROLE}`}, want: "pg_execute_server_program"},
+		{role: "ovdb createrole", attributes: "CREATEROLE", setup: []string{`GRANT SELECT ON {TABLE} TO {ROLE}`}, want: "CREATEROLE"},
+		{role: "ovdb bypassrls", attributes: "BYPASSRLS", setup: []string{`GRANT SELECT ON {TABLE} TO {ROLE}`}, want: "BYPASSRLS"},
+		{role: "ovdb schema create", setup: []string{`GRANT SELECT ON {TABLE} TO {ROLE}`, `GRANT CREATE ON SCHEMA {SCHEMA} TO {ROLE}`}, want: "may create in schema"},
+		{role: "ovdb sequence usage", setup: []string{`GRANT SELECT ON {TABLE} TO {ROLE}`, `CREATE SEQUENCE {SCHEMA}."ovdb counter"`, `GRANT USAGE ON SEQUENCE {SCHEMA}."ovdb counter" TO {ROLE}`}, want: "sequence"},
+		{role: "ovdb security definer", setup: []string{`GRANT SELECT ON {TABLE} TO {ROLE}`, `CREATE FUNCTION {SCHEMA}."ovdb definer"() RETURNS int LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'`}, want: "SECURITY DEFINER"},
+		// Ownership alone: the owner revoked its own privileges, and still owns the
+		// table, so it can grant them back.
+		{role: "ovdb revoked owner", setup: []string{`ALTER TABLE {TABLE} OWNER TO {ROLE}`, `REVOKE ALL ON {TABLE} FROM {ROLE}`, `GRANT SELECT ON {TABLE} TO {ROLE}`}, want: "owns relation"},
 	} {
 		t.Run(tc.role, func(t *testing.T) {
 			quotedRole := `"` + tc.role + `"`
-			if _, err := admin.Exec(`CREATE ROLE ` + quotedRole + ` LOGIN PASSWORD 'test-only-password'`); err != nil {
+			if _, err := admin.Exec(`CREATE ROLE ` + quotedRole + ` LOGIN ` + tc.attributes + ` PASSWORD 'test-only-password'`); err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() {
-				_, _ = admin.Exec(`DROP OWNED BY ` + quotedRole)
-				_, _ = admin.Exec(`DROP ROLE IF EXISTS ` + quotedRole)
+				for _, statement := range []string{
+					`DROP FUNCTION IF EXISTS ` + quotedSchema + `."ovdb definer"()`,
+					`DROP SEQUENCE IF EXISTS ` + quotedSchema + `."ovdb counter"`,
+					`REVOKE INSERT ON ` + quotedTable + ` FROM PUBLIC`,
+					`ALTER TABLE ` + quotedTable + ` OWNER TO CURRENT_USER`,
+					`DROP OWNED BY ` + quotedRole,
+					`DROP ROLE IF EXISTS ` + quotedRole,
+					`DROP ROLE IF EXISTS "ovdb owner role"`,
+				} {
+					_, _ = admin.Exec(statement)
+				}
 			})
-			for _, grant := range append([]string{`GRANT USAGE ON SCHEMA ` + quotedSchema}, tc.grants...) {
-				if _, err := admin.Exec(grant + ` TO ` + quotedRole); err != nil {
-					t.Fatalf("%s: %v", grant, err)
+			replacer := strings.NewReplacer("{ROLE}", quotedRole, "{SCHEMA}", quotedSchema, "{TABLE}", quotedTable)
+			for _, statement := range append([]string{`GRANT USAGE ON SCHEMA {SCHEMA} TO {ROLE}`}, tc.setup...) {
+				statement = replacer.Replace(statement)
+				if _, err := admin.Exec(statement); err != nil {
+					t.Fatalf("%s: %v", statement, err)
 				}
 			}
 			u, err := url.Parse(os.Getenv(pgITDSNEnv))
@@ -307,11 +340,14 @@ func TestPostgresIntegration_NativeRoleMustBeReadOnlyWhenRequired(t *testing.T) 
 			}
 			u.User = url.UserPassword(tc.role, "test-only-password")
 			_, err = pgITNativeMount(t, "role", u.String(), required)
-			if tc.refuse != (err != nil) {
-				t.Fatalf("mount as %q: %v, want refused=%v", tc.role, err, tc.refuse)
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("mount as %q refused: %v", tc.role, err)
+			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+				t.Fatalf("mount as %q: %v, want a refusal naming %q", tc.role, err, tc.want)
 			}
-			if tc.refuse && !strings.Contains(err.Error(), "owns or may write") {
-				t.Fatalf("refusal = %v, want it to say the role may write", err)
+			if tc.role == "ovdb revoked owner" && strings.Contains(err.Error(), "may write") {
+				t.Fatalf("the revoked owner was refused for a privilege, not only for owning: %v", err)
 			}
 		})
 	}

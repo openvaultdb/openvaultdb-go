@@ -97,22 +97,21 @@ func TestNativeSettingsDefaultsAndStatementTimeout(t *testing.T) {
 }
 
 type fakeAccess struct {
-	superuser     bool
-	superuserErr  error
-	changeable    map[string]map[string]bool
-	changeableErr error
-	selectable    map[string]bool
-	closed        bool
+	reasons []string
+	err     error
+	got     [3][]string
 }
 
 func (f *fakeAccess) SelectableRelations(context.Context, string) (map[string]bool, error) {
-	return f.selectable, nil
+	return nil, nil
 }
-func (f *fakeAccess) Superuser(context.Context) (bool, error) { return f.superuser, f.superuserErr }
-func (f *fakeAccess) ChangeableRelations(_ context.Context, schemaName string) (map[string]bool, error) {
-	return f.changeable[schemaName], f.changeableErr
+
+func (f *fakeAccess) WriteCapabilities(_ context.Context, schemas, relationSchemas, relationNames []string) ([]string, error) {
+	f.got = [3][]string{schemas, relationSchemas, relationNames}
+	return f.reasons, f.err
 }
-func (f *fakeAccess) Close() error { f.closed = true; return nil }
+
+func (f *fakeAccess) Close() error { return nil }
 
 func TestRefuseWritableRole(t *testing.T) {
 	exposed := &schema.Schemas{Collections: map[string]schema.Collection{}}
@@ -120,29 +119,20 @@ func TestRefuseWritableRole(t *testing.T) {
 		id, _ := schema.NativePostgresCollectionID(source.Schema, source.Name)
 		exposed.Collections[id] = schema.Collection{Source: &source}
 	}
+	readOnly := &fakeAccess{}
+	if err := refuseWritableRole(context.Background(), readOnly, exposed); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(readOnly.got[0], ",") != "s,t" || len(readOnly.got[1]) != 3 || len(readOnly.got[2]) != 3 {
+		t.Fatalf("asked about %v", readOnly.got)
+	}
+	err := refuseWritableRole(context.Background(), &fakeAccess{reasons: []string{"z reason", "a reason"}}, exposed)
+	if err == nil || !strings.Contains(err.Error(), "not read-only: a reason; z reason;") {
+		t.Fatalf("error = %v", err)
+	}
 	boom := errors.New("boom")
-	for name, tc := range map[string]struct {
-		access *fakeAccess
-		want   string
-	}{
-		"select only":       {access: &fakeAccess{changeable: map[string]map[string]bool{"s": {"not exposed": true}}}},
-		"superuser":         {access: &fakeAccess{superuser: true}, want: "superuser"},
-		"superuser unknown": {access: &fakeAccess{superuserErr: boom}, want: "boom"},
-		"privileges failed": {access: &fakeAccess{changeableErr: boom}, want: "boom"},
-		"writable":          {access: &fakeAccess{changeable: map[string]map[string]bool{"s": {"a": true, "b": true}}}, want: `may write 2 exposed relation(s), for example "s"."a"`},
-	} {
-		t.Run(name, func(t *testing.T) {
-			err := refuseWritableRole(context.Background(), tc.access, exposed)
-			if tc.want == "" {
-				if err != nil {
-					t.Fatal(err)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("error = %v, want %q", err, tc.want)
-			}
-		})
+	if err := refuseWritableRole(context.Background(), &fakeAccess{err: boom}, exposed); !errors.Is(err, boom) {
+		t.Fatalf("error = %v", err)
 	}
 }
 

@@ -288,15 +288,13 @@ type nativePostgresSelectVisibility interface {
 }
 
 // nativePostgresAccess is the privilege view of the role a native mount connects
-// as: what it may read, and what it could change.
+// as: what it may read, and every way it could change data or the schema.
 type nativePostgresAccess interface {
 	nativePostgresSelectVisibility
-	// Superuser reports whether the role is a superuser.
-	Superuser(context.Context) (bool, error)
-	// ChangeableRelations lists the relations of a schema that the role owns (or is
-	// a member of the owner of), or on which it holds INSERT, UPDATE, DELETE or
-	// TRUNCATE, on the table or on any of its columns.
-	ChangeableRelations(context.Context, string) (map[string]bool, error)
+	// WriteCapabilities lists, as short reasons, every way the role could write
+	// (writeCapabilitiesQuery); it is empty for a read-only role. The exposed
+	// relations are given as parallel lists of schema and relation names.
+	WriteCapabilities(ctx context.Context, exposedSchemas, relationSchemas, relationNames []string) ([]string, error)
 	Close() error
 }
 
@@ -334,76 +332,103 @@ type postgresSelectVisibility struct{ db *sql.DB }
 
 func (v postgresSelectVisibility) Close() error { return v.db.Close() }
 
-func (v postgresSelectVisibility) Superuser(ctx context.Context) (bool, error) {
-	var superuser bool
-	if err := v.db.QueryRowContext(ctx, `SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = current_user`).Scan(&superuser); err != nil {
-		return false, errors.New("could not check whether the PostgreSQL role is a superuser")
-	}
-	return superuser, nil
-}
+// writeCapabilitiesQuery lists every way the current role could change data or the
+// schema. Membership is MEMBER, not USAGE: a NOINHERIT member of a role does not
+// use its privileges by default but can SET ROLE to it, so each privilege is
+// checked for every role the current role is a member of, itself included, and
+// privileges granted to PUBLIC count too (the has_*_privilege functions include
+// them). $1 lists the exposed schemas; $2 and $3 the exposed relations.
+const writeCapabilitiesQuery = `
+WITH member_of AS (
+	SELECT r.oid, r.rolname, r.rolsuper, r.rolcreaterole, r.rolcreatedb, r.rolreplication, r.rolbypassrls
+	FROM pg_catalog.pg_roles AS r
+	WHERE pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER')
+), exposed AS (
+	SELECT c.oid, n.nspname, c.relname
+	FROM unnest($2::text[], $3::text[]) AS e(nspname, relname)
+	JOIN pg_catalog.pg_namespace AS n ON n.nspname = e.nspname
+	JOIN pg_catalog.pg_class AS c ON c.relnamespace = n.oid AND c.relname = e.relname
+), exposed_schemas AS (
+	SELECT n.oid, n.nspname FROM pg_catalog.pg_namespace AS n
+	WHERE n.nspname = ANY($1::text[]) OR n.nspname = 'public'
+), user_namespaces AS (
+	SELECT n.oid, n.nspname, n.nspowner FROM pg_catalog.pg_namespace AS n
+	WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\_toast%' AND n.nspname NOT LIKE 'pg\_temp\_%'
+)
+SELECT reason FROM (
+	SELECT format('role %I has the %s attribute', m.rolname, a.attribute)
+	FROM member_of AS m, LATERAL (VALUES ('SUPERUSER', m.rolsuper), ('CREATEROLE', m.rolcreaterole), ('CREATEDB', m.rolcreatedb), ('REPLICATION', m.rolreplication), ('BYPASSRLS', m.rolbypassrls)) AS a(attribute, held)
+	WHERE a.held
+	UNION ALL
+	SELECT format('is a member of %I', m.rolname) FROM member_of AS m
+	WHERE m.rolname IN ('pg_write_all_data', 'pg_execute_server_program', 'pg_read_server_files', 'pg_write_server_files')
+	UNION ALL
+	SELECT format('owns schema %I (as %I)', n.nspname, m.rolname) FROM user_namespaces AS n JOIN member_of AS m ON m.oid = n.nspowner
+	UNION ALL
+	SELECT format('owns relation %I.%I (as %I)', n.nspname, c.relname, m.rolname)
+	FROM pg_catalog.pg_class AS c JOIN user_namespaces AS n ON n.oid = c.relnamespace JOIN member_of AS m ON m.oid = c.relowner
+	UNION ALL
+	SELECT format('owns function %I.%I (as %I)', n.nspname, p.proname, m.rolname)
+	FROM pg_catalog.pg_proc AS p JOIN user_namespaces AS n ON n.oid = p.pronamespace JOIN member_of AS m ON m.oid = p.proowner
+	UNION ALL
+	SELECT format('may write %I.%I (as %I)', e.nspname, e.relname, m.rolname) FROM exposed AS e, member_of AS m
+	WHERE pg_catalog.has_table_privilege(m.oid, e.oid, 'INSERT, UPDATE, DELETE, TRUNCATE, TRIGGER, REFERENCES')
+		OR pg_catalog.has_any_column_privilege(m.oid, e.oid, 'INSERT, UPDATE, REFERENCES')
+	UNION ALL
+	SELECT format('may create in schema %I (as %I)', s.nspname, m.rolname) FROM exposed_schemas AS s, member_of AS m
+	WHERE pg_catalog.has_schema_privilege(m.oid, s.oid, 'CREATE')
+	UNION ALL
+	SELECT format('may use or update sequence %I.%I (as %I)', s.nspname, c.relname, m.rolname)
+	FROM pg_catalog.pg_class AS c JOIN exposed_schemas AS s ON s.oid = c.relnamespace, member_of AS m
+	WHERE c.relkind = 'S' AND pg_catalog.has_sequence_privilege(m.oid, c.oid, 'USAGE, UPDATE')
+	UNION ALL
+	SELECT format('may execute SECURITY DEFINER function %I.%I', s.nspname, p.proname)
+	FROM pg_catalog.pg_proc AS p JOIN exposed_schemas AS s ON s.oid = p.pronamespace
+	WHERE p.prosecdef AND pg_catalog.has_function_privilege(current_user, p.oid, 'EXECUTE')
+) AS reasons(reason)
+LIMIT 20`
 
-func (v postgresSelectVisibility) ChangeableRelations(ctx context.Context, schemaName string) (map[string]bool, error) {
-	rows, err := v.db.QueryContext(ctx, `
-		SELECT c.relname
-		FROM pg_catalog.pg_class AS c
-		JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
-		WHERE n.nspname = $1 AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
-		AND (pg_has_role(current_user, c.relowner, 'USAGE')
-			OR has_table_privilege(current_user, c.oid, 'INSERT, UPDATE, DELETE, TRUNCATE')
-			OR has_any_column_privilege(current_user, c.oid, 'INSERT, UPDATE'))`, schemaName)
+func (v postgresSelectVisibility) WriteCapabilities(ctx context.Context, exposedSchemas, relationSchemas, relationNames []string) ([]string, error) {
+	rows, err := v.db.QueryContext(ctx, writeCapabilitiesQuery, exposedSchemas, relationSchemas, relationNames)
 	if err != nil {
-		return nil, errors.New("could not check PostgreSQL relation write privileges")
+		return nil, errors.New("could not check the PostgreSQL role's write privileges")
 	}
 	defer func() { _ = rows.Close() }()
-	changeable := make(map[string]bool)
+	var reasons []string
 	for rows.Next() {
-		var relation string
-		if err := rows.Scan(&relation); err != nil {
-			return nil, errors.New("could not read PostgreSQL relation write privileges")
+		var reason string
+		if err := rows.Scan(&reason); err != nil {
+			return nil, errors.New("could not read the PostgreSQL role's write privileges")
 		}
-		changeable[relation] = true
+		reasons = append(reasons, reason)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, errors.New("could not read PostgreSQL relation write privileges")
+		return nil, errors.New("could not read the PostgreSQL role's write privileges")
 	}
-	return changeable, nil
+	return reasons, nil
 }
 
 // refuseWritableRole refuses a native read-only mount whose role could change
-// what it exposes: a superuser, or a role that owns or may write any exposed
-// relation (Options.RequireReadOnlyNativePostgresRole). The session is read-only
-// either way; this check makes a misconfigured role a mount failure instead of a
-// latent risk.
+// data or the schema (Options.RequireReadOnlyNativePostgresRole): see
+// writeCapabilitiesQuery for what counts. The session is read-only either way;
+// this check makes a misconfigured role a mount failure instead of a latent risk.
 func refuseWritableRole(ctx context.Context, access nativePostgresAccess, schemas *schema.Schemas) error {
-	superuser, err := access.Superuser(ctx)
+	var relationSchemas, relationNames []string
+	exposedSchemas := map[string]bool{}
+	for _, collection := range schemas.Collections {
+		relationSchemas = append(relationSchemas, collection.Source.Schema)
+		relationNames = append(relationNames, collection.Source.Name)
+		exposedSchemas[collection.Source.Schema] = true
+	}
+	reasons, err := access.WriteCapabilities(ctx, slices.Sorted(maps.Keys(exposedSchemas)), relationSchemas, relationNames)
 	if err != nil {
 		return err
 	}
-	if superuser {
-		return errors.New("native read-only PostgreSQL mount refused: the role is a superuser; connect as a role with only SELECT on the exposed relations")
-	}
-	exposed := map[string][]string{}
-	for _, collection := range schemas.Collections {
-		exposed[collection.Source.Schema] = append(exposed[collection.Source.Schema], collection.Source.Name)
-	}
-	var changeable []string
-	for _, schemaName := range slices.Sorted(maps.Keys(exposed)) {
-		owned, err := access.ChangeableRelations(ctx, schemaName)
-		if err != nil {
-			return err
-		}
-		for _, relation := range exposed[schemaName] {
-			if owned[relation] {
-				changeable = append(changeable, fmt.Sprintf("%q.%q", schemaName, relation))
-			}
-		}
-	}
-	if len(changeable) == 0 {
+	if len(reasons) == 0 {
 		return nil
 	}
-	sort.Strings(changeable)
-	example := changeable[0]
-	return fmt.Errorf("native read-only PostgreSQL mount refused: the role owns or may write %d exposed relation(s), for example %s; connect as a role with only SELECT on the exposed relations", len(changeable), example)
+	sort.Strings(reasons)
+	return fmt.Errorf("native read-only PostgreSQL mount refused: the role is not read-only: %s; connect as a role with only SELECT on the exposed relations (and USAGE on their schemas)", strings.Join(reasons, "; "))
 }
 
 func (v postgresSelectVisibility) SelectableRelations(ctx context.Context, schemaName string) (map[string]bool, error) {
