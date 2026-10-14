@@ -458,8 +458,9 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 	if err := os.WriteFile(path, []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// The CI server has no TLS: the leg allows a plain connection explicitly.
-	native, err := mount.FileWithOptions(path, mount.Options{AllowInsecureNativePostgresTransport: true})
+	// The CI server has no TLS and is on localhost, which needs none: mount.File
+	// mounts it as it did before verified TLS was required of remote hosts.
+	native, err := mount.File(path)
 	if err != nil {
 		t.Fatalf("mount native read-only PostgreSQL: %v", err)
 	}
@@ -749,7 +750,7 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 	restrictedQuery.Set("application_name", "ovdb-it-select-visibility")
 	restrictedURL.RawQuery = restrictedQuery.Encode()
 	t.Setenv(pgITMountDSNEnv, restrictedURL.String())
-	restricted, err := mount.FileWithOptions(path, mount.Options{AllowInsecureNativePostgresTransport: true})
+	restricted, err := mount.File(path)
 	if err != nil {
 		t.Fatalf("mount SELECT-restricted role: %v", err)
 	}
@@ -799,7 +800,7 @@ func TestPostgresIntegration_NativeRelationExclusionHidesDescriptorAndQueryLooku
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	native, err := mount.FileWithOptions(path, mount.Options{AllowInsecureNativePostgresTransport: true, ExcludedNativePostgresRelations: []schema.NativeCollectionSource{{Schema: physicalSchema, Name: "_import_manifest"}}})
+	native, err := mount.FileWithOptions(path, mount.Options{ExcludedNativePostgresRelations: []schema.NativeCollectionSource{{Schema: physicalSchema, Name: "_import_manifest"}}})
 	if err != nil {
 		t.Fatalf("mount native PostgreSQL with consumer relation exclusion: %v", err)
 	}

@@ -50,7 +50,6 @@ func TestNativePostgresDemoDatasets_EveryCollectionAnswers(t *testing.T) {
 				t.Fatal(err)
 			}
 			db, err := mount.FileWithOptions(path, mount.Options{
-				AllowInsecureNativePostgresTransport: u.Query().Get("sslmode") == "disable",
 				// The role the public demo connects as must be read-only, as the cloud requires.
 				RequireReadOnlyNativePostgresRole: true,
 			})

@@ -49,9 +49,12 @@ type Options struct {
 	ExcludedNativePostgresRelations []schema.NativeCollectionSource
 
 	// AllowInsecureNativePostgresTransport lets a native read-only PostgreSQL
-	// mount connect without a verified TLS connection (see
+	// mount reach a remote host without a verified TLS connection (see
 	// docs/native-postgres-read.md). By default such a mount requires
-	// sslmode=verify-full or sslmode=verify-ca, with no plaintext fallback.
+	// sslmode=verify-full or sslmode=verify-ca, with no plaintext fallback, unless
+	// every host is local (a Unix socket, a loopback address or localhost). The
+	// manifest field storage.postgres.insecure_transport and the environment
+	// variable OVDB_NATIVE_POSTGRES_INSECURE_TRANSPORT allow the same.
 	AllowInsecureNativePostgresTransport bool
 
 	// NativePostgresStatementTimeout is the statement_timeout a native read-only

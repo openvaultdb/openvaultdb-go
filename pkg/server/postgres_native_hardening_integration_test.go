@@ -27,7 +27,7 @@ const (
 )
 
 // pgITNativeMount mounts the native read-only manifest of the test server with
-// opts, on a plain connection (the CI server has no TLS).
+// opts. The CI server is on localhost without TLS, which needs no opt-out.
 func pgITNativeMount(t *testing.T, id, dsn string, opts mount.Options) (*core.Database, error) {
 	t.Helper()
 	t.Setenv(pgITMountDSNEnv, dsn)
@@ -36,7 +36,6 @@ func pgITNativeMount(t *testing.T, id, dsn string, opts mount.Options) (*core.Da
 	if err := os.WriteFile(path, []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	opts.AllowInsecureNativePostgresTransport = true
 	db, err := mount.FileWithOptions(path, opts)
 	if err == nil {
 		t.Cleanup(func() { _ = db.Close() })

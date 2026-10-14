@@ -98,7 +98,8 @@ jobs:
             NativeRelationExclusionHidesDescriptorAndQueryLookup \
             NativeLongNamesValuesAndReadOnlyTransactions \
             NativeStatementTimeoutEndsASlowRead \
-            NativeRoleMustBeReadOnlyWhenRequired; do
+            NativeRoleMustBeReadOnlyWhenRequired \
+            NativeIntegerComparisonsByOperator; do
             if ! grep -qE "^--- PASS: TestPostgresIntegration_${name} " /tmp/gotest.log; then
               echo "::error::TestPostgresIntegration_${name} did not report PASS"
               exit 1

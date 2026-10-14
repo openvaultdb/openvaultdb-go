@@ -59,14 +59,21 @@ func TestNativePostgresRequiresAVerifiedTLSConnection(t *testing.T) {
 		{"postgres://reader@db.example.test/samples", false},
 		{"postgres://reader@db.example.test/samples?sslmode=allow", false},
 		{"postgres://reader@db.example.test/samples?sslmode=disable", false},
-		{"host=/tmp user=reader dbname=samples", false},
+		{"host=/tmp user=reader dbname=samples", true},
+		{"host=/tmp user=reader dbname=samples sslmode=verify-full", true},
+		{"postgres://reader@127.0.0.1:5432/samples?sslmode=disable", true},
+		{"postgres://reader@localhost/samples", true},
+		{"postgres://reader@[::1]:5432/samples?sslmode=disable", true},
+		{"postgres://reader@127.0.0.1,db.example.test/samples?sslmode=disable", false},
+		{"postgres://reader@127.0.0.1.example.test/samples?sslmode=disable", false},
+		{"postgres://reader@10.0.0.5/samples?sslmode=require", false},
 	} {
 		got, err := postgresReadOnlyDSN(tc.dsn, secure)
 		if tc.ok != (err == nil) {
 			t.Errorf("%s: %q, %v; want accepted=%v", tc.dsn, got, err, tc.ok)
 			continue
 		}
-		if err != nil && (!strings.Contains(err.Error(), "verify-full") || strings.Contains(err.Error(), "reader")) {
+		if err != nil && (!strings.Contains(err.Error(), "verify-full") || !strings.Contains(err.Error(), InsecureNativePostgresTransportEnv) || strings.Contains(err.Error(), "reader")) {
 			t.Errorf("%s: refusal %q does not name the requirement or repeats the DSN", tc.dsn, err)
 		}
 	}
@@ -145,5 +152,40 @@ func TestOpenPostgresNativeRefusesBeforeConnectingWithoutTLS(t *testing.T) {
 	}
 	if _, _, err := openPostgresWithOptions(m, Options{}); err == nil || !strings.Contains(err.Error(), "verify-full") {
 		t.Fatalf("error = %v, want the TLS requirement", err)
+	}
+}
+
+func TestInsecureTransportOptOuts(t *testing.T) {
+	m := &manifest.Manifest{Database: manifest.Database{ID: "samples"}, Storage: manifest.Storage{Engine: "postgres", Postgres: &manifest.PostgresOptions{ReadOnly: true}}}
+	t.Setenv(InsecureNativePostgresTransportEnv, "")
+	if got, err := withInsecureTransportOptOut(m, nativeSettingsOf(Options{})); err != nil || got.allowInsecure {
+		t.Fatalf("no opt-out: %+v, %v", got, err)
+	}
+	if got, _ := withInsecureTransportOptOut(m, nativeSettingsOf(Options{AllowInsecureNativePostgresTransport: true})); !got.allowInsecure {
+		t.Fatal("the option was ignored")
+	}
+	m.Storage.Postgres.InsecureTransport = true
+	if got, _ := withInsecureTransportOptOut(m, nativeSettingsOf(Options{})); !got.allowInsecure {
+		t.Fatal("the manifest field was ignored")
+	}
+	m.Storage.Postgres.InsecureTransport = false
+	t.Setenv(InsecureNativePostgresTransportEnv, "true")
+	if got, _ := withInsecureTransportOptOut(m, nativeSettingsOf(Options{})); !got.allowInsecure {
+		t.Fatal("the environment variable was ignored")
+	}
+	t.Setenv(InsecureNativePostgresTransportEnv, "false")
+	if got, _ := withInsecureTransportOptOut(m, nativeSettingsOf(Options{})); got.allowInsecure {
+		t.Fatal("false allowed it")
+	}
+	t.Setenv(InsecureNativePostgresTransportEnv, "maybe")
+	if _, err := withInsecureTransportOptOut(m, nativeSettingsOf(Options{})); err == nil {
+		t.Fatal("an invalid value was accepted")
+	}
+	// The mount itself honours the manifest field before connecting.
+	t.Setenv(InsecureNativePostgresTransportEnv, "maybe")
+	t.Setenv("TEST_NATIVE_OPTOUT_DSN", "postgres://reader@db.example.test/samples?sslmode=disable")
+	m.Storage.Postgres.DSNEnv = "TEST_NATIVE_OPTOUT_DSN"
+	if _, _, err := openPostgresWithOptions(m, Options{}); err == nil || !strings.Contains(err.Error(), "true or false") {
+		t.Fatalf("error = %v, want the invalid environment value", err)
 	}
 }

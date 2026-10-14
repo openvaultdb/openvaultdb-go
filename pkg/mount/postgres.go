@@ -6,7 +6,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
+	"net"
 	"net/url"
 	"os"
 	"slices"
@@ -143,6 +145,9 @@ func openPostgresNative(m *manifest.Manifest, open postgresOpener, settings nati
 	}
 	if nativeReadOnly {
 		var err error
+		if settings, err = withInsecureTransportOptOut(m, settings); err != nil {
+			return nil, nil, err
+		}
 		dsn, err = postgresReadOnlyDSN(dsn, settings)
 		if err != nil {
 			return nil, nil, err
@@ -225,10 +230,10 @@ func openPostgresNative(m *manifest.Manifest, open postgresOpener, settings nati
 // role has broader grants, and a statement_timeout, so that the server ends a
 // statement the mount no longer waits for. The caller's other connection settings
 // remain intact. PostgreSQL's `options` parameter can override startup settings,
-// so it is refused for this profile. Unless settings allow an insecure transport,
-// the connection must be TLS with a verified server certificate (sslmode
-// verify-full or verify-ca, or require with a root certificate) and no plaintext
-// fallback.
+// so it is refused for this profile. Unless settings allow an insecure transport
+// or every host is on this machine (localPostgresHosts), the connection must be
+// TLS with a verified server certificate (sslmode verify-full or verify-ca, or
+// require with a root certificate) and no plaintext fallback.
 func postgresReadOnlyDSN(dsn string, settings nativePostgresSettings) (string, error) {
 	config, err := pgx.ParseConfig(dsn)
 	if err != nil {
@@ -239,7 +244,7 @@ func postgresReadOnlyDSN(dsn string, settings nativePostgresSettings) (string, e
 	if strings.TrimSpace(config.RuntimeParams["options"]) != "" {
 		return "", errors.New("native read-only PostgreSQL mounts do not support the PostgreSQL options connection parameter")
 	}
-	if !settings.allowInsecure {
+	if !settings.allowInsecure && !localPostgresHosts(config) {
 		// Every way pgx may connect must verify: the first attempt and each fallback
 		// (sslmode=prefer and allow fall back to a plaintext connection).
 		attempts := []*tls.Config{config.TLSConfig}
@@ -248,7 +253,7 @@ func postgresReadOnlyDSN(dsn string, settings nativePostgresSettings) (string, e
 		}
 		for _, attempt := range attempts {
 			if !verifiedTLS(attempt) {
-				return "", errors.New("native read-only PostgreSQL mounts require sslmode=verify-full or sslmode=verify-ca (mount.Options.AllowInsecureNativePostgresTransport allows a connection without a verified TLS server certificate)")
+				return "", errInsecureTransport
 			}
 		}
 	}
@@ -268,6 +273,66 @@ func postgresReadOnlyDSN(dsn string, settings nativePostgresSettings) (string, e
 	// the enforced values therefore overrides an earlier one without rewriting or
 	// re-encoding credentials and connection settings.
 	return dsn + " default_transaction_read_only='on' statement_timeout='" + timeout + "'", nil
+}
+
+// InsecureNativePostgresTransportEnv, set to true, lets every native read-only
+// PostgreSQL mount of the process reach a remote server without a verified TLS
+// connection, as storage.postgres.insecure_transport does for one manifest. It is
+// how a command-line tool that mounts manifests as they are reaches a local proxy
+// or a development server on another host.
+const InsecureNativePostgresTransportEnv = "OVDB_NATIVE_POSTGRES_INSECURE_TRANSPORT"
+
+var errInsecureTransport = errors.New("native read-only PostgreSQL mounts to a remote host require a verified TLS connection: sslmode=verify-full (or verify-ca); " +
+	"for local development set storage.postgres.insecure_transport: true in the manifest, " + InsecureNativePostgresTransportEnv + "=true in the environment, " +
+	"or mount.Options.AllowInsecureNativePostgresTransport (loopback and Unix-socket hosts need none of these)")
+
+// withInsecureTransportOptOut applies the manifest's and the environment's opt-out
+// of verified TLS to settings, and logs a warning whenever any opt-out is set.
+func withInsecureTransportOptOut(m *manifest.Manifest, settings nativePostgresSettings) (nativePostgresSettings, error) {
+	var sources []string
+	if settings.allowInsecure {
+		sources = append(sources, "mount.Options.AllowInsecureNativePostgresTransport")
+	}
+	if m.Storage.Postgres.InsecureTransport {
+		sources = append(sources, "storage.postgres.insecure_transport")
+	}
+	if value := strings.TrimSpace(os.Getenv(InsecureNativePostgresTransportEnv)); value != "" {
+		allowed, err := strconv.ParseBool(value)
+		if err != nil {
+			return settings, fmt.Errorf("%s must be true or false", InsecureNativePostgresTransportEnv)
+		}
+		if allowed {
+			sources = append(sources, InsecureNativePostgresTransportEnv)
+		}
+	}
+	if len(sources) > 0 {
+		settings.allowInsecure = true
+		slog.Warn("native PostgreSQL mount may connect without a verified TLS connection; use this for local development only",
+			"database", m.Database.ID, "opt-out", strings.Join(sources, ", "))
+	}
+	return settings, nil
+}
+
+// localPostgresHosts reports whether every host a connection may use is on this
+// machine: a Unix-socket directory, a loopback IP address, or the name
+// localhost. Traffic to them never crosses a network, so TLS adds nothing. A
+// name other than localhost is not resolved and does not qualify: what it
+// resolves to can change.
+func localPostgresHosts(config *pgx.ConnConfig) bool {
+	hosts := []string{config.Host}
+	for _, fallback := range config.Fallbacks {
+		hosts = append(hosts, fallback.Host)
+	}
+	for _, host := range hosts {
+		if strings.HasPrefix(host, "/") || strings.EqualFold(host, "localhost") {
+			continue
+		}
+		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // verifiedTLS reports whether a connection made with config verifies the

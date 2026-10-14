@@ -34,10 +34,16 @@ A native read-only mount is opened with `mount.FileWithOptions`; these
 
 | Option | Default | Effect |
 |---|---|---|
-| `AllowInsecureNativePostgresTransport` | `false` | By default the connection must be TLS with a verified server certificate: `sslmode=verify-full` (recommended; Neon and other managed services work with it and the system roots) or `sslmode=verify-ca`, or `sslmode=require` with an `sslrootcert`. `disable`, `allow`, `prefer` (pgx's default when no `sslmode` is given), plain `require` and a Unix-socket host are refused when the mount opens, before any connection is made. Set this option to connect without a verified certificate, for a local or test server. |
-| `NativePostgresStatementTimeout` | 15s | Sent as the `statement_timeout` startup parameter (it overrides one in the connection string), so the server ends a statement that runs too long even if the client has gone. |
+| `AllowInsecureNativePostgresTransport` | `false` | A connection to a remote host must be TLS with a verified server certificate: `sslmode=verify-full` (recommended; Neon and other managed services work with it and the system roots) or `sslmode=verify-ca`, or `sslmode=require` with an `sslrootcert`. `disable`, `allow`, `prefer` (pgx's default when no `sslmode` is given) and plain `require` are refused when the mount opens, before any connection is made. A host on this machine needs none of this: a Unix-socket directory, a loopback IP address (`127.0.0.0/8`, `::1`) or the name `localhost` never crosses a network. Every host of a multi-host connection string must be local for the exemption; other names are not resolved. This option, the manifest field `storage.postgres.insecure_transport: true`, or the environment variable `OVDB_NATIVE_POSTGRES_INSECURE_TRANSPORT=true` (which reaches tools such as the `ovdb` CLI that mount manifests as they are) allows a remote host without a verified certificate; the mount logs a warning whenever one of them is set. |
+| `NativePostgresStatementTimeout` | 15s | Sent as the `statement_timeout` startup parameter. It overrides a `statement_timeout` in the connection string, so the server ends a statement that runs too long even if the client has gone. |
 | `NativePostgresDiscoveryTimeout` | 30s | Bounds the catalogue read when the mount opens. |
 | `RequireReadOnlyNativePostgresRole` | `false` | Refuses to mount a role that could change data or the schema, listing each reason. Every role the connecting role is a **member** of counts, `NOINHERIT` memberships included (the role can `SET ROLE` to them), and so do grants to `PUBLIC`. Refused: the `SUPERUSER`, `CREATEROLE`, `CREATEDB`, `REPLICATION` or `BYPASSRLS` attribute; membership in `pg_write_all_data`, `pg_execute_server_program`, `pg_read_server_files` or `pg_write_server_files`; owning any schema, relation or function outside the system schemas; `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `TRIGGER` or `REFERENCES` on an exposed relation, or `INSERT`/`UPDATE`/`REFERENCES` on any of its columns; `CREATE` on an exposed schema or on `public`; `USAGE` or `UPDATE` on a sequence of those schemas; and `EXECUTE` on a `SECURITY DEFINER` function in them. A service that exposes a database publicly should turn it on. |
+
+Each read runs in its own `BEGIN READ ONLY` … `COMMIT`, two round trips more
+than a bare statement. `default_transaction_read_only` and `statement_timeout`
+are sent as startup parameters, which PgBouncer refuses by default
+(`ignore_startup_parameters`); connect a native mount to the server's direct
+endpoint (on Neon, the host without `-pooler`) rather than through a pooler.
 
 `mount.All` mounts several manifests concurrently and returns a `mount.Health`
 for each (mounted or not, the error, the time it took). A `mount.Spec` marked
@@ -49,6 +55,17 @@ Database metadata advertises `capabilities.dtql: true` and
 `capabilities.query: false`. Native mounts support the catalog-backed DTQL
 read surface; the legacy `/query` endpoint requires OVDB record keys and is
 answered with `501 query_unsupported`.
+
+## Upgrading
+
+- **BREAKING:** a native read-only mount to a remote host now requires a
+  verified TLS connection (`sslmode=verify-full` or `verify-ca`). Loopback and
+  Unix-socket hosts are exempt. Change the connection string, or opt out for
+  local development as described under Connection safety.
+- Every native read runs in an explicit read-only transaction, and sessions
+  start with `statement_timeout` (15s by default).
+- On integer columns `==`, `In` and `NotIn` refuse values the column cannot
+  hold, and filters on `bytea` columns are refused (see Filter values).
 
 ## Discovery and collection IDs
 
