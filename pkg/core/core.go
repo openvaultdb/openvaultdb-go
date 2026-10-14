@@ -390,7 +390,7 @@ func (d *Database) Collections(ctx context.Context) ([]string, error) {
 		sort.Strings(names)
 		return names, nil
 	}
-	reader, ok := dal.As[dbschema.SchemaReader](d.db)
+	reader, ok := dal.As[dbschema.SchemaReader](d.driver())
 	if !ok {
 		return nil, nil
 	}
@@ -452,7 +452,7 @@ func (d *Database) CollectionForeignKeys(ctx context.Context, collection string)
 		collection, _ = d.CanonicalCollection(collection)
 	}
 
-	reader, ok := dal.As[dbschema.SchemaReader](d.db)
+	reader, ok := dal.As[dbschema.SchemaReader](d.driver())
 	if !ok {
 		return nil, nil
 	}
@@ -769,7 +769,7 @@ func (d *Database) ensureCollection(ctx context.Context, collection string, fiel
 		return nil
 	}
 
-	modifier, ok := dal.As[ddl.SchemaModifier](d.db)
+	modifier, ok := dal.As[ddl.SchemaModifier](d.driver())
 	if !ok {
 		// Drivers without a DDL surface (Firestore) have implicit
 		// collections — nothing to provision; core still validates modes.

@@ -71,6 +71,8 @@ func pgITHardeningSchema(t *testing.T, admin *sql.DB) {
 		`CREATE VIEW ` + quotedSchema + `."flip session default" AS SELECT
 			set_config('default_transaction_read_only', 'off', false) AS flipped`,
 		`CREATE VIEW ` + quotedSchema + `."slow view" AS SELECT pg_sleep(3)::text AS slept`,
+		`CREATE TABLE ` + quotedSchema + `."fk parent" (id bigint PRIMARY KEY)`,
+		`CREATE TABLE ` + quotedSchema + `."fk child" (id bigint PRIMARY KEY, parent_id bigint CONSTRAINT "child to parent" REFERENCES ` + quotedSchema + `."fk parent" (id))`,
 	} {
 		if _, err := admin.Exec(statement); err != nil {
 			t.Fatalf("%s: %v", statement, err)
@@ -108,6 +110,18 @@ func TestPostgresIntegration_NativeLongNamesValuesAndReadOnlyTransactions(t *tes
 	servertest.RequireEveryCollection(t, t.Context(), base, "hardening", servertest.Options{
 		Collections: pgITCollectionIDs(t, native, pgITLongTable, pgITLongView),
 	})
+
+	// Foreign keys come from the driver's catalogue, beneath the read-only
+	// transaction wrapper: outgoing on the child, incoming on the parent's page.
+	childID := pgITCollectionIDs(t, native, "fk child")[0:1]
+	if keys, err := native.CollectionForeignKeys(t.Context(), childID[0]); err != nil || len(keys) != 1 || keys[0].ReferencedCollection != "fk parent" {
+		t.Fatalf("child foreign keys = %+v, %v; want one", keys, err)
+	}
+	parentID, _ := native.ResolveNativePostgresCollection(pgITLongSchema, "fk parent")
+	parentPage := relHTTPDo(t, base, http.MethodGet, "/ovdb/dbs/hardening/collections/"+url.PathEscape(parentID), "", "", nil)
+	if parentPage.status != http.StatusOK || !strings.Contains(parentPage.raw, ">"+pgITLongSchema+".fk child</a>.<code>parent_id</code>") || strings.Contains(parentPage.raw, "No incoming references") {
+		t.Fatalf("parent page: %d %d, want the child reference in Referenced by: %q", parentPage.status, len(parentPage.raw), parentPage.raw[max(0, strings.Index(parentPage.raw, "References")):])
+	}
 
 	table := map[string]string{"schema": pgITLongSchema, "name": pgITLongTable}
 	byID := func(value any) map[string]any {
@@ -222,7 +236,7 @@ func pgITCollectionIDs(t *testing.T, db *core.Database, relations ...string) []s
 		if !ok {
 			t.Fatalf("relation %q is not a collection", relation)
 		}
-		if len(id) <= 63 {
+		if len(id) <= 63 && len(relation) > 30 {
 			t.Fatalf("collection ID %q is not longer than 63 bytes: the test proves nothing", id)
 		}
 		ids[i] = id

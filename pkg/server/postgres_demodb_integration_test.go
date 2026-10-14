@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -59,6 +60,18 @@ func TestNativePostgresDemoDatasets_EveryCollectionAnswers(t *testing.T) {
 			t.Cleanup(func() { _ = db.Close() })
 			baseURL, logs := pgITServeLogged(t, map[string]*core.Database{id: db})
 			report := servertest.RequireEveryCollection(t, t.Context(), baseURL, id, servertest.Options{})
+			if dataset == "chinook" {
+				// The demo's catalogue keys: Track has three, and Album's page lists Track.
+				track, _ := db.ResolveNativePostgresCollection("chinook", "Track")
+				if keys, err := db.CollectionForeignKeys(t.Context(), track); err != nil || len(keys) != 3 {
+					t.Errorf("Track foreign keys = %d, %v; want 3", len(keys), err)
+				}
+				album, _ := db.ResolveNativePostgresCollection("chinook", "Album")
+				page := relHTTPDo(t, baseURL, http.MethodGet, "/ovdb/dbs/"+id+"/collections/"+url.PathEscape(album), "", "", nil)
+				if page.status != http.StatusOK || !strings.Contains(page.raw, ">chinook.Track</a>.<code>AlbumId</code>") {
+					t.Errorf("Album page does not list Track among the collections that reference it: %d", page.status)
+				}
+			}
 			if len(report.Failures()) > 0 {
 				t.Logf("server log:\n%s", logs)
 			}

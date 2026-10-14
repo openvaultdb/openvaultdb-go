@@ -253,7 +253,7 @@ func (g guardedQueryExecutor) JoinFields(ctx context.Context, source dal.Records
 	}
 	executor := g.executor
 	if native, ok := executor.(nativeReadTxDB); ok {
-		// The fields come from the driver's catalogue, not from a query.
+		// The fields come from the driver's catalogue, not from a query (see driver).
 		executor = native.DB
 	}
 	if provider, ok := executor.(dal.JoinFieldsProvider); ok {

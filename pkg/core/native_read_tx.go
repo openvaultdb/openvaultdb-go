@@ -129,3 +129,15 @@ func (r readTxRecordsetReader) Close() error {
 	}
 	return txErr
 }
+
+// driver is the driver the database was opened with, beneath the read-transaction
+// wrapper of a native PostgreSQL mount. Every lookup of an optional driver
+// interface (dal.As: schema reading, DDL, foreign keys) goes through it, because
+// the wrapper adds only the two query methods and hides everything else the
+// driver implements.
+func (d *Database) driver() dal.DB {
+	if wrapped, ok := d.db.(nativeReadTxDB); ok {
+		return wrapped.DB
+	}
+	return d.db
+}
