@@ -94,7 +94,11 @@ jobs:
             OrderOverAColumnWithAnUnvalidatedNotNullConstraint \
             NamesOver63BytesAreA400AndNoStatementIsSent \
             ManifestNamesAreCheckedBeforeProvisioning \
-            NativeReadOnlyCatalogAndFilteredRows; do
+            NativeReadOnlyCatalogAndFilteredRows \
+            NativeRelationExclusionHidesDescriptorAndQueryLookup \
+            NativeLongNamesValuesAndReadOnlyTransactions \
+            NativeStatementTimeoutEndsASlowRead \
+            NativeRoleMustBeReadOnlyWhenRequired; do
             if ! grep -qE "^--- PASS: TestPostgresIntegration_${name} " /tmp/gotest.log; then
               echo "::error::TestPostgresIntegration_${name} did not report PASS"
               exit 1

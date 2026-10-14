@@ -262,6 +262,9 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 		setCache()
 	}
 	footer := map[string]any{"columns": result.Columns, "execution": result.Execution}
+	if nativePostgres && query.Offset() > 0 && len(query.OrderBy()) == 0 {
+		footer["warnings"] = []string{unorderedOffsetWarning}
+	}
 	if len(capture.rights) == 0 {
 		if err := stream.Finish(footer); err != nil {
 			if stream.started {
@@ -297,6 +300,12 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 		s.writeRelationalError(w, r, err)
 	}
 }
+
+// unorderedOffsetWarning is the warning of the footer of a native PostgreSQL answer
+// to a document with an offset and no orderBy. PostgreSQL returns the rows of such
+// a query in no defined order, so pages of a view or of a table without a key can
+// repeat or skip rows (docs/native-postgres-read.md).
+const unorderedOffsetWarning = "offset without orderBy: PostgreSQL returns rows in no defined order, so pages can repeat or skip rows; add an orderBy over columns that identify a row"
 
 // readableCollection reports whether a relational document may name collection of
 // db: one the database declares, under its canonical name. A collection a

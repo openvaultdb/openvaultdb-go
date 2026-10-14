@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/dalgo/dal"
@@ -46,6 +47,29 @@ type Options struct {
 	// collection ID. A non-empty list is rejected for non-PostgreSQL engines and
 	// non-native PostgreSQL mounts.
 	ExcludedNativePostgresRelations []schema.NativeCollectionSource
+
+	// AllowInsecureNativePostgresTransport lets a native read-only PostgreSQL
+	// mount connect without a verified TLS connection (see
+	// docs/native-postgres-read.md). By default such a mount requires
+	// sslmode=verify-full or sslmode=verify-ca, with no plaintext fallback.
+	AllowInsecureNativePostgresTransport bool
+
+	// NativePostgresStatementTimeout is the statement_timeout a native read-only
+	// PostgreSQL session starts with, so the server itself ends a statement that
+	// runs too long. Zero is DefaultNativePostgresStatementTimeout (15s).
+	NativePostgresStatementTimeout time.Duration
+
+	// NativePostgresDiscoveryTimeout bounds the catalogue read of a native
+	// read-only PostgreSQL mount. Zero is DefaultNativePostgresDiscoveryTimeout
+	// (30s).
+	NativePostgresDiscoveryTimeout time.Duration
+
+	// RequireReadOnlyNativePostgresRole refuses to mount a native read-only
+	// PostgreSQL database whose role is a superuser, or owns or may write
+	// (INSERT, UPDATE, DELETE or TRUNCATE, on a table or any of its columns) any
+	// relation the mount exposes. Off by default; a service that exposes a
+	// database to the public, such as the demo datasets, turns it on.
+	RequireReadOnlyNativePostgresRole bool
 }
 
 // File mounts one database from a manifest file. Relative storage paths are
@@ -144,7 +168,7 @@ func FileWithOptions(manifestPath string, opts Options) (*core.Database, error) 
 		// lives next to the manifest.
 		cataloguePath = filepath.Join(baseDir, m.Database.ID+".inferred.json")
 	case "postgres":
-		if db, modes, err = openPostgresWithExcludedRelations(m, opts.ExcludedNativePostgresRelations); err != nil {
+		if db, modes, err = openPostgresWithOptions(m, opts); err != nil {
 			return nil, fmt.Errorf("%s: %w", manifestPath, err)
 		}
 		cataloguePath = filepath.Join(baseDir, m.Database.ID+".inferred.json")

@@ -434,19 +434,19 @@ func TestPostgresReadOnlyDSNEnforcesSettingForURLAndKeywordForms(t *testing.T) {
 		{"keyword", "host=db.example.test user=reader password='p ss' dbname=samples default_transaction_read_only=off"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := postgresReadOnlyDSN(tc.dsn)
+			got, err := postgresReadOnlyDSN(tc.dsn, insecureNativeSettings)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if strings.Contains(tc.name, "url") {
 				parsed, err := url.Parse(got)
-				if err != nil || parsed.Query().Get("default_transaction_read_only") != "on" {
+				if err != nil || parsed.Query().Get("default_transaction_read_only") != "on" || parsed.Query().Get("statement_timeout") != "15000" {
 					t.Fatalf("dsn = %q, parse error %v", got, err)
 				}
 				if parsed.User.Username() != "reader" || parsed.Query().Get("sslmode") != "require" {
 					t.Fatalf("other URL settings changed: %q", got)
 				}
-			} else if !strings.HasSuffix(got, "default_transaction_read_only='on'") || !strings.Contains(got, "password='p ss'") {
+			} else if !strings.HasSuffix(got, "default_transaction_read_only='on' statement_timeout='15000'") || !strings.Contains(got, "password='p ss'") {
 				t.Fatalf("keyword DSN = %q", got)
 			}
 		})
@@ -458,7 +458,7 @@ func TestPostgresReadOnlyDSNRejectsOptionsOverrides(t *testing.T) {
 		"postgres://reader@db.example.test/samples?options=-cdefault_transaction_read_only%3Doff",
 		"host=db.example.test user=reader dbname=samples options='-c default_transaction_read_only=off'",
 	} {
-		got, err := postgresReadOnlyDSN(dsn)
+		got, err := postgresReadOnlyDSN(dsn, insecureNativeSettings)
 		if err == nil || got != "" || strings.Contains(err.Error(), "reader") || strings.Contains(err.Error(), "db.example") {
 			t.Errorf("postgresReadOnlyDSN(%q) = %q, %v; want safe refusal", dsn, got, err)
 		}
@@ -475,3 +475,5 @@ func TestNativePostgresDiscoveryUsesStableLogicalID(t *testing.T) {
 		t.Fatalf("source = %+v", schemas.Collections[want].Source)
 	}
 }
+
+var insecureNativeSettings = nativeSettingsOf(Options{AllowInsecureNativePostgresTransport: true})

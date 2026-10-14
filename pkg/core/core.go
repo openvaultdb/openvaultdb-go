@@ -179,6 +179,7 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 		if err != nil {
 			return nil, err
 		}
+		d.db = nativeReadTxDB{DB: db}
 	}
 	if err = d.snapshotLicenses(); err != nil {
 		return nil, err

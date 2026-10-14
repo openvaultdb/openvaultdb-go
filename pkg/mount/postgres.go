@@ -2,12 +2,16 @@ package mount
 
 import (
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,12 +33,50 @@ import (
 // test can make the open fail the way a driver does.
 type postgresOpener func(dsn string, schema dal.Schema, opts dalgo2sql.DbOptions, options ...dalgo2postgres.Option) (*dalgo2postgres.Database, error)
 
-// openPostgresWithExcludedRelations opens a PostgreSQL mount while omitting
-// exact schema/relation pairs from native read-only discovery. Exclusions are
-// deliberately supplied by the mounting consumer, not stored in a manifest,
-// so the generic mount keeps its existing expose-all default.
-func openPostgresWithExcludedRelations(m *manifest.Manifest, excluded []schema.NativeCollectionSource) (dal.DB, []schema.Mode, error) {
-	return openPostgresWithExclusions(m, dalgo2postgres.NewDatabaseWithOptions, excluded)
+// nativePostgresSettings are the mount Options that apply to a native read-only
+// PostgreSQL mount.
+type nativePostgresSettings struct {
+	excluded            []schema.NativeCollectionSource
+	statementTimeout    time.Duration
+	discoveryTimeout    time.Duration
+	requireReadOnlyRole bool
+	allowInsecure       bool
+}
+
+// Defaults of the native read-only PostgreSQL mount Options.
+const (
+	// DefaultNativePostgresStatementTimeout is the statement_timeout a native
+	// read-only PostgreSQL session starts with when Options sets none.
+	DefaultNativePostgresStatementTimeout = 15 * time.Second
+	// DefaultNativePostgresDiscoveryTimeout bounds the catalogue read of a native
+	// read-only PostgreSQL mount when Options sets none.
+	DefaultNativePostgresDiscoveryTimeout = 30 * time.Second
+)
+
+func nativeSettingsOf(opts Options) nativePostgresSettings {
+	settings := nativePostgresSettings{
+		excluded:            opts.ExcludedNativePostgresRelations,
+		statementTimeout:    opts.NativePostgresStatementTimeout,
+		discoveryTimeout:    opts.NativePostgresDiscoveryTimeout,
+		requireReadOnlyRole: opts.RequireReadOnlyNativePostgresRole,
+		allowInsecure:       opts.AllowInsecureNativePostgresTransport,
+	}
+	if settings.statementTimeout <= 0 {
+		settings.statementTimeout = DefaultNativePostgresStatementTimeout
+	}
+	if settings.discoveryTimeout <= 0 {
+		settings.discoveryTimeout = DefaultNativePostgresDiscoveryTimeout
+	}
+	return settings
+}
+
+// openPostgresWithOptions opens a PostgreSQL mount with the native read-only
+// settings of opts. Exclusions omit exact schema/relation pairs from native
+// read-only discovery. They are deliberately supplied by the mounting consumer,
+// not stored in a manifest, so the generic mount keeps its existing expose-all
+// default.
+func openPostgresWithOptions(m *manifest.Manifest, opts Options) (dal.DB, []schema.Mode, error) {
+	return openPostgresNative(m, dalgo2postgres.NewDatabaseWithOptions, nativeSettingsOf(opts), sqlOpenPostgresAccess)
 }
 
 // openPostgresWith is openPostgresWithExclusions with no excluded relations.
@@ -43,7 +85,29 @@ func openPostgresWith(m *manifest.Manifest, open postgresOpener) (dal.DB, []sche
 	return openPostgresWithExclusions(m, open, nil)
 }
 
+// openPostgresWithExclusions opens with the default native settings and the
+// given exclusions. It does not require a verified TLS connection, so that a test
+// can hand it any connection string; the mount entry point requires one unless
+// Options allow otherwise.
 func openPostgresWithExclusions(m *manifest.Manifest, open postgresOpener, excluded []schema.NativeCollectionSource) (dal.DB, []schema.Mode, error) {
+	settings := nativeSettingsOf(Options{ExcludedNativePostgresRelations: excluded, AllowInsecureNativePostgresTransport: true})
+	return openPostgresNative(m, open, settings, sqlOpenPostgresAccess)
+}
+
+// postgresAccessOpener opens the second connection a native mount checks the
+// role's privileges with.
+type postgresAccessOpener func(dsn string) (nativePostgresAccess, error)
+
+func sqlOpenPostgresAccess(dsn string) (nativePostgresAccess, error) {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, err
+	}
+	return postgresSelectVisibility{db: db}, nil
+}
+
+func openPostgresNative(m *manifest.Manifest, open postgresOpener, settings nativePostgresSettings, openAccess postgresAccessOpener) (dal.DB, []schema.Mode, error) {
+	excluded := settings.excluded
 	// A name the database cannot keep whole is refused before the environment is read
 	// and before any connection is made, so that nothing is created for the entries
 	// before it (the collections are provisioned one by one when the database opens).
@@ -79,7 +143,7 @@ func openPostgresWithExclusions(m *manifest.Manifest, open postgresOpener, exclu
 	}
 	if nativeReadOnly {
 		var err error
-		dsn, err = postgresReadOnlyDSN(dsn)
+		dsn, err = postgresReadOnlyDSN(dsn, settings)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -127,19 +191,24 @@ func openPostgresWithExclusions(m *manifest.Manifest, open postgresOpener, exclu
 			_ = db.Close()
 			return nil, nil, errors.New("PostgreSQL driver does not provide native schema discovery")
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		visibilityDB, openErr := sql.Open("pgx", dsn)
+		ctx, cancel := context.WithTimeout(context.Background(), settings.discoveryTimeout)
+		access, openErr := openAccess(dsn)
 		if openErr != nil {
 			cancel()
 			_ = db.Close()
 			return nil, nil, errors.New("could not check PostgreSQL read privileges")
 		}
-		nativeSchemas, err := discoverNativePostgresSchemasExcluding(ctx, catalog, postgresSelectVisibility{db: visibilityDB}, excludedRelations)
-		closeErr := visibilityDB.Close()
+		nativeSchemas, err := discoverNativePostgresSchemasExcluding(ctx, catalog, access, excludedRelations)
+		if err != nil {
+			err = fmt.Errorf("failed to discover native PostgreSQL schema: %w", err)
+		} else if settings.requireReadOnlyRole {
+			err = refuseWritableRole(ctx, access, nativeSchemas)
+		}
+		closeErr := access.Close()
 		cancel()
 		if err != nil {
 			_ = db.Close()
-			return nil, nil, fmt.Errorf("failed to discover native PostgreSQL schema: %w", err)
+			return nil, nil, err
 		}
 		if closeErr != nil {
 			_ = db.Close()
@@ -150,12 +219,17 @@ func openPostgresWithExclusions(m *manifest.Manifest, open postgresOpener, exclu
 	return db, []schema.Mode{schema.ModeStrict}, nil
 }
 
-// postgresReadOnlyDSN forces the PostgreSQL session default to read-only for a
-// native read-only mount. This protects structured SELECTs that invoke volatile
-// functions or read views, even when the configured role has broader grants.
-// The caller's other connection settings remain intact. PostgreSQL's `options`
-// parameter can override startup settings, so it is refused for this profile.
-func postgresReadOnlyDSN(dsn string) (string, error) {
+// postgresReadOnlyDSN forces the PostgreSQL session defaults of a native
+// read-only mount: default_transaction_read_only=on, which protects structured
+// SELECTs that invoke volatile functions or read views even when the configured
+// role has broader grants, and a statement_timeout, so that the server ends a
+// statement the mount no longer waits for. The caller's other connection settings
+// remain intact. PostgreSQL's `options` parameter can override startup settings,
+// so it is refused for this profile. Unless settings allow an insecure transport,
+// the connection must be TLS with a verified server certificate (sslmode
+// verify-full or verify-ca, or require with a root certificate) and no plaintext
+// fallback.
+func postgresReadOnlyDSN(dsn string, settings nativePostgresSettings) (string, error) {
 	config, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		// The adapter below reports connection-string errors without exposing the
@@ -165,6 +239,20 @@ func postgresReadOnlyDSN(dsn string) (string, error) {
 	if strings.TrimSpace(config.RuntimeParams["options"]) != "" {
 		return "", errors.New("native read-only PostgreSQL mounts do not support the PostgreSQL options connection parameter")
 	}
+	if !settings.allowInsecure {
+		// Every way pgx may connect must verify: the first attempt and each fallback
+		// (sslmode=prefer and allow fall back to a plaintext connection).
+		attempts := []*tls.Config{config.TLSConfig}
+		for _, fallback := range config.Fallbacks {
+			attempts = append(attempts, fallback.TLSConfig)
+		}
+		for _, attempt := range attempts {
+			if !verifiedTLS(attempt) {
+				return "", errors.New("native read-only PostgreSQL mounts require sslmode=verify-full or sslmode=verify-ca (mount.Options.AllowInsecureNativePostgresTransport allows a connection without a verified TLS server certificate)")
+			}
+		}
+	}
+	timeout := strconv.FormatInt(settings.statementTimeout.Milliseconds(), 10)
 	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
 		parsed, err := url.Parse(dsn)
 		if err != nil {
@@ -172,13 +260,21 @@ func postgresReadOnlyDSN(dsn string) (string, error) {
 		}
 		query := parsed.Query()
 		query.Set("default_transaction_read_only", "on")
+		query.Set("statement_timeout", timeout)
 		parsed.RawQuery = query.Encode()
 		return parsed.String(), nil
 	}
 	// pgx's keyword/value parser keeps the last occurrence of a setting. Appending
-	// the enforced value therefore overrides an earlier `off` without rewriting
-	// or re-encoding credentials and connection settings.
-	return dsn + " default_transaction_read_only='on'", nil
+	// the enforced values therefore overrides an earlier one without rewriting or
+	// re-encoding credentials and connection settings.
+	return dsn + " default_transaction_read_only='on' statement_timeout='" + timeout + "'", nil
+}
+
+// verifiedTLS reports whether a connection made with config verifies the
+// server's certificate: TLS with the standard verification (verify-full), or with
+// pgx's own chain check (verify-ca, and require with a root certificate).
+func verifiedTLS(config *tls.Config) bool {
+	return config != nil && (!config.InsecureSkipVerify || config.VerifyPeerCertificate != nil)
 }
 
 type nativePostgresCatalog interface {
@@ -189,6 +285,19 @@ type nativePostgresCatalog interface {
 
 type nativePostgresSelectVisibility interface {
 	SelectableRelations(context.Context, string) (map[string]bool, error)
+}
+
+// nativePostgresAccess is the privilege view of the role a native mount connects
+// as: what it may read, and what it could change.
+type nativePostgresAccess interface {
+	nativePostgresSelectVisibility
+	// Superuser reports whether the role is a superuser.
+	Superuser(context.Context) (bool, error)
+	// ChangeableRelations lists the relations of a schema that the role owns (or is
+	// a member of the owner of), or on which it holds INSERT, UPDATE, DELETE or
+	// TRUNCATE, on the table or on any of its columns.
+	ChangeableRelations(context.Context, string) (map[string]bool, error)
+	Close() error
 }
 
 // Native catalog descriptions run concurrently because each relation requires
@@ -222,6 +331,80 @@ func (e *nativePostgresDescribeError) Error() string {
 func (e *nativePostgresDescribeError) Unwrap() error { return e.cause }
 
 type postgresSelectVisibility struct{ db *sql.DB }
+
+func (v postgresSelectVisibility) Close() error { return v.db.Close() }
+
+func (v postgresSelectVisibility) Superuser(ctx context.Context) (bool, error) {
+	var superuser bool
+	if err := v.db.QueryRowContext(ctx, `SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = current_user`).Scan(&superuser); err != nil {
+		return false, errors.New("could not check whether the PostgreSQL role is a superuser")
+	}
+	return superuser, nil
+}
+
+func (v postgresSelectVisibility) ChangeableRelations(ctx context.Context, schemaName string) (map[string]bool, error) {
+	rows, err := v.db.QueryContext(ctx, `
+		SELECT c.relname
+		FROM pg_catalog.pg_class AS c
+		JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+		WHERE n.nspname = $1 AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+		AND (pg_has_role(current_user, c.relowner, 'USAGE')
+			OR has_table_privilege(current_user, c.oid, 'INSERT, UPDATE, DELETE, TRUNCATE')
+			OR has_any_column_privilege(current_user, c.oid, 'INSERT, UPDATE'))`, schemaName)
+	if err != nil {
+		return nil, errors.New("could not check PostgreSQL relation write privileges")
+	}
+	defer func() { _ = rows.Close() }()
+	changeable := make(map[string]bool)
+	for rows.Next() {
+		var relation string
+		if err := rows.Scan(&relation); err != nil {
+			return nil, errors.New("could not read PostgreSQL relation write privileges")
+		}
+		changeable[relation] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errors.New("could not read PostgreSQL relation write privileges")
+	}
+	return changeable, nil
+}
+
+// refuseWritableRole refuses a native read-only mount whose role could change
+// what it exposes: a superuser, or a role that owns or may write any exposed
+// relation (Options.RequireReadOnlyNativePostgresRole). The session is read-only
+// either way; this check makes a misconfigured role a mount failure instead of a
+// latent risk.
+func refuseWritableRole(ctx context.Context, access nativePostgresAccess, schemas *schema.Schemas) error {
+	superuser, err := access.Superuser(ctx)
+	if err != nil {
+		return err
+	}
+	if superuser {
+		return errors.New("native read-only PostgreSQL mount refused: the role is a superuser; connect as a role with only SELECT on the exposed relations")
+	}
+	exposed := map[string][]string{}
+	for _, collection := range schemas.Collections {
+		exposed[collection.Source.Schema] = append(exposed[collection.Source.Schema], collection.Source.Name)
+	}
+	var changeable []string
+	for _, schemaName := range slices.Sorted(maps.Keys(exposed)) {
+		owned, err := access.ChangeableRelations(ctx, schemaName)
+		if err != nil {
+			return err
+		}
+		for _, relation := range exposed[schemaName] {
+			if owned[relation] {
+				changeable = append(changeable, fmt.Sprintf("%q.%q", schemaName, relation))
+			}
+		}
+	}
+	if len(changeable) == 0 {
+		return nil
+	}
+	sort.Strings(changeable)
+	example := changeable[0]
+	return fmt.Errorf("native read-only PostgreSQL mount refused: the role owns or may write %d exposed relation(s), for example %s; connect as a role with only SELECT on the exposed relations", len(changeable), example)
+}
 
 func (v postgresSelectVisibility) SelectableRelations(ctx context.Context, schemaName string) (map[string]bool, error) {
 	rows, err := v.db.QueryContext(ctx, `

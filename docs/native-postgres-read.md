@@ -20,10 +20,30 @@ part of the manifest or API. Use a database role that has only the catalog and
 `SELECT` privileges the mount needs. OVDB starts native read-only sessions with
 `default_transaction_read_only=on`, refuses the `options` connection parameter
 that could override it, and only advertises relations for which the role has
-`SELECT`. Keyed record reads and every write API are refused, and opening the
-mount does not create or alter tables. The session setting is defense in depth;
-least-privilege database grants remain necessary, especially for views or
-functions owned by another role.
+`SELECT`. Every read runs in an explicit `BEGIN READ ONLY` transaction of its
+own, so a view whose function changes the session default cannot make a later
+read writable. Keyed record reads and every write API are refused, and opening
+the mount does not create or alter tables. The session settings are defense in
+depth; least-privilege database grants remain necessary, especially for views
+or functions owned by another role.
+
+## Connection safety
+
+A native read-only mount is opened with `mount.FileWithOptions`; these
+`mount.Options` fields apply to it:
+
+| Option | Default | Effect |
+|---|---|---|
+| `AllowInsecureNativePostgresTransport` | `false` | By default the connection must be TLS with a verified server certificate: `sslmode=verify-full` (recommended; Neon and other managed services work with it and the system roots) or `sslmode=verify-ca`, or `sslmode=require` with an `sslrootcert`. `disable`, `allow`, `prefer` (pgx's default when no `sslmode` is given), plain `require` and a Unix-socket host are refused when the mount opens, before any connection is made. Set this option to connect without a verified certificate, for a local or test server. |
+| `NativePostgresStatementTimeout` | 15s | Sent as the `statement_timeout` startup parameter (it overrides one in the connection string), so the server ends a statement that runs too long even if the client has gone. |
+| `NativePostgresDiscoveryTimeout` | 30s | Bounds the catalogue read when the mount opens. |
+| `RequireReadOnlyNativePostgresRole` | `false` | Refuses to mount when the role is a superuser, or owns (or is a member of the owner of) any exposed relation, or holds `INSERT`, `UPDATE`, `DELETE` or `TRUNCATE` on one, on the table or on any of its columns. Relations the role cannot `SELECT` are not exposed and are not counted. A service that exposes a database publicly should turn it on. |
+
+`mount.All` mounts several manifests concurrently and returns a `mount.Health`
+for each (mounted or not, the error, the time it took). A `mount.Spec` marked
+`Optional` that fails, for example a PostgreSQL database whose catalogue read
+fails or times out, is reported in its health and does not stop the others; a
+required spec that fails fails the call and closes what was mounted.
 
 Database metadata advertises `capabilities.dtql: true` and
 `capabilities.query: false`. Native mounts support the catalog-backed DTQL
@@ -92,12 +112,21 @@ orderBy:
 limit: 50
 ```
 
+Native collection IDs are opaque route IDs and are not held to PostgreSQL's
+63-byte identifier limit: a schema and relation of up to 63 bytes each give an
+ID well over 63 bytes, and every route accepts it. The 63-byte limit applies to
+the schema, relation and column names the ID encodes, which discovery checks,
+and still applies to the collection names of writable PostgreSQL mounts.
+
 Queries use the server's configured relational row, byte, and execution bounds.
 Values are parameterized by the driver. Exact PostgreSQL `NUMERIC` values are
 returned as decimal strings; `NUMERIC` without a declared precision advertises
 unbounded decimal metadata rather than an invented precision. PostgreSQL
 `int64`/`uint64` values outside JavaScript's safe-integer range are returned as
 decimal strings; smaller integers keep their JSON number representation.
+`real` and `double precision` values that JSON has no number for are returned
+as the strings PostgreSQL spells them with: `"NaN"`, `"Infinity"` and
+`"-Infinity"`; a filter with the same string finds them.
 JSON/JSONB columns are emitted as JSON values with their numeric lexemes
 preserved. A browser's ordinary `JSON.parse` may still round a nested number
 above 2^53−1; clients that need exact nested JSON numbers must use a lossless
@@ -107,6 +136,47 @@ offset, and timestamp with time zone as a UTC RFC3339 value. Filters,
 projections, ordering, and other DTQL operations
 are limited to the structured forms supported by the installed DALgo PostgreSQL
 adapter; this mount does not expose arbitrary SQL.
+
+### Filter values
+
+- An integer literal outside JavaScript's safe range (above 2^53−1 or below
+  −(2^53−1)), inline as `value:`/`values:` or bound as a JSON parameter, is
+  compared exactly: OVDB passes its digits to PostgreSQL as text, which parses
+  them as the column's type. A large ID can therefore be sent as a JSON number or
+  as a string, with the same result.
+- On a `smallint`, `integer` or `bigint` column a value must be a whole number
+  the column can hold. A fraction (`1.5`), a number outside the column's range
+  (`2^70`, or `40000` on a smallint), and a boolean are refused with
+  `400 invalid_dtql`, as text that is not an integer (`'abc'`, `'1e3'`) already
+  is by PostgreSQL. PostgreSQL would otherwise compare such a value as a numeric
+  and silently return no rows.
+- A `bytea` column cannot be compared with a value: the column is returned as
+  base64 text, and comparing it with that text would compare the bytes with the
+  bytes of the text. Such a filter is refused with `400 invalid_dtql`. A bytea
+  column can still be projected and ordered by.
+
+### Paging
+
+PostgreSQL returns rows in no defined order unless the query has an `ORDER BY`.
+An `offset` without an `orderBy` is still answered, but pages of a view or of a
+table without a key can then repeat or skip rows, so the footer of such an
+answer carries `"warnings": ["offset without orderBy: ..."]`. Page with an
+`orderBy` over columns that identify a row, the primary key where there is one.
+OVDB does not add an order of its own: ordering by every column is not possible
+for every type, and `ctid` does not exist on views.
+
+### Proving every collection answers
+
+`pkg/server/servertest` drives a running server through the HTTP API.
+`servertest.EveryCollection` (or `RequireEveryCollection` in a test) reads a
+database's metadata and runs, on every collection it lists, a bounded read, an
+unbounded streamed read, an order by the primary key (else every field), an
+order by each field, an equality filter on each scalar field of a sampled row,
+an offset page, the refusal of values an integer column cannot hold, and the
+exact match of an integer above 2^53. It returns a report with a matrix of
+passes and failures. The repository runs it against the demo datasets when
+`OVDB_TEST_DEMODB_POSTGRES_DSN` points at a server that holds them
+(`TestNativePostgresDemoDatasets_EveryCollectionAnswers`).
 
 The current source contract is for bounded relational reads. Keyed record
 endpoints and mutation APIs are unsupported. A collection with no primary key
