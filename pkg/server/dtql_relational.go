@@ -73,6 +73,10 @@ func (s *Server) handleCrossDatabaseDTQL(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
+	if hasUnsafeIntegerValue(doc) {
+		writeError(w, http.StatusBadRequest, "invalid_dtql", errUnsafeIntegerValue)
+		return
+	}
 	query, profile, err := classifyDTQLDocument(withoutContinuationFields(doc, false))
 	if err != nil {
 		s.writeMappedError(w, r, clippedError{err})

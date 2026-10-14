@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"strconv"
 
 	"gopkg.in/yaml.v3"
@@ -29,6 +30,17 @@ func exactIntegerValues(doc []byte) []byte {
 		return doc
 	}
 	return rewritten
+}
+
+// errUnsafeIntegerValue is the refusal, on an engine that compares values as
+// JSON numbers, of an integer value outside JavaScript's exact range.
+const errUnsafeIntegerValue = "invalid or unsupported DTQL query: an integer value exceeds the exact range (2^53-1) of this engine; send it as a string"
+
+// hasUnsafeIntegerValue reports whether the document has an integer value that
+// exactIntegerValues would rewrite. Every engine but native PostgreSQL refuses
+// one, with errUnsafeIntegerValue.
+func hasUnsafeIntegerValue(doc []byte) bool {
+	return !bytes.Equal(exactIntegerValues(doc), doc)
 }
 
 func rewriteExactIntegers(node *yaml.Node) bool {

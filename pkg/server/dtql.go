@@ -53,6 +53,9 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 	doc = withoutOwnDatabase(withoutDefaultSchema(doc, db.Engine()), db.ID())
 	if db.NativePostgresReadOnly() {
 		doc = exactIntegerValues(doc)
+	} else if hasUnsafeIntegerValue(doc) {
+		writeError(w, http.StatusBadRequest, "invalid_dtql", errUnsafeIntegerValue)
+		return
 	}
 	if s.boundedImmutable(db) {
 		doc = withoutOwnDatabase(doc, r.PathValue("db"))
