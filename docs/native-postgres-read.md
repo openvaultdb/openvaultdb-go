@@ -45,11 +45,14 @@ are sent as startup parameters, which PgBouncer refuses by default
 (`ignore_startup_parameters`); connect a native mount to the server's direct
 endpoint (on Neon, the host without `-pooler`) rather than through a pooler.
 
-`mount.All` mounts several manifests concurrently and returns a `mount.Health`
-for each (mounted or not, the error, the time it took). A `mount.Spec` marked
-`Optional` that fails, for example a PostgreSQL database whose catalogue read
-fails or times out, is reported in its health and does not stop the others; a
-required spec that fails fails the call and closes what was mounted.
+`mount.All` mounts several manifests concurrently (four at a time;
+`mount.AllWithOptions` sets the number) and returns a `mount.Health` for each
+(mounted or not, the error, the time it took). A `mount.Spec` marked `Optional`
+that fails, for example a PostgreSQL database whose catalogue read fails or
+times out, is reported in its health and does not stop the others. A mount that
+panics is reported as failed. A required spec that fails fails the call: the
+specs not yet started are skipped (`mount.ErrMountSkipped`) and what was mounted
+is closed.
 
 Database metadata advertises `capabilities.dtql: true` and
 `capabilities.query: false`. Native mounts support the catalog-backed DTQL

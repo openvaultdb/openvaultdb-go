@@ -58,7 +58,7 @@ func TestAllFailsOnARequiredMountAndClosesTheOthers(t *testing.T) {
 		opened = append(opened, db)
 		return db, err
 	}
-	dbs, health, err := all([]Spec{{Path: first}, {Path: "broken"}}, mountFile)
+	dbs, health, err := all([]Spec{{Path: first}, {Path: "broken"}}, AllOptions{}, mountFile)
 	if err == nil || !strings.Contains(err.Error(), "catalogue read failed") || dbs != nil {
 		t.Fatalf("All = %v, %v; want the required failure", dbs, err)
 	}
@@ -67,5 +67,34 @@ func TestAllFailsOnARequiredMountAndClosesTheOthers(t *testing.T) {
 	}
 	if len(opened) != 1 {
 		t.Fatalf("opened %d databases, want the one that mounted", len(opened))
+	}
+}
+
+func TestAllSkipsTheRestAfterARequiredFailureAndRecoversPanics(t *testing.T) {
+	var started []string
+	mountFile := func(path string, _ Options) (*core.Database, error) {
+		started = append(started, path)
+		switch path {
+		case "panics":
+			panic("driver bug")
+		case "required fails":
+			return nil, errors.New("down")
+		}
+		return nil, errors.New("unexpected " + path)
+	}
+	// One at a time, so the order is fixed: the optional panic is reported, the
+	// required failure stops the specs after it.
+	_, health, err := all([]Spec{{Path: "panics", Optional: true}, {Path: "required fails"}, {Path: "never"}}, AllOptions{Concurrency: 1}, mountFile)
+	if err == nil || !strings.Contains(err.Error(), "down") {
+		t.Fatalf("error = %v", err)
+	}
+	if health[0].Err == nil || !strings.Contains(health[0].Err.Error(), "mounting panicked: driver bug") {
+		t.Errorf("panic health: %+v", health[0])
+	}
+	if !errors.Is(health[2].Err, ErrMountSkipped) || len(started) != 2 {
+		t.Errorf("skipped health: %+v, started %v", health[2], started)
+	}
+	if _, _, err := AllWithOptions(nil, AllOptions{}); err != nil {
+		t.Fatal(err)
 	}
 }
