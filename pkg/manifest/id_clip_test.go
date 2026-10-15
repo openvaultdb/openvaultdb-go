@@ -11,6 +11,13 @@ import (
 // TestDatabaseIDMessagesClipTheID: a database id longer than the bound is cut
 // where an error message repeats it; a short one is shown whole.
 func TestDatabaseIDMessagesClipTheID(t *testing.T) {
+	t.Parallel()
+	if err := ValidateID(""); err == nil {
+		t.Fatal("expected error for empty id")
+	}
+	if err := ValidateID("ok"); err != nil {
+		t.Fatalf("unexpected error for valid id: %v", err)
+	}
 	long := strings.Repeat("a", 1<<16) + "/"
 	err := ValidateID(long)
 	if err == nil || len(err.Error()) > 1024 || strings.Contains(err.Error(), strings.Repeat("a", 1000)) {

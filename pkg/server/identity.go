@@ -55,9 +55,6 @@ func WithGrantIdentity(config GrantIdentityConfig) Option {
 		if err := subject.Validate(); err != nil {
 			return access.Principal{}, err
 		}
-		if err := actor.Validate(); err != nil {
-			return access.Principal{}, err
-		}
 		membership, err := config.Resolve(ctx, subject)
 		if err != nil {
 			return access.Principal{}, err

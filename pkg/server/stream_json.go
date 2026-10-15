@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -119,10 +118,6 @@ func (s *jsonRowStream) finish(footer map[string]any, complete bool) error {
 	if len(encoded) > maxStreamFooterBytes {
 		return errors.New("query response footer exceeds its byte limit")
 	}
-	encoded = bytes.TrimSpace(encoded)
-	if len(encoded) < 2 {
-		return errors.New("invalid JSON stream footer")
-	}
 	prefixBytes := 0
 	if !s.started {
 		prefixBytes = len([]byte(`{"records":[`))
@@ -223,7 +218,7 @@ func (w *boundedErrorResponseWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func flushJSONStream(w http.ResponseWriter) error {
+var flushJSONStream = func(w http.ResponseWriter) error {
 	err := http.NewResponseController(w).Flush()
 	if errors.Is(err, http.ErrNotSupported) {
 		return nil

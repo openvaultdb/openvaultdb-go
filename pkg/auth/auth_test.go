@@ -1,8 +1,12 @@
 package auth
 
 import (
+	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,6 +14,7 @@ import (
 )
 
 func TestParseCapability(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		in         string
 		wantErr    bool
@@ -47,7 +52,22 @@ func TestParseCapability(t *testing.T) {
 	}
 }
 
+func TestParseCapabilities(t *testing.T) {
+	t.Parallel()
+	caps, err := ParseCapabilities(" records:read , , records:write:contacts ")
+	if err != nil || len(caps) != 2 {
+		t.Fatalf("ParseCapabilities: %v, %+v", err, caps)
+	}
+	if _, err := ParseCapabilities(" ,  "); err == nil {
+		t.Fatal("expected error for empty capability list")
+	}
+	if _, err := ParseCapabilities("records:read,invalid"); err == nil {
+		t.Fatal("expected error for invalid capability in list")
+	}
+}
+
 func TestPrincipalAllows(t *testing.T) {
+	t.Parallel()
 	grant := &Grant{
 		DatabaseID: "db1",
 		Capabilities: []Capability{
@@ -84,6 +104,7 @@ func TestPrincipalAllows(t *testing.T) {
 // (server-level, e.g. databases:create) and the interaction between
 // db-scoped grants and server-level checks.
 func TestPrincipalAllows_ServerLevel(t *testing.T) {
+	t.Parallel()
 	createOnly := &Principal{Grant: &Grant{
 		DatabaseID:   "", // server-level
 		Capabilities: []Capability{{Action: CapDatabasesCreate}},
@@ -120,6 +141,7 @@ func TestPrincipalAllows_ServerLevel(t *testing.T) {
 }
 
 func TestParseCapability_DatabasesCreate(t *testing.T) {
+	t.Parallel()
 	c, err := ParseCapability("databases:create")
 	if err != nil {
 		t.Fatalf("ParseCapability(databases:create): %v", err)
@@ -130,6 +152,7 @@ func TestParseCapability_DatabasesCreate(t *testing.T) {
 }
 
 func TestStore_CodeExchangeAndPersistence(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "auth.json")
 	s, err := OpenStore(path)
 	if err != nil {
@@ -192,6 +215,7 @@ func TestStore_CodeExchangeAndPersistence(t *testing.T) {
 // TestStore_BackwardCompatLoad ensures grants persisted without the ID field
 // (old format) load correctly: a stable synthetic ID is derived from the hash.
 func TestStore_BackwardCompatLoad(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "auth.json")
 	// Write legacy grant JSON without id/label/revokedAt fields.
 	legacy := `[{
@@ -235,6 +259,7 @@ func writeFileAtomic(path string, data []byte) error {
 // TestStore_ZeroExpiryNeverExpires checks that a grant with zero ExpiresAt
 // never expires and is correctly loaded from disk.
 func TestStore_ZeroExpiryNeverExpires(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "auth.json")
 	s, err := OpenStore(path)
 	if err != nil {
@@ -276,6 +301,7 @@ func TestStore_ZeroExpiryNeverExpires(t *testing.T) {
 
 // TestStore_RevokedLookupRejected checks that a revoked token cannot be used.
 func TestStore_RevokedLookupRejected(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "auth.json")
 	s, err := OpenStore(path)
 	if err != nil {
@@ -316,6 +342,7 @@ func TestStore_RevokedLookupRejected(t *testing.T) {
 
 // TestStore_CreateListRevokePersistence is an end-to-end round-trip.
 func TestStore_CreateListRevokePersistence(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "auth.json")
 	s, err := OpenStore(path)
 	if err != nil {
@@ -381,6 +408,7 @@ func writeFile(path string, data []byte) error {
 func rename(old, new string) error { return os.Rename(old, new) }
 
 func TestGrantExpiredAtExactDeadline(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, time.September, 2, 12, 0, 0, 0, time.UTC)
 	grant := &Grant{ExpiresAt: now}
 	if !grant.Expired(now) {
@@ -391,8 +419,252 @@ func TestGrantExpiredAtExactDeadline(t *testing.T) {
 	}
 }
 
+func TestMiddleware(t *testing.T) {
+	t.Parallel()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "auth.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	appGrant := &Grant{
+		DatabaseID:   "db1",
+		Capabilities: []Capability{{Action: CapRecordsRead}},
+	}
+	if err := store.CreateGrant(appGrant, "app-token"); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &Config{
+		OwnerToken: "owner-secret",
+		Store:      store,
+	}
+
+	var seenPrincipal *Principal
+	handler := cfg.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPrincipal = FromRequest(r)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Public paths bypass auth.
+	for _, pub := range []string{"/ovdb", "/ovdb/anything", "/.well-known/openvaultdb", "/authorize", "/token"} {
+		seenPrincipal = nil
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, pub, nil)
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || seenPrincipal != nil {
+			t.Fatalf("public path %s: status=%d, principal=%+v", pub, rec.Code, seenPrincipal)
+		}
+	}
+
+	// Missing token -> 401.
+	for _, hdr := range []string{"", "Basic abc", "Bearer "} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/v1/databases", nil)
+		if hdr != "" {
+			req.Header.Set("Authorization", hdr)
+		}
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("hdr %q: want 401, got %d", hdr, rec.Code)
+		}
+	}
+
+	// Owner token -> 200 with Owner=true.
+	{
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/v1/databases", nil)
+		req.Header.Set("Authorization", "Bearer owner-secret")
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || seenPrincipal == nil || !seenPrincipal.Owner {
+			t.Fatalf("owner token failed: code=%d principal=%+v", rec.Code, seenPrincipal)
+		}
+	}
+
+	// Valid app token -> 200 with Grant.
+	{
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/v1/databases", nil)
+		req.Header.Set("Authorization", "bearer   app-token  ")
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || seenPrincipal == nil || seenPrincipal.Grant == nil || seenPrincipal.Grant.ID != appGrant.ID {
+			t.Fatalf("app token failed: code=%d principal=%+v", rec.Code, seenPrincipal)
+		}
+	}
+
+	// Unknown token -> 401.
+	{
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/v1/databases", nil)
+		req.Header.Set("Authorization", "Bearer invalid-token")
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("invalid token: want 401, got %d", rec.Code)
+		}
+	}
+}
+
+func TestOpenStoreErrorAndExpiredPaths(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// Reading a directory as filePath fails with non-ErrNotExist.
+	if _, err := OpenStore(dir); err == nil {
+		t.Fatal("expected error when opening directory as auth store")
+	}
+
+	// Invalid JSON.
+	badJSON := filepath.Join(dir, "bad.json")
+	if err := os.WriteFile(badJSON, []byte("{not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenStore(badJSON); err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+
+	// Invalid stored grant identity.
+	badIdent := filepath.Join(dir, "bad-ident.json")
+	if err := os.WriteFile(badIdent, []byte(`[{"tokenHash":"abc","subject":{"realm":"local","kind":"user","id":"u1"}}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenStore(badIdent); err == nil {
+		t.Fatal("expected error for invalid stored grant identity")
+	}
+
+	// Expired grant on disk is dropped during OpenStore.
+	expiredPath := filepath.Join(dir, "expired.json")
+	expiredJSON := `[{
+		"id": "exp1",
+		"tokenHash": "abc123def456abc123def456abc123de",
+		"principalType": "application",
+		"principalId": "old-app",
+		"databaseId": "mydb",
+		"capabilities": [{"action": "records:read"}],
+		"issuedAt": "2020-01-01T00:00:00Z",
+		"expiresAt": "2020-01-02T00:00:00Z"
+	}]`
+	if err := os.WriteFile(expiredPath, []byte(expiredJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenStore(expiredPath)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	if len(s.ListGrants()) != 0 {
+		t.Fatalf("expected expired grant to be dropped on load, got %d", len(s.ListGrants()))
+	}
+}
+
+func TestStoreSaveFailures(t *testing.T) {
+	t.Parallel()
+	caps := []Capability{{Action: CapRecordsRead}}
+
+	// 1. MkdirAll failure: parent of filePath is a regular file.
+	{
+		dir := t.TempDir()
+		blocker := filepath.Join(dir, "blocker")
+		if err := os.WriteFile(blocker, []byte("file"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		s := &Store{
+			filePath:   filepath.Join(blocker, "auth.json"),
+			grants:     map[string]*Grant{},
+			grantsByID: map[string]*Grant{},
+			codes:      map[string]authCode{},
+		}
+		s.PutCode("c1", "app1", "http://localhost/cb", "db1", caps)
+		if _, _, err := s.ExchangeCode("c1", "app1"); err == nil {
+			t.Fatal("expected ExchangeCode error when MkdirAll fails")
+		}
+		if err := s.CreateGrant(&Grant{DatabaseID: "db1", Capabilities: caps}, "tok"); err == nil {
+			t.Fatal("expected CreateGrant error when MkdirAll fails")
+		}
+	}
+
+	// 2. WriteFile failure: filePath + ".tmp" is an existing directory.
+	{
+		dir := t.TempDir()
+		storePath := filepath.Join(dir, "auth.json")
+		if err := os.MkdirAll(storePath+".tmp", 0o755); err != nil {
+			t.Fatal(err)
+		}
+		s, err := OpenStore(storePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.CreateGrant(&Grant{DatabaseID: "db1", Capabilities: caps}, "tok"); err == nil {
+			t.Fatal("expected CreateGrant error when WriteFile fails")
+		}
+	}
+
+	// 3. Rename failure: filePath is an existing directory.
+	{
+		dir := t.TempDir()
+		storePath := filepath.Join(dir, "auth.json")
+		s, err := OpenStore(storePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(storePath, "sub"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.CreateGrant(&Grant{DatabaseID: "db1", Capabilities: caps}, "tok"); err == nil {
+			t.Fatal("expected CreateGrant error when Rename fails")
+		}
+	}
+}
+
+// Not parallel: mutates package-level seams randRead and marshalIndent.
+func TestRandAndMarshalSeams(t *testing.T) {
+	origRand := randRead
+	origMarshal := marshalIndent
+	t.Cleanup(func() {
+		randRead = origRand
+		marshalIndent = origMarshal
+	})
+
+	caps := []Capability{{Action: CapRecordsRead}}
+	s, err := OpenStore(filepath.Join(t.TempDir(), "auth.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// randRead failing immediately covers NewToken() and NewGrantID() errors.
+	randRead = func(b []byte) (int, error) {
+		return 0, errors.New("entropy exhausted")
+	}
+	s.PutCode("c1", "app1", "http://localhost/cb", "db1", caps)
+	if _, _, err := s.ExchangeCode("c1", "app1"); err == nil {
+		t.Fatal("expected error when NewToken fails in ExchangeCode")
+	}
+	if err := s.CreateGrant(&Grant{DatabaseID: "db1", Capabilities: caps}, "tok"); err == nil {
+		t.Fatal("expected error when NewGrantID fails in CreateGrant")
+	}
+
+	// randRead succeeding once (for NewToken) then failing on the 2nd call (for NewGrantID) in ExchangeCode.
+	calls := 0
+	randRead = func(b []byte) (int, error) {
+		calls++
+		if calls == 2 {
+			return 0, errors.New("entropy exhausted on second read")
+		}
+		return origRand(b)
+	}
+	s.PutCode("c2", "app1", "http://localhost/cb", "db1", caps)
+	if _, _, err := s.ExchangeCode("c2", "app1"); err == nil {
+		t.Fatal("expected error when NewGrantID fails in ExchangeCode")
+	}
+
+	// Restore randRead, fail marshalIndent.
+	randRead = origRand
+	marshalIndent = func(v any, prefix, indent string) ([]byte, error) {
+		return nil, errors.New("marshal failed")
+	}
+	if err := s.CreateGrant(&Grant{DatabaseID: "db1", Capabilities: caps}, "tok"); err == nil {
+		t.Fatal("expected error when marshalIndent fails")
+	}
+}
+
 // ensure imported packages are used
 var (
+	_ = rand.Read
 	_ = json.Marshal
 	_ = fmt.Sprintf
 )

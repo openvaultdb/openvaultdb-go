@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,6 +14,10 @@ import (
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 )
+
+var sampleWithinInspection = func(ctx context.Context, coordinator *access.EnforcementCoordinator, ops []access.ProtectedOperation, fn func(access.InspectionSession) error) error {
+	return coordinator.WithinInspection(ctx, ops, fn)
+}
 
 func (s *Server) sampleAccess(w http.ResponseWriter, r *http.Request, db *core.Database, request api.Request, owners []core.PolicyLayer, requester access.Principal) {
 	if db.Coordinator() == nil {
@@ -125,7 +130,7 @@ func (s *Server) sampleAccess(w http.ResponseWriter, r *http.Request, db *core.D
 		ops = append(ops, normalized)
 	}
 	var visible map[string]bool
-	err = db.Coordinator().WithinInspection(r.Context(), ops, func(session access.InspectionSession) error {
+	err = sampleWithinInspection(r.Context(), db.Coordinator(), ops, func(session access.InspectionSession) error {
 		assessment, admissionErr := session.Assess(r.Context())
 		if admissionErr != nil && assessment.Outcome == "" {
 			return admissionErr

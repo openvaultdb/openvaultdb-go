@@ -348,16 +348,18 @@ func (j journey) collection(id string, meta collectionMetadata) []Check {
 	return checks
 }
 
+var jsonMarshalJourney = json.Marshal
+
 // query posts a DTQL document, as the JSON body {"query": "<document>"}, to the
 // per-database endpoint. message is empty when the answer is a 200 without an
 // error; otherwise it says what came back.
 func (j journey) query(document map[string]any, stream bool) (int, answer, string) {
 	var decoded answer
-	text, err := json.Marshal(document)
+	text, err := jsonMarshalJourney(document)
 	if err != nil {
 		return 0, decoded, err.Error()
 	}
-	body, err := json.Marshal(map[string]string{"query": string(text)})
+	body, err := jsonMarshalJourney(map[string]string{"query": string(text)})
 	if err != nil {
 		return 0, decoded, err.Error()
 	}

@@ -13,6 +13,7 @@ import (
 // decoder are reported by line and kind, whatever text they quote, and a scanner or
 // parser error is wrapped as it is.
 func TestParseErrorDescribesEachMistakeByItsLineAndKind(t *testing.T) {
+	t.Parallel()
 	typed := func(texts ...string) error { return &yaml.TypeError{Errors: texts} }
 	long := make([]string, 0, maxParseProblems+3)
 	for i := 1; i <= maxParseProblems+3; i++ {
@@ -51,6 +52,7 @@ func TestParseErrorDescribesEachMistakeByItsLineAndKind(t *testing.T) {
 // is fixed and starts with the line) can hold the text of the document, so it is
 // replaced by one sentence that wraps nothing.
 func TestParseErrorOfAnyOtherDecoderErrorIsOneFixedSentence(t *testing.T) {
+	t.Parallel()
 	const want = "failed to parse manifest YAML: the document could not be decoded"
 	for _, c := range []struct{ name, text string }{
 		{"a value that cannot be decoded as its tag", "yaml: cannot decode !!str `secret` as a !!int"},
@@ -81,6 +83,7 @@ func TestParseErrorOfAnyOtherDecoderErrorIsOneFixedSentence(t *testing.T) {
 // TestDecodeYAMLTurnsAPanicIntoAnError: a decode that panics is an error, and a
 // decode that does not panic gives its own result.
 func TestDecodeYAMLTurnsAPanicIntoAnError(t *testing.T) {
+	t.Parallel()
 	if err := decodeYAML(func() error { panic("hash of unhashable type") }); !errors.Is(err, errDecoderPanic) {
 		t.Errorf("got %v", err)
 	}
@@ -97,6 +100,7 @@ func TestDecodeYAMLTurnsAPanicIntoAnError(t *testing.T) {
 // nodes, gives an error or a panic for no document today. When it does, Parse
 // reports one fixed sentence that wraps nothing.
 func TestParseReportsAFailureOfTheSecondDecode(t *testing.T) {
+	// Not parallel: mutates package-level unmarshalYAML seam.
 	const doc = "database: {id: sqlmount, schema_mode: strict}\nstorage:\n  engine: sqlite\n  path: x\n"
 	defer func(saved func([]byte, any) error) { unmarshalYAML = saved }(unmarshalYAML)
 	for _, c := range []struct {

@@ -26,6 +26,7 @@ func tokenEnvManifest(scalar string) string {
 // is refused when the manifest is validated, with a message that names the field
 // and does not repeat the value.
 func TestTokenEnvIsAcceptedOnlyAsAnEnvironmentVariableName(t *testing.T) {
+	t.Parallel()
 	const field = "storage.ingitdb.github.token_env"
 	for _, scalar := range []string{"MY_TOKEN", "_t", "OVDB_TOKEN_2", "a", "Mixed_Case_1"} {
 		t.Run("accepts "+scalar, func(t *testing.T) {
@@ -72,6 +73,7 @@ func TestTokenEnvIsAcceptedOnlyAsAnEnvironmentVariableName(t *testing.T) {
 // TestTokenEnvIsCheckedOnValidate: a manifest built in code is checked as one read
 // from a file is, and an empty token_env (the default variable) is accepted.
 func TestTokenEnvIsCheckedOnValidate(t *testing.T) {
+	t.Parallel()
 	m := &manifest.Manifest{
 		Database: manifest.Database{ID: "ghmount", SchemaMode: schema.ModeStrict},
 		Storage:  manifest.Storage{Engine: "ingitdb", InGitDB: &manifest.InGitDBOptions{GitHub: &manifest.InGitDBGitHubOptions{Owner: "me", Repo: "data"}}},

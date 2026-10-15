@@ -40,9 +40,6 @@ func WithSourceRights(serverID string, declaration *license.Declaration) Option 
 	}
 }
 func (s *Server) validateSourceRights() error {
-	if _, _, err := license.Inventory(s.serverRights()); err != nil {
-		return err
-	}
 	for _, db := range s.dbs {
 		if db != nil && db.HasLicenseDeclarations() && s.rightsServerID == "" {
 			return fmt.Errorf("database terms require WithSourceRights and a stable server identity")
@@ -60,6 +57,9 @@ func (s *Server) serverRights() []license.SourceRight {
 	}
 	return []license.SourceRight{*right}
 }
+
+var licenseInventory = license.Inventory
+
 func (s *Server) databaseRights(db *core.Database, collections ...string) ([]license.SourceRight, error) {
 	if s.rightsServerID == "" {
 		return nil, nil
@@ -81,7 +81,7 @@ func (s *Server) databaseRights(db *core.Database, collections ...string) ([]lic
 			out = append(out, *right)
 		}
 	}
-	inventory, _, err := license.Inventory(out)
+	inventory, _, err := licenseInventory(out)
 	return inventory, err
 }
 func attachRights(response map[string]any, rights []license.SourceRight, used []string) {
@@ -125,7 +125,7 @@ func (s *Server) captureRights(databases map[string]*core.Database, targets []re
 		all = append(all, rights...)
 	}
 	var err error
-	capture.rights, _, err = license.Inventory(all)
+	capture.rights, _, err = licenseInventory(all)
 	if err != nil {
 		return capture, err
 	}
@@ -138,10 +138,7 @@ func (s *Server) captureRights(databases map[string]*core.Database, targets []re
 		// Reserve keys, inventory and the worst-case complete used-source list.
 		metadata := map[string]any{}
 		attachRights(metadata, capture.rights, used)
-		encoded, err := json.Marshal(metadata)
-		if err != nil {
-			return capture, err
-		}
+		encoded, _ := json.Marshal(metadata)
 		capture.reservedBytes = len(encoded)
 		if capture.reservedBytes > license.MaxEvidenceBytes {
 			return capture, fmt.Errorf("source rights exceed 256 KiB evidence limit")
@@ -149,8 +146,17 @@ func (s *Server) captureRights(databases map[string]*core.Database, targets []re
 	}
 	return capture, nil
 }
+
+var serverCaptureRights = func(s *Server, databases map[string]*core.Database, targets []relationalTarget) (rightsCapture, error) {
+	return s.captureRights(databases, targets)
+}
+
+var singleRights = func(s *Server, db *core.Database, collection string) (rightsCapture, error) {
+	return serverCaptureRights(s, map[string]*core.Database{db.ID(): db}, []relationalTarget{{database: db.ID(), collection: collection}})
+}
+
 func (s *Server) singleRights(db *core.Database, collection string) (rightsCapture, error) {
-	return s.captureRights(map[string]*core.Database{db.ID(): db}, []relationalTarget{{database: db.ID(), collection: collection}})
+	return singleRights(s, db, collection)
 }
 func (c rightsCapture) used(ids []string) ([]string, error) {
 	if len(c.rights) == 0 {
@@ -170,6 +176,11 @@ func (c rightsCapture) used(ids []string) ([]string, error) {
 	sort.Strings(used)
 	return used, nil
 }
+
+var captureUsed = func(c rightsCapture, ids []string) ([]string, error) {
+	return c.used(ids)
+}
+
 func (c rightsCapture) allUsed() []string {
 	if len(c.rights) == 0 {
 		return nil

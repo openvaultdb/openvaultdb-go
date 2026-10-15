@@ -3,6 +3,7 @@ package manifest_test
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 )
 
 func TestDatabaseTagsRoundTripAndLegacyManifest(t *testing.T) {
+	t.Parallel()
 	base := "database: {id: chinook, schema_mode: schemaless%s}\nstorage: {engine: ingitdb, path: ./data}\n"
 	for _, tc := range []struct {
 		name, field string
@@ -57,6 +59,7 @@ func TestDatabaseTagsRoundTripAndLegacyManifest(t *testing.T) {
 }
 
 func TestDatabaseTagsValidation(t *testing.T) {
+	t.Parallel()
 	base := "database: {id: chinook, schema_mode: schemaless, tags: %s}\nstorage: {engine: ingitdb, path: ./data}\n"
 	for _, tc := range []struct{ name, value, want string }{
 		{"uppercase", "[SQLite]", "database.tags[0]"},
@@ -83,6 +86,7 @@ func TestDatabaseTagsValidation(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDatabaseCacheTTL(t *testing.T) {
+	t.Parallel()
 	const base = "database: {id: testdb, schema_mode: schemaless, cache_ttl: %s}\nstorage: {engine: ingitdb, path: ./data}\n"
 	for _, tc := range []struct {
 		value string
@@ -98,6 +102,7 @@ func TestDatabaseCacheTTL(t *testing.T) {
 }
 
 func TestParse_ValidSQLiteStrict(t *testing.T) {
+	t.Parallel()
 	yaml := []byte(`
 database:
   id: my-db_1
@@ -137,6 +142,7 @@ schemas:
 }
 
 func TestParse_ValidInGitDBSchemaless(t *testing.T) {
+	t.Parallel()
 	yaml := []byte(`
 database:
   id: events
@@ -161,6 +167,7 @@ storage:
 }
 
 func TestParse_StrictWithoutSchemas_Error(t *testing.T) {
+	t.Parallel()
 	yaml := []byte(`
 database:
   id: mydb
@@ -180,6 +187,7 @@ storage:
 }
 
 func TestParse_NativePostgresReadOnlyStrictWithoutDeclaredSchemas(t *testing.T) {
+	t.Parallel()
 	yaml := []byte(`
 database: {id: samples, schema_mode: strict}
 storage:
@@ -196,6 +204,7 @@ storage:
 }
 
 func TestParse_UnknownSchemaMode_Error(t *testing.T) {
+	t.Parallel()
 	yaml := []byte(`
 database:
   id: mydb
@@ -211,6 +220,7 @@ storage:
 }
 
 func TestParse_MissingID_Error(t *testing.T) {
+	t.Parallel()
 	yaml := []byte(`
 database:
   schema_mode: schemaless
@@ -228,6 +238,7 @@ storage:
 }
 
 func TestParse_MissingEngine_Error(t *testing.T) {
+	t.Parallel()
 	yaml := []byte(`
 database:
   id: mydb
@@ -245,6 +256,7 @@ storage:
 }
 
 func TestParse_MissingPath_Error(t *testing.T) {
+	t.Parallel()
 	yaml := []byte(`
 database:
   id: mydb
@@ -262,6 +274,7 @@ storage:
 }
 
 func TestParse_InvalidID_PathTraversal(t *testing.T) {
+	t.Parallel()
 	yaml := []byte(`
 database:
   id: ".."
@@ -277,6 +290,7 @@ storage:
 }
 
 func TestParse_InvalidID_Slashes(t *testing.T) {
+	t.Parallel()
 	yaml := []byte(`
 database:
   id: foo/bar
@@ -292,6 +306,7 @@ storage:
 }
 
 func TestParse_UnknownYAMLKey_Rejected(t *testing.T) {
+	t.Parallel()
 	yaml := []byte(`
 database:
   id: mydb
@@ -323,6 +338,7 @@ storage:
 `
 
 func TestParse_InGitDB_PushNone(t *testing.T) {
+	t.Parallel()
 	yaml := []byte(`
 database:
   id: events
@@ -340,6 +356,7 @@ storage:
 }
 
 func TestParse_InGitDB_PushSync(t *testing.T) {
+	t.Parallel()
 	yaml := []byte(`
 database:
   id: events
@@ -357,6 +374,7 @@ storage:
 }
 
 func TestParse_InGitDB_PushAsync(t *testing.T) {
+	t.Parallel()
 	yaml := []byte(`
 database:
   id: events
@@ -374,6 +392,7 @@ storage:
 }
 
 func TestParse_InGitDB_PushInvalid_Error(t *testing.T) {
+	t.Parallel()
 	yaml := []byte(`
 database:
   id: events
@@ -394,6 +413,7 @@ storage:
 }
 
 func TestParse_InGitDB_OptionsWithSQLiteEngine_Error(t *testing.T) {
+	t.Parallel()
 	yaml := []byte(`
 database:
   id: mydb
@@ -418,6 +438,7 @@ storage:
 // ---------------------------------------------------------------------------
 
 func TestInGitDBOptions_NilReceiver(t *testing.T) {
+	t.Parallel()
 	var o *manifest.InGitDBOptions
 
 	if got := o.PushMode(); got != "none" {
@@ -432,6 +453,7 @@ func TestInGitDBOptions_NilReceiver(t *testing.T) {
 }
 
 func TestInGitDBOptions_ZeroValue(t *testing.T) {
+	t.Parallel()
 	o := &manifest.InGitDBOptions{} // all fields empty
 
 	if got := o.PushMode(); got != "none" {
@@ -446,6 +468,7 @@ func TestInGitDBOptions_ZeroValue(t *testing.T) {
 }
 
 func TestInGitDBOptions_SetValues(t *testing.T) {
+	t.Parallel()
 	o := &manifest.InGitDBOptions{
 		Push:   "sync",
 		Remote: "upstream",
@@ -468,6 +491,7 @@ func TestInGitDBOptions_SetValues(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParse_InvalidDatabaseIDs(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		id   string
@@ -500,6 +524,7 @@ storage:
 }
 
 func TestParse_ValidDatabaseIDs(t *testing.T) {
+	t.Parallel()
 	cases := []string{
 		"a",
 		"mydb",
@@ -533,6 +558,7 @@ storage:
 // ---------------------------------------------------------------------------
 
 func TestParse_StrictMode_WithSchemas_Valid(t *testing.T) {
+	t.Parallel()
 	yaml := []byte(`
 database:
   id: catalog
@@ -573,6 +599,7 @@ schemas:
 }
 
 func TestParse_PartialMode_WithoutSchemas_Valid(t *testing.T) {
+	t.Parallel()
 	yaml := []byte(`
 database:
   id: metrics
@@ -592,6 +619,7 @@ storage:
 // ---------------------------------------------------------------------------
 
 func TestParse_InGitDB_FullOptions(t *testing.T) {
+	t.Parallel()
 	yaml := []byte(`
 database:
   id: repo-db
@@ -628,6 +656,7 @@ storage:
 // ---------------------------------------------------------------------------
 
 func TestParse_InGitDB_NoOptionsBlock_Defaults(t *testing.T) {
+	t.Parallel()
 	yaml := []byte(`
 database:
   id: logs
@@ -663,6 +692,7 @@ var _ = ingitdbBase
 // storage.path, expose a DSN env-var indirection with defaults, and reject
 // their option block under the wrong engine.
 func TestSQLEngineOptions(t *testing.T) {
+	t.Parallel()
 	t.Run("postgres pathless with dsn_env default", func(t *testing.T) {
 		m, err := manifest.Parse([]byte(`
 database: {id: db, schema_mode: strict}
@@ -711,6 +741,7 @@ schemas: {collections: {c: {fields: {id: {type: string}}}}}
 // pathless, requires owner+repo, rejects the push option, and applies ref/
 // token-env defaults.
 func TestInGitDBGitHubBackend(t *testing.T) {
+	t.Parallel()
 	t.Run("valid github backend, pathless, defaults", func(t *testing.T) {
 		m, err := manifest.Parse([]byte(`
 database: {id: db, schema_mode: strict}
@@ -758,4 +789,46 @@ schemas: {collections: {c: {fields: {title: {type: string}}}}}
 			t.Errorf("nil defaults wrong")
 		}
 	})
+}
+
+func TestManifestAdditionalCoverage(t *testing.T) {
+	t.Parallel()
+	if got := (manifest.Database{CacheTTL: "10s"}).ReadCacheTTL(); got == 0 {
+		t.Fatal("expected positive ReadCacheTTL for 10s")
+	}
+	if got := (manifest.Database{CacheTTL: "bad"}).ReadCacheTTL(); got != 0 {
+		t.Fatalf("expected 0 ReadCacheTTL for invalid value, got %v", got)
+	}
+	if got := (&manifest.InGitDBGitHubOptions{Ref: "dev"}).GitRef(); got != "dev" {
+		t.Fatalf("expected dev, got %q", got)
+	}
+	if _, err := manifest.Load(t.TempDir() + "/missing.yaml"); err == nil {
+		t.Fatal("expected error loading missing file")
+	}
+	validFile := t.TempDir() + "/manifest.yaml"
+	if err := os.WriteFile(validFile, []byte("database: {id: db, schema_mode: schemaless}\nstorage: {engine: sqlite, path: ./db}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manifest.Load(validFile); err != nil {
+		t.Fatalf("unexpected error loading valid file: %v", err)
+	}
+	// Validate errors: retention, http, firestore, postgres options on non-postgres, schemas
+	for _, yamlStr := range []string{
+		"database: {id: db, schema_mode: schemaless, retention: invalid}\nstorage: {engine: sqlite, path: ./db}\n",
+		"database: {id: db, schema_mode: schemaless}\nstorage: {engine: sqlite, path: ./db, http: {profile: ecb-daily/1, collection: rates}}\n",
+		"database: {id: db, schema_mode: schemaless}\nstorage: {engine: firestore}\n",
+		"database: {id: db, schema_mode: schemaless}\nstorage: {engine: firestore, firestore: {project: p}}\n",
+		"database: {id: db, schema_mode: schemaless}\nstorage: {engine: sqlite, path: ./db, firestore: {project: p}}\n",
+		"database: {id: db, schema_mode: schemaless}\nstorage: {engine: sqlite, path: ./db, postgres: {dsn_env: X}}\n",
+		"database: {id: db, schema_mode: strict}\nstorage: {engine: sqlite, path: ./db}\nschemas: {collections: {c: {fields: {f: {type: unknown}}}}}\n",
+	} {
+		_, err := manifest.Parse([]byte(yamlStr))
+		if strings.Contains(yamlStr, "engine: firestore, firestore: {project: p}") {
+			if err != nil {
+				t.Fatalf("expected valid firestore manifest, got %v", err)
+			}
+		} else if err == nil {
+			t.Fatalf("expected error for %s", yamlStr)
+		}
+	}
 }

@@ -107,6 +107,7 @@ func TestFieldTypeValidate(t *testing.T) {
 }
 
 func TestDecimalFieldRequiresExactTextAndHonorsPrecisionScale(t *testing.T) {
+	t.Parallel()
 	field := schema.Field{Type: schema.TypeDecimal, Decimal: &schema.Decimal{Precision: 8, Scale: 4, Storage: "text"}}
 	collection := &schema.Collection{Fields: map[string]schema.Field{"amount": field}}
 	for _, value := range []string{"123.45", "123.4500", "-0.0001", "000012.3400", "+123.45", ".5", "1."} {
@@ -122,6 +123,7 @@ func TestDecimalFieldRequiresExactTextAndHonorsPrecisionScale(t *testing.T) {
 }
 
 func TestDecimalPrecisionScaleBoundaries(t *testing.T) {
+	t.Parallel()
 	validate := func(precision, scale int, value string) bool {
 		field := schema.Field{Type: schema.TypeDecimal, Decimal: &schema.Decimal{Precision: precision, Scale: scale, Storage: "text"}}
 		return schema.ValidateRecord(schema.ModeStrict, "amounts", &schema.Collection{Fields: map[string]schema.Field{"amount": field}}, map[string]any{"amount": value}) == nil
@@ -157,6 +159,7 @@ func TestDecimalPrecisionScaleBoundaries(t *testing.T) {
 }
 
 func TestUnboundedDecimalMetadataDoesNotInventPrecisionOrScale(t *testing.T) {
+	t.Parallel()
 	field := schema.Field{Type: schema.TypeDecimal, Decimal: &schema.Decimal{Storage: "text", Unbounded: true}}
 	collection := &schema.Collection{Fields: map[string]schema.Field{"amount": field}}
 	if err := field.Validate(); err != nil {
@@ -178,6 +181,7 @@ func TestUnboundedDecimalMetadataDoesNotInventPrecisionOrScale(t *testing.T) {
 }
 
 func TestDecimalFieldMetadataMustBeCompleteAndConsistent(t *testing.T) {
+	t.Parallel()
 	for _, field := range []schema.Field{
 		{Type: schema.TypeDecimal},
 		{Type: schema.TypeDecimal, Decimal: &schema.Decimal{Precision: 5, Scale: 6, Storage: "text"}},
@@ -746,6 +750,7 @@ func TestSchemasValidate(t *testing.T) {
 		{"missing source field", schema.Reference{Field: "Missing", Collection: "Artist", TargetField: "ArtistId"}},
 		{"missing collection", schema.Reference{Field: "ArtistId", Collection: "Missing", TargetField: "ArtistId"}},
 		{"missing target field", schema.Reference{Field: "ArtistId", Collection: "Artist", TargetField: "Missing"}},
+		{"mixed singular and plural fields", schema.Reference{Field: "ArtistId", Fields: []string{"ArtistId"}, Collection: "Artist", TargetField: "ArtistId"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := &schema.Schemas{Collections: map[string]schema.Collection{
@@ -835,5 +840,11 @@ func TestValidateRecord_UnknownMode(t *testing.T) {
 	err := schema.ValidateRecord("unknown_mode", "col", col, map[string]any{"name": "test"})
 	if err == nil {
 		t.Fatal("expected error for unknown mode but got nil")
+	}
+	unknownFieldCol := &schema.Collection{Fields: map[string]schema.Field{
+		"name": {Type: "unknown_type"},
+	}}
+	if err := schema.ValidateRecord(schema.ModeStrict, "col", unknownFieldCol, map[string]any{"name": "test"}); err == nil {
+		t.Fatal("expected error for unknown field type in ValidateRecord")
 	}
 }

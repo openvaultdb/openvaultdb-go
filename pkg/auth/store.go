@@ -218,6 +218,8 @@ func (s *Store) Lookup(token string) *Grant {
 	return cloneGrant(g)
 }
 
+var marshalIndent = json.MarshalIndent
+
 // saveLocked persists grants atomically (temp file + rename). Callers hold mu.
 // Revoked grants are kept (audit trail). Truly expired non-revoked grants are pruned.
 func (s *Store) saveLocked() error {
@@ -231,7 +233,7 @@ func (s *Store) saveLocked() error {
 		}
 		grants = append(grants, g)
 	}
-	b, err := json.MarshalIndent(grants, "", "  ")
+	b, err := marshalIndent(grants, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal auth store: %w", err)
 	}

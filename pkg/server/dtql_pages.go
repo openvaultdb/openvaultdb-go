@@ -78,9 +78,27 @@ type querySnapshot struct {
 	timer     *time.Timer
 }
 
+type snapshotTempFile interface {
+	io.Writer
+	io.Closer
+	Name() string
+}
+
+var (
+	readSnapshotRand       = rand.Read
+	snapshotTimerAfterFunc = time.AfterFunc
+	createSnapshotTemp     = func(dir string) (snapshotTempFile, error) { return os.CreateTemp(dir, "snapshot-*") }
+	readSnapshotDir        = os.ReadDir
+	seekSnapshotFile       = func(f *os.File, offset int64, whence int) (int64, error) { return f.Seek(offset, whence) }
+	snapshotMkdirAll       = os.MkdirAll
+	snapshotLstat          = os.Lstat
+	removeSnapshotFile     = os.Remove
+	marshalSnapshotRow     = json.Marshal
+)
+
 func newSnapshotIdentity() (string, error) {
 	var id [32]byte
-	if _, err := rand.Read(id[:]); err != nil {
+	if _, err := readSnapshotRand(id[:]); err != nil {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(id[:]), nil
@@ -179,7 +197,7 @@ func (s *Server) handlePagedDTQL(w http.ResponseWriter, r *http.Request, db *cor
 	for _, collection := range collections {
 		targets = append(targets, relationalTarget{database: db.ID(), collection: collection})
 	}
-	capture, err := s.captureRights(map[string]*core.Database{db.ID(): db}, targets)
+	capture, err := serverCaptureRights(s, map[string]*core.Database{db.ID(): db}, targets)
 	if err != nil {
 		s.rightsError(w, err)
 		return
@@ -220,7 +238,7 @@ func (s *Server) handlePagedDTQL(w http.ResponseWriter, r *http.Request, db *cor
 		s.snapshots = make(map[string]*querySnapshot)
 	}
 	s.snapshots[id] = snap
-	snap.timer = time.AfterFunc(snapshotLifetime, func() { s.expireSnapshot(snap) })
+	snap.timer = snapshotTimerAfterFunc(snapshotLifetime, func() { s.expireSnapshot(snap) })
 	s.snapshotMu.Unlock()
 	s.mu.RUnlock()
 	reserved = false
@@ -235,7 +253,7 @@ func spoolDTQL(ctx context.Context, db *core.Database, query dal.StructuredQuery
 	if db.NoRetention() {
 		return "", 0, errRetentionNotAuthorized
 	}
-	f, err := os.CreateTemp(dir, "snapshot-*")
+	f, err := createSnapshotTemp(dir)
 	if err != nil {
 		return "", 0, err
 	}
@@ -250,7 +268,7 @@ func spoolDTQL(ctx context.Context, db *core.Database, query dal.StructuredQuery
 	w := bufio.NewWriterSize(f, 64<<10)
 	rows := 0
 	err = db.StreamDTQLSnapshot(ctx, query, func(rec core.Record) error {
-		row, marshalErr := json.Marshal(struct {
+		row, marshalErr := marshalSnapshotRow(struct {
 			Key  string         `json:"key"`
 			Data map[string]any `json:"data,omitempty"`
 		}{Key: rec.Key.String(), Data: rec.Data})
@@ -293,14 +311,14 @@ func spoolDTQL(ctx context.Context, db *core.Database, query dal.StructuredQuery
 // snapshots at most five; the extra minute avoids touching an active file.
 func prepareSnapshotDir() (string, error) {
 	dir := filepath.Join(os.TempDir(), "ovdb-query-snapshots-"+strconv.Itoa(os.Getuid()))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := snapshotMkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	info, err := os.Lstat(dir)
+	info, err := snapshotLstat(dir)
 	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
 		return "", fmt.Errorf("query snapshot directory is not private")
 	}
-	entries, err := os.ReadDir(dir)
+	entries, err := readSnapshotDir(dir)
 	if err != nil {
 		return "", err
 	}
@@ -430,7 +448,7 @@ func (s *Server) serveSnapshotPage(w http.ResponseWriter, token string, db *core
 		writeError(w, http.StatusGone, "snapshot_expired", "query snapshot is unavailable; restart the query")
 		return
 	}
-	if _, err = f.Seek(offset, io.SeekStart); err != nil {
+	if _, err = seekSnapshotFile(f, offset, io.SeekStart); err != nil {
 		_ = f.Close()
 		s.removeSnapshotLocked(snap)
 		s.snapshotMu.Unlock()
@@ -486,7 +504,7 @@ func (s *Server) removeSnapshotLocked(snap *querySnapshot) {
 		snap.timer.Stop()
 	}
 	s.snapshotSlots--
-	if err := os.Remove(snap.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := removeSnapshotFile(snap.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		s.logger.Warn("failed to remove query snapshot", "error", fmt.Errorf("remove temporary file: %w", err))
 	}
 }

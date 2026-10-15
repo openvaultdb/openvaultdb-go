@@ -1,7 +1,6 @@
 package providerreads
 
 import (
-	"encoding/json"
 	"fmt"
 	"sync"
 )
@@ -18,12 +17,12 @@ type Collector struct {
 
 func NewCollector(plan Plan) (*Collector, error) {
 	// Detach mutable admission maps/slices before validation or any read.
-	raw, err := json.Marshal(plan)
+	raw, err := jsonMarshal(plan)
 	if err != nil {
 		return nil, err
 	}
 	var frozen Plan
-	if err = json.Unmarshal(raw, &frozen); err != nil {
+	if err = jsonUnmarshal(raw, &frozen); err != nil {
 		return nil, err
 	}
 	if err = validStringsValue(plan); err != nil {
@@ -145,11 +144,11 @@ func (c *Collector) Finish(used []string) (Envelope, error) {
 	if err := Validate(c.envelope, c.plan, used); err != nil {
 		return Envelope{}, err
 	}
-	raw, err := json.Marshal(c.envelope)
+	raw, err := jsonMarshal(c.envelope)
 	if err != nil {
 		return Envelope{}, err
 	}
 	var out Envelope
-	err = json.Unmarshal(raw, &out)
+	err = jsonUnmarshal(raw, &out)
 	return out, err
 }

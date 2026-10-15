@@ -350,6 +350,16 @@ func containsDot(s string) bool {
 	return false
 }
 
+type tempFile interface {
+	Write(p []byte) (n int, err error)
+	Close() error
+	Name() string
+}
+
+var createTemp = func(dir, pattern string) (tempFile, error) {
+	return os.CreateTemp(dir, pattern)
+}
+
 // persist serialises the catalogue to c.filePath atomically via a temp file.
 // The caller must hold c.mu.
 func (c *Catalogue) persist() error {
@@ -358,7 +368,7 @@ func (c *Catalogue) persist() error {
 		return fmt.Errorf("inferred: create catalogue dir %q: %w", dir, err)
 	}
 
-	tmp, err := os.CreateTemp(dir, ".inferred-schema-*.tmp")
+	tmp, err := createTemp(dir, ".inferred-schema-*.tmp")
 	if err != nil {
 		return fmt.Errorf("inferred: create temp file: %w", err)
 	}

@@ -7,6 +7,7 @@ import (
 )
 
 func TestSQLiteBusyTimeoutPresenceAndBounds(t *testing.T) {
+	t.Parallel()
 	base := "database: {id: w1, schema_mode: strict}\nstorage: {engine: sqlite, path: data.sqlite%s}\nschemas: {collections: {things: {fields: {key: {type: string}}}}}\n"
 	for _, tc := range []struct {
 		option string

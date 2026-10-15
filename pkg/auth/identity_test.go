@@ -8,6 +8,7 @@ import (
 )
 
 func TestTypedGrantPersistenceAndIsolation(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "grants.json")
 	store, err := OpenStore(path)
 	if err != nil {
@@ -44,5 +45,29 @@ func TestTypedGrantPersistenceAndIsolation(t *testing.T) {
 	}
 	if reopened.Lookup("token") != nil {
 		t.Fatal("revoked identity credential usable")
+	}
+}
+
+func TestGrantValidateIdentityEdgeCases(t *testing.T) {
+	t.Parallel()
+	var nilGrant *Grant
+	if err := nilGrant.ValidateIdentity(); err == nil {
+		t.Fatal("expected error for nil grant")
+	}
+	validUser := access.PrincipalRef{Realm: "local", Kind: access.PrincipalKindUser, ID: "u1"}
+	validApp := access.PrincipalRef{Realm: "local", Kind: access.PrincipalKindApplication, ID: "a1"}
+	invalidRef := access.PrincipalRef{Realm: "", Kind: access.PrincipalKindUser, ID: "u1"}
+
+	if err := (&Grant{Subject: &invalidRef, Actor: &validApp}).ValidateIdentity(); err == nil {
+		t.Fatal("expected error for invalid subject")
+	}
+	if err := (&Grant{Subject: &validUser, Actor: &invalidRef}).ValidateIdentity(); err == nil {
+		t.Fatal("expected error for invalid actor")
+	}
+	if err := (&Grant{Subject: &validUser, Actor: &validUser}).ValidateIdentity(); err == nil {
+		t.Fatal("expected error when actor is a user")
+	}
+	if cloneGrant(nil) != nil {
+		t.Fatal("expected nil from cloneGrant(nil)")
 	}
 }

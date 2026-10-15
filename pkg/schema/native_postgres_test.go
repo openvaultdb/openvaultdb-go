@@ -1,11 +1,14 @@
 package schema
 
 import (
+	"encoding/base64"
+	"encoding/binary"
 	"strings"
 	"testing"
 )
 
 func TestNativePostgresCollectionIDRoundTripAndSeparatesTupleParts(t *testing.T) {
+	t.Parallel()
 	tests := []struct{ schema, name string }{
 		{"public", "Artist"},
 		{"sales data", "Order Details"},
@@ -37,6 +40,7 @@ func TestNativePostgresCollectionIDRoundTripAndSeparatesTupleParts(t *testing.T)
 }
 
 func TestNativePostgresCollectionIDRejectsIllegalPhysicalIdentifiers(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ schema, name string }{
 		{"", "table"}, {"schema", ""}, {strings.Repeat("x", 64), "table"},
 		{"schema", strings.Repeat("x", 64)}, {"bad\x00schema", "table"}, {"schema", "bad\x00table"},
@@ -49,7 +53,25 @@ func TestNativePostgresCollectionIDRejectsIllegalPhysicalIdentifiers(t *testing.
 }
 
 func TestParseNativePostgresCollectionIDRejectsMalformedAndNonCanonicalIDs(t *testing.T) {
-	for _, id := range []string{"", "pg1_", "pg1_%%", "pg1_YQ", "pg1_!!!!", "pg2_"} {
+	t.Parallel()
+	encodeTuple := func(schemaLen uint32, schemaBytes string, nameLen uint32, nameBytes string) string {
+		buf := make([]byte, 8+len(schemaBytes)+len(nameBytes))
+		binary.BigEndian.PutUint32(buf[:4], schemaLen)
+		copy(buf[4:], schemaBytes)
+		off := 4 + len(schemaBytes)
+		binary.BigEndian.PutUint32(buf[off:off+4], nameLen)
+		copy(buf[off+4:], nameBytes)
+		return nativePostgresCollectionPrefix + base64.RawURLEncoding.EncodeToString(buf)
+	}
+	for _, id := range []string{
+		"", "pg1_", "pg1_%%", "pg1_YQ", "pg1_!!!!", "pg2_",
+		encodeTuple(0, "", 1, "a"),
+		encodeTuple(5, "a", 1, "b"),
+		encodeTuple(1, "a", 0, ""),
+		encodeTuple(1, "a", 5, "b"),
+		encodeTuple(1, "\x00", 1, "b"),
+		encodeTuple(1, "a", 1, "\x00"),
+	} {
 		if _, _, err := ParseNativePostgresCollectionID(id); err == nil {
 			t.Errorf("ParseNativePostgresCollectionID(%q) unexpectedly succeeded", id)
 		}

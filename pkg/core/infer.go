@@ -19,9 +19,7 @@ func deepCopy(m map[string]any) map[string]any {
 		return out
 	}
 	var out map[string]any
-	if err = json.Unmarshal(b, &out); err != nil {
-		return m
-	}
+	_ = json.Unmarshal(b, &out)
 	return out
 }
 

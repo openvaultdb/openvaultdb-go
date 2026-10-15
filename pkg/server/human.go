@@ -123,16 +123,10 @@ func (s *Server) humanDatabases(r *http.Request, includeProviderReferences bool,
 				displayName := name
 				if source, native := db.NativePostgresSource(name); native {
 					displayName = source.Schema + "." + source.Name
-					doc, err := yaml.Marshal(map[string]any{"from": map[string]string{"schema": source.Schema, "name": source.Name}, "limit": 50})
-					if err != nil {
-						return nil, fmt.Errorf("native collection query link: %w", err)
-					}
+					doc, _ := yaml.Marshal(map[string]any{"from": map[string]string{"schema": source.Schema, "name": source.Name}, "limit": 50})
 					query.Set("q", string(doc))
 				} else {
-					queryJSON, err := json.Marshal(core.Query{Collection: queryName, Limit: 50})
-					if err != nil {
-						return nil, fmt.Errorf("collection %q query link: %w", name, err)
-					}
+					queryJSON, _ := json.Marshal(core.Query{Collection: queryName, Limit: 50})
 					query.Set("q", string(queryJSON))
 				}
 				references := make([]humanReference, 0, len(schema.References))
@@ -343,9 +337,6 @@ func (s *Server) handleHumanCollection(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, db := range databases {
-			if db.ID != id {
-				continue
-			}
 			for _, collection := range db.Collections {
 				if collection.ID == name {
 					view.Title, view.Database, view.Collection = collection.Name, db, collection

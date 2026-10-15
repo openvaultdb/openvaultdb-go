@@ -16,13 +16,18 @@ import (
 	"unicode/utf8"
 )
 
+var (
+	jsonMarshal   = json.Marshal
+	jsonUnmarshal = json.Unmarshal
+)
+
 // Canonical returns RFC 8785 JSON, with ECMAScript numbers and UTF-16 key order.
 // No Unicode normalization or recursive field removal is performed.
 func Canonical(value any) ([]byte, error) {
 	if err := validStrings(reflect.ValueOf(value)); err != nil {
 		return nil, err
 	}
-	raw, err := json.Marshal(value)
+	raw, err := jsonMarshal(value)
 	if err != nil {
 		return nil, err
 	}

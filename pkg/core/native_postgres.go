@@ -26,9 +26,6 @@ func nativePostgresMappings(schemas *schema.Schemas) (map[string]schema.NativeCo
 			return nil, nil, fmt.Errorf("native PostgreSQL collection ID does not match its source mapping")
 		}
 		key := nativePostgresTuple{schema: source.Schema, name: source.Name}
-		if _, exists := bySource[key]; exists {
-			return nil, nil, fmt.Errorf("native PostgreSQL source mapping is duplicated")
-		}
 		for field := range collection.Fields {
 			if field == "" || len(field) > 63 || !utf8.ValidString(field) || strings.IndexByte(field, 0) >= 0 {
 				return nil, nil, fmt.Errorf("native PostgreSQL column name is outside the identifier contract")

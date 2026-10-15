@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +27,10 @@ const crossDatabaseDTQLPath = "/v1/dtql"
 
 // crossDatabaseTugQLPath is the canonical endpoint for cross-database TugQL queries.
 const crossDatabaseTugQLPath = "/v1/tugql"
+
+var streamDTQLQuery = func(db *core.Database, ctx context.Context, query dal.StructuredQuery, emit func(core.Record) error) error {
+	return db.StreamDTQLQuery(ctx, query, emit)
+}
 
 // handleDTQL authenticates a bounded DTQL query and executes it through the
 // mounted database's secured DALgo handle. A document is classified once, after
@@ -127,7 +132,7 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 			Data map[string]any `json:"data,omitempty"`
 		}{Key: rec.Key.String(), Data: data})
 	}
-	err = db.StreamDTQLQuery(ctx, query, writeRecord)
+	err = streamDTQLQuery(db, ctx, query, writeRecord)
 	if err != nil {
 		err = hiddenAsDenied(db, err)
 		if errors.Is(err, access.ErrAccessDenied) {
@@ -166,7 +171,7 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	footer := map[string]any{}
-	evidence, providerErr := providerCapture.finish(capture.allUsed())
+	evidence, providerErr := finishProviderCapture(providerCapture, capture.allUsed())
 	if providerErr != nil {
 		if stream.started {
 			s.finishStreamErrorOrAbort(w, r, stream, func(w http.ResponseWriter) { s.rightsError(w, providerErr) })
@@ -180,7 +185,7 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 		footer["providerReads"] = evidence
 	}
 	attachRights(footer, capture.rights, capture.allUsed())
-	if err := stream.Finish(footer); err != nil {
+	if err := finishDTQLStream(stream, footer); err != nil {
 		if stream.started {
 			s.finishStreamErrorOrAbort(w, r, stream, func(w http.ResponseWriter) { s.writeStreamMappedError(w, r, err) })
 			return
@@ -189,6 +194,12 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 		s.writeMappedError(w, r, err)
 	}
 }
+
+var (
+	finishDTQLStream    = func(s *jsonRowStream, footer map[string]any) error { return s.Finish(footer) }
+	marshalDTQLURLBody  = json.Marshal
+	encodeDTQLParamNode = func(node *yaml.Node, value any) error { return node.Encode(value) }
+)
 
 // readDTQLDocument returns the DTQL document of a request: the q parameter of a
 // GET, or the body of a POST (with its parameters bound when the body is JSON).
@@ -294,7 +305,7 @@ func dtqlFromURL(u *url.URL) ([]byte, error) {
 		}
 		parameters = json.RawMessage(raw[0])
 	}
-	body, err := json.Marshal(struct {
+	body, err := marshalDTQLURLBody(struct {
 		Query      string          `json:"query"`
 		Parameters json.RawMessage `json:"parameters"`
 	}{Query: query[0], Parameters: parameters})
@@ -360,7 +371,7 @@ func bindDTQLParameters(body []byte) ([]byte, error) {
 				return fmt.Errorf("parameter %q must be a scalar or array", name)
 			}
 			var bound yaml.Node
-			if err := bound.Encode(value); err != nil {
+			if err := encodeDTQLParamNode(&bound, value); err != nil {
 				return err
 			}
 			node.Content[0].Value = key

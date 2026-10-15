@@ -105,6 +105,8 @@ func (s *Server) handleDatabaseCreate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, resp)
 }
 
+var newDatabaseToken = auth.NewToken
+
 // mintDatabaseToken mints a never-expiring grant scoped to the new database
 // with the full data capability set, labelled from the request label or the
 // creator grant's label.
@@ -117,7 +119,7 @@ func (s *Server) mintDatabaseToken(r *http.Request, databaseID, label string) (s
 	if creator != nil && creator.Grant != nil {
 		principalID = creator.Grant.PrincipalID
 	}
-	token, err := auth.NewToken()
+	token, err := newDatabaseToken()
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to generate token: %w", err)
 	}
@@ -139,6 +141,8 @@ func (s *Server) mintDatabaseToken(r *http.Request, databaseID, label string) (s
 	tr := grantToResponse(g, "")
 	return token, &tr, nil
 }
+
+var mountFile = mount.File
 
 // provisionDatabase creates <dataDir>/<id>/ (git init, best-effort), writes
 // <dataDir>/<id>.yaml (an inGitDB schemaless manifest — the persisted record
@@ -165,7 +169,7 @@ func provisionDatabase(dataDir, id string) (*core.Database, error) {
 	if err := os.WriteFile(manifestPath, []byte(manifestYAML), 0o644); err != nil {
 		return nil, fmt.Errorf("failed to write manifest: %w", err)
 	}
-	db, err := mount.File(manifestPath)
+	db, err := mountFile(manifestPath)
 	if err != nil {
 		// Roll back the manifest so a broken database is not remounted on restart.
 		_ = os.Remove(manifestPath)

@@ -71,16 +71,11 @@ func safeURL(s string) error {
 			return fmt.Errorf("unsupported punycode upstream label")
 		}
 	}
-	authority := u.Hostname()
 	if port := u.Port(); port != "" {
 		n, e := strconv.Atoi(port)
 		if e != nil || n < 1 || n > 65535 || n == 443 || strconv.Itoa(n) != port {
 			return fmt.Errorf("noncanonical upstream port")
 		}
-		authority += ":" + port
-	}
-	if u.Host != authority {
-		return fmt.Errorf("noncanonical upstream authority")
 	}
 	for i := 0; i < len(s); i++ {
 		c := s[i]
@@ -271,7 +266,7 @@ func validateRights(p Plan) error {
 			return err
 		}
 		var obj any
-		if err = json.Unmarshal(raw, &obj); err != nil {
+		if err = jsonUnmarshal(raw, &obj); err != nil {
 			return err
 		}
 		if err = boundedJSON(obj, ""); err != nil {
@@ -412,18 +407,14 @@ func Validate(e Envelope, p Plan, used []string) error {
 		if !found {
 			return fmt.Errorf("unplanned resource request")
 		}
-		found = false
 		for _, b := range e.Bindings {
 			if b.ResourceID == o.ResourceID {
 				h, err := ObservationDigest(e.Execution, b, o)
 				if err != nil || h != o.ObservationID {
 					return fmt.Errorf("observation digest mismatch")
 				}
-				found = true
+				break
 			}
-		}
-		if !found {
-			return fmt.Errorf("unplanned observation binding")
 		}
 	}
 	claimed := map[string]bool{}

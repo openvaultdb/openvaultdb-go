@@ -37,6 +37,7 @@ func openTestStore(t *testing.T, root string) *Store {
 	return store
 }
 func TestGenerationActivationCASAndValidation(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openTestStore(t, t.TempDir())
 	if _, err := store.Load(ctx); err == nil {
@@ -87,6 +88,8 @@ func TestGenerationActivationCASAndValidation(t *testing.T) {
 		t.Fatal("corrupt reload failed open")
 	}
 }
+
+// Not parallel: subprocess re-executes test binary with environment variables
 func TestGenerationCrashRecovery(t *testing.T) {
 	if root := os.Getenv("OVDB_POLICY_CRASH_ROOT"); root != "" {
 		store := openTestStore(t, root)
@@ -124,6 +127,7 @@ func TestGenerationCrashRecovery(t *testing.T) {
 	}
 }
 func TestGenerationMissingReferenceAndUncertainPublication(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t, t.TempDir())
 	ctx := context.Background()
 	old, err := store.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")})
@@ -156,6 +160,7 @@ func TestGenerationMissingReferenceAndUncertainPublication(t *testing.T) {
 }
 
 func TestGenerationPrivateEditPreservesPublicRevision(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t, t.TempDir())
 	ctx := context.Background()
 	public := policy(t, "name")
@@ -180,6 +185,7 @@ func TestGenerationPrivateEditPreservesPublicRevision(t *testing.T) {
 	}
 }
 func TestGenerationRejectsSymlinkAndDuplicatePointer(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t, t.TempDir())
 	ctx := context.Background()
 	first, err := store.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")})

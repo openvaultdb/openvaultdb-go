@@ -47,19 +47,15 @@ func readJSON(d *json.Decoder) (any, error) {
 	if !ok {
 		return token, nil
 	}
-	switch delim {
-	case '{':
+	if delim == '{' {
 		out := map[string]any{}
 		for d.More() {
 			key, err := d.Token()
 			if err != nil {
 				return nil, err
 			}
-			k, ok := key.(string)
-			if !ok {
-				return nil, fmt.Errorf("invalid JSON key")
-			}
-			if _, ok = out[k]; ok {
+			k := key.(string)
+			if _, ok := out[k]; ok {
 				return nil, fmt.Errorf("duplicate JSON key")
 			}
 			out[k], err = readJSON(d)
@@ -69,19 +65,17 @@ func readJSON(d *json.Decoder) (any, error) {
 		}
 		_, err = d.Token()
 		return out, err
-	case '[':
-		out := []any{}
-		for d.More() {
-			v, err := readJSON(d)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, v)
-		}
-		_, err = d.Token()
-		return out, err
 	}
-	return nil, fmt.Errorf("invalid JSON delimiter")
+	out := []any{}
+	for d.More() {
+		v, err := readJSON(d)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	_, err = d.Token()
+	return out, err
 }
 func closedShape(v any, t reflect.Type) error {
 	if v == nil {

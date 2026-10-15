@@ -131,6 +131,11 @@ func WithPublicOrigin(origin string) Option {
 	return func(s *Server) { s.publicOrigin = strings.TrimRight(origin, "/") }
 }
 
+var (
+	serverRandRead   = rand.Read
+	unmountDrainSync = func() {}
+)
+
 // New creates a Server over mounted databases keyed by database id.
 func New(version string, dbs map[string]*core.Database, opts ...Option) *Server {
 	if dbs == nil {
@@ -156,7 +161,7 @@ func New(version string, dbs map[string]*core.Database, opts ...Option) *Server 
 		}
 	}
 	s.snapshotDir, s.snapshotDirErr = prepareSnapshotDir()
-	if _, err := rand.Read(s.snapshotKey[:]); err != nil {
+	if _, err := serverRandRead(s.snapshotKey[:]); err != nil {
 		s.snapshotDirErr = fmt.Errorf("query snapshot token key: %w", err)
 	}
 	return s
@@ -261,6 +266,7 @@ func (s *Server) UnmountContext(ctx context.Context, id string) error {
 		close(drained)
 		closeErr <- db.Close()
 	}()
+	unmountDrainSync()
 	select {
 	case <-drained:
 		return <-closeErr

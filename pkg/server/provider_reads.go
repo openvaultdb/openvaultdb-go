@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -90,7 +89,7 @@ func (s *Server) validateProviderProfiles() error {
 		}
 	}
 	if len(s.providerProfilesByDB) > 0 && s.corsCfg != nil {
-		cfg, err := s.corsCfg.WithHeaders([]string{ProviderExecutionIDHeader}, nil)
+		cfg, err := corsWithHeaders(s.corsCfg, []string{ProviderExecutionIDHeader}, nil)
 		if err != nil {
 			return err
 		}
@@ -98,6 +97,13 @@ func (s *Server) validateProviderProfiles() error {
 	}
 	return nil
 }
+
+var corsWithHeaders = func(c *CORSConfig, allowed, exposed []string) (*CORSConfig, error) {
+	return c.WithHeaders(allowed, exposed)
+}
+
+var contextWithProvenanceObserver = dalgo2http.ContextWithProvenanceObserver
+
 func (s *Server) providerPlan(p ProviderReadProfile, capture rightsCapture, id string) providerreads.Plan {
 	upstreamURL := manifest.ECBDailyURL
 	if p.RequestProfile == IANANativeOperatorRequestProfile {
@@ -136,7 +142,7 @@ func (s *Server) beginProviderRead(r *http.Request, db *core.Database, collectio
 	if capture.reservedBytes+16*1024 > providerreads.MaxMetadataBytes {
 		return ctx, nil, fmt.Errorf("provider metadata reservation exceeded")
 	}
-	observed := dalgo2http.ContextWithProvenanceObserver(ctx, func(o dalgo2http.Provenance) {
+	observed := contextWithProvenanceObserver(ctx, func(o dalgo2http.Provenance) {
 		pc.mu.Lock()
 		defer pc.mu.Unlock()
 		if pc.err != nil {
@@ -185,7 +191,7 @@ func providerExecutionID(headers http.Header) (string, error) {
 	// Legacy callers cannot independently predict this nonce. Strict consumers
 	// supply their fresh client ID instead; no retained replay ledger is needed.
 	var nonce [16]byte
-	if _, err := rand.Read(nonce[:]); err != nil {
+	if _, err := serverRandRead(nonce[:]); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(nonce[:]), nil
@@ -210,4 +216,8 @@ func (pc *providerCapture) finish(used []string) (*providerreads.Envelope, error
 	}
 	e, err := pc.collector.Finish(used)
 	return &e, err
+}
+
+var finishProviderCapture = func(pc *providerCapture, used []string) (*providerreads.Envelope, error) {
+	return pc.finish(used)
 }

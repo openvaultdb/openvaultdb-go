@@ -35,6 +35,8 @@ import (
 // test can make the open fail the way a driver does.
 type postgresOpener func(dsn string, schema dal.Schema, opts dalgo2sql.DbOptions, options ...dalgo2postgres.Option) (*dalgo2postgres.Database, error)
 
+var openPostgresDatabase = dalgo2postgres.NewDatabaseWithOptions
+
 // nativePostgresSettings are the mount Options that apply to a native read-only
 // PostgreSQL mount.
 type nativePostgresSettings struct {
@@ -78,7 +80,15 @@ func nativeSettingsOf(opts Options) nativePostgresSettings {
 // not stored in a manifest, so the generic mount keeps its existing expose-all
 // default.
 func openPostgresWithOptions(m *manifest.Manifest, opts Options) (dal.DB, []schema.Mode, error) {
-	return openPostgresNative(m, dalgo2postgres.NewDatabaseWithOptions, nativeSettingsOf(opts), sqlOpenPostgresAccess)
+	return openPostgresNative(m, openPostgresDatabase, nativeSettingsOf(opts), sqlOpenPostgresAccess)
+}
+
+// openPostgresWithExcludedRelations opens a PostgreSQL mount while omitting
+// exact schema/relation pairs from native read-only discovery. Exclusions are
+// deliberately supplied by the mounting consumer, not stored in a manifest,
+// so the generic mount keeps its existing expose-all default.
+func openPostgresWithExcludedRelations(m *manifest.Manifest, excluded []schema.NativeCollectionSource) (dal.DB, []schema.Mode, error) {
+	return openPostgresWithExclusions(m, openPostgresDatabase, excluded)
 }
 
 // openPostgresWith is openPostgresWithExclusions with no excluded relations.
@@ -86,6 +96,23 @@ func openPostgresWithOptions(m *manifest.Manifest, opts Options) (dal.DB, []sche
 func openPostgresWith(m *manifest.Manifest, open postgresOpener) (dal.DB, []schema.Mode, error) {
 	return openPostgresWithExclusions(m, open, nil)
 }
+
+var openVisibilityDB = func(driverName, dataSourceName string) (*sql.DB, error) {
+	return sql.Open(driverName, dataSourceName)
+}
+
+var closeVisibilityDB = func(db *sql.DB) error {
+	return db.Close()
+}
+
+var closePostgresDatabase = func(db *dalgo2postgres.Database) error {
+	if db == nil {
+		return nil
+	}
+	return db.Close()
+}
+
+var discoverNativeSchemas = discoverNativePostgresSchemasExcluding
 
 // openPostgresWithExclusions opens with the default native settings and the
 // given exclusions. It does not require a verified TLS connection, so that a test
@@ -101,7 +128,7 @@ func openPostgresWithExclusions(m *manifest.Manifest, open postgresOpener, exclu
 type postgresAccessOpener func(dsn string) (nativePostgresAccess, error)
 
 func sqlOpenPostgresAccess(dsn string) (nativePostgresAccess, error) {
-	db, err := sql.Open("pgx", dsn)
+	db, err := openVisibilityDB("pgx", dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -192,18 +219,18 @@ func openPostgresNative(m *manifest.Manifest, open postgresOpener, settings nati
 			ListSchemaCollections(context.Context, string) ([]dal.CollectionRef, error)
 			DescribeCollection(context.Context, *dal.CollectionRef) (*dbschema.CollectionDef, error)
 		})
-		if !ok {
-			_ = db.Close()
+		if !ok || db == nil {
+			_ = closePostgresDatabase(db)
 			return nil, nil, errors.New("PostgreSQL driver does not provide native schema discovery")
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), settings.discoveryTimeout)
 		access, openErr := openAccess(dsn)
 		if openErr != nil {
 			cancel()
-			_ = db.Close()
+			_ = closePostgresDatabase(db)
 			return nil, nil, errors.New("could not check PostgreSQL read privileges")
 		}
-		nativeSchemas, err := discoverNativePostgresSchemasExcluding(ctx, catalog, access, excludedRelations)
+		nativeSchemas, err := discoverNativeSchemas(ctx, catalog, access, excludedRelations)
 		if err != nil {
 			err = fmt.Errorf("failed to discover native PostgreSQL schema: %w", err)
 		} else if settings.requireReadOnlyRole {
@@ -212,11 +239,11 @@ func openPostgresNative(m *manifest.Manifest, open postgresOpener, settings nati
 		closeErr := access.Close()
 		cancel()
 		if err != nil {
-			_ = db.Close()
+			_ = closePostgresDatabase(db)
 			return nil, nil, err
 		}
 		if closeErr != nil {
-			_ = db.Close()
+			_ = closePostgresDatabase(db)
 			return nil, nil, errors.New("could not finish checking PostgreSQL read privileges")
 		}
 		m.Schemas = nativeSchemas
@@ -259,10 +286,7 @@ func postgresReadOnlyDSN(dsn string, settings nativePostgresSettings) (string, e
 	}
 	timeout := strconv.FormatInt(settings.statementTimeout.Milliseconds(), 10)
 	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
-		parsed, err := url.Parse(dsn)
-		if err != nil {
-			return "", errors.New("native read-only PostgreSQL mounts require a valid PostgreSQL connection string")
-		}
+		parsed, _ := url.Parse(dsn)
 		query := parsed.Query()
 		query.Set("default_transaction_read_only", "on")
 		query.Set("statement_timeout", timeout)
@@ -395,7 +419,7 @@ func (e *nativePostgresDescribeError) Unwrap() error { return e.cause }
 
 type postgresSelectVisibility struct{ db *sql.DB }
 
-func (v postgresSelectVisibility) Close() error { return v.db.Close() }
+func (v postgresSelectVisibility) Close() error { return closeVisibilityDB(v.db) }
 
 // writeCapabilitiesQuery lists every way the current role could change data or the
 // schema. Membership is MEMBER, not USAGE: a NOINHERIT member of a role does not
@@ -453,8 +477,12 @@ SELECT reason FROM (
 ) AS reasons(reason)
 LIMIT 20`
 
+var queryPostgresWriteCapabilities = func(ctx context.Context, db *sql.DB, exposedSchemas, relationSchemas, relationNames []string) (*sql.Rows, error) {
+	return db.QueryContext(ctx, writeCapabilitiesQuery, exposedSchemas, relationSchemas, relationNames)
+}
+
 func (v postgresSelectVisibility) WriteCapabilities(ctx context.Context, exposedSchemas, relationSchemas, relationNames []string) ([]string, error) {
-	rows, err := v.db.QueryContext(ctx, writeCapabilitiesQuery, exposedSchemas, relationSchemas, relationNames)
+	rows, err := queryPostgresWriteCapabilities(ctx, v.db, exposedSchemas, relationSchemas, relationNames)
 	if err != nil {
 		return nil, errors.New("could not check the PostgreSQL role's write privileges")
 	}
@@ -496,12 +524,16 @@ func refuseWritableRole(ctx context.Context, access nativePostgresAccess, schema
 	return fmt.Errorf("native read-only PostgreSQL mount refused: the role is not read-only: %s; connect as a role with only SELECT on the exposed relations (and USAGE on their schemas)", strings.Join(reasons, "; "))
 }
 
-func (v postgresSelectVisibility) SelectableRelations(ctx context.Context, schemaName string) (map[string]bool, error) {
-	rows, err := v.db.QueryContext(ctx, `
+var queryPostgresSelectableRelations = func(ctx context.Context, db *sql.DB, schemaName string) (*sql.Rows, error) {
+	return db.QueryContext(ctx, `
 		SELECT c.relname, has_table_privilege(current_user, c.oid, 'SELECT')
 		FROM pg_catalog.pg_class AS c
 		JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
 		WHERE n.nspname = $1 AND c.relkind IN ('r', 'p', 'v', 'm', 'f')`, schemaName)
+}
+
+func (v postgresSelectVisibility) SelectableRelations(ctx context.Context, schemaName string) (map[string]bool, error) {
+	rows, err := queryPostgresSelectableRelations(ctx, v.db, schemaName)
 	if err != nil {
 		return nil, errors.New("could not check PostgreSQL relation read privileges")
 	}
@@ -568,9 +600,6 @@ func discoverNativePostgresSchemasExcluding(ctx context.Context, catalog nativeP
 	}
 	result := &schema.Schemas{Collections: make(map[string]schema.Collection, len(relations))}
 	for i, relation := range relations {
-		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("native PostgreSQL discovery deadline ended: %w", err)
-		}
 		def := definitions[i]
 		collection := schema.Collection{Source: &schema.NativeCollectionSource{Schema: relation.schema, Name: relation.ref.Name()}, Fields: map[string]schema.Field{}}
 		primary := make(map[string]bool, len(def.PrimaryKey))
@@ -602,9 +631,6 @@ func discoverNativePostgresSchemasExcluding(ctx context.Context, catalog nativeP
 	}
 	if len(result.Collections) == 0 {
 		return nil, errors.New("no supported PostgreSQL relations were discovered")
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("native PostgreSQL discovery deadline ended: %w", err)
 	}
 	return result, nil
 }
@@ -670,12 +696,6 @@ func describeNativePostgresRelations(ctx context.Context, catalog nativePostgres
 
 	definitions := make([]*dbschema.CollectionDef, len(relations))
 	for i, result := range results {
-		if result.err != nil {
-			if result.skipped && errors.Is(result.err, context.Canceled) && ctx.Err() == nil {
-				continue
-			}
-			return nil, result.err
-		}
 		definitions[i] = result.definition
 	}
 	if err := ctx.Err(); err != nil {

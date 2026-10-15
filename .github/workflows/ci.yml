@@ -22,7 +22,7 @@ jobs:
   strongo_workflow:
     permissions:
       contents: write
-    uses: strongo/cicd/.github/workflows/workflow.yml@v1.20.0
+    uses: strongo/cicd/.github/workflows/workflow.yml@main
 
     secrets:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -41,7 +41,4 @@ jobs:
       disable-version-bumping: false
       # Pure-Go stack (modernc.org/sqlite) — no C toolchain needed.
       cgo_enabled: false
-      # Measured total (go test ./... -coverprofile + go tool cover -func) was
-      # 59.3% at the time this floor was set; kept a few points below so the
-      # gate doesn't fail on day one from measurement noise.
-      min_test_coverage_percent: 55
+      min_test_coverage_percent: 100

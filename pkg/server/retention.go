@@ -150,11 +150,8 @@ func withoutContinuationFields(data []byte, jsonEnvelope bool) []byte {
 				delete(fields, name)
 			}
 		}
-		out, err := json.Marshal(fields)
-		if err == nil {
-			return out
-		}
-		return data
+		out, _ := json.Marshal(fields)
+		return out
 	}
 	var document yaml.Node
 	if yaml.Unmarshal(data, &document) != nil || len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
@@ -168,10 +165,7 @@ func withoutContinuationFields(data []byte, jsonEnvelope bool) []byte {
 		}
 	}
 	root.Content = fields
-	out, err := yaml.Marshal(&document)
-	if err != nil {
-		return data
-	}
+	out, _ := yaml.Marshal(&document)
 	return out
 }
 

@@ -28,8 +28,10 @@ type mysqlOpener func(dsn string, schema dal.Schema, opts dalgo2sql.DbOptions) (
 // relational tables (id primary-key column + one column per declared field).
 // Unlike Postgres, MySQL preserves identifier case, so no case folding is
 // needed.
+var openMySQLDatabase = dalgo2mysql.NewDatabaseWithOptions
+
 func openMySQL(m *manifest.Manifest) (dal.DB, []schema.Mode, error) {
-	return openMySQLWith(m, dalgo2mysql.NewDatabaseWithOptions)
+	return openMySQLWith(m, openMySQLDatabase)
 }
 
 // openMySQLWith is openMySQL with the function that opens the connection. An

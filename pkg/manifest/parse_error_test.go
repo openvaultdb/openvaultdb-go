@@ -16,6 +16,7 @@ import (
 // string written one level up, as the value of storage.postgres or storage.mysql,
 // or as a field name, is not repeated in whole or in part.
 func TestParseErrorOfAValueOfTheWrongTypeDoesNotRepeatTheManifest(t *testing.T) {
+	t.Parallel()
 	const head = "database: {id: sqlmount, schema_mode: strict}\nstorage:\n  engine: postgres\n"
 	for _, c := range []struct {
 		name, doc, want string
@@ -65,6 +66,7 @@ func TestParseErrorOfAValueOfTheWrongTypeDoesNotRepeatTheManifest(t *testing.T) 
 // each holds none of the document: not in its message, not in its detail, and not
 // in an error that it wraps.
 func TestParseErrorOfADocumentTheDecoderRefusesForAnotherReasonDoesNotRepeatIt(t *testing.T) {
+	t.Parallel()
 	const head = "database: {id: sqlmount, schema_mode: strict}\nstorage:\n  engine: postgres\n"
 	for _, c := range []struct{ name, doc string }{
 		{"a connection string with an explicit tag", head + "  postgres:\n    dsn_env: !!int postgres://app:pw-MARKER-31c8@db/x\n"},
@@ -100,6 +102,7 @@ func TestParseErrorOfADocumentTheDecoderRefusesForAnotherReasonDoesNotRepeatIt(t
 // all, or only comments) is reported as empty, and every other error of the decoder
 // that has no line in its text is one fixed sentence.
 func TestParseOfAnEmptyManifestSaysSo(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct{ name, doc string }{
 		{"nothing at all", ""},
 		{"only comments", "# nothing here\n# still nothing\n"},
@@ -120,6 +123,7 @@ func TestParseOfAnEmptyManifestSaysSo(t *testing.T) {
 // refuses these documents with a message that has no line prefix, so each is
 // answered by the fixed sentence and nothing is wrapped.
 func TestParseOfADocumentTheDecoderRefusesWithoutALineIsOneFixedSentence(t *testing.T) {
+	t.Parallel()
 	const head = "database: {id: sqlmount, schema_mode: strict}\nstorage:\n  engine: sqlite\n"
 	for _, c := range []struct{ name, doc string }{
 		{"a scanner error on the first line", "\tdatabase: 1\n"},
@@ -147,6 +151,7 @@ func TestParseOfADocumentTheDecoderRefusesWithoutALineIsOneFixedSentence(t *test
 // in the schemas. (The decoder panics for a mapping that holds a merge key and a key
 // that is a sequence or a mapping.)
 func TestParseOfAManifestTheDecoderCannotDecodeIsAnErrorNotAPanic(t *testing.T) {
+	t.Parallel()
 	const head = "database: {id: sqlmount, schema_mode: strict}\n"
 	for _, c := range []struct{ name, doc string }{
 		{"at the top level", head + "<<: {a: b}\n? [a]\n: x\n"},
