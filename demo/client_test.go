@@ -10,6 +10,10 @@ import (
 )
 
 func TestClientRejectsInvalidInputBeforeNetworkAndCancelledCalls(t *testing.T) {
+	t.Parallel()
+	if _, err := NewClient("://bad"); err == nil {
+		t.Fatal("expected NewClient error for invalid base URL")
+	}
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
 	defer server.Close()
@@ -31,6 +35,7 @@ func TestClientRejectsInvalidInputBeforeNetworkAndCancelledCalls(t *testing.T) {
 }
 
 func TestClientRejectsMalformedDemoMetadata(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"sessionId":"session_1","ownerUserId":"user_1","spaceId":"space_1","spaceType":"group","databaseId":"demo-sneat-space","expiresAt":"2026-09-02T13:00:00Z","proxyUrl":"//not-an-origin","appUrl":"https://listus.app/space/group/space_1/lists"}`))
 	}))
@@ -45,6 +50,7 @@ func TestClientRejectsMalformedDemoMetadata(t *testing.T) {
 }
 
 func TestClientSessionLifecycleUsesExactPublicContract(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.Header.Get("Authorization") != "Bearer device-token" {
 			t.Fatalf("Authorization = %q", request.Header.Get("Authorization"))

@@ -104,6 +104,8 @@ func Resolve(source Identity, server, database, recordset *Declaration) (*Source
 	return &SourceRight{SourceID: source.SourceID(), Source: source, Declaration: d.Normalized(), DeclarationScope: scope, DeclaredAt: at, EvidenceOrigin: origin, Pins: []Pin{}, Transformations: []string{}}, nil
 }
 
+var jsonMarshal = json.Marshal
+
 // Inventory returns deterministic distinct source identities and rejects stale
 // conflicting evidence. Its encoded size is reserved before releasing data.
 func Inventory(rights []SourceRight) ([]SourceRight, int, error) {
@@ -111,14 +113,14 @@ func Inventory(rights []SourceRight) ([]SourceRight, int, error) {
 	encodedBytes := 2
 	for _, right := range rights {
 		if prior, ok := byID[right.SourceID]; ok {
-			a, _ := json.Marshal(prior)
-			b, _ := json.Marshal(right)
+			a, _ := jsonMarshal(prior)
+			b, _ := jsonMarshal(right)
 			if string(a) != string(b) {
 				return nil, 0, fmt.Errorf("conflicting source rights")
 			}
 			continue
 		}
-		encoded, err := json.Marshal(right)
+		encoded, err := jsonMarshal(right)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -136,7 +138,7 @@ func Inventory(rights []SourceRight) ([]SourceRight, int, error) {
 		out = append(out, right)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].SourceID < out[j].SourceID })
-	encoded, err := json.Marshal(out)
+	encoded, err := jsonMarshal(out)
 	if err != nil {
 		return nil, 0, err
 	}

@@ -57,6 +57,13 @@ func (s *Server) ownerAllows(r *http.Request, source az.Source, capability strin
 	return auth.FromRequest(r).Allows(source.DatabaseID, capability, resource.Table)
 }
 
+var (
+	parseAuthorizationRequest = api.Parse
+	newAuthorizationGrantID   = auth.NewGrantID
+	azMarshalResult           = az.MarshalResult
+	accessAssessPlan          = access.AssessPlan
+)
+
 func (s *Server) handleAccessEvaluate(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	db := s.db(w, r)
@@ -68,7 +75,7 @@ func (s *Server) handleAccessEvaluate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "bad_request", "invalid request body size")
 		return
 	}
-	request, err := api.Parse(data, db.ID())
+	request, err := parseAuthorizationRequest(data, db.ID())
 	if err != nil {
 		writeError(w, 400, "bad_request", err.Error())
 		return
@@ -133,7 +140,7 @@ func (s *Server) handleAccessEvaluate(w http.ResponseWriter, r *http.Request) {
 }
 
 func newAuthorization(mode az.Mode) az.Result {
-	id, err := auth.NewGrantID()
+	id, err := newAuthorizationGrantID()
 	if err != nil {
 		panic("request identity entropy unavailable")
 	}
@@ -192,7 +199,7 @@ func (s *Server) assessPlan(r *http.Request, db *core.Database, request api.Requ
 				result.Blockers = append(result.Blockers, az.Blocker{OperationID: op.ID, LayerID: layerID, Code: az.CodeSourceUnavailable, Scope: az.ScopeConfiguration})
 				continue
 			}
-			assessment := access.AssessPlan(r.Context(), internal, owner.Policies)
+			assessment := accessAssessPlan(r.Context(), internal, owner.Policies)
 			outcome := az.Outcome(assessment.Outcome)
 			layer.Result = reduceOutcome(layer.Result, outcome)
 			result.Operations[i].Result = reduceOutcome(result.Operations[i].Result, outcome)
@@ -375,7 +382,7 @@ func conditionNodes(condition *access.DocumentCondition) int {
 
 func writeAuthorization(w http.ResponseWriter, status int, result az.Result) {
 	result = boundAuthorization(result)
-	data, err := az.MarshalResult(result)
+	data, err := azMarshalResult(result)
 	if err != nil {
 		writeError(w, 500, "internal", "authorization result could not be encoded")
 		return
@@ -457,7 +464,7 @@ func (s *Server) writeQueryAuthorizationError(w http.ResponseWriter, r *http.Req
 		result.Blockers = append(result.Blockers, az.Blocker{OperationID: op.ID, Code: code, Scope: az.ScopeOperation})
 	}
 	result = boundAuthorization(result)
-	if _, err := az.MarshalResult(result); err != nil {
+	if _, err := azMarshalResult(result); err != nil {
 		writeError(w, 500, "internal", "authorization result could not be encoded")
 		return
 	}

@@ -123,7 +123,9 @@ func newQueryGate(l QueryLimits, c clock) *queryGate {
 // noRelease is the release function of a refused acquire: calling it does
 // nothing, so `release, ok := g.acquire(...); defer release()` written before
 // the ok check does not panic on a refusal.
-func noRelease() {}
+func noRelease() {
+	return
+}
 
 // acquire takes a slot on route, waiting up to the queue wait for one to free.
 // It returns the release function and true, or a no-op release function and

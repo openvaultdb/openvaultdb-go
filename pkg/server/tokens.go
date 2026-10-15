@@ -54,6 +54,8 @@ func grantToResponse(g *auth.Grant, secret string) tokenResponse {
 	return r
 }
 
+var newAuthToken = auth.NewToken
+
 // handleTokensCreate handles POST /v1/tokens (owner only).
 func (s *Server) handleTokensCreate(w http.ResponseWriter, r *http.Request) {
 	if !s.isOwner(r) {
@@ -100,7 +102,7 @@ func (s *Server) handleTokensCreate(w http.ResponseWriter, r *http.Request) {
 		expiresAt = time.Now().UTC().Add(d)
 	}
 
-	token, err := auth.NewToken()
+	token, err := newAuthToken()
 	if err != nil {
 		s.writeInternalError(w, r, "failed to generate token: "+err.Error(), err)
 		return

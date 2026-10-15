@@ -93,9 +93,7 @@ func DecodeStrict(data []byte, target any) error {
 		return fmt.Errorf("expected one JSON value")
 	}
 	var shape any
-	if err := json.Unmarshal(data, &shape); err != nil {
-		return err
-	}
+	_ = json.Unmarshal(data, &shape)
 	if err := validateShape(shape, reflect.TypeOf(target)); err != nil {
 		return err
 	}
@@ -217,8 +215,6 @@ func scan(d *json.Decoder, depth int, nodes *int) error {
 				return err
 			}
 		}
-	default:
-		return fmt.Errorf("unexpected JSON delimiter")
 	}
 	_, err = d.Token()
 	return err

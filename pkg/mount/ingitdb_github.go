@@ -26,6 +26,8 @@ import (
 // from the manifest's declared schemas, so this backend supports strict and
 // partial modes. Schemaless (collections discovered on write) needs the
 // GitHub driver to grow the definition on the fly — a follow-up.
+var newBatchingGitHubDB = dalgo2github.NewBatchingGitHubDB
+
 func openInGitDBGitHub(m *manifest.Manifest) (dal.DB, []schema.Mode, error) {
 	gh := m.Storage.InGitDB.GitHub
 	tokenEnv := gh.TokenEnvVar()
@@ -56,7 +58,7 @@ func openInGitDBGitHub(m *manifest.Manifest) (dal.DB, []schema.Mode, error) {
 		Token:      token,
 		APIBaseURL: gh.APIBaseURL,
 	}
-	db, err := dalgo2github.NewBatchingGitHubDB(cfg, def, "ovdb: write")
+	db, err := newBatchingGitHubDB(cfg, def, "ovdb: write")
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open GitHub-backed inGitDB %s/%s@%s: %w",
 			gh.Owner, gh.Repo, gh.GitRef(), err)

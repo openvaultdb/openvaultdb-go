@@ -135,10 +135,12 @@ func (g *Grant) Expired(now time.Time) bool {
 // Revoked reports whether the grant has been revoked.
 func (g *Grant) Revoked() bool { return g.RevokedAt != nil }
 
+var randRead = rand.Read
+
 // NewGrantID generates a short random grant identifier (8 random hex bytes = 16 hex chars).
 func NewGrantID() (string, error) {
 	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
+	if _, err := randRead(b); err != nil {
 		return "", fmt.Errorf("failed to generate grant id: %w", err)
 	}
 	return hex.EncodeToString(b), nil
@@ -187,7 +189,7 @@ func (p *Principal) Allows(databaseID, action, collection string) bool {
 // NewToken mints a cryptographically random opaque bearer token.
 func NewToken() (string, error) {
 	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
+	if _, err := randRead(b); err != nil {
 		return "", fmt.Errorf("failed to generate token: %w", err)
 	}
 	return "ovdb_" + hex.EncodeToString(b), nil

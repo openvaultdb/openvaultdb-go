@@ -21,6 +21,7 @@ func newCatalogue(t *testing.T) (*inferred.Catalogue, string) {
 
 // TestObserveSimpleRecord verifies that a flat record populates field stats.
 func TestObserveSimpleRecord(t *testing.T) {
+	t.Parallel()
 	c, _ := newCatalogue(t)
 
 	record := map[string]any{
@@ -63,6 +64,7 @@ func TestObserveSimpleRecord(t *testing.T) {
 
 // TestNestedObjectsDottedPaths verifies that nested objects produce dotted paths.
 func TestNestedObjectsDottedPaths(t *testing.T) {
+	t.Parallel()
 	c, _ := newCatalogue(t)
 
 	record := map[string]any{
@@ -91,6 +93,7 @@ func TestNestedObjectsDottedPaths(t *testing.T) {
 
 // TestArraysRecordElementTypes verifies that array fields record element types.
 func TestArraysRecordElementTypes(t *testing.T) {
+	t.Parallel()
 	c, _ := newCatalogue(t)
 
 	record := map[string]any{
@@ -118,6 +121,7 @@ func TestArraysRecordElementTypes(t *testing.T) {
 // different non-null types sets HasConflict and causes FieldsForCollection to
 // return TypeAny.
 func TestTypeConflictDetection(t *testing.T) {
+	t.Parallel()
 	c, _ := newCatalogue(t)
 
 	if err := c.Observe("users", map[string]any{"age": float64(25)}); err != nil {
@@ -153,6 +157,7 @@ func TestTypeConflictDetection(t *testing.T) {
 // TestMissingFieldCounting verifies that MissingCount increments for fields
 // absent in later records.
 func TestMissingFieldCounting(t *testing.T) {
+	t.Parallel()
 	c, _ := newCatalogue(t)
 
 	// Record 1: has both fields.
@@ -194,6 +199,7 @@ func TestMissingFieldCounting(t *testing.T) {
 // TestPersistenceRoundTrip verifies that a catalogue loaded after Observe
 // contains the same data.
 func TestPersistenceRoundTrip(t *testing.T) {
+	t.Parallel()
 	c, path := newCatalogue(t)
 
 	record := map[string]any{
@@ -229,6 +235,7 @@ func TestPersistenceRoundTrip(t *testing.T) {
 // TestMissingFilePath verifies that Load on a non-existent file returns an
 // empty catalogue without error.
 func TestMissingFilePath(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "nonexistent", "inferred-schema.json")
 	c, err := inferred.Load(path)
 	if err != nil {
@@ -243,6 +250,7 @@ func TestMissingFilePath(t *testing.T) {
 // TestFieldsForCollectionTypeMapping verifies JSON-type → schema.FieldType
 // mapping for all supported types.
 func TestFieldsForCollectionTypeMapping(t *testing.T) {
+	t.Parallel()
 	c, _ := newCatalogue(t)
 
 	records := []map[string]any{
@@ -287,6 +295,7 @@ func TestFieldsForCollectionTypeMapping(t *testing.T) {
 // TestFieldsForCollectionNilOnUnknown verifies that FieldsForCollection returns
 // nil for a collection that was never observed.
 func TestFieldsForCollectionNilOnUnknown(t *testing.T) {
+	t.Parallel()
 	c, _ := newCatalogue(t)
 	if fields := c.FieldsForCollection("ghost"); fields != nil {
 		t.Errorf("expected nil for unknown collection, got %v", fields)
@@ -296,6 +305,7 @@ func TestFieldsForCollectionNilOnUnknown(t *testing.T) {
 // TestFieldsForCollectionTopLevelOnly verifies that dotted (nested) paths are
 // excluded from FieldsForCollection output.
 func TestFieldsForCollectionTopLevelOnly(t *testing.T) {
+	t.Parallel()
 	c, _ := newCatalogue(t)
 
 	record := map[string]any{
@@ -319,6 +329,7 @@ func TestFieldsForCollectionTopLevelOnly(t *testing.T) {
 // TestConcurrentObserve verifies that concurrent Observe calls do not race.
 // Run with -race to detect data races.
 func TestConcurrentObserve(t *testing.T) {
+	t.Parallel()
 	c, _ := newCatalogue(t)
 
 	const goroutines = 20
@@ -348,6 +359,7 @@ func TestConcurrentObserve(t *testing.T) {
 // TestMaxDepthGuard verifies that deeply nested objects do not cause infinite
 // recursion (paths beyond maxDepth are silently dropped).
 func TestMaxDepthGuard(t *testing.T) {
+	t.Parallel()
 	c, _ := newCatalogue(t)
 
 	// Build a 10-level deep nested map (exceeds maxDepth=8).
@@ -363,6 +375,7 @@ func TestMaxDepthGuard(t *testing.T) {
 
 // TestNullHandling verifies that null values are recorded as "null" type.
 func TestNullHandling(t *testing.T) {
+	t.Parallel()
 	c, _ := newCatalogue(t)
 
 	if err := c.Observe("nulls", map[string]any{"maybe": nil}); err != nil {
@@ -382,10 +395,15 @@ func TestNullHandling(t *testing.T) {
 	if fs.HasConflict {
 		t.Error("HasConflict should be false with only null observed")
 	}
+	fields := c.FieldsForCollection("nulls")
+	if fields["maybe"].Type != schema.TypeAny {
+		t.Errorf("null-only field Type = %q, want %q", fields["maybe"].Type, schema.TypeAny)
+	}
 }
 
 // TestNullDoesNotConflict verifies that null + one non-null type is not a conflict.
 func TestNullDoesNotConflict(t *testing.T) {
+	t.Parallel()
 	c, _ := newCatalogue(t)
 
 	_ = c.Observe("mix", map[string]any{"x": nil})
@@ -400,6 +418,7 @@ func TestNullDoesNotConflict(t *testing.T) {
 
 // TestTimestamps verifies that FirstSeen/LastSeen are populated.
 func TestTimestamps(t *testing.T) {
+	t.Parallel()
 	c, _ := newCatalogue(t)
 
 	if err := c.Observe("ts", map[string]any{"f": "v"}); err != nil {

@@ -142,19 +142,14 @@ func ParseJSON(data []byte, profile Profile) (Declaration, error) {
 		_, _ = obj.Token()
 		seen := map[string]bool{}
 		for obj.More() {
-			token, err := obj.Token()
-			if err != nil {
-				return d, err
-			}
+			token, _ := obj.Token()
 			key := token.(string)
 			if seen[key] {
 				return d, fmt.Errorf("duplicate license field")
 			}
 			seen[key] = true
 			var value any
-			if err := obj.Decode(&value); err != nil {
-				return d, err
-			}
+			_ = obj.Decode(&value)
 			text, ok := value.(string)
 			if !ok || strings.TrimSpace(text) == "" {
 				return d, fmt.Errorf("license fields must be nonblank strings")
@@ -218,10 +213,7 @@ func ParseYAML(node *yaml.Node, profile Profile) (Declaration, error) {
 		}
 		raw[key.Value] = value.Value
 	}
-	data, err := json.Marshal(raw)
-	if err != nil {
-		return Declaration{}, err
-	}
+	data, _ := json.Marshal(raw)
 	return ParseJSON(data, profile)
 }
 func (d *Declaration) UnmarshalYAML(node *yaml.Node) error {

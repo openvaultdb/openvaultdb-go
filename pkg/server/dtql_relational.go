@@ -48,6 +48,8 @@ import (
 type joinExecuteFunc func(ctx context.Context, query dal.StructuredQuery, profile joinexec.Profile, defaultDatabase string, registry joinexec.Registry, authorize joinexec.Authorize, limits joinexec.Limits, opts ...joinexec.Option) (joinexec.Result, error)
 type joinStreamExecuteFunc func(ctx context.Context, query dal.StructuredQuery, profile joinexec.Profile, defaultDatabase string, registry joinexec.Registry, authorize joinexec.Authorize, limits joinexec.Limits, emit func(record.Record) error, opts ...joinexec.Option) (joinexec.StreamResult, error)
 
+var finishRelationalStream = func(s *jsonRowStream, footer map[string]any) error { return s.Finish(footer) }
+
 // maxEchoLen is the most bytes of a name from the request an error body repeats.
 // A name can be as long as the request body, and an error is not the place to
 // send it back.
@@ -178,7 +180,7 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 		s.writeRelationalError(w, r, err)
 		return
 	}
-	capture, err := s.captureRights(databases, targets)
+	capture, err := serverCaptureRights(s, databases, targets)
 	if err != nil {
 		s.rightsError(w, err)
 		return
@@ -263,7 +265,7 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	}
 	footer := map[string]any{"columns": result.Columns, "execution": result.Execution}
 	if len(capture.rights) == 0 {
-		if err := stream.Finish(footer); err != nil {
+		if err := finishRelationalStream(stream, footer); err != nil {
 			if stream.started {
 				s.finishStreamErrorOrAbort(w, r, stream, func(w http.ResponseWriter) { s.writeRelationalStreamError(w, r, err) })
 				return
@@ -277,7 +279,7 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	for _, source := range result.Execution.Sources {
 		usedIDs = append(usedIDs, (license.Identity{ServerID: s.rightsServerID, DatabaseID: source.Database, Recordset: source.Collection}).SourceID())
 	}
-	used, err := capture.used(usedIDs)
+	used, err := captureUsed(capture, usedIDs)
 	if err != nil {
 		if stream.started {
 			s.finishStreamErrorOrAbort(w, r, stream, func(w http.ResponseWriter) { s.rightsError(w, err) })
@@ -288,7 +290,7 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 		return
 	}
 	attachRights(footer, capture.rights, used)
-	if err := stream.Finish(footer); err != nil {
+	if err := finishRelationalStream(stream, footer); err != nil {
 		if stream.started {
 			s.finishStreamErrorOrAbort(w, r, stream, func(w http.ResponseWriter) { s.writeRelationalStreamError(w, r, err) })
 			return

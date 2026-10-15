@@ -29,8 +29,11 @@ func newGitPushHook(dir string, o *manifest.InGitDBOptions) (hook func(ctx conte
 	case "async":
 		signal := make(chan struct{}, 1)
 		var mu sync.Mutex
+		var wg sync.WaitGroup
 		stopped := false
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			for range signal {
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				if err := gitPush(ctx, dir, o.PushRemote(), o.PushBranch()); err != nil {
@@ -52,10 +55,15 @@ func newGitPushHook(dir string, o *manifest.InGitDBOptions) (hook func(ctx conte
 				return nil
 			}, func() error {
 				mu.Lock()
-				defer mu.Unlock()
+				shouldWait := false
 				if !stopped {
 					stopped = true
 					close(signal) // a pending push still runs, then the pusher exits
+					shouldWait = true
+				}
+				mu.Unlock()
+				if shouldWait {
+					wg.Wait()
 				}
 				return nil
 			}
@@ -64,8 +72,10 @@ func newGitPushHook(dir string, o *manifest.InGitDBOptions) (hook func(ctx conte
 	}
 }
 
+var execCommandContext = exec.CommandContext
+
 func gitPush(ctx context.Context, dir, remote, branch string) error {
-	out, err := exec.CommandContext(ctx, "git", "-C", dir, "push", remote, branch).CombinedOutput()
+	out, err := execCommandContext(ctx, "git", "-C", dir, "push", remote, branch).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git push %s %s: %w: %s", remote, branch, err, out)
 	}

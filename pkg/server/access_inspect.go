@@ -652,7 +652,7 @@ func (s *Server) handleAccessEvidence(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
-	evidence, refused, err := evidenceOnce(ctx, coordinator, internal)
+	evidence, refused, err := runEvidenceOnce(ctx, coordinator, internal)
 	if refused {
 		s.logUnpreparedCollections(r, []string{op.Resource.Table})
 	}
@@ -701,6 +701,8 @@ func evidenceOnce(ctx context.Context, coordinator inspectionCoordinator, op acc
 	refused, err = refusedWhileAlive(ctx, err)
 	return evidence, refused, err
 }
+
+var runEvidenceOnce = evidenceOnce
 
 func writeUnavailablePoint(w http.ResponseWriter, db *core.Database, key *record.Key, action string) {
 	resource := az.Resource{DatabaseID: db.ID(), Path: "/" + key.Collection() + "/" + fmt.Sprint(key.ID), Table: key.Collection(), RowID: fmt.Sprint(key.ID)}

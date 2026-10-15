@@ -27,6 +27,7 @@ func namedManifest(engine, collection, field string) *manifest.Manifest {
 }
 
 func TestPostgresManifestNamesAreRefusedAtLoad(t *testing.T) {
+	t.Parallel()
 	long := strings.Repeat("n", 64)
 	for _, tc := range []struct {
 		what, collection, field, want string
@@ -59,6 +60,7 @@ func TestPostgresManifestNamesAreRefusedAtLoad(t *testing.T) {
 }
 
 func TestPostgresManifestNameRefusalIsBoundedAndNamesTheFirstEntryInOrder(t *testing.T) {
+	t.Parallel()
 	huge := strings.Repeat("n", 1<<16)
 	err := namedManifest("postgres", "orders", huge).Validate()
 	if err == nil || len(err.Error()) > 1024 || !strings.Contains(err.Error(), "65536 bytes") {
@@ -79,6 +81,7 @@ func TestPostgresManifestNameRefusalIsBoundedAndNamesTheFirstEntryInOrder(t *tes
 }
 
 func TestPostgresManifestNamesAtTheLimitAreAccepted(t *testing.T) {
+	t.Parallel()
 	at := strings.Repeat("n", 63)
 	for _, name := range []string{at, strings.ToUpper(at), "_", "select", "Orders", "a1_B2", "id"} {
 		if err := namedManifest("postgres", name, name).Validate(); err != nil {
@@ -94,6 +97,7 @@ func TestPostgresManifestNamesAtTheLimitAreAccepted(t *testing.T) {
 }
 
 func TestOtherEnginesAreNotHeldToThePostgresNameRule(t *testing.T) {
+	t.Parallel()
 	long := strings.Repeat("n", 64)
 	for _, engine := range []string{"sqlite", "ingitdb", "mysql"} {
 		m := namedManifest(engine, long, "a b")

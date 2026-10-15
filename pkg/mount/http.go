@@ -10,6 +10,8 @@ import (
 	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 )
 
+var newHTTPDB = dalgo2http.NewDB
+
 // openHTTP compiles a fixed live-only resource. The nil production client uses
 // dalgo2http's guarded HTTPS transport, DNS/address checks and redirect refusal.
 // A client parameter is private to this package for synthetic transport tests.
@@ -29,7 +31,7 @@ func openHTTP(m *manifest.Manifest, client *http.Client) (dal.DB, []schema.Mode,
 		collection.Decoder = dalgo2http.DecoderStrictCSV3
 		collection.KeyField = "Value" // Query transport only; no point-read or scalar-code promise.
 	}
-	db, err := dalgo2http.NewDB(dalgo2http.Config{
+	db, err := newHTTPDB(dalgo2http.Config{
 		Mode: dalgo2http.ModeLive, Client: client,
 		Collections: []dalgo2http.Collection{collection},
 	})

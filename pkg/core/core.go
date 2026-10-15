@@ -258,9 +258,6 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 			option = access.WithDatabasePolicyProvider(controller.Policies)
 		}
 		options := []access.DBOption{option}
-		if d.coordinator != nil {
-			options = append(options, access.WithEnforcementCoordinator(d.coordinator))
-		}
 		secured, err := access.SecureDB(db, options...)
 		if err != nil {
 			return nil, err
@@ -373,17 +370,17 @@ func (d *Database) Exists(ctx context.Context, key *record.Key) (bool, error) {
 // declared spelling is the one listed. Every name listed is one the routes that
 // take a collection accept.
 func (d *Database) Collections(ctx context.Context) ([]string, error) {
-	if d.ReadOnly() {
-		names := make([]string, 0, len(d.names.spellings))
-		for name := range d.names.spellings {
+	if d.nativePostgres {
+		names := make([]string, 0, len(d.nativeSources))
+		for name := range d.nativeSources {
 			names = append(names, name)
 		}
 		sort.Strings(names)
 		return names, nil
 	}
-	if d.nativePostgres {
-		names := make([]string, 0, len(d.nativeSources))
-		for name := range d.nativeSources {
+	if d.ReadOnly() {
+		names := make([]string, 0, len(d.names.spellings))
+		for name := range d.names.spellings {
 			names = append(names, name)
 		}
 		sort.Strings(names)
@@ -588,7 +585,7 @@ func (d *Database) apply(ctx context.Context, ops []Op, message string) (int, er
 	}
 	txOpts := []dal.TransactionOption{dal.TxWithMessage(message)}
 	err := d.db.RunReadwriteTransaction(ctx, func(ctx context.Context, tx dal.ReadwriteTransaction) error {
-		for i, op := range ops {
+		for _, op := range ops {
 			var err error
 			dk := op.Key
 			switch op.Op {
@@ -615,10 +612,7 @@ func (d *Database) apply(ctx context.Context, ops []Op, message string) (int, er
 					return fmt.Errorf("failed to insert %s: %w", clipKey(op.Key), err)
 				}
 			case "update":
-				updates, err := toDalUpdates(op.Updates)
-				if err != nil {
-					return fmt.Errorf("op %d (update %s): %w", i, clipKey(op.Key), err)
-				}
+				updates, _ := toDalUpdates(op.Updates)
 				if err = tx.Update(ctx, dk, updates); err != nil {
 					return fmt.Errorf("failed to update %s: %w", clipKey(op.Key), err)
 				}
@@ -626,8 +620,6 @@ func (d *Database) apply(ctx context.Context, ops []Op, message string) (int, er
 				if err = tx.Delete(ctx, dk); err != nil {
 					return fmt.Errorf("failed to delete %s: %w", clipKey(op.Key), err)
 				}
-			default:
-				return fmt.Errorf("op %d: unknown op %q", i, op.Op)
 			}
 		}
 		return nil

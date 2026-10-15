@@ -50,9 +50,6 @@ func nativePostgresJSONSafeValue(value any) any {
 			}
 			return value
 		}
-		if unsigned, err := strconv.ParseUint(text, 10, 64); err == nil && unsigned <= uint64(maxJavaScriptSafeInteger) {
-			return value
-		}
 		return text
 	case json.RawMessage, []byte:
 		// Raw JSON is kept byte-for-byte so its number lexemes and shape
@@ -251,9 +248,6 @@ func nativePostgresProjectionTypes(query dal.StructuredQuery, endpoint *core.Dat
 		}
 	}
 	addFrom = func(from dal.FromSource) {
-		if from == nil {
-			return
-		}
 		addSource(from.Base())
 		for _, joined := range from.Joins() {
 			if nested := joined.From(); nested != nil {

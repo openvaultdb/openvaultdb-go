@@ -26,6 +26,7 @@ func dsnEnvManifest(engine, scalar string) string {
 // the check is refused when the manifest is validated, with a message that names
 // the field and does not repeat the value.
 func TestDSNEnvIsAcceptedOnlyAsAnEnvironmentVariableName(t *testing.T) {
+	t.Parallel()
 	for _, engine := range []string{"postgres", "mysql"} {
 		field := "storage." + engine + ".dsn_env"
 		for _, scalar := range []string{"MY_DSN", "_dsn", "OVDB_DSN_2", "a", "Mixed_Case_1"} {
@@ -83,6 +84,7 @@ func TestDSNEnvIsAcceptedOnlyAsAnEnvironmentVariableName(t *testing.T) {
 // TestDSNEnvIsCheckedOnValidate: a manifest built in code is checked as one read
 // from a file is, and an empty dsn_env (the default variable) is accepted.
 func TestDSNEnvIsCheckedOnValidate(t *testing.T) {
+	t.Parallel()
 	build := func(engine string) *manifest.Manifest {
 		return &manifest.Manifest{
 			Database: manifest.Database{ID: "sqlmount", SchemaMode: schema.ModeStrict},
@@ -123,6 +125,7 @@ func TestDSNEnvIsCheckedOnValidate(t *testing.T) {
 // TestValidEnvVarName: the name of an environment variable is a letter or an
 // underscore followed by letters, digits and underscores, all ASCII.
 func TestValidEnvVarName(t *testing.T) {
+	t.Parallel()
 	for name, want := range map[string]bool{
 		"A": true, "_": true, "a1": true, "OVDB_POSTGRES_DSN": true,
 		"": false, "1a": false, "a-b": false, "a b": false, "a=b": false, "é": false, "a\n": false, "\na": false, "a$": false,

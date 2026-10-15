@@ -3,6 +3,7 @@ package manifest
 import "testing"
 
 func TestRetentionValidationDefaultsAndCache(t *testing.T) {
+	t.Parallel()
 	for _, engine := range []string{"sqlite", "ingitdb", "firestore", "postgres", "mysql", "http", "future"} {
 		for _, retention := range []string{"", "none", "authorized", "unknown"} {
 			for _, cache := range []string{"", "0s", "0h", "1h", "bad"} {

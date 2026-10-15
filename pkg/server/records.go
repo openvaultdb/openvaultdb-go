@@ -406,7 +406,7 @@ func (s *Server) executeQuery(w http.ResponseWriter, r *http.Request, db *core.D
 		}
 	}
 	footer := map[string]any{}
-	evidence, providerErr := providerCapture.finish(capture.allUsed())
+	evidence, providerErr := finishProviderCapture(providerCapture, capture.allUsed())
 	if providerErr != nil {
 		if stream.started {
 			s.finishStreamErrorOrAbort(w, r, stream, func(w http.ResponseWriter) { s.rightsError(w, providerErr) })
@@ -420,7 +420,7 @@ func (s *Server) executeQuery(w http.ResponseWriter, r *http.Request, db *core.D
 		footer["providerReads"] = evidence
 	}
 	attachRights(footer, capture.rights, capture.allUsed())
-	if err := stream.Finish(footer); err != nil {
+	if err := finishRecordStream(stream, footer); err != nil {
 		if stream.started {
 			s.finishStreamErrorOrAbort(w, r, stream, func(w http.ResponseWriter) { s.writeStreamMappedError(w, r, err) })
 			return
@@ -447,3 +447,5 @@ func (s *Server) cacheReadResponse(w http.ResponseWriter, r *http.Request, db *c
 		w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, s-maxage=%d", seconds, seconds))
 	}
 }
+
+var finishRecordStream = func(s *jsonRowStream, footer map[string]any) error { return s.Finish(footer) }
