@@ -117,7 +117,7 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 		s.readRecord(w, r, db, key)
 	case http.MethodHead:
 		exists, err := db.Exists(ctx, key)
-		if errors.Is(err, core.ErrHTTPOperationUnsupported) {
+		if errors.Is(err, core.ErrHTTPOperationUnsupported) || errors.Is(err, core.ErrNativePostgresOperationUnsupported) {
 			w.WriteHeader(http.StatusNotImplemented)
 			return
 		}

@@ -48,7 +48,10 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 func writeMappedError(w http.ResponseWriter, err error) (internal bool) {
 	var validationErr *schema.ValidationError
 	switch {
-	case errors.Is(err, core.ErrHTTPOperationUnsupported):
+	case errors.Is(err, core.ErrHTTPOperationUnsupported), errors.Is(err, core.ErrNativePostgresOperationUnsupported):
+		// A read-only mount (an HTTP source, a native PostgreSQL mount) does not serve
+		// keyed record reads; capabilities.read is false. It is an answer by design,
+		// never a 500, and the message is fixed: nothing of the mount is in it.
 		writeError(w, http.StatusNotImplemented, "operation_unsupported", "the source does not support this operation")
 	case errors.Is(err, core.ErrDatabaseUnreachable):
 		// The database server of the mount cannot be reached: one status and one code

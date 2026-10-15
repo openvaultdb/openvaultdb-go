@@ -73,6 +73,16 @@ func (d *Database) nameTooLong(name string) bool {
 	return limit > 0 && len(name) > limit
 }
 
+// collectionNameTooLong reports whether a collection name is longer than the server
+// of the mount keeps in a name. The collection ID of a native PostgreSQL mount is an
+// opaque route ID (schema.NativePostgresCollectionID) that never reaches SQL: the
+// driver is handed the schema and relation it encodes, and each of those was held to
+// the 63-byte rule when the ID was built. Its length is therefore not checked; an ID
+// the mount did not discover is refused as not declared.
+func (d *Database) collectionNameTooLong(name string) bool {
+	return !d.nativePostgres && d.nameTooLong(name)
+}
+
 // errCollectionNameTooLong is the refusal of a collection name over the limit of the
 // engine. It wraps ErrInvalidKey (HTTP 400 invalid_key, as every collection name outside
 // the name rule is) and gives the limit and not the name, which can be as long as the
@@ -309,7 +319,10 @@ func (w fieldWalk) condition(condition dal.Condition, depth int) error {
 		if err := w.expression(c.Left, depth+1); err != nil {
 			return err
 		}
-		return w.expression(c.Right, depth+1)
+		if err := w.expression(c.Right, depth+1); err != nil {
+			return err
+		}
+		return w.nativeValue(c)
 	case dal.GroupCondition:
 		for _, child := range c.Conditions() {
 			if err := w.condition(child, depth+1); err != nil {

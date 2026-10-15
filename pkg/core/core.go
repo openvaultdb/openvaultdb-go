@@ -179,6 +179,7 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 		if err != nil {
 			return nil, err
 		}
+		d.db = nativeReadTxDB{DB: db}
 	}
 	if err = d.snapshotLicenses(); err != nil {
 		return nil, err
@@ -287,7 +288,7 @@ func (d *Database) InferredSnapshot() *inferred.Snapshot {
 // adapter call (GuardKey). The adapter is given the collection's canonical name
 // (CanonicalCollection), whichever spelling the key carries.
 func (d *Database) Get(ctx context.Context, key *record.Key) (map[string]any, error) {
-	if d.ReadOnly() {
+	if !d.KeyedRecordReadsServed() {
 		return nil, d.readOnlyOperationError()
 	}
 	if err := d.GuardKey(key); err != nil {
@@ -349,7 +350,7 @@ func (d *Database) coerceToSchema(collection string, data map[string]any) map[st
 // collection on a SQL engine before the adapter is called, and gives the adapter
 // the collection's canonical name.
 func (d *Database) Exists(ctx context.Context, key *record.Key) (bool, error) {
-	if d.ReadOnly() {
+	if !d.KeyedRecordReadsServed() {
 		return false, d.readOnlyOperationError()
 	}
 	if err := d.GuardKey(key); err != nil {
@@ -386,7 +387,7 @@ func (d *Database) Collections(ctx context.Context) ([]string, error) {
 		sort.Strings(names)
 		return names, nil
 	}
-	reader, ok := dal.As[dbschema.SchemaReader](d.db)
+	reader, ok := dal.As[dbschema.SchemaReader](d.driver())
 	if !ok {
 		return nil, nil
 	}
@@ -448,7 +449,7 @@ func (d *Database) CollectionForeignKeys(ctx context.Context, collection string)
 		collection, _ = d.CanonicalCollection(collection)
 	}
 
-	reader, ok := dal.As[dbschema.SchemaReader](d.db)
+	reader, ok := dal.As[dbschema.SchemaReader](d.driver())
 	if !ok {
 		return nil, nil
 	}
@@ -760,7 +761,7 @@ func (d *Database) ensureCollection(ctx context.Context, collection string, fiel
 		return nil
 	}
 
-	modifier, ok := dal.As[ddl.SchemaModifier](d.db)
+	modifier, ok := dal.As[ddl.SchemaModifier](d.driver())
 	if !ok {
 		// Drivers without a DDL surface (Firestore) have implicit
 		// collections — nothing to provision; core still validates modes.

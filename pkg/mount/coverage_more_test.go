@@ -717,11 +717,11 @@ func TestMountPostgresTypesAndVisibility(t *testing.T) {
 	}
 
 	// postgresReadOnlyDSN
-	dsnWithParams, err := postgresReadOnlyDSN("postgres://u:p@localhost:5432/db?sslmode=disable")
+	dsnWithParams, err := postgresReadOnlyDSN("postgres://u:p@localhost:5432/db?sslmode=disable", nativeSettingsOf(Options{}))
 	if err != nil || !strings.Contains(dsnWithParams, "default_transaction_read_only=on") {
 		t.Fatalf("postgresReadOnlyDSN: %v, %v", dsnWithParams, err)
 	}
-	if _, err := postgresReadOnlyDSN("postgres://%ZZ"); err == nil {
+	if _, err := postgresReadOnlyDSN("postgres://%ZZ", nativeSettingsOf(Options{})); err == nil {
 		t.Fatal("expected error for invalid URL in postgresReadOnlyDSN")
 	}
 

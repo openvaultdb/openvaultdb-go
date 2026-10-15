@@ -154,10 +154,16 @@ func (s *Server) humanDatabases(r *http.Request, includeProviderReferences bool,
 					target := fk.ReferencedCollection
 					targetID := fk.ReferencedCollection
 					if db.NativePostgresReadOnly() {
-						if logical, ok := db.ResolveNativePostgresCollection(fk.ReferencedNamespace, fk.ReferencedCollection); ok {
+						namespace := fk.ReferencedNamespace
+						if source, ok := db.NativePostgresSource(name); ok && namespace == "" {
+							// The driver leaves the namespace out for a key into the
+							// referencing relation's own schema.
+							namespace = source.Schema
+						}
+						if logical, ok := db.ResolveNativePostgresCollection(namespace, fk.ReferencedCollection); ok {
 							targetID = logical
 						}
-						target = fk.ReferencedNamespace + "." + target
+						target = namespace + "." + target
 					} else if fk.ReferencedNamespace != "" {
 						target = fk.ReferencedNamespace + "." + target
 					}

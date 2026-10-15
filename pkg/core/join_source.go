@@ -251,7 +251,12 @@ func (g guardedQueryExecutor) JoinFields(ctx context.Context, source dal.Records
 	if err := g.db.guardQuery(); err != nil {
 		return nil, err
 	}
-	if provider, ok := g.executor.(dal.JoinFieldsProvider); ok {
+	executor := g.executor
+	if native, ok := executor.(nativeReadTxDB); ok {
+		// The fields come from the driver's catalogue, not from a query (see driver).
+		executor = native.DB
+	}
+	if provider, ok := executor.(dal.JoinFieldsProvider); ok {
 		fields, err := provider.JoinFields(ctx, source)
 		if err != nil {
 			err = g.db.queryError(ctx, "failed to load the fields of the collection", err)

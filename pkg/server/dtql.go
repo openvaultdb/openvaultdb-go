@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/dal-go/dalgo/access"
@@ -55,6 +56,12 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	doc = withoutOwnDatabase(withoutDefaultSchema(doc, db.Engine()), db.ID())
+	if db.NativePostgresReadOnly() {
+		doc = exactIntegerValues(doc)
+	} else if hasUnsafeIntegerValue(doc) {
+		writeError(w, http.StatusBadRequest, "invalid_dtql", errUnsafeIntegerValue)
+		return
+	}
 	if s.boundedImmutable(db) {
 		doc = withoutOwnDatabase(doc, r.PathValue("db"))
 	}
@@ -342,8 +349,8 @@ func bindDTQLParameters(body []byte) ([]byte, error) {
 			if !ok {
 				return fmt.Errorf("parameter %q is not bound", name)
 			}
-			var value any
-			if err := json.Unmarshal(raw, &value); err != nil {
+			value, err := decodeDTQLParameter(raw)
+			if err != nil {
 				return fmt.Errorf("invalid parameter %q: %w", name, err)
 			}
 			if value == nil {
@@ -390,9 +397,47 @@ func bindDTQLParameters(body []byte) ([]byte, error) {
 	return yaml.Marshal(&query)
 }
 
+// decodeDTQLParameter decodes the JSON value of a parameter. A number written as
+// an integer that fits 64 bits is kept as that integer (int64), so a large ID is
+// not rounded through float64: DALgo then refuses one outside JavaScript's safe
+// range as a value on most engines, and a native PostgreSQL database compares it
+// exactly (exactIntegerValues). Every other number is a float64, as before.
+func decodeDTQLParameter(raw json.RawMessage) (any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	return dtqlParameterNumbers(value)
+}
+
+func dtqlParameterNumbers(value any) (any, error) {
+	switch v := value.(type) {
+	case json.Number:
+		if integer, err := strconv.ParseInt(v.String(), 10, 64); err == nil {
+			return integer, nil
+		}
+		number, err := strconv.ParseFloat(v.String(), 64)
+		if err != nil {
+			return nil, fmt.Errorf("number %s is out of range", clipText(v.String(), maxEchoLen))
+		}
+		return number, nil
+	case []any:
+		for i, item := range v {
+			converted, err := dtqlParameterNumbers(item)
+			if err != nil {
+				return nil, err
+			}
+			v[i] = converted
+		}
+	}
+	return value, nil
+}
+
 func isDTQLScalar(value any) bool {
 	switch value.(type) {
-	case string, bool, float64:
+	case string, bool, float64, int64:
 		return true
 	default:
 		return false

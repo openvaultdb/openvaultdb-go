@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -31,6 +32,10 @@ func nativePostgresJSONSafeIntegers(fields map[string]any) map[string]any {
 
 func nativePostgresJSONSafeValue(value any) any {
 	switch n := value.(type) {
+	case float64:
+		return nativePostgresJSONFloat(n, value)
+	case float32:
+		return nativePostgresJSONFloat(float64(n), value)
 	case int64:
 		if n < -maxJavaScriptSafeInteger || n > maxJavaScriptSafeInteger {
 			return strconv.FormatInt(n, 10)
@@ -80,6 +85,22 @@ func nativePostgresJSONSafeValue(value any) any {
 		out[i] = nativePostgresJSONSafeValue(v.Index(i).Interface())
 	}
 	return out
+}
+
+// nativePostgresJSONFloat spells the special values of PostgreSQL's real and
+// double precision, which JSON has no number for, as PostgreSQL itself spells
+// them: "NaN", "Infinity" and "-Infinity". Every finite value is returned as it
+// came (value), a JSON number.
+func nativePostgresJSONFloat(n float64, value any) any {
+	switch {
+	case math.IsNaN(n):
+		return "NaN"
+	case math.IsInf(n, 1):
+		return "Infinity"
+	case math.IsInf(n, -1):
+		return "-Infinity"
+	}
+	return value
 }
 
 func nativePostgresIntegerLexeme(text string) bool {
