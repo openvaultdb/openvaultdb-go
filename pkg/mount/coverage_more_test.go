@@ -796,6 +796,75 @@ func TestMountPostgresTypesAndVisibility(t *testing.T) {
 		t.Fatal("expected rows.Err() error")
 	}
 
+	// WriteCapabilities: error querying
+	origWriteCaps := queryPostgresWriteCapabilities
+	defer func() { queryPostgresWriteCapabilities = origWriteCaps }()
+	_ = func() error {
+		_, err := origWriteCaps(ctx, closedDB, []string{"s"}, []string{"s"}, []string{"t"})
+		return err
+	}()
+	queryPostgresWriteCapabilities = func(ctx context.Context, _ *sql.DB, _, _, _ []string) (*sql.Rows, error) {
+		return nil, errors.New("query failed")
+	}
+	if _, err := vSuccess.WriteCapabilities(ctx, []string{"s"}, []string{"s"}, []string{"t"}); err == nil {
+		t.Fatal("expected error on query failure")
+	}
+
+	// WriteCapabilities: scan error
+	queryPostgresWriteCapabilities = func(ctx context.Context, _ *sql.DB, _, _, _ []string) (*sql.Rows, error) {
+		return testDB.QueryContext(ctx, "SELECT name, can_select FROM test_rels")
+	}
+	if _, err := vSuccess.WriteCapabilities(ctx, []string{"s"}, []string{"s"}, []string{"t"}); err == nil {
+		t.Fatal("expected scan error on 2 columns")
+	}
+
+	// WriteCapabilities: rows.Err() error
+	queryPostgresWriteCapabilities = func(ctx context.Context, _ *sql.DB, _, _, _ []string) (*sql.Rows, error) {
+		mockQueryFunc = func(_ string, _ []driver.Value) (driver.Rows, error) {
+			return &mockSimpleRows{cols: []string{"reason"}, rowErr: errors.New("rows err")}, nil
+		}
+		mockVisDB, err := sql.Open("mockmountdriver", "mock")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return mockVisDB.QueryContext(ctx, "SELECT")
+	}
+	if _, err := vSuccess.WriteCapabilities(ctx, []string{"s"}, []string{"s"}, []string{"t"}); err == nil {
+		t.Fatal("expected rows.Err() error")
+	}
+
+	// WriteCapabilities: success with reasons
+	if _, err := testDB.ExecContext(ctx, "CREATE TABLE test_caps (reason TEXT); INSERT INTO test_caps VALUES ('superuser')"); err != nil {
+		t.Fatal(err)
+	}
+	queryPostgresWriteCapabilities = func(ctx context.Context, _ *sql.DB, _, _, _ []string) (*sql.Rows, error) {
+		return testDB.QueryContext(ctx, "SELECT reason FROM test_caps")
+	}
+	reasons, err := vSuccess.WriteCapabilities(ctx, []string{"s"}, []string{"s"}, []string{"t"})
+	if err != nil || len(reasons) != 1 || reasons[0] != "superuser" {
+		t.Fatalf("expected 1 reason, got %v, err: %v", reasons, err)
+	}
+
+	// refuseWritableRole with reasons
+	schemasForRefuse := &schema.Schemas{
+		Collections: map[string]schema.Collection{
+			"orders": {Source: &schema.NativeCollectionSource{Schema: "public", Name: "orders"}},
+		},
+	}
+	if err := refuseWritableRole(ctx, vSuccess, schemasForRefuse); err == nil || !strings.Contains(err.Error(), "the role is not read-only: superuser") {
+		t.Fatalf("expected refuseWritableRole error, got: %v", err)
+	}
+
+	// refuseWritableRole without reasons
+	queryPostgresWriteCapabilities = func(ctx context.Context, _ *sql.DB, _, _, _ []string) (*sql.Rows, error) {
+		return testDB.QueryContext(ctx, "SELECT reason FROM test_caps WHERE 1=0")
+	}
+	if err := refuseWritableRole(ctx, vSuccess, schemasForRefuse); err != nil {
+		t.Fatalf("expected no error when no reasons, got: %v", err)
+	}
+
+	queryPostgresWriteCapabilities = origWriteCaps
+
 	// Default openVisibilityDB and closePostgresDatabase
 	if vDB, err := origVisDB("mockmountdriver", "mock"); err != nil {
 		t.Fatal(err)
@@ -812,7 +881,7 @@ func TestMountPostgresTypesAndVisibility(t *testing.T) {
 		Database: manifest.Database{ID: "pgro", SchemaMode: schema.ModeStrict},
 		Storage:  manifest.Storage{Engine: "postgres", Postgres: &manifest.PostgresOptions{ReadOnly: true, DSNEnv: "PG_DSN"}},
 	}
-	fakeDB, _ := dalgo2postgres.NewDatabaseWithOptions("postgres://localhost/orders", dal.NewSchema(nil, nil), dalgo2sql.DbOptions{})
+	fakeDB := &dalgo2postgres.Database{}
 	openPostgresDatabase = func(_ string, _ dal.Schema, _ dalgo2sql.DbOptions, _ ...dalgo2postgres.Option) (*dalgo2postgres.Database, error) {
 		return fakeDB, nil
 	}
@@ -861,6 +930,39 @@ func TestMountPostgresTypesAndVisibility(t *testing.T) {
 	} else if db == nil {
 		t.Fatal("expected db not nil")
 	}
+
+	// 6. non-catalog DB (postgres.go:223-225)
+	if _, _, err := openPostgresNative(mROValid, func(string, dal.Schema, dalgo2sql.DbOptions, ...dalgo2postgres.Option) (*dalgo2postgres.Database, error) {
+		return nil, nil
+	}, nativeSettingsOf(Options{}), sqlOpenPostgresAccess); err == nil || !strings.Contains(err.Error(), "PostgreSQL driver does not provide native schema discovery") {
+		t.Fatalf("expected non-catalog error, got: %v", err)
+	}
+
+	// 7. RequireReadOnlyNativePostgresRole in openPostgresWithOptions (postgres.go:237-238)
+	cleanDB, errClean := sql.Open("sqlite", ":memory:")
+	if errClean != nil {
+		t.Fatal(errClean)
+	}
+	defer func() { _ = cleanDB.Close() }()
+	openPostgresDatabase = func(_ string, _ dal.Schema, _ dalgo2sql.DbOptions, _ ...dalgo2postgres.Option) (*dalgo2postgres.Database, error) {
+		return fakeDB, nil
+	}
+	openVisibilityDB = func(_, _ string) (*sql.DB, error) {
+		return cleanDB, nil
+	}
+	closeVisibilityDB = func(_ *sql.DB) error { return nil }
+	discoverNativeSchemas = func(context.Context, nativePostgresCatalog, nativePostgresSelectVisibility, map[schema.NativeCollectionSource]struct{}) (*schema.Schemas, error) {
+		return schemasForRefuse, nil
+	}
+	origWriteCaps2 := queryPostgresWriteCapabilities
+	defer func() { queryPostgresWriteCapabilities = origWriteCaps2 }()
+	queryPostgresWriteCapabilities = func(ctx context.Context, _ *sql.DB, _, _, _ []string) (*sql.Rows, error) {
+		return cleanDB.QueryContext(ctx, "SELECT 1 WHERE 1=0")
+	}
+	if _, _, err := openPostgresWithOptions(mROValid, Options{AllowInsecureNativePostgresTransport: true, RequireReadOnlyNativePostgresRole: true}); err != nil {
+		t.Fatalf("expected success for clean read-only role, got: %v", err)
+	}
+	queryPostgresWriteCapabilities = origWriteCaps2
 
 	// discoverNativePostgresSchemasExcluding edge cases:
 	// 1. ListSchemas error

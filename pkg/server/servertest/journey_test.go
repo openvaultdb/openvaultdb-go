@@ -3,6 +3,7 @@ package servertest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -195,4 +196,77 @@ func (r *recordingTB) Errorf(string, ...any) { r.errors++ }
 func (r *recordingTB) Fatalf(string, ...any) {
 	r.fatals++
 	panic("fatal")
+}
+
+type cancelAfterGetRT struct {
+	cancel context.CancelFunc
+	rt     http.RoundTripper
+}
+
+func (c *cancelAfterGetRT) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := c.rt.RoundTrip(req)
+	if req.Method == http.MethodGet {
+		c.cancel()
+	}
+	return resp, err
+}
+
+func TestJourneyAdditionalCoverage(t *testing.T) {
+	// 1. journey.go: lines 167-168: ctx.Err() != nil in EveryCollection
+	api := fakeAPI(t)
+	defer api.Close()
+	ctxCancel, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	opts := Options{
+		Header: http.Header{"X-Test": {"yes"}},
+		Client: &http.Client{Transport: &cancelAfterGetRT{cancel: cancel, rt: http.DefaultTransport}},
+	}
+	if _, err := EveryCollection(ctxCancel, api.URL+"/", "db", opts); err == nil {
+		t.Fatal("expected error on cancelled context")
+	}
+
+	// 2. journey.go: lines 314-315: bytea filter not refused with message == ""
+	srvBytea := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = io.WriteString(w, `{
+				"collections": ["tbl"],
+				"schemas": {"collections": {"tbl": {"fields": {"b": {"nativeType": "bytea"}}}}}
+			}`)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"records":[{"data":{"b":"AA=="}}],"complete":true}`)
+	}))
+	defer srvBytea.Close()
+	repBytea, err := EveryCollection(context.Background(), srvBytea.URL+"/", "db", Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundByteaMsg := false
+	for _, ch := range repBytea.Checks {
+		if ch.Kind == KindFilter && strings.Contains(ch.Message, "a filter on a bytea column was not refused") {
+			foundByteaMsg = true
+			break
+		}
+	}
+	if !foundByteaMsg {
+		t.Fatal("expected 'a filter on a bytea column was not refused' message")
+	}
+
+	// 3. journey.go: lines 362-363: jsonMarshalJourney error on query body
+	oldMarshal := jsonMarshalJourney
+	defer func() { jsonMarshalJourney = oldMarshal }()
+	calls := 0
+	jsonMarshalJourney = func(v any) ([]byte, error) {
+		calls++
+		if calls == 2 {
+			return nil, errors.New("forced marshal body error")
+		}
+		return json.Marshal(v)
+	}
+	j := journey{ctx: context.Background(), base: "http://127.0.0.1:0", database: "db", opts: Options{Client: http.DefaultClient}}
+	if _, _, msg := j.query(map[string]any{"from": "x"}, false); !strings.Contains(msg, "forced marshal body error") {
+		t.Fatalf("expected forced marshal body error, got %q", msg)
+	}
+	jsonMarshalJourney = oldMarshal
 }

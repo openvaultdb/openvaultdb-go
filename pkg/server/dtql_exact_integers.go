@@ -17,6 +17,8 @@ import (
 // integer is not an integer to YAML either (it reads it as a float) and is left
 // for the column check to refuse. A document that is not YAML, or that holds no
 // such literal, is returned unchanged.
+var yamlMarshalExact = yaml.Marshal
+
 func exactIntegerValues(doc []byte) []byte {
 	var root yaml.Node
 	if err := yaml.Unmarshal(doc, &root); err != nil {
@@ -25,7 +27,7 @@ func exactIntegerValues(doc []byte) []byte {
 	if !rewriteExactIntegers(&root) {
 		return doc
 	}
-	rewritten, err := yaml.Marshal(&root)
+	rewritten, err := yamlMarshalExact(&root)
 	if err != nil {
 		return doc
 	}

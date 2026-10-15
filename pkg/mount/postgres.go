@@ -128,7 +128,7 @@ func openPostgresWithExclusions(m *manifest.Manifest, open postgresOpener, exclu
 type postgresAccessOpener func(dsn string) (nativePostgresAccess, error)
 
 func sqlOpenPostgresAccess(dsn string) (nativePostgresAccess, error) {
-	db, err := sql.Open("pgx", dsn)
+	db, err := openVisibilityDB("pgx", dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +219,7 @@ func openPostgresNative(m *manifest.Manifest, open postgresOpener, settings nati
 			ListSchemaCollections(context.Context, string) ([]dal.CollectionRef, error)
 			DescribeCollection(context.Context, *dal.CollectionRef) (*dbschema.CollectionDef, error)
 		})
-		if !ok {
+		if !ok || db == nil {
 			_ = closePostgresDatabase(db)
 			return nil, nil, errors.New("PostgreSQL driver does not provide native schema discovery")
 		}
@@ -419,7 +419,7 @@ func (e *nativePostgresDescribeError) Unwrap() error { return e.cause }
 
 type postgresSelectVisibility struct{ db *sql.DB }
 
-func (v postgresSelectVisibility) Close() error { return v.db.Close() }
+func (v postgresSelectVisibility) Close() error { return closeVisibilityDB(v.db) }
 
 // writeCapabilitiesQuery lists every way the current role could change data or the
 // schema. Membership is MEMBER, not USAGE: a NOINHERIT member of a role does not
@@ -477,8 +477,12 @@ SELECT reason FROM (
 ) AS reasons(reason)
 LIMIT 20`
 
+var queryPostgresWriteCapabilities = func(ctx context.Context, db *sql.DB, exposedSchemas, relationSchemas, relationNames []string) (*sql.Rows, error) {
+	return db.QueryContext(ctx, writeCapabilitiesQuery, exposedSchemas, relationSchemas, relationNames)
+}
+
 func (v postgresSelectVisibility) WriteCapabilities(ctx context.Context, exposedSchemas, relationSchemas, relationNames []string) ([]string, error) {
-	rows, err := v.db.QueryContext(ctx, writeCapabilitiesQuery, exposedSchemas, relationSchemas, relationNames)
+	rows, err := queryPostgresWriteCapabilities(ctx, v.db, exposedSchemas, relationSchemas, relationNames)
 	if err != nil {
 		return nil, errors.New("could not check the PostgreSQL role's write privileges")
 	}

@@ -369,6 +369,16 @@ func TestDTQLAndPagesCoverageBatch11(t *testing.T) {
 	if rec298.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500 on relational finish error unstarted, got %d, body: %s", rec298.Code, rec298.Body.String())
 	}
+
+	// dtql_exact_integers.go: lines 30-31: yamlMarshalExact error
+	oldYAMLMarshal := yamlMarshalExact
+	defer func() { yamlMarshalExact = oldYAMLMarshal }()
+	yamlMarshalExact = func(any) ([]byte, error) { return nil, errors.New("forced yaml marshal error") }
+	rawDoc := []byte("value: 9007199254740993")
+	if got := exactIntegerValues(rawDoc); string(got) != string(rawDoc) {
+		t.Fatalf("expected rawDoc on yaml marshal error, got %s", got)
+	}
+	yamlMarshalExact = oldYAMLMarshal
 }
 
 func TestHumanAndPostgresWireCoverageBatch11(t *testing.T) {
@@ -762,18 +772,29 @@ func (m multiFKReaderDB) DescribeCollection(ctx context.Context, ref *dal.Collec
 		ns = "other_schema"
 		target = "roles"
 	}
-	return &dbschema.CollectionDef{
-		Name: ref.Name(),
-		ForeignKeys: []dbschema.ForeignKeyDef{
-			{
-				Name:                 "fk_multi",
-				ReferencedNamespace:  ns,
-				ReferencedCollection: target,
-				Fields:               []dal.FieldName{"user_id", "dept_id"},
-				ReferencedFields:     []dal.FieldName{"id", "dept_id"},
-				Enforcement:          "Enforced",
-			},
+	fks := []dbschema.ForeignKeyDef{
+		{
+			Name:                 "fk_multi",
+			ReferencedNamespace:  ns,
+			ReferencedCollection: target,
+			Fields:               []dal.FieldName{"user_id", "dept_id"},
+			ReferencedFields:     []dal.FieldName{"id", "dept_id"},
+			Enforcement:          "Enforced",
 		},
+	}
+	if m.isPG {
+		fks = append(fks, dbschema.ForeignKeyDef{
+			Name:                 "fk_same_schema",
+			ReferencedNamespace:  "",
+			ReferencedCollection: target,
+			Fields:               []dal.FieldName{"user_id"},
+			ReferencedFields:     []dal.FieldName{"id"},
+			Enforcement:          "Enforced",
+		})
+	}
+	return &dbschema.CollectionDef{
+		Name:        ref.Name(),
+		ForeignKeys: fks,
 	}, nil
 }
 
