@@ -22,7 +22,9 @@ part of the manifest or API. Use a database role that has only the catalog and
 that could override it, and only advertises relations for which the role has
 `SELECT`. Every read runs in an explicit `BEGIN READ ONLY` transaction of its
 own, so a view whose function changes the session default cannot make a later
-read writable. Keyed record reads and every write API are refused, and opening
+read writable. Keyed record reads and every write API are refused (a keyed read, `GET`/`HEAD`
+on `/records/...` or `/read`, is answered `501 operation_unsupported`, as
+`/query` is `501 query_unsupported`; never a 500), and opening
 the mount does not create or alter tables. The session settings are defense in
 depth; least-privilege database grants remain necessary, especially for views
 or functions owned by another role.
@@ -55,7 +57,7 @@ specs not yet started are skipped (`mount.ErrMountSkipped`) and what was mounted
 is closed.
 
 Database metadata advertises `capabilities.dtql: true` and
-`capabilities.query: false`. Native mounts support the catalog-backed DTQL
+`capabilities.query: false` and `capabilities.read: false` (keyed reads are not served). Native mounts support the catalog-backed DTQL
 read surface; the legacy `/query` endpoint requires OVDB record keys and is
 answered with `501 query_unsupported`.
 
