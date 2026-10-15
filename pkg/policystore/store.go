@@ -21,7 +21,45 @@ import (
 	"github.com/gofrs/flock"
 )
 
-var ErrConflict = errors.New("policy generation revision conflict")
+type syncWriter interface {
+	Write(p []byte) (n int, err error)
+	Sync() error
+	Close() error
+}
+
+type activeTempFile interface {
+	Write(p []byte) (n int, err error)
+	Sync() error
+	Close() error
+	Name() string
+}
+
+type publicationLock interface {
+	TryLockContext(ctx context.Context, retryDelay time.Duration) (bool, error)
+	Unlock() error
+}
+
+var (
+	ErrConflict  = errors.New("policy generation revision conflict")
+	sameFile     = os.SameFile
+	openSyncFile = func(path string, flag int, perm os.FileMode) (syncWriter, error) {
+		return os.OpenFile(path, flag, perm)
+	}
+	createActiveTemp   = func(dir, pattern string) (activeTempFile, error) { return os.CreateTemp(dir, pattern) }
+	newPublicationLock = func(path string) publicationLock { return flock.New(path) }
+	osMkdirAll         = os.MkdirAll
+	osMkdir            = os.Mkdir
+	osLstat            = os.Lstat
+	osRename           = os.Rename
+	osOpenRoot         = os.OpenRoot
+	osMkdirTemp        = os.MkdirTemp
+	rootLstat          = func(root *os.Root, name string) (os.FileInfo, error) { return root.Lstat(name) }
+	rootOpen           = func(root *os.Root, name string) (*os.File, error) { return root.Open(name) }
+	syncDirFn          = syncDir
+	ioReadAll          = io.ReadAll
+	marshalPolicy      = access.MarshalDTQLPolicyJSON
+	loadPolicyFiles    = access.LoadPolicyFiles
+)
 
 const maxGenerationBytes = 16 << 20
 const maxPolicies = 100
@@ -70,10 +108,10 @@ func Open(root string, owner Owner) (*Store, error) {
 			return nil, err
 		}
 	}
-	if err := os.MkdirAll(root, 0700); err != nil {
+	if err := osMkdirAll(root, 0700); err != nil {
 		return nil, err
 	}
-	info, err := os.Lstat(root)
+	info, err := osLstat(root)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +161,7 @@ func strictJSON(data []byte, value any) error {
 	return nil
 }
 func (s *Store) read(name string, limit int64) ([]byte, error) {
-	root, err := os.OpenRoot(s.root)
+	root, err := osOpenRoot(s.root)
 	if err != nil {
 		return nil, err
 	}
@@ -142,23 +180,23 @@ func (s *Store) read(name string, limit int64) ([]byte, error) {
 			return nil, fmt.Errorf("symlink in policy-store path")
 		}
 	}
-	before, err := root.Lstat(name)
+	before, err := rootLstat(root, name)
 	if err != nil {
 		return nil, err
 	}
 	if !before.Mode().IsRegular() {
 		return nil, fmt.Errorf("generation member must be regular")
 	}
-	file, err := root.Open(name)
+	file, err := rootOpen(root, name)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = file.Close() }()
 	opened, err := file.Stat()
-	if err != nil || !os.SameFile(before, opened) {
+	if err != nil || !sameFile(before, opened) {
 		return nil, fmt.Errorf("generation member changed while opening")
 	}
-	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	data, err := ioReadAll(io.LimitReader(file, limit+1))
 	if err != nil {
 		return nil, err
 	}
@@ -217,7 +255,7 @@ func (s *Store) loadGeneration(ctx context.Context, revision string) (Snapshot, 
 		}
 		paths = append(paths, filepath.Join(prefix, entry.File))
 	}
-	policies, err := access.LoadPolicyFiles(s.root, access.FilePolicyConfig{Enabled: true, Database: s.owner.Database, Realm: s.owner.Realm, Policies: paths})
+	policies, err := loadPolicyFiles(s.root, access.FilePolicyConfig{Enabled: true, Database: s.owner.Database, Realm: s.owner.Realm, Policies: paths})
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -232,7 +270,7 @@ func syncDir(path string) error {
 	return file.Sync()
 }
 func writeSync(path string, data []byte) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	file, err := openSyncFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return err
 	}
@@ -264,10 +302,10 @@ func (s *Store) Activate(ctx context.Context, expected string, documents []acces
 		return Snapshot{}, fmt.Errorf("invalid expected generation")
 	}
 	lockPath := filepath.Join(s.root, ".publication.lock")
-	if info, err := os.Lstat(lockPath); err == nil && (!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0) {
+	if info, err := osLstat(lockPath); err == nil && (!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0) {
 		return Snapshot{}, fmt.Errorf("invalid publication lock")
 	}
-	lock := flock.New(lockPath)
+	lock := newPublicationLock(lockPath)
 	acquired, err := lock.TryLockContext(ctx, 10*time.Millisecond)
 	if err != nil {
 		return Snapshot{}, err
@@ -286,7 +324,7 @@ func (s *Store) Activate(ctx context.Context, expected string, documents []acces
 	// A missing generation referenced by an existing active pointer must not
 	// masquerade as an uninitialized store.
 	if err != nil {
-		if _, statErr := os.Lstat(filepath.Join(s.root, "active.json")); !errors.Is(statErr, os.ErrNotExist) {
+		if _, statErr := osLstat(filepath.Join(s.root, "active.json")); !errors.Is(statErr, os.ErrNotExist) {
 			return Snapshot{}, err
 		}
 	}
@@ -305,7 +343,7 @@ func (s *Store) Activate(ctx context.Context, expected string, documents []acces
 			return Snapshot{}, fmt.Errorf("duplicate identity or wrong policy target")
 		}
 		seen[doc.Metadata.Name] = true
-		body, err := access.MarshalDTQLPolicyJSON(doc)
+		body, err := marshalPolicy(doc)
 		if err != nil {
 			return Snapshot{}, err
 		}
@@ -319,27 +357,24 @@ func (s *Store) Activate(ctx context.Context, expected string, documents []acces
 		bodies[name] = body
 	}
 	sort.Slice(m.Documents, func(i, j int) bool { return m.Documents[i].ID < m.Documents[j].ID })
-	data, err := json.Marshal(m)
-	if err != nil {
-		return Snapshot{}, err
-	}
+	data, _ := json.Marshal(m)
 	revision := digest(data)
 	generations := filepath.Join(s.root, "generations")
-	if err = os.MkdirAll(generations, 0700); err != nil {
+	if err = osMkdirAll(generations, 0700); err != nil {
 		return Snapshot{}, err
 	}
-	info, err := os.Lstat(generations)
+	info, err := osLstat(generations)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return Snapshot{}, fmt.Errorf("invalid generations directory")
 	}
 	destination := filepath.Join(generations, revision)
-	if _, err = os.Lstat(destination); errors.Is(err, os.ErrNotExist) {
-		stage, err := os.MkdirTemp(generations, ".pending-")
+	if _, err = osLstat(destination); errors.Is(err, os.ErrNotExist) {
+		stage, err := osMkdirTemp(generations, ".pending-")
 		if err != nil {
 			return Snapshot{}, err
 		}
 		defer func() { _ = os.RemoveAll(stage) }()
-		if err = os.Mkdir(filepath.Join(stage, "policies"), 0700); err != nil {
+		if err = osMkdir(filepath.Join(stage, "policies"), 0700); err != nil {
 			return Snapshot{}, err
 		}
 		for name, body := range bodies {
@@ -350,19 +385,19 @@ func (s *Store) Activate(ctx context.Context, expected string, documents []acces
 		if err = writeSync(filepath.Join(stage, "manifest.json"), data); err != nil {
 			return Snapshot{}, err
 		}
-		if err = syncDir(filepath.Join(stage, "policies")); err != nil {
+		if err = syncDirFn(filepath.Join(stage, "policies")); err != nil {
 			return Snapshot{}, err
 		}
-		if err = syncDir(stage); err != nil {
+		if err = syncDirFn(stage); err != nil {
 			return Snapshot{}, err
 		}
 		if err = s.checkpoint("generation-synced"); err != nil {
 			return Snapshot{}, err
 		}
-		if err = os.Rename(stage, destination); err != nil {
+		if err = osRename(stage, destination); err != nil {
 			return Snapshot{}, err
 		}
-		if err = syncDir(generations); err != nil {
+		if err = syncDirFn(generations); err != nil {
 			return Snapshot{}, err
 		}
 	} else if err != nil {
@@ -379,7 +414,7 @@ func (s *Store) Activate(ctx context.Context, expected string, documents []acces
 		return Snapshot{}, err
 	}
 	activeData, _ := json.Marshal(pointer{Generation: revision})
-	temp, err := os.CreateTemp(s.root, ".active-")
+	temp, err := createActiveTemp(s.root, ".active-")
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -402,11 +437,11 @@ func (s *Store) Activate(ctx context.Context, expected string, documents []acces
 	if err = ctx.Err(); err != nil {
 		return Snapshot{}, err
 	}
-	if err = os.Rename(tempPath, filepath.Join(s.root, "active.json")); err != nil {
+	if err = osRename(tempPath, filepath.Join(s.root, "active.json")); err != nil {
 		return Snapshot{}, err
 	}
 	// Errors after the rename are uncertain publication, never rollback.
-	if err = syncDir(s.root); err != nil {
+	if err = syncDirFn(s.root); err != nil {
 		return Snapshot{}, fmt.Errorf("generation may be active: %w", err)
 	}
 	if err = s.checkpoint("pointer-published"); err != nil {
