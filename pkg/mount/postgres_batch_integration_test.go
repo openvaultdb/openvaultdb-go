@@ -33,7 +33,6 @@ func (v perRelationVisibility) SelectableRelations(ctx context.Context, schemaNa
 // reader) a relation the role may read only some columns of, which discovery
 // leaves out on both paths.
 const batchDiscoveryFixtureSQL = `
-DROP SCHEMA IF EXISTS ovdb_batch_it CASCADE;
 CREATE SCHEMA ovdb_batch_it;
 SET search_path = ovdb_batch_it;
 CREATE TYPE mood AS ENUM ('sad', 'ok');
@@ -57,26 +56,37 @@ func TestPostgresIntegration_NativeBatchedDiscoveryMatchesPerRelationDescribe(t 
 		t.Skip("OVDB_TEST_POSTGRES_DSN is not set: no PostgreSQL server to test against")
 	}
 	ctx := context.Background()
+	// A database of its own: the tests of pkg/server run at the same time on the
+	// same server and create and drop relations in its default database, which a
+	// superuser's discovery would otherwise see change between the two reads.
+	cluster, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const database = "ovdb_batch_it"
+	for _, statement := range []string{"DROP DATABASE IF EXISTS " + database + " WITH (FORCE)", "DROP ROLE IF EXISTS ovdb_batch_it_reader", "CREATE DATABASE " + database} {
+		if _, err := cluster.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	dsn = dsnWithDatabase(t, dsn, database)
 	admin, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_, _ = admin.Exec("DROP SCHEMA IF EXISTS ovdb_batch_it CASCADE")
-		_, _ = admin.Exec("DROP OWNED BY ovdb_batch_it_reader")
-		_, _ = admin.Exec("DROP ROLE IF EXISTS ovdb_batch_it_reader")
 		_ = admin.Close()
+		_, _ = cluster.Exec("DROP DATABASE IF EXISTS " + database + " WITH (FORCE)")
+		_, _ = cluster.Exec("DROP ROLE IF EXISTS ovdb_batch_it_reader")
+		_ = cluster.Close()
 	})
 	if _, err := admin.ExecContext(ctx, batchDiscoveryFixtureSQL); err != nil {
 		t.Fatalf("create the fixture: %v", err)
 	}
 	// The superuser sees every relation; the reader may read only two columns of
 	// "Sales.Customer", which both paths therefore leave out.
-	_, _ = admin.ExecContext(ctx, "DROP OWNED BY ovdb_batch_it_reader")
-	_, _ = admin.ExecContext(ctx, "DROP ROLE IF EXISTS ovdb_batch_it_reader")
 	for _, statement := range []string{
 		"CREATE ROLE ovdb_batch_it_reader LOGIN PASSWORD 'reader'",
-		"DO $$ BEGIN EXECUTE format('GRANT CONNECT ON DATABASE %I TO ovdb_batch_it_reader', current_database()); END $$",
 		"GRANT USAGE ON SCHEMA ovdb_batch_it TO ovdb_batch_it_reader",
 		`GRANT SELECT ON "Order Lines", line_totals, customer_names, measurements, measurements_2026 TO ovdb_batch_it_reader`,
 		`GRANT SELECT (id, name) ON "Sales.Customer" TO ovdb_batch_it_reader`,
@@ -142,5 +152,16 @@ func dsnWithUser(t *testing.T, dsn, user, password string) string {
 		t.Fatalf("OVDB_TEST_POSTGRES_DSN is not a URL: %v", err)
 	}
 	parsed.User = url.UserPassword(user, password)
+	return parsed.String()
+}
+
+// dsnWithDatabase is the postgres:// URL dsn naming another database.
+func dsnWithDatabase(t *testing.T, dsn, database string) string {
+	t.Helper()
+	parsed, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("OVDB_TEST_POSTGRES_DSN is not a URL: %v", err)
+	}
+	parsed.Path = "/" + database
 	return parsed.String()
 }
