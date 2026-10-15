@@ -236,6 +236,11 @@ func openPostgresNative(m *manifest.Manifest, open postgresOpener, settings nati
 		} else if settings.requireReadOnlyRole {
 			err = refuseWritableRole(ctx, access, nativeSchemas)
 		}
+		if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			// Whatever step the deadline ended, the cause is the deadline: say so, so
+			// that a caller can tell a slow catalogue from a refused or broken one.
+			err = fmt.Errorf("%w (%s, %w): %w", ErrNativePostgresDiscoveryTimeout, settings.discoveryTimeout, context.DeadlineExceeded, err)
+		}
 		closeErr := access.Close()
 		cancel()
 		if err != nil {
@@ -390,7 +395,9 @@ type nativePostgresAccess interface {
 // Native catalog descriptions run concurrently because each relation requires
 // several metadata round trips. Keep the pool small and fixed so broad schemas
 // fit the mount's single discovery deadline without creating one connection per
-// relation.
+// relation. The mount's own access connection describes a whole schema in two
+// queries instead (nativePostgresSchemaDescriber); this per-relation path serves
+// a privilege view that cannot.
 const nativePostgresDescribeConcurrency = 4
 
 type nativePostgresRelation struct {
@@ -594,7 +601,12 @@ func discoverNativePostgresSchemasExcluding(ctx context.Context, catalog nativeP
 			relations = append(relations, nativePostgresRelation{schema: schemaName, ref: ref, id: id})
 		}
 	}
-	definitions, err := describeNativePostgresRelations(ctx, catalog, relations)
+	var definitions []*dbschema.CollectionDef
+	if describer, batched := visibility.(nativePostgresSchemaDescriber); batched {
+		definitions, err = describeNativePostgresRelationsBatched(ctx, describer, relations)
+	} else {
+		definitions, err = describeNativePostgresRelations(ctx, catalog, relations)
+	}
 	if err != nil {
 		return nil, err
 	}

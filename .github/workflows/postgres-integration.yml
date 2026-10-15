@@ -1,7 +1,7 @@
 name: PostgreSQL integration
 
-# Runs the tests of pkg/server that need a PostgreSQL server (the files
-# postgres_integration_test.go) against a postgres service container, on two server
+# Runs the tests of pkg/server and pkg/mount that need a PostgreSQL server (the files
+# postgres_*integration_test.go) against a postgres service container, on two server
 # versions: 17, the version the fleet runs, and 18, the newest (a row of these tests,
 # the order over a column whose not-null constraint is not validated, shows only on 18).
 # Each version is a job of its own and each must pass; OVDB_TEST_POSTGRES_MAJOR names the
@@ -74,7 +74,7 @@ jobs:
       - name: go test (with a live PostgreSQL)
         run: |
           set -o pipefail
-          go test -v -count=1 -run '^TestPostgresIntegration_' ./pkg/server/ 2>&1 | tee /tmp/gotest.log
+          go test -v -count=1 -run '^TestPostgresIntegration_' ./pkg/server/ ./pkg/mount/ 2>&1 | tee /tmp/gotest.log
           if grep -qE '^\s*--- SKIP: TestPostgresIntegration_' /tmp/gotest.log; then
             echo "::error::a PostgreSQL integration test SKIPPED - the DSN did not reach the tests"
             exit 1
@@ -99,7 +99,8 @@ jobs:
             NativeLongNamesValuesAndReadOnlyTransactions \
             NativeStatementTimeoutEndsASlowRead \
             NativeRoleMustBeReadOnlyWhenRequired \
-            NativeIntegerComparisonsByOperator; do
+            NativeIntegerComparisonsByOperator \
+            NativeBatchedDiscoveryMatchesPerRelationDescribe; do
             if ! grep -qE "^--- PASS: TestPostgresIntegration_${name} " /tmp/gotest.log; then
               echo "::error::TestPostgresIntegration_${name} did not report PASS"
               exit 1
