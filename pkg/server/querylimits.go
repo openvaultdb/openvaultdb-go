@@ -124,7 +124,6 @@ func newQueryGate(l QueryLimits, c clock) *queryGate {
 // nothing, so `release, ok := g.acquire(...); defer release()` written before
 // the ok check does not panic on a refusal.
 func noRelease() {
-	return
 }
 
 // acquire takes a slot on route, waiting up to the queue wait for one to free.

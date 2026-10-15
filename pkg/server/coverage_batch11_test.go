@@ -308,7 +308,7 @@ func TestDTQLAndPagesCoverageBatch11(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(fDamaged.Name())
+	defer func() { _ = os.Remove(fDamaged.Name()) }()
 	_, _ = fDamaged.WriteString("short")
 	_ = fDamaged.Close()
 

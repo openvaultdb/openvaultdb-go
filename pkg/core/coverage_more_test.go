@@ -858,16 +858,6 @@ scopes:
 	}
 }
 
-type dummyCloserDB struct {
-	dal.DB
-	closed bool
-}
-
-func (d *dummyCloserDB) Close() error {
-	d.closed = true
-	return errors.New("close error")
-}
-
 func TestCoreLifecycleAndAccessInterfaces(t *testing.T) {
 	t.Parallel()
 
