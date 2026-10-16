@@ -24,6 +24,10 @@ core, mount, server) plus the `conformance` suite. The `ovdb` CLI (`serve`,
 `init`, `status`, `databases`, `token`, `version`) has moved to its own repo,
 [github.com/openvaultdb/ovdb](https://github.com/openvaultdb/ovdb).
 
+## OpenVaultDB Go in DataTug session storage
+
+[DataTug](https://datatug.app)’s in-progress OpenVaultDB session-storage architecture currently centers on this Go implementation. Read [how DataTug’s development tools were built](https://datatug.app/en/under-the-hood/tools-we-built/).
+
 ## OpenVaultDB Cloud catalogue client
 
 The dependency-free `cloud` package reads safe registration metadata for
