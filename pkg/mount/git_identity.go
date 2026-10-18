@@ -1,57 +1,107 @@
 package mount
 
-import "os/exec"
+import (
+	"os/exec"
+	"path/filepath"
+	"strings"
+)
 
 // gitIdentityName and gitIdentityEmail are the repo-local git identity
-// ensureGitIdentity stamps on a local inGitDB directory when it has none of
-// its own.
+// ensureGitIdentity stamps on a database repository that ovdb owns when git
+// cannot resolve any identity for it.
 const (
 	gitIdentityName  = "OpenVaultDB"
 	gitIdentityEmail = "ovdb@localhost"
 )
 
-// ensureGitIdentity best-effort fills in a missing LOCAL (per-repository,
-// never --global/--system) git identity for dir, so any `git commit`
-// dalgo2ingitdb runs against it (see gitCommitPaths in
-// github.com/ingitdb/dalgo2ingitdb) succeeds regardless of the host's
-// ambient config and regardless of how dir came to be a git repository —
-// freshly `git init`-ed by provisionDatabase, `git init`-ed by an older
-// build, restored from a backup, or prepared by an operator directly.
-// Without this, `git commit` fails with "empty ident name ... not allowed"
-// on any host with no ambient user.name/user.email — every fresh GitHub
-// Actions runner, and any fresh production host, since nothing here ever
-// configures git globally — turning every write into a 500.
+// ensureGitIdentity best-effort gives a database repository an identity so
+// any commit dalgo2ingitdb runs against it (see gitCommitPaths in
+// github.com/ingitdb/dalgo2ingitdb) succeeds on a host with no ambient git
+// identity — every fresh GitHub Actions runner and fresh production host,
+// where the commit would otherwise fail with "empty ident name ... not
+// allowed" and turn every write into a 500.
 //
-// It is idempotent and never overwrites an identity that is already set:
-// an operator's own user.name/user.email is left untouched. It is a no-op
-// — same tolerance as the `git init` it complements — when dir is not (yet)
-// a git work tree, or when the git binary is unavailable: dalgo2ingitdb
-// tolerates a plain, non-git directory, so mounting one here must not
-// silently turn it into a git repository.
+// It writes LOCAL (per-repository, never --global/--system) config, and only
+// when BOTH guards hold:
 //
-// Called from openInGitDB, which is the single choke point every local
-// inGitDB mount passes through — a runtime create (provisionDatabase calls
-// mount.File right after `git init`), a restart remount (mount.Dir, used by
-// both `ovdb serve --data-dir` rescans and `ovdb serve --dir`), and a
-// directly-mounted `--manifest` file. Ensuring identity here, rather than
-// only at creation time, means a database that already existed as a
-// git repo without an identity — from an older build, a restored backup, or
-// a directory an operator prepared themselves — self-heals the next time it
-// is mounted, instead of failing every write forever.
+//  1. dir is itself the top level of a git repository (isRepoTopLevel) — a
+//     repository ovdb owns. A folder that merely lives inside a larger
+//     repository (a user's project that happens to hold an inGitDB folder)
+//     is never touched: stamping would rewrite the enclosing repository's
+//     config and re-author every later commit there. dalgo2ingitdb runs git
+//     with the process environment and offers no per-database identity
+//     option, so ovdb cannot supply an identity for such a folder's commits
+//     alone; if git has no identity for it, writes there fail with git's own
+//     clear error until the operator configures one — an operator-owned
+//     repository is never altered silently.
+//  2. git cannot resolve an identity for dir at all (gitIdentityResolves).
+//     Any identity git can already use — repo-local, global, system, env, or
+//     git's own passwd fallback — wins and is left alone.
+//
+// Only the missing key is written: a resolvable user.name is never replaced
+// just because user.email is absent. It is idempotent, and a no-op — same
+// tolerance as the `git init` it complements — when dir is not a git
+// repository or the git binary is unavailable, so mounting a plain
+// directory never turns it into a repository.
+//
+// Called from openInGitDB, the single choke point every local inGitDB mount
+// passes through (runtime create, restart remount, direct --manifest), so a
+// database repository from an older build or restored backup self-heals the
+// next time it is mounted.
 func ensureGitIdentity(dir string) {
-	if exec.Command("git", "-C", dir, "rev-parse", "--is-inside-work-tree").Run() != nil {
-		return // not a git repo (or no git binary) — nothing to do
+	if !isRepoTopLevel(dir) || gitIdentityResolves(dir) {
+		return
 	}
 	ensureLocalGitConfig(dir, "user.name", gitIdentityName)
 	ensureLocalGitConfig(dir, "user.email", gitIdentityEmail)
 }
 
+// isRepoTopLevel reports whether dir is the root of a git work tree, as
+// opposed to a subdirectory of an enclosing repository (where
+// `rev-parse --is-inside-work-tree` is also true) or not a repository at all.
+// Both paths are symlink-resolved before comparing, since git prints the
+// physical path (macOS /var vs /private/var, /tmp vs /private/tmp).
+func isRepoTopLevel(dir string) bool {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return false // not a git work tree (or no git binary)
+	}
+	top := strings.TrimRight(string(out), "\r\n")
+	return realPath(filepath.FromSlash(top)) == realPath(dir)
+}
+
+// realPath returns p with symlinks resolved and cleaned, or p unchanged when
+// it cannot be resolved.
+func realPath(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	return filepath.Clean(p)
+}
+
+// gitIdentityResolves reports whether git can determine both the author and
+// committer identity for dir, exactly as a commit there would. `git var
+// GIT_*_IDENT` runs git's strict identity resolution (config at every level,
+// GIT_AUTHOR_*/GIT_COMMITTER_* env, user.useConfigOnly, passwd fallback), so
+// it fails iff `git commit` would fail with "empty ident name" / "unable to
+// auto-detect email address". Checking effective identity this way, rather
+// than only the repo-local config, is what keeps a perfectly good global or
+// system identity from being shadowed.
+func gitIdentityResolves(dir string) bool {
+	for _, v := range []string{"GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"} {
+		if exec.Command("git", "-C", dir, "var", v).Run() != nil {
+			return false
+		}
+	}
+	return true
+}
+
 // ensureLocalGitConfig sets key=value as LOCAL git config in dir only when
-// key has no value there yet, leaving any existing value (an operator's own
-// configured identity) untouched.
+// key has no effective (any-level) value, leaving an existing value
+// untouched.
 func ensureLocalGitConfig(dir, key, value string) {
-	if exec.Command("git", "-C", dir, "config", "--local", "--get", key).Run() == nil {
-		return // already configured
+	if out, err := exec.Command("git", "-C", dir, "config", "--get", key).Output(); err == nil && strings.TrimSpace(string(out)) != "" {
+		return // already configured at some level
 	}
 	_ = exec.Command("git", "-C", dir, "config", "--local", key, value).Run()
 }
