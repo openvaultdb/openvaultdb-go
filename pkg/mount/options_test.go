@@ -69,8 +69,8 @@ func onlyGlobalGitIdentity(t *testing.T, dir string) {
 	if err := os.WriteFile(globalConfig, []byte("[user]\n\tname = Global User\n\temail = global@example.com\n[init]\n\tdefaultBranch = main\n[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	isolateGitConfig(t)
 	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
-	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 }
 
 // TestFileWithOptions_ConnectLeavesGitRepoUntouched verifies
@@ -173,6 +173,9 @@ func TestFileWithOptions_ZeroValueMatchesFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	gitOut(t, dataDir, "init", "-q")
+	// A host with no identity anywhere: the zero Options still provisions one
+	// for a repository ovdb owns (a global identity would make this a no-op).
+	simulateBareHost(t, dataDir)
 	db, err := FileWithOptions(writeIngitdbManifest(t, dir, "data"), Options{})
 	if err != nil {
 		t.Fatal(err)

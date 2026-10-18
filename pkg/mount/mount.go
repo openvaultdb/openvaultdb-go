@@ -35,8 +35,10 @@ type Options struct {
 	// (<file>.inferred.json, <folder>/.ovdb/inferred-schema.json).
 	CatalogueDir string
 	// SkipGitIdentity disables stamping a repo-local git identity on a local
-	// inGitDB folder (see ensureGitIdentity), so mounting leaves .git/config
-	// untouched. Commits then rely on the host's own git identity.
+	// inGitDB repository (see ensureGitIdentity; it only ever acts on a
+	// repository top level that has no resolvable identity), so mounting
+	// leaves .git/config untouched. Commits then rely on the host's own git
+	// identity.
 	SkipGitIdentity bool
 
 	// ExcludedNativePostgresRelations omits exact schema/relation pairs from a

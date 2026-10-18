@@ -1,6 +1,7 @@
 package mount
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -26,6 +27,27 @@ func unsetEnvForTest(t *testing.T, key string) {
 			_ = os.Unsetenv(key)
 		}
 	})
+}
+
+// isolateGitConfig points every ambient git config source (HOME,
+// XDG_CONFIG_HOME, the global and system files) at throwaway locations and
+// clears the identity env vars, so no test here can read or write the
+// developer's real git config. Callers layer a global file on top by
+// setting GIT_CONFIG_GLOBAL afterwards.
+func isolateGitConfig(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{
+		"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+		"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL",
+	} {
+		unsetEnvForTest(t, k)
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, "gitconfig"))
 }
 
 // simulateBareHost reproduces, as closely as a test process can, a host with
@@ -56,14 +78,8 @@ func unsetEnvForTest(t *testing.T, key string) {
 // production failure deterministically on any OS, including this Mac.
 func simulateBareHost(t *testing.T, dir string) {
 	t.Helper()
-	for _, k := range []string{
-		"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
-		"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
-	} {
-		unsetEnvForTest(t, k)
-	}
+	isolateGitConfig(t)
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	if out, err := exec.Command("git", "-C", dir, "config", "--local", "user.useConfigOnly", "true").CombinedOutput(); err != nil {
 		t.Fatalf("git config user.useConfigOnly: %v: %s", err, out)
 	}
@@ -131,6 +147,7 @@ func TestOpenInGitDB_RemountStampsIdentityOnBareHost(t *testing.T) {
 // keeps their own identity, not the ones this package would otherwise
 // stamp in.
 func TestOpenInGitDB_PreservesOperatorConfiguredIdentity(t *testing.T) {
+	isolateGitConfig(t)
 	dir := t.TempDir()
 	dataDir := filepath.Join(dir, "data")
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
@@ -165,5 +182,152 @@ func TestOpenInGitDB_PreservesOperatorConfiguredIdentity(t *testing.T) {
 	}
 	if got := string(gotEmail); got != wantEmail+"\n" {
 		t.Fatalf("user.email after mount = %q, want operator's %q (must not be overwritten)", got, wantEmail)
+	}
+}
+
+// initRepo git-inits dir (creating it) and returns it.
+func initRepo(t *testing.T, dir string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitOut(t, dir, "init", "-q")
+	return dir
+}
+
+func readLocalConfig(t *testing.T, repo string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(repo, ".git", "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// Regression (defect 1): a perfectly good global identity must not be
+// shadowed by a repo-local OpenVaultDB one. Previously only the LOCAL config
+// was consulted, so this stamped user.name=OpenVaultDB into the repository
+// of anyone who had only a global identity.
+func TestEnsureGitIdentity_GlobalIdentityLeavesLocalConfigUntouched(t *testing.T) {
+	root := t.TempDir()
+	onlyGlobalGitIdentity(t, root)
+	repo := initRepo(t, filepath.Join(root, "repo"))
+	before := readLocalConfig(t, repo)
+
+	ensureGitIdentity(repo)
+
+	if after := readLocalConfig(t, repo); !bytes.Equal(before, after) {
+		t.Fatalf(".git/config changed despite a global identity:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	// And through the real mount path.
+	manifest := writeIngitdbManifest(t, root, "repo")
+	db, err := File(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if after := readLocalConfig(t, repo); !bytes.Equal(before, after) {
+		t.Fatalf(".git/config changed by mount:\n%s", after)
+	}
+}
+
+// Regression (defect 2): a folder inside a larger repository must not cause
+// the ENCLOSING repository's config to be written, even on a host with no
+// identity at all. `rev-parse --is-inside-work-tree` is true there.
+func TestEnsureGitIdentity_SubfolderOfEnclosingRepoLeavesItsConfigUntouched(t *testing.T) {
+	root := t.TempDir()
+	enclosing := initRepo(t, filepath.Join(root, "enclosing"))
+	simulateBareHost(t, enclosing)
+	sub := filepath.Join(enclosing, "db")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before := readLocalConfig(t, enclosing)
+
+	ensureGitIdentity(sub)
+
+	if after := readLocalConfig(t, enclosing); !bytes.Equal(before, after) {
+		t.Fatalf("enclosing repo config changed:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	// And through the real mount path (storage.path inside the enclosing repo).
+	db, err := File(writeIngitdbManifest(t, root, "enclosing/db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if after := readLocalConfig(t, enclosing); !bytes.Equal(before, after) {
+		t.Fatalf("enclosing repo config changed by mount:\n%s", after)
+	}
+}
+
+// Original intent, reached through a symlinked path: on a host with no
+// identity anywhere, a repository top-level (given as a symlink to it, as
+// macOS /tmp is) is still recognised as the top level and a write commits.
+func TestOpenInGitDB_BareHostSymlinkedTopLevelCommits(t *testing.T) {
+	root := t.TempDir()
+	real := initRepo(t, filepath.Join(root, "real"))
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	simulateBareHost(t, real)
+
+	db, err := File(writeIngitdbManifest(t, root, "link"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	key, err := core.ParseKey("notes", "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Apply(context.Background(), []core.Op{{Op: "insert", Key: key, Data: map[string]any{"text": "hi"}}}, "seed"); err != nil {
+		t.Fatalf("Apply on a bare host: %v", err)
+	}
+	if got := gitOut(t, real, "log", "-1", "--format=%an"); got != gitIdentityName+"\n" {
+		t.Fatalf("commit author = %q, want %q", got, gitIdentityName)
+	}
+}
+
+// Only the missing key is stamped: a resolvable user.name is not replaced
+// just because user.email is absent.
+func TestEnsureGitIdentity_StampsOnlyMissingKey(t *testing.T) {
+	root := t.TempDir()
+	repo := initRepo(t, filepath.Join(root, "repo"))
+	simulateBareHost(t, repo)
+	global := filepath.Join(root, "gitconfig")
+	if err := os.WriteFile(global, []byte("[user]\n\tname = Global User\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", global)
+
+	ensureGitIdentity(repo)
+
+	if got := gitOut(t, repo, "config", "--local", "--get", "user.email"); got != gitIdentityEmail+"\n" {
+		t.Fatalf("local user.email = %q, want %q", got, gitIdentityEmail)
+	}
+	out, err := exec.Command("git", "-C", repo, "config", "--local", "--get", "user.name").Output()
+	if err == nil {
+		t.Fatalf("local user.name stamped (%q) over the global one", out)
+	}
+	if got := gitOut(t, repo, "config", "--get", "user.name"); got != "Global User\n" {
+		t.Fatalf("effective user.name = %q, want the global one", got)
+	}
+}
+
+// A plain (non-git) directory is left a plain directory.
+func TestEnsureGitIdentity_NonGitDirIsNoOp(t *testing.T) {
+	isolateGitConfig(t)
+	dir := t.TempDir()
+	ensureGitIdentity(dir)
+	if _, err := os.Stat(filepath.Join(dir, ".git")); !os.IsNotExist(err) {
+		t.Fatalf(".git created in a plain directory: %v", err)
+	}
+}
+
+func TestRealPath_UnresolvablePathIsCleaned(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "missing", "..", "x")
+	if got, want := realPath(p), filepath.Clean(p); got != want {
+		t.Fatalf("realPath = %q, want %q", got, want)
 	}
 }

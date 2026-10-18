@@ -43,8 +43,8 @@ func TestMountUnmount_WaitsForInFlight(t *testing.T) {
 		t.Fatal("new request acquired an unmounting database")
 	}
 	select {
-	case <-done:
-		t.Fatal("Unmount returned while a request was in flight")
+	case err := <-done:
+		t.Fatalf("Unmount returned (%v) while a request was in flight", err)
 	case <-closed:
 		t.Fatal("database closed while a request was in flight")
 	case <-time.After(100 * time.Millisecond):

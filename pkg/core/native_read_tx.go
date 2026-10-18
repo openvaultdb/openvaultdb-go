@@ -93,7 +93,9 @@ func openInReadTx[R any](ctx context.Context, db dal.DB, open func(context.Conte
 	}()
 	got := <-ready
 	if got.err != nil {
-		<-hold.done
+		// got.err is the error that matters; the release result is moot.
+		releaseErr := <-hold.done
+		_ = releaseErr
 		var zero R
 		return zero, nil, got.err
 	}
