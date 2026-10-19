@@ -2,10 +2,12 @@ package core
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/dal-go/dalgo/dbschema"
 	"github.com/dal-go/dalgo/ddl"
+	"github.com/dal-go/record"
 	"github.com/openvaultdb/openvaultdb-go/pkg/manifest"
 	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 )
@@ -44,6 +46,16 @@ func TestExternalDALGOMountIsProgrammaticAndReadOnly(t *testing.T) {
 	}
 	if probe.creates != 0 {
 		t.Fatalf("read-only external mount provisioned %d collections", probe.creates)
+	}
+	key := record.NewKeyWithID("entries", "one")
+	if _, err := d.Get(context.Background(), key); !errors.Is(err, ErrExternalOperationUnsupported) {
+		t.Fatalf("keyed read: %v", err)
+	}
+	if _, err := d.Exists(context.Background(), key); !errors.Is(err, ErrExternalOperationUnsupported) {
+		t.Fatalf("existence read: %v", err)
+	}
+	if _, err := d.Apply(context.Background(), nil, ""); !errors.Is(err, ErrExternalOperationUnsupported) {
+		t.Fatalf("write: %v", err)
 	}
 	names, err := d.Collections(context.Background())
 	if err != nil || len(names) != 1 || names[0] != "entries" {
