@@ -13,6 +13,10 @@ var ErrHTTPOperationUnsupported = fmt.Errorf("%w: HTTP source operation unsuppor
 // operation that the native PostgreSQL catalog mount does not expose.
 var ErrNativePostgresOperationUnsupported = fmt.Errorf("%w: native PostgreSQL mount supports structured reads only", dal.ErrNotSupported)
 
+// ErrExternalOperationUnsupported identifies keyed or mutating operations on
+// a programmatically supplied read-only DALGO source.
+var ErrExternalOperationUnsupported = fmt.Errorf("%w: external DALGO mount supports structured reads only", dal.ErrNotSupported)
+
 // ReadOnlyHTTP reports the fixed source capability captured by Open. Such a
 // source supports bounded queries, but not keyed reads, writes or DDL.
 func (d *Database) ReadOnlyHTTP() bool { return d.readOnlyHTTP }
@@ -22,7 +26,7 @@ func (d *Database) ReadOnlyHTTP() bool { return d.readOnlyHTTP }
 func (d *Database) HTTPProfile() string { return d.httpProfile }
 
 // ReadOnly reports mounts that expose neither keyed record reads nor writes.
-func (d *Database) ReadOnly() bool { return d.readOnlyHTTP || d.nativePostgres }
+func (d *Database) ReadOnly() bool { return d.readOnlyHTTP || d.nativePostgres || d.externalReadOnly }
 
 // KeyedRecordReadsServed reports whether keyed record reads (Get, Exists) are
 // served. It is the predicate those methods check, so the capability that
@@ -32,6 +36,9 @@ func (d *Database) KeyedRecordReadsServed() bool { return !d.ReadOnly() }
 func (d *Database) readOnlyOperationError() error {
 	if d.nativePostgres {
 		return ErrNativePostgresOperationUnsupported
+	}
+	if d.externalReadOnly {
+		return ErrExternalOperationUnsupported
 	}
 	return ErrHTTPOperationUnsupported
 }

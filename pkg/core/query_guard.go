@@ -75,7 +75,7 @@ func (d *Database) queryEngine() string {
 // Native PostgreSQL supports catalog-backed DTQL reads but not the legacy
 // collection-key /query contract (see CanCollectionQuery).
 func (d *Database) CanQuery() bool {
-	return d.nativePostgres || engineCleared(d.queryEngine(), d.previewPostgres)
+	return d.externalReadOnly || d.nativePostgres || engineCleared(d.queryEngine(), d.previewPostgres)
 }
 
 // CanCollectionQuery reports whether the legacy /query endpoint can address
