@@ -52,6 +52,7 @@ func (e *ModeCompatibilityError) Error() string {
 // Database is one mounted logical database: a DALgo driver plus mode
 // enforcement.
 type Database struct {
+	externalReadOnly bool                                     // trusted programmatic DALGO mount; never loaded from a public manifest
 	readOnlyHTTP     bool                                     // frozen mount capability; no point reads or writes
 	httpProfile      string                                   // frozen fixed resource profile; public Manifest may later mutate
 	nativePostgres   bool                                     // native PostgreSQL catalog mount, queries only
@@ -110,6 +111,25 @@ type Database struct {
 	closeErr  error
 }
 
+// OpenExternal mounts a caller-supplied DALGO driver for a read-only embedded
+// server. This is a Go composition API, not a manifest engine or HTTP protocol
+// extension: mount.File deliberately cannot load the private "external" marker.
+// The caller supplies declared collection schemas and controls file/credential
+// access in its adapter. No storage-specific behaviour is added to core.
+func OpenExternal(m *manifest.Manifest, db dal.DB) (*Database, error) {
+	if m == nil || db == nil || m.Storage.Engine != "external" || m.Database.SchemaMode != schema.ModeStrict || m.Schemas == nil || len(m.Schemas.Collections) == 0 {
+		return nil, fmt.Errorf("external DALGO mount requires a strict programmatic manifest and driver")
+	}
+	// Reuse the existing manifest validator without adding "external" to the
+	// public manifest format. A programmatic source has no storage path.
+	checked := *m
+	checked.Storage.Path = "programmatic"
+	if err := checked.Validate(); err != nil {
+		return nil, fmt.Errorf("external DALGO manifest: %w", err)
+	}
+	return openConfigured(m, db, []schema.Mode{schema.ModeStrict}, "", nil, true)
+}
+
 // Open validates driver/schema-mode compatibility and prepares the database:
 // declared collections are provisioned through the driver's
 // ddl.SchemaModifier, and (for partial/schemaless modes) the inferred schema
@@ -134,6 +154,10 @@ func OpenWithPolicyController(m *manifest.Manifest, db dal.DB, modes []schema.Mo
 	return open(m, db, modes, cataloguePath, controller)
 }
 func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, cataloguePath string, controller *policystore.Controller, policies ...access.Policy) (*Database, error) {
+	return openConfigured(m, db, supportedModes, cataloguePath, controller, false, policies...)
+}
+
+func openConfigured(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, cataloguePath string, controller *policystore.Controller, externalReadOnly bool, policies ...access.Policy) (*Database, error) {
 	if m.ACL != nil && m.ACL.Enabled && len(policies) == 0 && controller == nil {
 		return nil, fmt.Errorf("enabled OpenVaultDB ACL requires loaded policies")
 	}
@@ -171,7 +195,7 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 	if m.Storage.Engine == "http" {
 		httpProfile = m.Storage.HTTP.Profile // ValidateHTTP above requires this value.
 	}
-	d := &Database{Manifest: m, db: db, retention: m.EffectiveRetention(), readOnlyHTTP: m.Storage.Engine == "http", httpProfile: httpProfile, nativePostgres: nativePostgres, modes: supportedModes, policyController: controller,
+	d := &Database{Manifest: m, db: db, retention: m.EffectiveRetention(), readOnlyHTTP: m.Storage.Engine == "http", externalReadOnly: externalReadOnly, httpProfile: httpProfile, nativePostgres: nativePostgres, modes: supportedModes, policyController: controller,
 		names: names, documentEngine: documentEngines[m.Storage.Engine], foldsIdentifiers: foldingEngines[m.Storage.Engine] && !nativePostgres,
 		previewPostgres: previewPostgresQueries()}
 	if nativePostgres {
@@ -205,7 +229,7 @@ func open(m *manifest.Manifest, db dal.DB, supportedModes []schema.Mode, catalog
 	}); ok {
 		d.servingKeys, d.sqliteLockWait = source.SQLiteRecordKeys()
 	}
-	if m.Schemas != nil && !nativePostgres {
+	if m.Schemas != nil && !nativePostgres && !externalReadOnly {
 		ctx := context.Background()
 		names := make([]string, 0, len(m.Schemas.Collections))
 		for name := range m.Schemas.Collections {
