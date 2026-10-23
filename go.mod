@@ -77,7 +77,7 @@ require (
 	github.com/bits-and-blooms/bitset v1.24.6 // indirect
 	github.com/dal-go/dalgo2openvaultdb v0.3.3
 	github.com/dal-go/dalgo2sql v0.29.7
-	github.com/dal-go/dalgo2sqlite v0.4.5
+	github.com/dal-go/dalgo2sqlite v0.4.7
 	github.com/gofrs/flock v0.13.0
 	github.com/ingitdb/dalgo2ingitdb4github v0.2.3
 	github.com/ingr-io/ingr-go v0.0.2 // indirect
