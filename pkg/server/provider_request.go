@@ -70,7 +70,7 @@ func (s *Server) guardProviderRequest(w http.ResponseWriter, r *http.Request, db
 	}
 	requestProfile := s.providerProfilesByDB[db].RequestProfile
 	path := r.URL.Path
-	query, tugql := strings.HasSuffix(path, "/query"), strings.HasSuffix(path, "/tugql")
+	query, tugql := strings.HasSuffix(path, "/query"), isTugQLEndpointPath(path)
 	if strings.HasSuffix(path, "/read") || strings.Contains(path, "/records/") || strings.HasSuffix(path, "/batch") {
 		refuseProviderRequest(w, requestProfile)
 		return false

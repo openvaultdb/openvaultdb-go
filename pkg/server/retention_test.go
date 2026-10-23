@@ -93,6 +93,10 @@ func TestNoRetentionRefusesAllContinuationBeforeAdapterOrSnapshot(t *testing.T) 
 				{"GET", "/v1/databases/live/tugql?q=" + url.QueryEscape("from: {name: customers}\n"), ""},
 				{"POST", "/v1/databases/live/tugql", "from: {name: customers, alias: c}\n"},
 				{"POST", "/v1/tugql", "from: {database: live, name: customers}\n"},
+				// Legacy routes keep the same refusal (removed in TugQL cutover step 9).
+				{"POST", "/v1/databases/live/dtql", "from: {name: customers}\n"},
+				{"GET", "/v1/databases/live/dtql?q=" + url.QueryEscape("from: {name: customers}\n"), ""},
+				{"POST", "/v1/dtql", "from: {database: live, name: customers}\n"},
 				{"GET", "/v1/databases/live/read?key=customers/a", ""},
 				{"GET", "/v1/databases/live/records/customers/a", ""},
 				{"HEAD", "/v1/databases/live/records/customers/a", ""},

@@ -1,6 +1,9 @@
 package server
 
-import "net/http"
+import (
+	"net/http"
+	"strings"
+)
 
 // Wire-compatibility with deployed clients that still call the pre-rename DTQL
 // forms. Everything in this file is removed in TugQL cutover step 9 once
@@ -29,4 +32,12 @@ func (s *Server) registerLegacyDTQLRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/databases/{db}"+legacyDTQLDatabaseSuffix, s.handleTugQL)
 	mux.HandleFunc("POST "+legacyDTQLCrossDatabasePath, s.handleCrossDatabaseTugQL)
 	mux.HandleFunc("GET "+legacyDTQLCrossDatabasePath, s.handleCrossDatabaseTugQL)
+}
+
+// isTugQLEndpointPath reports whether path ends in a TugQL endpoint, including the
+// legacy /dtql suffix, so the legacy routes keep every TugQL guard (provider
+// request profile, continuation refusal, cache Vary). In TugQL cutover step 9 it
+// becomes strings.HasSuffix(path, "/tugql").
+func isTugQLEndpointPath(path string) bool {
+	return strings.HasSuffix(path, "/tugql") || strings.HasSuffix(path, legacyDTQLDatabaseSuffix)
 }

@@ -483,7 +483,7 @@ func isReadCacheEndpoint(r *http.Request) bool {
 		return true
 	}
 	return strings.HasPrefix(r.URL.Path, "/v1/databases/") &&
-		(strings.HasSuffix(r.URL.Path, "/read") || strings.HasSuffix(r.URL.Path, "/query") || strings.HasSuffix(r.URL.Path, "/tugql") || strings.HasSuffix(r.URL.Path, legacyDTQLDatabaseSuffix))
+		(strings.HasSuffix(r.URL.Path, "/read") || strings.HasSuffix(r.URL.Path, "/query") || isTugQLEndpointPath(r.URL.Path))
 }
 
 // isMutation identifies every mounted route that persists data or changes

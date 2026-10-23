@@ -239,6 +239,13 @@ func TestReadOnlyCachesGETResponses(t *testing.T) {
 	if got := tugqlResponse.Header.Get("Vary"); got != "OVDB-Page-Size, OVDB-Page-Token, OVDB-Page-Close" {
 		t.Fatalf("GET tugql Vary = %q", got)
 	}
+	// The legacy /dtql route keeps the same Vary (removed in TugQL cutover step 9).
+	legacyResponse := doRequest(t, http.MethodGet, ts.URL+"/v1/databases/testdb/dtql?"+query, nil)
+	mustStatus(t, legacyResponse, http.StatusOK)
+	if got := legacyResponse.Header.Get("Vary"); got != "OVDB-Page-Size, OVDB-Page-Token, OVDB-Page-Close" {
+		t.Fatalf("GET legacy dtql Vary = %q", got)
+	}
+	drainClose(legacyResponse)
 	var result map[string]any
 	decodeJSON(t, tugqlResponse, &result)
 	if records := result["records"].([]any); len(records) != 1 {

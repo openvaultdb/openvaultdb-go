@@ -520,6 +520,27 @@ func TestProviderRequestValidationBranches(t *testing.T) {
 	reqTugQLParam := httptest.NewRequest(http.MethodGet, "/v1/databases/ecb/tugql?q=from+daily+limit+5&parameters=%7B%7D", nil)
 	_ = srvRestricted.guardProviderRequest(recTugQLParam, reqTugQLParam, dbHTTP)
 
+	// The legacy /dtql suffix gets the same provider guard as /tugql (removed in
+	// TugQL cutover step 9 with legacy_dtql.go).
+	for _, legacy := range []struct{ method, tugql, dtql, body string }{
+		{http.MethodPost, "/v1/databases/ecb/tugql", "/v1/databases/ecb/dtql", `{"query":"from daily limit 5"}`},
+		{http.MethodGet, "/v1/databases/ecb/tugql?q=from+daily+limit+5&parameters=%7B%7D", "/v1/databases/ecb/dtql?q=from+daily+limit+5&parameters=%7B%7D", ""},
+		{http.MethodGet, "/v1/databases/ecb/tugql?q=from+daily+limit+5&extra=1", "/v1/databases/ecb/dtql?q=from+daily+limit+5&extra=1", ""},
+	} {
+		run := func(path string) (bool, int, string) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(legacy.method, path, strings.NewReader(legacy.body))
+			req.Header.Set("Content-Type", "application/json")
+			ok := srvRestricted.guardProviderRequest(rec, req, dbHTTP)
+			return ok, rec.Code, rec.Body.String()
+		}
+		tOK, tCode, tBody := run(legacy.tugql)
+		dOK, dCode, dBody := run(legacy.dtql)
+		if tOK != dOK || tCode != dCode || tBody != dBody {
+			t.Fatalf("legacy provider guard differs for %s: tugql=(%v,%d,%q) dtql=(%v,%d,%q)", legacy.dtql, tOK, tCode, tBody, dOK, dCode, dBody)
+		}
+	}
+
 	// 3. providerWireNode checks
 	if providerWireNode([]byte(`key: *alias`)) != nil {
 		t.Fatal("expected nil for alias node")

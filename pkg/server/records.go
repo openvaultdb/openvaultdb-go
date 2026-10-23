@@ -440,7 +440,7 @@ func (s *Server) cacheReadResponse(w http.ResponseWriter, r *http.Request, db *c
 	if s.readOnly && ttl > 0 && r.Method == http.MethodGet &&
 		isReadCacheEndpoint(r) &&
 		s.authCfg == nil && !db.HasAccessPolicies() {
-		if strings.HasSuffix(r.URL.Path, "/tugql") {
+		if isTugQLEndpointPath(r.URL.Path) {
 			w.Header().Add("Vary", "OVDB-Page-Size, OVDB-Page-Token, OVDB-Page-Close")
 		}
 		seconds := int(ttl.Seconds())

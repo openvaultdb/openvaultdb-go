@@ -186,7 +186,7 @@ func (s *Server) guardRetentionRead(w http.ResponseWriter, r *http.Request, db *
 		name, err := url.QueryUnescape(name)
 		forbidden = forbidden || (err == nil && continuationName(name))
 	}
-	tugql := strings.HasSuffix(r.URL.Path, "/tugql")
+	tugql := isTugQLEndpointPath(r.URL.Path)
 	for name, values := range values {
 		forbidden = forbidden || continuationName(name)
 		if name == "q" {
@@ -203,7 +203,7 @@ func (s *Server) guardRetentionRead(w http.ResponseWriter, r *http.Request, db *
 			}
 		}
 	}
-	if !forbidden && r.Method == http.MethodPost && (strings.HasSuffix(r.URL.Path, "/query") || strings.HasSuffix(r.URL.Path, "/tugql")) && r.Body != nil {
+	if !forbidden && r.Method == http.MethodPost && (strings.HasSuffix(r.URL.Path, "/query") || isTugQLEndpointPath(r.URL.Path)) && r.Body != nil {
 		data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes))
 		if err != nil {
 			writeError(w, 400, "bad_request", "query request exceeds the bounded read limit")
