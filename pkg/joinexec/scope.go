@@ -24,7 +24,7 @@ import (
 // source with no ambiguity check at all. The check therefore refuses, in DALgo's own
 // words, a name that two of the lists carry, and leaves DALgo what it decides on every
 // route: a name that one list carries is bound to that source, and one that none
-// carries is refused as unavailable. The DTQL parser keeps an unqualified field out of
+// carries is refused as unavailable. The TugQL parser keeps an unqualified field out of
 // a join with no subquery as well, but Execute takes any query and does not depend on
 // it.
 //
@@ -180,7 +180,7 @@ type scopeLevel struct {
 // that names its source and whose list does not carry it. A name that stands for
 // a column where DALgo or a mount would read a field of a source is refused whatever the
 // sources supply (see the comment at the top of this file). The refusal is a scope error
-// (*dal.QueryValidationError), which the server answers as a 400 invalid_dtql, and nothing
+// (*dal.QueryValidationError), which the server answers as a 400 invalid_tugql, and nothing
 // has been read when it is returned. An error of fields is returned as it is. A field a
 // source qualifies, and one that is the alias of a column where DALgo reads it as the
 // column, are not looked at.

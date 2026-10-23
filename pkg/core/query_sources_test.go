@@ -28,8 +28,8 @@ var srcGuardSQLEngines = []string{"sqlite", "postgres", "mysql"}
 type srcGuardCase struct {
 	name  string
 	query dal.StructuredQuery
-	// single is true when the single-collection entry points (ExecuteDTQLQuery,
-	// StreamDTQLSnapshot, SelectAccessSample) pass the query on to the guard;
+	// single is true when the single-collection entry points (ExecuteTugQLQuery,
+	// StreamTugQLSnapshot, SelectAccessSample) pass the query on to the guard;
 	// they refuse a join, a derived root, a group, a column list and a scan
 	// before it, for their own reasons.
 	single bool
@@ -99,12 +99,12 @@ func srcGuardCases(x string) []srcGuardCase {
 // srcGuardSingleEntries are the entry points that take one single-collection
 // query and read it through the engine guard.
 var srcGuardSingleEntries = map[string]func(*Database, dal.StructuredQuery) error{
-	"ExecuteDTQLQuery": func(db *Database, q dal.StructuredQuery) error {
-		_, err := db.ExecuteDTQLQuery(context.Background(), q)
+	"ExecuteTugQLQuery": func(db *Database, q dal.StructuredQuery) error {
+		_, err := db.ExecuteTugQLQuery(context.Background(), q)
 		return err
 	},
-	"StreamDTQLSnapshot": func(db *Database, q dal.StructuredQuery) error {
-		return db.StreamDTQLSnapshot(context.Background(), q, func(Record) error { return nil })
+	"StreamTugQLSnapshot": func(db *Database, q dal.StructuredQuery) error {
+		return db.StreamTugQLSnapshot(context.Background(), q, func(Record) error { return nil })
 	},
 	"SelectAccessSample": func(db *Database, q dal.StructuredQuery) error {
 		_, _, err := db.SelectAccessSample(context.Background(), q, 1, access.Principal{})
@@ -196,7 +196,7 @@ func TestUndeclaredSourceRefusedBeforeAdapterOnSQLEngines(t *testing.T) {
 			}
 			check := func(entry string, err error) {
 				t.Helper()
-				if !errors.Is(err, ErrNotFound) || errors.Is(err, ErrInvalidDTQL) || errors.Is(err, ErrQueryUnsupported) {
+				if !errors.Is(err, ErrNotFound) || errors.Is(err, ErrInvalidTugQL) || errors.Is(err, ErrQueryUnsupported) {
 					t.Errorf("%s/%s/%s: want ErrNotFound, got %v", engine, tc.name, entry, err)
 					return
 				}
@@ -334,9 +334,9 @@ func TestWireQueryRefusesAnUndeclaredCollection(t *testing.T) {
 	}
 }
 
-// TestExecuteDTQLRefusesAnUndeclaredCollection runs the same through the
+// TestExecuteTugQLRefusesAnUndeclaredCollection runs the same through the
 // document form of the entry point that parses its own text.
-func TestExecuteDTQLRefusesAnUndeclaredCollection(t *testing.T) {
+func TestExecuteTugQLRefusesAnUndeclaredCollection(t *testing.T) {
 	docs := map[string]string{
 		"root":       "from: {name: ghost}\n",
 		"exists":     "from: {name: customers}\nwhere: {exists: {query: {from: {name: ghost}}}}\n",
@@ -345,7 +345,7 @@ func TestExecuteDTQLRefusesAnUndeclaredCollection(t *testing.T) {
 	for _, engine := range srcGuardSQLEngines {
 		for label, doc := range docs {
 			db, fake := writeGuardOpen(t, engine, "customers", "orders")
-			if _, err := db.ExecuteDTQL(context.Background(), []byte(doc)); !errors.Is(err, ErrNotFound) {
+			if _, err := db.ExecuteTugQL(context.Background(), []byte(doc)); !errors.Is(err, ErrNotFound) {
 				t.Errorf("%s/%s: want ErrNotFound, got %v", engine, label, err)
 			}
 			if fake.reached() != 0 {
@@ -355,7 +355,7 @@ func TestExecuteDTQLRefusesAnUndeclaredCollection(t *testing.T) {
 	}
 	db, fake := writeGuardOpen(t, "sqlite", "customers", "orders", "ghost")
 	for label, doc := range docs {
-		if _, err := db.ExecuteDTQL(context.Background(), []byte(doc)); !errors.Is(err, errFakeReached) {
+		if _, err := db.ExecuteTugQL(context.Background(), []byte(doc)); !errors.Is(err, errFakeReached) {
 			t.Errorf("declared %s: %v", label, err)
 		}
 	}
@@ -448,14 +448,14 @@ func TestSQLiteInternalTablesAreUndeclared(t *testing.T) {
 	for _, name := range []string{"sqlite_master", "sqlite_schema", "sqlite_temp_master", "sqlite_sequence", "SQLITE_MASTER", "Sqlite_Schema"} {
 		db, fake := writeGuardOpen(t, "sqlite", "customers")
 		doc := fmt.Sprintf("from: {name: %s}\n", name)
-		if _, err := db.ExecuteDTQL(context.Background(), []byte(doc)); !errors.Is(err, ErrNotFound) {
-			t.Errorf("dtql %s: %v", name, err)
+		if _, err := db.ExecuteTugQL(context.Background(), []byte(doc)); !errors.Is(err, ErrNotFound) {
+			t.Errorf("tugql %s: %v", name, err)
 		}
 		if _, err := db.Execute(context.Background(), Query{Collection: name}); !errors.Is(err, ErrNotFound) {
 			t.Errorf("wire %s: %v", name, err)
 		}
 		inSubquery := withExists("customers", srcGuardInner(name))
-		if _, err := db.ExecuteDTQLQuery(context.Background(), inSubquery); !errors.Is(err, ErrNotFound) {
+		if _, err := db.ExecuteTugQLQuery(context.Background(), inSubquery); !errors.Is(err, ErrNotFound) {
 			t.Errorf("subquery %s: %v", name, err)
 		}
 		if fake.reached() != 0 {
@@ -522,8 +522,8 @@ func TestSourceGuardFailsClosedOnShapesItDoesNotKnow(t *testing.T) {
 	db, fake := writeGuardOpen(t, "sqlite", "customers", "orders")
 	for label, query := range srcGuardWalkerCases() {
 		err := db.guardSources(query)
-		if !errors.Is(err, ErrInvalidDTQL) || errors.Is(err, ErrNotFound) {
-			t.Errorf("%s: want ErrInvalidDTQL, got %v", label, err)
+		if !errors.Is(err, ErrInvalidTugQL) || errors.Is(err, ErrNotFound) {
+			t.Errorf("%s: want ErrInvalidTugQL, got %v", label, err)
 		}
 	}
 	if fake.reached() != 0 {
@@ -726,9 +726,9 @@ func TestJoinSourceHoldsEnginesOutsideQuotedNamesToTheStrictRule(t *testing.T) {
 			db, calls := srcGuardJoinOpen(t, tc.engine, "customers")
 			err := srcGuardJoinEntries["Executor records reader"](db, named(tc.field))
 			switch {
-			case !tc.want && !errors.Is(err, ErrInvalidDTQL):
-				t.Errorf("want ErrInvalidDTQL, got %v", err)
-			case tc.want && errors.Is(err, ErrInvalidDTQL):
+			case !tc.want && !errors.Is(err, ErrInvalidTugQL):
+				t.Errorf("want ErrInvalidTugQL, got %v", err)
+			case tc.want && errors.Is(err, ErrInvalidTugQL):
 				t.Errorf("a name of the engine's rule was refused: %v", err)
 			}
 			if !tc.want && *calls != (joinSrcRecorder{}) {
@@ -745,7 +745,7 @@ func TestJoinSourceHoldsEnginesOutsideQuotedNamesToTheStrictRule(t *testing.T) {
 	}
 	// ReadTx's executor and JoinFields go through the same guard.
 	db, calls := srcGuardJoinOpen(t, "sqlite", "customers")
-	if err := srcGuardJoinEntries["ReadTx records reader"](db, named("a;b")); !errors.Is(err, ErrInvalidDTQL) {
+	if err := srcGuardJoinEntries["ReadTx records reader"](db, named("a;b")); !errors.Is(err, ErrInvalidTugQL) {
 		t.Errorf("ReadTx: %v", err)
 	}
 	if calls.readers != 0 {
@@ -763,7 +763,7 @@ func TestCheckRelationalNamesKeepsTheRelationalVariant(t *testing.T) {
 	if err := db.checkRelationalNames(nullTest); err != nil {
 		t.Errorf("a null test: %v", err)
 	}
-	if err := db.checkRelationalNames(selectQuery(fromTree(dal.NewCollectionRef("c", "", record.NewKeyWithID("p", "1"))).NewQuery())); !errors.Is(err, ErrInvalidDTQL) {
+	if err := db.checkRelationalNames(selectQuery(fromTree(dal.NewCollectionRef("c", "", record.NewKeyWithID("p", "1"))).NewQuery())); !errors.Is(err, ErrInvalidTugQL) {
 		t.Errorf("a parent: %v", err)
 	}
 }
@@ -807,8 +807,11 @@ func TestUndeclaredCollectionMessagesClipTheName(t *testing.T) {
 	hugeName := strings.Repeat("x", 1<<16)
 	db, _ := writeGuardOpen(t, "sqlite", "customers")
 	for label, err := range map[string]error{
-		"wire":     func() error { _, err := db.Execute(context.Background(), Query{Collection: hugeName}); return err }(),
-		"dtql":     func() error { _, err := db.ExecuteDTQLQuery(context.Background(), srcGuardInner(hugeName)); return err }(),
+		"wire": func() error { _, err := db.Execute(context.Background(), Query{Collection: hugeName}); return err }(),
+		"tugql": func() error {
+			_, err := db.ExecuteTugQLQuery(context.Background(), srcGuardInner(hugeName))
+			return err
+		}(),
 		"join":     srcGuardJoinEntries["Executor records reader"](srcGuardJoinDB(t), srcGuardInner(hugeName)),
 		"derived":  db.guardSources(selectQuery(fromTree(dal.NewQuerySource(srcGuardInner(hugeName), "d")).NewQuery())),
 		"parent":   db.guardSources(selectQuery(fromTree(dal.NewCollectionRef(hugeName, "", record.NewKeyWithID("customers", "1"))).NewQuery())),
@@ -838,8 +841,8 @@ func TestOverLongCollectionNameIsClippedInQueryErrors(t *testing.T) {
 	db, _ := writeGuardOpen(t, "ingitdb")
 	for label, err := range map[string]error{
 		"wire":   func() error { _, err := db.Execute(context.Background(), Query{Collection: huge}); return err }(),
-		"dtql":   func() error { _, err := db.ExecuteDTQLQuery(context.Background(), srcGuardInner(huge)); return err }(),
-		"stream": db.StreamDTQLSnapshot(context.Background(), srcGuardInner(huge), func(Record) error { return nil }),
+		"tugql":  func() error { _, err := db.ExecuteTugQLQuery(context.Background(), srcGuardInner(huge)); return err }(),
+		"stream": db.StreamTugQLSnapshot(context.Background(), srcGuardInner(huge), func(Record) error { return nil }),
 	} {
 		if err == nil || len(err.Error()) > 4*maxEchoedNameLen {
 			t.Errorf("%s: %d bytes: %.80v", label, len(fmt.Sprint(err)), err)
@@ -878,8 +881,8 @@ func TestFailedReadMessagesClipTheCollectionName(t *testing.T) {
 	ctx := context.Background()
 	for label, err := range map[string]error{
 		"wire":   func() error { _, err := db.Execute(ctx, Query{Collection: huge}); return err }(),
-		"dtql":   func() error { _, err := db.ExecuteDTQLQuery(ctx, srcGuardInner(huge)); return err }(),
-		"stream": db.StreamDTQLSnapshot(ctx, srcGuardInner(huge), func(Record) error { return nil }),
+		"tugql":  func() error { _, err := db.ExecuteTugQLQuery(ctx, srcGuardInner(huge)); return err }(),
+		"stream": db.StreamTugQLSnapshot(ctx, srcGuardInner(huge), func(Record) error { return nil }),
 	} {
 		if !errors.Is(err, errSrcGuardRead) || !strings.Contains(err.Error(), "failed reading query results") || len(err.Error()) > 4*maxEchoedNameLen {
 			t.Errorf("%s: %d bytes: %.100v", label, len(fmt.Sprint(err)), err)

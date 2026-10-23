@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"github.com/dal-go/dalgo/access"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
@@ -276,11 +276,11 @@ func TestAccessSampleMoreBranches(t *testing.T) {
 	}
 }
 
-func TestDtqlRelationalProfileMismatchLogInternalFalse(t *testing.T) {
+func TestTugqlRelationalProfileMismatchLogInternalFalse(t *testing.T) {
 	t.Parallel()
 	srv := New("test", nil)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/databases/db1/dtql", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/databases/db1/tugql", nil)
 	srv.writeRelationalErrorMode(rec, req, joinexec.ErrProfileMismatch, false)
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500 for profile mismatch, got %d", rec.Code)

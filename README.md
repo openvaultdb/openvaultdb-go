@@ -330,7 +330,7 @@ run when that env var is set (`gcloud emulators firestore start`).
 
 ### Which engines can be queried today
 
-Structured queries (`/query` and `/dtql`) run on SQLite, inGitDB and Firestore
+Structured queries (`/query` and `/tugql`) run on SQLite, inGitDB and Firestore
 mounts, and on a PostgreSQL mount while the preview switch is on: the server's
 environment holds `OVDB_PREVIEW_POSTGRES_QUERIES=1` when the mount opens (see
 `docs/api.md`). A MySQL mount, and a PostgreSQL mount without the switch, are
@@ -409,6 +409,6 @@ for its manifest and query contract. MySQL structured queries remain refused.
 - Replication, sync, conflict resolution, migrations
 - Read-your-writes across HTTP round-trips (driver buffers writes client-side)
 - Per-field SQLite columns / indexes
-- Query cursors, offsets, projections, group-by on `/query` (DTQL documents have grouping)
+- Query cursors, offsets, projections, group-by on `/query` (TugQL documents have grouping)
 
 See [docs/roadmap.md](docs/roadmap.md) for the prioritised follow-up list.

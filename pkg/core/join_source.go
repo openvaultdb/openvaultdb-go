@@ -28,7 +28,7 @@ import (
 // run verbatim) is refused too.
 //
 // Before the engine guard, the executor checks the query as Execute and
-// ExecuteDTQLQuery do. Its collection, field and alias names are checked with
+// ExecuteTugQLQuery do. Its collection, field and alias names are checked with
 // the field-name rule of the mount's engine (checkRelationalNames), so an
 // engine outside quotedNameEngines is held to the strict rule here, in code. On
 // an engine that builds SQL, every collection the query reads must be declared
@@ -56,13 +56,13 @@ var ErrProtectedReadTx = errors.New("a policy-protected database is read through
 // partly authorising a query. The decision depends on the shape of the query
 // alone, before any collection name is looked at, so the error is the same
 // whichever collections the query names and says nothing of which exist. The
-// executor of Executor and the entry points that take one query (ExecuteDTQLQuery,
-// StreamDTQLSnapshot, SelectAccessSample) return it; ReadTx refuses such a
+// executor of Executor and the entry points that take one query (ExecuteTugQLQuery,
+// StreamTugQLSnapshot, SelectAccessSample) return it; ReadTx refuses such a
 // database whole (ErrProtectedReadTx).
 var ErrProtectedSingleSource = errors.New("a policy-protected database is read one source at a time: no join, derived source or subquery")
 
 // errJoinSourceStructuredOnly refuses a query that is not a dal.StructuredQuery.
-var errJoinSourceStructuredOnly = fmt.Errorf("%w: only structured queries are accepted", ErrInvalidDTQL)
+var errJoinSourceStructuredOnly = fmt.Errorf("%w: only structured queries are accepted", ErrInvalidTugQL)
 
 // EngineInGitDBGitHub is the Engine of an inGitDB mount whose backend is a
 // GitHub repository. Its reads go over the network, so a caller routing by

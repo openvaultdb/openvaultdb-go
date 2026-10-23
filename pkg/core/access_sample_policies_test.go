@@ -20,7 +20,7 @@ import (
 func TestSampleReadsThePolicyLayersBeforeLookingAtCollectionNames(t *testing.T) {
 	ctx := context.Background()
 	parse := func(collection string) dal.StructuredQuery {
-		query, _, err := ParseDTQL([]byte("from: {name: " + collection + "}\n"))
+		query, _, err := ParseTugQL([]byte("from: {name: " + collection + "}\n"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -92,7 +92,7 @@ func TestSampleSkipsAPolicyLayerThatIsNotEnabled(t *testing.T) {
 	if layers := db.PolicyLayers(context.Background()); len(layers) != 2 || !layers[0].Enabled || layers[1].Enabled {
 		t.Fatalf("want an enabled owner layer and a lower layer that is not enabled: %+v", layers)
 	}
-	query, _, err := ParseDTQL([]byte("from: {name: customers}\n"))
+	query, _, err := ParseTugQL([]byte("from: {name: customers}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -12,8 +12,8 @@ import (
 	"testing"
 
 	"github.com/dal-go/dalgo/access"
-	"github.com/dal-go/dalgo/dtql"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	"github.com/dal-go/dalgo/tugql"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
@@ -79,7 +79,7 @@ func nestedScopeServer(t *testing.T, engine string) (*httptest.Server, *guardFak
 	return ts, fake
 }
 
-// nestedScopeDocuments are DTQL documents of the collection customers that read
+// nestedScopeDocuments are TugQL documents of the collection customers that read
 // the collection orders as well.
 var nestedScopeDocuments = map[string]string{
 	"exists":             "from: {name: customers}\nwhere: {exists: {query: {from: {name: orders}}}}\n",
@@ -88,8 +88,8 @@ var nestedScopeDocuments = map[string]string{
 	"exists with a join": "from: {name: customers}\nwhere: {exists: {query: {from: {name: customers, alias: c2, joins: [{from: {name: orders, alias: o}, on: [{op: '==', left: {field: id, source: c2}, right: {field: id, source: o}}]}]}}}}\n",
 }
 
-// TestDTQLReadsOfAnotherCollectionAreAuthorizedPerCollection: a token's read
-// capability is scoped to a collection. A DTQL document of one collection can
+// TestTugQLReadsOfAnotherCollectionAreAuthorizedPerCollection: a token's read
+// capability is scoped to a collection. A TugQL document of one collection can
 // read another inside a subquery, so the capability is checked for every
 // collection the document reads, before anything is read, on every engine, for a
 // plain request, a request that pages a snapshot and a parameterised one. A
@@ -97,18 +97,18 @@ var nestedScopeDocuments = map[string]string{
 // capability check meets the refusals every relational document meets before a
 // read: the paging headers, and an engine the server does not join (firestore, by
 // default). Neither depends on the caller, and neither reads.
-func TestDTQLReadsOfAnotherCollectionAreAuthorizedPerCollection(t *testing.T) {
+func TestTugQLReadsOfAnotherCollectionAreAuthorizedPerCollection(t *testing.T) {
 	for _, engine := range []string{"sqlite", "ingitdb", "firestore"} {
 		t.Run(engine, func(t *testing.T) {
 			ts, fake := nestedScopeServer(t, engine)
-			const dtql = "/v1/databases/guarded/dtql"
+			const tugql = "/v1/databases/guarded/tugql"
 			for label, doc := range nestedScopeDocuments {
 				parameterised, _ := json.Marshal(map[string]any{"query": doc, "parameters": map[string]any{}})
 				for _, call := range []guardCall{
-					{name: "GET", method: "GET", path: dtql + "?q=" + url.QueryEscape(doc)},
-					{name: "POST", method: "POST", path: dtql, body: doc},
-					{name: "POST parameters", method: "POST", path: dtql, body: string(parameterised), headers: map[string]string{"Content-Type": "application/json"}},
-					{name: "snapshot page", method: "POST", path: dtql, body: doc, headers: map[string]string{"OVDB-Page-Size": "10"}},
+					{name: "GET", method: "GET", path: tugql + "?q=" + url.QueryEscape(doc)},
+					{name: "POST", method: "POST", path: tugql, body: doc},
+					{name: "POST parameters", method: "POST", path: tugql, body: string(parameterised), headers: map[string]string{"Content-Type": "application/json"}},
+					{name: "snapshot page", method: "POST", path: tugql, body: doc, headers: map[string]string{"OVDB-Page-Size": "10"}},
 				} {
 					with := func(token string) guardCall {
 						withToken := call
@@ -154,7 +154,7 @@ func TestDTQLReadsOfAnotherCollectionAreAuthorizedPerCollection(t *testing.T) {
 			}
 			// A document of the one collection the token reads is not stopped.
 			before := fake.queries
-			status, body := send(t, ts, guardCall{method: "POST", path: dtql, body: "from: {name: customers}\n", headers: map[string]string{"Authorization": "Bearer " + nestedScopeCustomersToken}})
+			status, body := send(t, ts, guardCall{method: "POST", path: tugql, body: "from: {name: customers}\n", headers: map[string]string{"Authorization": "Bearer " + nestedScopeCustomersToken}})
 			if status == http.StatusForbidden || fake.queries == before {
 				t.Errorf("a document of customers: %d %v", status, body)
 			}
@@ -163,7 +163,7 @@ func TestDTQLReadsOfAnotherCollectionAreAuthorizedPerCollection(t *testing.T) {
 }
 
 // TestAccessSampleReadsOfAnotherCollectionAreAuthorizedPerCollection: the sample
-// route runs a DTQL document too, so a subquery in its query is held to the same
+// route runs a TugQL document too, so a subquery in its query is held to the same
 // capability check as the root. The mount has access policies, so a token that
 // passes the capability check meets the mount's own refusal of a second source
 // (422 authorization_unsupported), never a 403.
@@ -178,7 +178,7 @@ func TestAccessSampleReadsOfAnotherCollectionAreAuthorizedPerCollection(t *testi
 	sample := func(query string) string {
 		op := writeGuardProtectedOp("update", "/customers", writeGuardProtectedSet("name"))
 		data, _ := json.Marshal(api.Request{APIVersion: az.APIVersion, Mode: az.ModeSample, DiagnosticLevel: "ordinary", Operations: []api.Operation{op},
-			Sample: &api.Sample{Limit: 1, Query: api.Query{Format: "dtql-yaml", Text: query}}})
+			Sample: &api.Sample{Limit: 1, Query: api.Query{Format: "tugql-yaml", Text: query}}})
 		return string(data)
 	}
 	ask := func(token, query string) (int, string) {
@@ -221,41 +221,41 @@ func nestedScopeUnlistableDocument(groups int) string {
 // accept the document, and QueryCollections cannot list its sources.
 func nestedScopeRequireUnlistable(t *testing.T, doc string) {
 	t.Helper()
-	query, err := dtql.Deserialize([]byte(doc))
+	query, err := tugql.Deserialize([]byte(doc))
 	if err != nil {
 		t.Fatalf("the document does not parse: %v", err)
 	}
-	if _, err := core.ClassifyDTQL(query); err != nil {
+	if _, err := core.ClassifyTugQL(query); err != nil {
 		t.Fatalf("the classifier refuses the document, so it is not the case under test: %v", err)
 	}
-	if _, _, err := core.ParseDTQL([]byte(doc)); err != nil {
+	if _, _, err := core.ParseTugQL([]byte(doc)); err != nil {
 		t.Fatalf("the single-collection validator refuses the document, so it is not the case under test: %v", err)
 	}
-	if _, err := core.QueryCollections(query); !errors.Is(err, core.ErrInvalidDTQL) {
+	if _, err := core.QueryCollections(query); !errors.Is(err, core.ErrInvalidTugQL) {
 		t.Fatalf("QueryCollections lists the sources of the document (%v), so it is not the case under test", err)
 	}
 }
 
-// TestDTQLDocumentTooDeepForTheClassifierIsRefusedForEveryCaller: a document the
+// TestTugQLDocumentTooDeepForTheClassifierIsRefusedForEveryCaller: a document the
 // parser accepts but that nests derived sources inside two nested join trees past
-// the depth the classifier allows is refused with 400 invalid_dtql before anything
+// the depth the classifier allows is refused with 400 invalid_tugql before anything
 // is read, for a token and for the owner alike: the classifier's refusal comes before
 // the capability check.
-func TestDTQLDocumentTooDeepForTheClassifierIsRefusedForEveryCaller(t *testing.T) {
+func TestTugQLDocumentTooDeepForTheClassifierIsRefusedForEveryCaller(t *testing.T) {
 	derived := "{name: customers}"
 	for i := 0; i < 14; i++ {
 		derived = fmt.Sprintf("{query: {as: d%d, from: %s}}", i, derived)
 	}
 	doc := "from: {name: customers}\nwhere: {exists: {query: {from: {name: orders, joins: [{from: {name: customers, alias: c2, joins: [{from: " + derived +
 		", on: [{op: '==', left: {field: id, source: c2}, right: {field: id, source: d13}}]}]}, on: [{op: '==', left: {field: id, source: orders}, right: {field: id, source: c2}}]}]}}}}\n"
-	if _, _, err := core.ParseDTQL([]byte(doc)); err != nil {
+	if _, _, err := core.ParseTugQL([]byte(doc)); err != nil {
 		t.Fatalf("the single-collection validator refuses the document: %v", err)
 	}
 	ts, fake := nestedScopeServer(t, "ingitdb")
 	for name, token := range map[string]string{"scoped token": nestedScopeBothToken, "owner": ownerToken} {
-		status, body := send(t, ts, guardCall{method: "POST", path: "/v1/databases/guarded/dtql", body: doc, headers: map[string]string{"Authorization": "Bearer " + token}})
+		status, body := send(t, ts, guardCall{method: "POST", path: "/v1/databases/guarded/tugql", body: doc, headers: map[string]string{"Authorization": "Bearer " + token}})
 		detail, _ := body["error"].(map[string]any)
-		if status != http.StatusBadRequest || detail["code"] != "invalid_dtql" || fake.queries != 0 {
+		if status != http.StatusBadRequest || detail["code"] != "invalid_tugql" || fake.queries != 0 {
 			t.Fatalf("%s: %d %v (%d reads)", name, status, body, fake.queries)
 		}
 	}
@@ -265,7 +265,7 @@ func TestDTQLDocumentTooDeepForTheClassifierIsRefusedForEveryCaller(t *testing.T
 // route runs a document through the single-collection validator alone and lists
 // the collections it reads with core.QueryCollections to check the capability for
 // each. A document the classifier accepts and the listing cannot list is refused with
-// 400 invalid_dtql for a token that is not the owner's, before the mount is asked;
+// 400 invalid_tugql for a token that is not the owner's, before the mount is asked;
 // the owner's request is not checked per collection and reaches the mount's own
 // refusal of a second source (422 authorization_unsupported).
 func TestSampleDocumentWhoseSourcesCannotBeListedIsRefusedForAScopedToken(t *testing.T) {
@@ -280,9 +280,9 @@ func TestSampleDocumentWhoseSourcesCannotBeListedIsRefusedForAScopedToken(t *tes
 	t.Cleanup(ts.Close)
 	op := writeGuardProtectedOp("update", "/customers", writeGuardProtectedSet("name"))
 	data, _ := json.Marshal(api.Request{APIVersion: az.APIVersion, Mode: az.ModeSample, DiagnosticLevel: "ordinary", Operations: []api.Operation{op},
-		Sample: &api.Sample{Limit: 1, Query: api.Query{Format: "dtql-yaml", Text: doc}}})
+		Sample: &api.Sample{Limit: 1, Query: api.Query{Format: "tugql-yaml", Text: doc}}})
 	status, body := request(t, ts, http.MethodPost, "/v1/databases/crm/access/evaluate", nestedScopeBothToken, string(data))
-	if status != http.StatusBadRequest || errorCode(t, body) != "invalid_dtql" {
+	if status != http.StatusBadRequest || errorCode(t, body) != "invalid_tugql" {
 		t.Fatalf("scoped token: %d %s", status, body)
 	}
 	if status, body = request(t, ts, http.MethodPost, "/v1/databases/crm/access/evaluate", ownerToken, string(data)); status != http.StatusUnprocessableEntity || errorCode(t, body) != "authorization_unsupported" {
@@ -290,19 +290,19 @@ func TestSampleDocumentWhoseSourcesCannotBeListedIsRefusedForAScopedToken(t *tes
 	}
 }
 
-// TestDTQLDocumentWhoseSourcesCannotBeListedIsAuthorizedBySourcesTheClassifierLists:
+// TestTugQLDocumentWhoseSourcesCannotBeListedIsAuthorizedBySourcesTheClassifierLists:
 // the per-database endpoint answers a document with a subquery as a relational
 // document, whose capability check reads the sources the classifier found, not the
 // listing of core.QueryCollections. A document the classifier accepts and the listing
 // cannot list is therefore refused for no caller by the listing: a token that lacks
 // one of the collections it reads is a 403 before anything is read, and every caller
 // that holds them all (a token for both, the owner) reaches the adapter.
-func TestDTQLDocumentWhoseSourcesCannotBeListedIsAuthorizedBySourcesTheClassifierLists(t *testing.T) {
+func TestTugQLDocumentWhoseSourcesCannotBeListedIsAuthorizedBySourcesTheClassifierLists(t *testing.T) {
 	doc := nestedScopeUnlistableDocument(13)
 	nestedScopeRequireUnlistable(t, doc)
 	ts, fake := nestedScopeServer(t, "ingitdb")
 	call := func(token string) (int, map[string]any) {
-		return send(t, ts, guardCall{method: "POST", path: "/v1/databases/guarded/dtql", body: doc, headers: map[string]string{"Authorization": "Bearer " + token}})
+		return send(t, ts, guardCall{method: "POST", path: "/v1/databases/guarded/tugql", body: doc, headers: map[string]string{"Authorization": "Bearer " + token}})
 	}
 	status, body := call(nestedScopeCustomersToken)
 	detail, _ := body["error"].(map[string]any)

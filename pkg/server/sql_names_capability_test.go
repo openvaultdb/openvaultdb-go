@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"github.com/dal-go/dalgo/access"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
@@ -41,7 +41,7 @@ func (f sqlNamesFixture) quotedTableUntouched(t *testing.T) {
 	}
 }
 
-// TestCapabilityOnQueryRoutesIsCheckedOnTheCollectionAsWritten: /query and /dtql
+// TestCapabilityOnQueryRoutesIsCheckedOnTheCollectionAsWritten: /query and /tugql
 // hand the adapter the collection as written, and on SQLite that name is the
 // table of that exact name. A grant is therefore matched against the spelling
 // sent: a grant on the public name Order Details does not cover the quoted
@@ -54,7 +54,7 @@ func TestCapabilityOnQueryRoutesIsCheckedOnTheCollectionAsWritten(t *testing.T) 
 		out, _ := json.Marshal(map[string]string{"collection": collection})
 		return string(out)
 	}
-	dtql := func(collection string) string { return "from: {name: '" + collection + "'}\n" }
+	tugql := func(collection string) string { return "from: {name: '" + collection + "'}\n" }
 	routes := []struct {
 		name string
 		call func(collection string) guardCall
@@ -65,11 +65,11 @@ func TestCapabilityOnQueryRoutesIsCheckedOnTheCollectionAsWritten(t *testing.T) 
 		{"query POST", func(c string) guardCall {
 			return guardCall{method: "POST", path: "/v1/databases/dev/query", body: queryBody(c)}
 		}},
-		{"dtql GET", func(c string) guardCall {
-			return guardCall{method: "GET", path: "/v1/databases/dev/dtql?q=" + url.QueryEscape(dtql(c))}
+		{"tugql GET", func(c string) guardCall {
+			return guardCall{method: "GET", path: "/v1/databases/dev/tugql?q=" + url.QueryEscape(tugql(c))}
 		}},
-		{"dtql POST", func(c string) guardCall {
-			return guardCall{method: "POST", path: "/v1/databases/dev/dtql", body: dtql(c)}
+		{"tugql POST", func(c string) guardCall {
+			return guardCall{method: "POST", path: "/v1/databases/dev/tugql", body: tugql(c)}
 		}},
 	}
 	for _, c := range []struct {
@@ -190,7 +190,7 @@ func (p protectedQuoted) do(t *testing.T, token, method, path, content, body str
 
 // TestCapabilityOnProtectedRoutesIsCheckedOnTheCollectionAsWritten: the protected
 // update, the sampling and evidence endpoints of the authorization API, and
-// /query and /dtql on a mount with access policies, address the collection as
+// /query and /tugql on a mount with access policies, address the collection as
 // written. A grant on the public name customers covers a request that names it
 // and is refused for the quoted spelling, whose name is also the name of a table
 // of the file that no request under that grant may read or change.
@@ -207,12 +207,12 @@ func TestCapabilityOnProtectedRoutesIsCheckedOnTheCollectionAsWritten(t *testing
 	}{
 		{"protected update", func(c string) call {
 			op := writeGuardProtectedOp("update", "/"+c+"/01", writeGuardProtectedSet("name"))
-			return call{"PATCH", "/v1/databases/crm/records/" + url.PathEscape(c) + "/01", "application/vnd.dtql.operation+json", asJSON(op)}
+			return call{"PATCH", "/v1/databases/crm/records/" + url.PathEscape(c) + "/01", "application/vnd.tugql.operation+json", asJSON(op)}
 		}},
 		{"sample", func(c string) call {
 			op := writeGuardProtectedOp("update", "/"+c, writeGuardProtectedSet("name"))
 			request := api.Request{APIVersion: az.APIVersion, Mode: az.ModeSample, DiagnosticLevel: "ordinary", Operations: []api.Operation{op},
-				Sample: &api.Sample{Limit: 1, Query: api.Query{Format: "dtql-yaml", Text: "from: {name: '" + c + "'}\n"}}}
+				Sample: &api.Sample{Limit: 1, Query: api.Query{Format: "tugql-yaml", Text: "from: {name: '" + c + "'}\n"}}}
 			return call{"POST", "/v1/databases/crm/access/evaluate", "application/json", asJSON(request)}
 		}},
 		{"evidence", func(c string) call {
@@ -222,8 +222,8 @@ func TestCapabilityOnProtectedRoutesIsCheckedOnTheCollectionAsWritten(t *testing
 		{"query", func(c string) call {
 			return call{"POST", "/v1/databases/crm/query", "application/json", asJSON(map[string]string{"collection": c})}
 		}},
-		{"dtql", func(c string) call {
-			return call{"POST", "/v1/databases/crm/dtql", "application/yaml", "from: {name: '" + c + "'}\n"}
+		{"tugql", func(c string) call {
+			return call{"POST", "/v1/databases/crm/tugql", "application/yaml", "from: {name: '" + c + "'}\n"}
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {

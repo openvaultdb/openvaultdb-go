@@ -35,10 +35,10 @@ func TestRelationalBoundsAreTheOnesTheClassifierEnforces(t *testing.T) {
 		{"offset", fmt.Sprintf("from: {name: a}\noffset: %d\n", bounds.MaxOffset), fmt.Sprintf("from: {name: a}\noffset: %d\n", bounds.MaxOffset+1)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := ClassifyDTQL(mustDeserialize(t, tc.atBound)); err != nil {
+			if _, err := ClassifyTugQL(mustDeserialize(t, tc.atBound)); err != nil {
 				t.Errorf("at the bound: %v", err)
 			}
-			if _, err := ClassifyDTQL(mustDeserialize(t, tc.over)); err == nil {
+			if _, err := ClassifyTugQL(mustDeserialize(t, tc.over)); err == nil {
 				t.Error("just over the bound: classified")
 			}
 		})

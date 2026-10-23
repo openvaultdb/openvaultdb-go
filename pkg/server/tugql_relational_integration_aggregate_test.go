@@ -11,7 +11,7 @@ import (
 // carries the name, so a name that another source carries must not be answered from the
 // first (OJ-14). The documents carry an EXISTS test, which puts them on the in-memory
 // evaluation that binds unqualified fields (a join document without a subquery is
-// refused by the DTQL parser before it reaches the engine). The helpers of this file all
+// refused by the TugQL parser before it reaches the engine). The helpers of this file all
 // start with relIntAggregate so they cannot clash with the others of the package.
 
 const (
@@ -26,7 +26,7 @@ const (
 	relIntAggregateRevenue = "{aggregate: {function: sum, args: [{field: Total, source: i}]}, as: Revenue}"
 )
 
-// relIntAggregateRefused requires the 400 invalid_dtql of a scope refusal at path that
+// relIntAggregateRefused requires the 400 invalid_tugql of a scope refusal at path that
 // names the field and says what the caller can do about it.
 func relIntAggregateRefused(t *testing.T, resp relHTTPResponse, path, field string) {
 	t.Helper()

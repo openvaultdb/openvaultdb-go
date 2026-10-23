@@ -94,7 +94,7 @@ func TestMainAndRunLifecycle(t *testing.T) {
 
 	// Exercise the Resolve callback for matching subject ("demo-user") via queryToken,
 	// and for non-matching subject via a second grant.
-	req := httptest.NewRequest(http.MethodPost, "/v1/databases/sqlite/dtql", bytes.NewBufferString(`{"query":"from: {name: customers}\n"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/databases/sqlite/tugql", bytes.NewBufferString(`{"query":"from: {name: customers}\n"}`))
 	req.Header.Set("Authorization", "Bearer query-secret-token")
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -122,7 +122,7 @@ func TestMainAndRunLifecycle(t *testing.T) {
 	if err := run(createdDir, true, "127.0.0.1:0"); err != nil {
 		t.Fatalf("run reuse failed: %v", err)
 	}
-	reqOther := httptest.NewRequest(http.MethodPost, "/v1/databases/sqlite/dtql", bytes.NewBufferString(`{"query":"FROM customers SELECT id, name"}`))
+	reqOther := httptest.NewRequest(http.MethodPost, "/v1/databases/sqlite/tugql", bytes.NewBufferString(`{"query":"FROM customers SELECT id, name"}`))
 	reqOther.Header.Set("Authorization", "Bearer other-query-token")
 	reqOther.Header.Set("Content-Type", "application/json")
 	recOther := httptest.NewRecorder()

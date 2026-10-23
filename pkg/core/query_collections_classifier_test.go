@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dal-go/dalgo/dtql"
+	"github.com/dal-go/dalgo/tugql"
 )
 
 // The per-database endpoint reads the collections of a document with
@@ -44,11 +44,11 @@ func TestQueryCollectionsListsEveryDocumentTheClassifierCallsSingleCollection(t 
 	} {
 		for groups := 0; groups <= 20; groups++ {
 			doc := shape.doc(groups)
-			query, err := dtql.Deserialize([]byte(doc))
+			query, err := tugql.Deserialize([]byte(doc))
 			if err != nil {
 				t.Fatalf("%s, %d groups: %v", shape.name, groups, err)
 			}
-			profile, err := ClassifyDTQL(query)
+			profile, err := ClassifyTugQL(query)
 			if err != nil || profile.Kind != ProfileSingleCollection {
 				// Past the depth the classifier allows, or not a single-collection document
 				// (an IS NULL test is a relational feature): the listing is not asked.
@@ -79,11 +79,11 @@ func TestQueryCollectionsRefusesADocumentTheClassifierAcceptsWithADerivedSourceO
 	}
 	doc := "from: {name: customers}\nwhere: {exists: {query: {from: {name: orders, joins: [{from: {query: {as: d, from: {name: customers}, where: " + where +
 		"}}, on: [{op: '==', left: {field: id, source: orders}, right: {field: id, source: d}}]}]}}}}\n"
-	query, err := dtql.Deserialize([]byte(doc))
+	query, err := tugql.Deserialize([]byte(doc))
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err := ClassifyDTQL(query)
+	profile, err := ClassifyTugQL(query)
 	if err != nil || profile.Kind != ProfileRelational || !profile.HasSubquery {
 		t.Fatalf("classification = %+v, %v, want a relational document", profile, err)
 	}

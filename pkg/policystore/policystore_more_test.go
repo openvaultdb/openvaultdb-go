@@ -23,7 +23,7 @@ func TestLeaseAcquireAndRelease(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := openTestStore(t, t.TempDir())
-	first, err := store.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")})
+	first, err := store.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestControllerErrorsAndMethods(t *testing.T) {
 
 	// Initialized store
 	store := openTestStore(t, t.TempDir())
-	first, err := store.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")})
+	first, err := store.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestControllerErrorsAndMethods(t *testing.T) {
 
 	// publishErr != nil AND loadErr != nil
 	storeErrBoth := openTestStore(t, t.TempDir())
-	firstBoth, err := storeErrBoth.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")})
+	firstBoth, err := storeErrBoth.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,13 +164,13 @@ func TestControllerErrorsAndMethods(t *testing.T) {
 		_ = os.Remove(filepath.Join(storeErrBoth.root, "active.json"))
 		return errors.New("simulated publish failure")
 	}
-	if _, err := cBoth.Activate(ctx, firstBoth.Revision, []access.DTQLDocument{policy(t, "email")}); err == nil {
+	if _, err := cBoth.Activate(ctx, firstBoth.Revision, []access.TugQLDocument{policy(t, "email")}); err == nil {
 		t.Fatal("expected error")
 	}
 
 	// publishErr == nil AND loadErr != nil
 	storeErrLoad := openTestStore(t, t.TempDir())
-	firstLoad, err := storeErrLoad.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")})
+	firstLoad, err := storeErrLoad.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestControllerErrorsAndMethods(t *testing.T) {
 		}
 		return nil
 	}
-	if _, err := cLoad.Activate(ctx, firstLoad.Revision, []access.DTQLDocument{policy(t, "email")}); err == nil {
+	if _, err := cLoad.Activate(ctx, firstLoad.Revision, []access.TugQLDocument{policy(t, "email")}); err == nil {
 		t.Fatal("expected load error after pointer-published")
 	}
 }
@@ -379,7 +379,7 @@ func TestStoreLoadGenerationValidation(t *testing.T) {
 		t.Error("expected error for policy document digest mismatch")
 	}
 
-	// Document with corrupt DTQL policy
+	// Document with corrupt TugQL policy
 	corruptBytes := []byte("invalid policy")
 	corruptRev := digest(corruptBytes)
 	cDir := filepath.Join(store.root, "generations")
@@ -388,12 +388,12 @@ func TestStoreLoadGenerationValidation(t *testing.T) {
 	}})
 	_ = os.WriteFile(filepath.Join(cDir, r8, "policies", corruptRev+".json"), corruptBytes, 0600)
 	if _, err := store.loadGeneration(ctx, r8); err == nil {
-		t.Error("expected error for corrupt DTQL policy")
+		t.Error("expected error for corrupt TugQL policy")
 	}
 
 	// Document identity mismatch (Metadata.Name != entry.ID)
 	doc := policy(t, "name")
-	docBytes, _ := access.MarshalDTQLPolicyJSON(doc)
+	docBytes, _ := access.MarshalTugQLPolicyJSON(doc)
 	docRev := digest(docBytes)
 	r9 := writeManifest(manifest{Version: "ovdb.policy-generation/v1", Owner: store.owner, Documents: []Document{
 		{ID: "different_name", Revision: docRev, File: "policies/" + docRev + ".json"},
@@ -422,7 +422,7 @@ func TestStoreActivateValidation(t *testing.T) {
 	}
 
 	// > 100 policies
-	manyPols := make([]access.DTQLDocument, 101)
+	manyPols := make([]access.TugQLDocument, 101)
 	for i := range manyPols {
 		manyPols[i] = policy(t, "name")
 	}
@@ -431,14 +431,14 @@ func TestStoreActivateValidation(t *testing.T) {
 	}
 
 	// Invalid expected generation digest
-	if _, err := store.Activate(ctx, "invalid_digest", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := store.Activate(ctx, "invalid_digest", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Error("expected error for invalid expected digest")
 	}
 
 	// Publication lock is a directory
 	lockPath := filepath.Join(store.root, ".publication.lock")
 	_ = os.Mkdir(lockPath, 0700)
-	if _, err := store.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := store.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Error("expected error when publication lock is a directory")
 	}
 	_ = os.RemoveAll(lockPath)
@@ -449,7 +449,7 @@ func TestStoreActivateValidation(t *testing.T) {
 	if locked {
 		cancCtx, cancel := context.WithTimeout(ctx, 10*time.Millisecond)
 		defer cancel()
-		if _, err := store.Activate(cancCtx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+		if _, err := store.Activate(cancCtx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 			t.Error("expected error when publication lock is held")
 		}
 		_ = fl.Unlock()
@@ -459,14 +459,14 @@ func TestStoreActivateValidation(t *testing.T) {
 	p1 := policy(t, "name")
 	p2 := policy(t, "email")
 	p2.Metadata.Name = p1.Metadata.Name
-	if _, err := store.Activate(ctx, "", []access.DTQLDocument{p1, p2}); err == nil {
+	if _, err := store.Activate(ctx, "", []access.TugQLDocument{p1, p2}); err == nil {
 		t.Error("expected error for duplicate policy name")
 	}
 
 	// Context cancelled during Activate documents loop
 	cancCtxDoc, cancelDoc := context.WithCancel(ctx)
 	cancelDoc()
-	if _, err := store.Activate(cancCtxDoc, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := store.Activate(cancCtxDoc, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Error("expected context cancelled error in Activate documents loop")
 	}
 
@@ -479,7 +479,7 @@ func TestStoreActivateValidation(t *testing.T) {
 		}
 		return nil
 	}
-	if _, err := storeCancel.Activate(ctxPtr, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := storeCancel.Activate(ctxPtr, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Error("expected context cancelled error after pointer-synced")
 	}
 
@@ -488,7 +488,7 @@ func TestStoreActivateValidation(t *testing.T) {
 	genDir := filepath.Join(storeLstat.root, "generations")
 	_ = os.MkdirAll(genDir, 0700)
 	_ = os.Chmod(genDir, 0000)
-	if _, err := storeLstat.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := storeLstat.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Error("expected error when generations directory is not accessible")
 	}
 	_ = os.Chmod(genDir, 0700)
@@ -496,7 +496,7 @@ func TestStoreActivateValidation(t *testing.T) {
 	// Generations dir is a regular file
 	store2 := openTestStore(t, t.TempDir())
 	_ = os.WriteFile(filepath.Join(store2.root, "generations"), []byte("file"), 0600)
-	if _, err := store2.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := store2.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Error("expected error when generations path is a file")
 	}
 
@@ -509,7 +509,7 @@ func TestStoreActivateValidation(t *testing.T) {
 			}
 			return nil
 		}
-		if _, err := store3.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+		if _, err := store3.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 			t.Errorf("expected error when checkpoint failed at %s", failPhase)
 		}
 	}
@@ -585,7 +585,7 @@ func TestStoreSeams(t *testing.T) {
 
 	// sameFile returns false in read
 	store := openTestStore(t, t.TempDir())
-	first, err := store.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")})
+	first, err := store.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -600,7 +600,7 @@ func TestStoreSeams(t *testing.T) {
 		return &errSyncWriter{failWrite: true}, nil
 	}
 	store2 := openTestStore(t, t.TempDir())
-	if _, err := store2.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := store2.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error on openSyncFile write error")
 	}
 
@@ -609,7 +609,7 @@ func TestStoreSeams(t *testing.T) {
 		return &errSyncWriter{failSync: true}, nil
 	}
 	store3 := openTestStore(t, t.TempDir())
-	if _, err := store3.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := store3.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error on openSyncFile sync error")
 	}
 	openSyncFile = origOpenSyncFile
@@ -619,7 +619,7 @@ func TestStoreSeams(t *testing.T) {
 		return nil, errors.New("create temp error")
 	}
 	store4 := openTestStore(t, t.TempDir())
-	if _, err := store4.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := store4.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error on createActiveTemp error")
 	}
 
@@ -629,7 +629,7 @@ func TestStoreSeams(t *testing.T) {
 		return &errTempFile{failWrite: true, name: filepath.Join(tmpDir, "tmp")}, nil
 	}
 	store5 := openTestStore(t, t.TempDir())
-	if _, err := store5.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := store5.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error on temp write error")
 	}
 
@@ -638,7 +638,7 @@ func TestStoreSeams(t *testing.T) {
 		return &errTempFile{failSync: true, name: filepath.Join(tmpDir, "tmp")}, nil
 	}
 	store6 := openTestStore(t, t.TempDir())
-	if _, err := store6.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := store6.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error on temp sync error")
 	}
 
@@ -647,7 +647,7 @@ func TestStoreSeams(t *testing.T) {
 		return &errTempFile{failClose: true, name: filepath.Join(tmpDir, "tmp")}, nil
 	}
 	store7 := openTestStore(t, t.TempDir())
-	if _, err := store7.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := store7.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error on temp close error")
 	}
 	_ = first
@@ -657,7 +657,7 @@ func TestControllerActivateSuccess(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := openTestStore(t, t.TempDir())
-	first, err := store.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")})
+	first, err := store.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -665,7 +665,7 @@ func TestControllerActivateSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snap, err := c.Activate(ctx, first.Revision, []access.DTQLDocument{policy(t, "name")})
+	snap, err := c.Activate(ctx, first.Revision, []access.TugQLDocument{policy(t, "name")})
 	if err != nil {
 		t.Fatalf("c.Activate failed: %v", err)
 	}
@@ -708,16 +708,16 @@ func TestStore_LoadGeneration_ExceedsByteLimit(t *testing.T) {
 		id := fmt.Sprintf("doc-%d", i)
 		pi := policy(t, id)
 		pi.Metadata.Name = id
-		piBytes, err := access.MarshalDTQLPolicyJSON(pi)
+		piBytes, err := access.MarshalTugQLPolicyJSON(pi)
 		if err != nil {
 			t.Fatal(err)
 		}
 		padLen := 1000000 - len(piBytes)
 		pi.Metadata.Description = strings.Repeat("a", padLen-100)
-		piBytes, _ = access.MarshalDTQLPolicyJSON(pi)
+		piBytes, _ = access.MarshalTugQLPolicyJSON(pi)
 		for len(piBytes) < 1000000 {
 			pi.Metadata.Description += "x"
-			piBytes, _ = access.MarshalDTQLPolicyJSON(pi)
+			piBytes, _ = access.MarshalTugQLPolicyJSON(pi)
 		}
 		pRev := digest(piBytes)
 		docs[i] = Document{
@@ -823,7 +823,7 @@ func TestStore_ErrorBranchesCoverage(t *testing.T) {
 		return nil, errors.New("load policy files error")
 	}
 	validStore := openTestStore(t, t.TempDir())
-	if _, err := validStore.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := validStore.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error when loadPolicyFiles fails")
 	}
 	loadPolicyFiles = origLoadPolicyFiles
@@ -835,7 +835,7 @@ func TestStore_ErrorBranchesCoverage(t *testing.T) {
 		return nil, errors.New("open sync file error")
 	}
 	syncStore := openTestStore(t, t.TempDir())
-	if _, err := syncStore.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := syncStore.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error when openSyncFile fails")
 	}
 	openSyncFile = origOpenSyncFile
@@ -850,12 +850,12 @@ func TestStore_ErrorBranchesCoverage(t *testing.T) {
 	cancCtx, cancel := context.WithCancel(ctx)
 	cancel()
 	lockStore := openTestStore(t, t.TempDir())
-	if _, err := lockStore.Activate(cancCtx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := lockStore.Activate(cancCtx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error on canceled ctx when lock unavailable")
 	}
 
 	// Lock unavailable with normal ctx (line 306)
-	if _, err := lockStore.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := lockStore.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected publication lock unavailable error")
 	}
 
@@ -863,7 +863,7 @@ func TestStore_ErrorBranchesCoverage(t *testing.T) {
 	newPublicationLock = func(path string) publicationLock {
 		return &mockPubLock{err: errors.New("lock error")}
 	}
-	if _, err := lockStore.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := lockStore.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error when TryLockContext returns error")
 	}
 	newPublicationLock = origPubLock
@@ -871,18 +871,18 @@ func TestStore_ErrorBranchesCoverage(t *testing.T) {
 	// 9. Load error when expected != "" (line 311)
 	uninitStore := openTestStore(t, t.TempDir())
 	nonEmptyRev := strings.Repeat("a", 64)
-	if _, err := uninitStore.Activate(ctx, nonEmptyRev, []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := uninitStore.Activate(ctx, nonEmptyRev, []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error on uninitialized store with non-empty expected")
 	}
 
 	// 10. marshalPolicy error (line 337)
 	origMarshalPolicy := marshalPolicy
 	defer func() { marshalPolicy = origMarshalPolicy }()
-	marshalPolicy = func(doc access.DTQLDocument) ([]byte, error) {
+	marshalPolicy = func(doc access.TugQLDocument) ([]byte, error) {
 		return nil, errors.New("marshal error")
 	}
 	mStore := openTestStore(t, t.TempDir())
-	if _, err := mStore.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := mStore.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error when marshalPolicy fails")
 	}
 	marshalPolicy = origMarshalPolicy
@@ -891,22 +891,22 @@ func TestStore_ErrorBranchesCoverage(t *testing.T) {
 	doc1 := policy(t, "doc1")
 	doc2 := policy(t, "doc2")
 	loopCtx, loopCancel := context.WithCancel(ctx)
-	marshalPolicy = func(doc access.DTQLDocument) ([]byte, error) {
+	marshalPolicy = func(doc access.TugQLDocument) ([]byte, error) {
 		loopCancel()
 		return origMarshalPolicy(doc)
 	}
 	loopStore := openTestStore(t, t.TempDir())
-	if _, err := loopStore.Activate(loopCtx, "", []access.DTQLDocument{doc1, doc2}); err == nil {
+	if _, err := loopStore.Activate(loopCtx, "", []access.TugQLDocument{doc1, doc2}); err == nil {
 		t.Fatal("expected error on canceled ctx during documents loop")
 	}
 	marshalPolicy = origMarshalPolicy
 
 	// 11. Policy body > 1<<20 (line 341)
-	marshalPolicy = func(doc access.DTQLDocument) ([]byte, error) {
+	marshalPolicy = func(doc access.TugQLDocument) ([]byte, error) {
 		return make([]byte, (1<<20)+1), nil
 	}
 	bigStore := openTestStore(t, t.TempDir())
-	if _, err := bigStore.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := bigStore.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error when policy body exceeds 1MB")
 	}
 	marshalPolicy = origMarshalPolicy
@@ -921,7 +921,7 @@ func TestStore_ErrorBranchesCoverage(t *testing.T) {
 		return origOsLstat(name)
 	}
 	genFileStore := openTestStore(t, t.TempDir())
-	if _, err := genFileStore.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := genFileStore.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error when generations lstat fails")
 	}
 	osLstat = origOsLstat
@@ -933,7 +933,7 @@ func TestStore_ErrorBranchesCoverage(t *testing.T) {
 		return "", errors.New("mkdir temp error")
 	}
 	tmpStore := openTestStore(t, t.TempDir())
-	if _, err := tmpStore.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := tmpStore.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error when osMkdirTemp fails")
 	}
 	osMkdirTemp = origMkdirTemp
@@ -945,7 +945,7 @@ func TestStore_ErrorBranchesCoverage(t *testing.T) {
 		return errors.New("mkdir policies error")
 	}
 	polStore := openTestStore(t, t.TempDir())
-	if _, err := polStore.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := polStore.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error when osMkdir fails")
 	}
 	osMkdir = origMkdir
@@ -960,7 +960,7 @@ func TestStore_ErrorBranchesCoverage(t *testing.T) {
 		return origOpenSyncFile(path, flag, perm)
 	}
 	manStore := openTestStore(t, t.TempDir())
-	if _, err := manStore.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := manStore.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error on manifest writeSync error")
 	}
 	openSyncFile = origOpenSyncFile
@@ -975,7 +975,7 @@ func TestStore_ErrorBranchesCoverage(t *testing.T) {
 		return nil
 	}
 	sdStore1 := openTestStore(t, t.TempDir())
-	if _, err := sdStore1.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := sdStore1.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error on sync policies error")
 	}
 
@@ -986,7 +986,7 @@ func TestStore_ErrorBranchesCoverage(t *testing.T) {
 		return nil
 	}
 	sdStore2 := openTestStore(t, t.TempDir())
-	if _, err := sdStore2.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := sdStore2.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error on sync stage error")
 	}
 
@@ -997,7 +997,7 @@ func TestStore_ErrorBranchesCoverage(t *testing.T) {
 		return nil
 	}
 	sdStore3 := openTestStore(t, t.TempDir())
-	if _, err := sdStore3.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := sdStore3.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error on sync generations error")
 	}
 
@@ -1008,7 +1008,7 @@ func TestStore_ErrorBranchesCoverage(t *testing.T) {
 		}
 		return nil
 	}
-	if _, err := sdStore4.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := sdStore4.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error on sync root error")
 	}
 	syncDirFn = origSyncDirFn
@@ -1023,7 +1023,7 @@ func TestStore_ErrorBranchesCoverage(t *testing.T) {
 		return origRename(oldpath, newpath)
 	}
 	renStore1 := openTestStore(t, t.TempDir())
-	if _, err := renStore1.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := renStore1.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error on rename stage error")
 	}
 
@@ -1034,7 +1034,7 @@ func TestStore_ErrorBranchesCoverage(t *testing.T) {
 		return origRename(oldpath, newpath)
 	}
 	renStore2 := openTestStore(t, t.TempDir())
-	if _, err := renStore2.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := renStore2.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error on rename active error")
 	}
 	osRename = origRename
@@ -1048,7 +1048,7 @@ func TestStore_ErrorBranchesCoverage(t *testing.T) {
 		}
 		return nil
 	}
-	if _, err := cancellingStore.Activate(dynCtx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := cancellingStore.Activate(dynCtx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error when context canceled at generation-published")
 	}
 
@@ -1057,7 +1057,7 @@ func TestStore_ErrorBranchesCoverage(t *testing.T) {
 		return nil, errors.New("candidate load error")
 	}
 	candStore := openTestStore(t, t.TempDir())
-	if _, err := candStore.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := candStore.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("expected error when candidate load fails")
 	}
 	loadPolicyFiles = origLoadPolicyFiles

@@ -488,7 +488,7 @@ func TestProviderRequestValidationBranches(t *testing.T) {
 		}
 	}
 
-	// Non-query non-dtql path returns true
+	// Non-query non-tugql path returns true
 	reqMeta := httptest.NewRequest(http.MethodGet, "/v1/databases/ecb/schema", nil)
 	if !srvRestricted.guardProviderRequest(httptest.NewRecorder(), reqMeta, dbHTTP) {
 		t.Fatal("expected true for schema path")
@@ -509,16 +509,16 @@ func TestProviderRequestValidationBranches(t *testing.T) {
 		t.Fatal("expected guardProviderRequest to refuse extra parameters")
 	}
 
-	// DTQL with POST and application/json Content-Type
-	recDTQL := httptest.NewRecorder()
-	reqDTQL := httptest.NewRequest(http.MethodPost, "/v1/databases/ecb/dtql", strings.NewReader(`{"query":"from daily limit 5"}`))
-	reqDTQL.Header.Set("Content-Type", "application/json")
-	_ = srvRestricted.guardProviderRequest(recDTQL, reqDTQL, dbHTTP)
+	// TugQL with POST and application/json Content-Type
+	recTugQL := httptest.NewRecorder()
+	reqTugQL := httptest.NewRequest(http.MethodPost, "/v1/databases/ecb/tugql", strings.NewReader(`{"query":"from daily limit 5"}`))
+	reqTugQL.Header.Set("Content-Type", "application/json")
+	_ = srvRestricted.guardProviderRequest(recTugQL, reqTugQL, dbHTTP)
 
-	// DTQL with URL parameter
-	recDTQLParam := httptest.NewRecorder()
-	reqDTQLParam := httptest.NewRequest(http.MethodGet, "/v1/databases/ecb/dtql?q=from+daily+limit+5&parameters=%7B%7D", nil)
-	_ = srvRestricted.guardProviderRequest(recDTQLParam, reqDTQLParam, dbHTTP)
+	// TugQL with URL parameter
+	recTugQLParam := httptest.NewRecorder()
+	reqTugQLParam := httptest.NewRequest(http.MethodGet, "/v1/databases/ecb/tugql?q=from+daily+limit+5&parameters=%7B%7D", nil)
+	_ = srvRestricted.guardProviderRequest(recTugQLParam, reqTugQLParam, dbHTTP)
 
 	// 3. providerWireNode checks
 	if providerWireNode([]byte(`key: *alias`)) != nil {
@@ -542,20 +542,20 @@ func TestProviderRequestValidationBranches(t *testing.T) {
 		t.Fatal("expected false for invalid where filter mapping")
 	}
 
-	// 5. validProviderDTQLWire
-	if validProviderDTQLWire([]byte(`{"from":"not-mapping"}`)) {
+	// 5. validProviderTugQLWire
+	if validProviderTugQLWire([]byte(`{"from":"not-mapping"}`)) {
 		t.Fatal("expected false for non-mapping from")
 	}
-	if validProviderDTQLWire([]byte(`{"from":{"name":"daily"},"columns":"not-seq"}`)) {
+	if validProviderTugQLWire([]byte(`{"from":{"name":"daily"},"columns":"not-seq"}`)) {
 		t.Fatal("expected false for non-seq columns")
 	}
-	if validProviderDTQLWire([]byte(`{"from":{"name":"daily"},"columns":[{"bad":"key"}]}`)) {
+	if validProviderTugQLWire([]byte(`{"from":{"name":"daily"},"columns":[{"bad":"key"}]}`)) {
 		t.Fatal("expected false for bad column key")
 	}
-	if validProviderDTQLWire([]byte(`{"from":{"name":"daily"},"limit":100}`)) {
+	if validProviderTugQLWire([]byte(`{"from":{"name":"daily"},"limit":100}`)) {
 		t.Fatal("expected false for limit > 50")
 	}
-	if validProviderDTQLWire([]byte(`{"from":{"name":"daily"},"limit":0}`)) {
+	if validProviderTugQLWire([]byte(`{"from":{"name":"daily"},"limit":0}`)) {
 		t.Fatal("expected false for limit < 1")
 	}
 

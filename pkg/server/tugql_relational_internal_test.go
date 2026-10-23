@@ -21,7 +21,7 @@ import (
 
 	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/dalgo/dal"
-	"github.com/dal-go/dalgo/dtql"
+	"github.com/dal-go/dalgo/tugql"
 	"github.com/dal-go/record"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
@@ -251,45 +251,45 @@ func TestRelationalHandlerMapsEveryErrorOfTheExecutor(t *testing.T) {
 		{name: "policy denial", err: &denied, status: 403, code: "ACCESS_DENIED", excludes: []string{"private predicate"}},
 		{name: "policy denial in a source", err: &joinexec.SourceError{Database: "alpha", Collection: "orders", Err: &denied}, status: 403, code: "ACCESS_DENIED", excludes: []string{"private predicate"}},
 		{name: "shape the engine cannot compile", err: &unsupported, status: 422, code: "authorization_unsupported", excludes: []string{"private predicate"}},
-		{name: "DALgo join shape", err: &dal.JoinValidationError{Category: "join_scope", Path: "from.joins[0]", Message: "unknown alias"}, status: 400, code: "invalid_dtql", contains: []string{"join_scope", "unknown alias"}},
-		{name: "DALgo join shape, long message", err: &dal.JoinValidationError{Category: "join_scope", Path: "from", Message: long}, status: 400, code: "invalid_dtql"},
-		{name: "DALgo query shape", err: &dal.QueryValidationError{Category: "query_shape", Path: "where", Message: "duplicate output name"}, status: 400, code: "invalid_dtql", contains: []string{"query_shape", "duplicate output name"}},
-		{name: "DALgo query shape, wrapped", err: fmt.Errorf("executing: %w", &dal.QueryValidationError{Category: "query_shape", Path: "columns", Message: long}), status: 400, code: "invalid_dtql"},
-		{name: "invalid document", err: fmt.Errorf("%w: $: field name %q is not a plain field name", joinexec.ErrInvalidDocument, "a b"), status: 400, code: "invalid_dtql", contains: []string{"a b"}},
-		{name: "source without a database", err: fmt.Errorf("%w: collection %q", joinexec.ErrSourceWithoutDatabase, "orders"), status: 400, code: "invalid_dtql"},
-		{name: "invalid document, long message", err: fmt.Errorf("%w: %s", joinexec.ErrInvalidDocument, long), status: 400, code: "invalid_dtql"},
+		{name: "DALgo join shape", err: &dal.JoinValidationError{Category: "join_scope", Path: "from.joins[0]", Message: "unknown alias"}, status: 400, code: "invalid_tugql", contains: []string{"join_scope", "unknown alias"}},
+		{name: "DALgo join shape, long message", err: &dal.JoinValidationError{Category: "join_scope", Path: "from", Message: long}, status: 400, code: "invalid_tugql"},
+		{name: "DALgo query shape", err: &dal.QueryValidationError{Category: "query_shape", Path: "where", Message: "duplicate output name"}, status: 400, code: "invalid_tugql", contains: []string{"query_shape", "duplicate output name"}},
+		{name: "DALgo query shape, wrapped", err: fmt.Errorf("executing: %w", &dal.QueryValidationError{Category: "query_shape", Path: "columns", Message: long}), status: 400, code: "invalid_tugql"},
+		{name: "invalid document", err: fmt.Errorf("%w: $: field name %q is not a plain field name", joinexec.ErrInvalidDocument, "a b"), status: 400, code: "invalid_tugql", contains: []string{"a b"}},
+		{name: "source without a database", err: fmt.Errorf("%w: collection %q", joinexec.ErrSourceWithoutDatabase, "orders"), status: 400, code: "invalid_tugql"},
+		{name: "invalid document, long message", err: fmt.Errorf("%w: %s", joinexec.ErrInvalidDocument, long), status: 400, code: "invalid_tugql"},
 		{name: "profile that does not match is the server's defect", err: fmt.Errorf("%w: %w: sources", joinexec.ErrInvalidDocument, joinexec.ErrProfileMismatch), status: 500, code: "internal", logged: true, excludes: []string{"profile"}},
 		{name: "adapter refuses a null test", err: errors.New("unsupported condition dal.IsNullCondition"), status: 422, code: "query_unsupported"},
 		{name: "adapter refuses a null test, in a source", err: &joinexec.SourceError{Database: "alpha", Collection: "orders", Err: errors.New("dalgo2ingitdb: unsupported condition type dal.IsNullCondition")}, status: 422, code: "query_unsupported"},
 		{name: "adapter refuses a null test, wrapped twice", err: fmt.Errorf("executing: %w", &joinexec.SourceError{Database: "alpha", Collection: "orders", Err: fmt.Errorf("failed to build query: %w", errors.New("unsupported condition dal.IsNullCondition"))}), status: 422, code: "query_unsupported"},
 		{name: "the phrase in the middle of an error is not the refusal", err: errors.New("read failed: unsupported condition in the driver"), status: 500, code: "internal", logged: true},
 		{name: "a source named like the refusal, failing for another reason", err: &joinexec.SourceError{Database: "alpha", Collection: "unsupported condition", Err: errors.New("disk exploded")}, status: 500, code: "internal", logged: true, excludes: []string{"disk exploded", "unsupported condition"}},
-		{name: "column the database does not know", err: errors.New("SQL logic error: no such column: Fooo (1)"), status: 400, code: "invalid_dtql", contains: []string{"Fooo"}, excludes: []string{"SQL logic error"}},
-		{name: "column the database does not know, in a source", err: &joinexec.SourceError{Database: "alpha", Collection: "orders", Err: fmt.Errorf("failed to get SQL reader: %w", errors.New("SQL logic error: no such column: c.Fooo (1)"))}, status: 400, code: "invalid_dtql", contains: []string{"c.Fooo"}},
-		{name: "column with a long name", err: errors.New("SQL logic error: no such column: " + long), status: 400, code: "invalid_dtql"},
+		{name: "column the database does not know", err: errors.New("SQL logic error: no such column: Fooo (1)"), status: 400, code: "invalid_tugql", contains: []string{"Fooo"}, excludes: []string{"SQL logic error"}},
+		{name: "column the database does not know, in a source", err: &joinexec.SourceError{Database: "alpha", Collection: "orders", Err: fmt.Errorf("failed to get SQL reader: %w", errors.New("SQL logic error: no such column: c.Fooo (1)"))}, status: 400, code: "invalid_tugql", contains: []string{"c.Fooo"}},
+		{name: "column with a long name", err: errors.New("SQL logic error: no such column: " + long), status: 400, code: "invalid_tugql"},
 		{name: "the phrase for a missing column in the middle of an error is not the refusal", err: errors.New("read failed: no such column: x"), status: 500, code: "internal", logged: true},
 		{name: "a source named like a missing column, failing for another reason", err: &joinexec.SourceError{Database: "alpha", Collection: "no such column: x", Err: errors.New("disk exploded")}, status: 500, code: "internal", logged: true, excludes: []string{"disk exploded", "no such column"}},
-		{name: "a join the executor could not plan, fixed refusal", err: &dal.JoinValidationError{Category: "join_plan", Path: "columns[0]", Message: "wildcard expansion requires ordered schema metadata"}, status: 400, code: "invalid_dtql", contains: []string{"wildcard expansion"}},
-		{name: "a join the executor could not plan, fixed refusal, wrapped", err: fmt.Errorf("joining: %w", &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: "generic JOIN does not support provider cursors"}), status: 400, code: "invalid_dtql", contains: []string{"provider cursors"}},
-		{name: "a join the executor could not plan, IN without an array", err: &dal.JoinValidationError{Category: "join_plan", Path: "where", Message: "IN or NOT IN requires an array"}, status: 400, code: "invalid_dtql"},
-		{name: "a join the executor could not plan, IS NULL without an operand", err: &dal.JoinValidationError{Category: "join_plan", Path: "where", Message: "IS NULL requires an operand"}, status: 400, code: "invalid_dtql"},
-		{name: "a join the executor could not plan, operator", err: &dal.JoinValidationError{Category: "join_plan", Path: "where", Message: "unsupported operator like"}, status: 400, code: "invalid_dtql", contains: []string{"like"}},
+		{name: "a join the executor could not plan, fixed refusal", err: &dal.JoinValidationError{Category: "join_plan", Path: "columns[0]", Message: "wildcard expansion requires ordered schema metadata"}, status: 400, code: "invalid_tugql", contains: []string{"wildcard expansion"}},
+		{name: "a join the executor could not plan, fixed refusal, wrapped", err: fmt.Errorf("joining: %w", &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: "generic JOIN does not support provider cursors"}), status: 400, code: "invalid_tugql", contains: []string{"provider cursors"}},
+		{name: "a join the executor could not plan, IN without an array", err: &dal.JoinValidationError{Category: "join_plan", Path: "where", Message: "IN or NOT IN requires an array"}, status: 400, code: "invalid_tugql"},
+		{name: "a join the executor could not plan, IS NULL without an operand", err: &dal.JoinValidationError{Category: "join_plan", Path: "where", Message: "IS NULL requires an operand"}, status: 400, code: "invalid_tugql"},
+		{name: "a join the executor could not plan, operator", err: &dal.JoinValidationError{Category: "join_plan", Path: "where", Message: "unsupported operator like"}, status: 400, code: "invalid_tugql", contains: []string{"like"}},
 		{name: "a join whose scan failed", err: &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: "cannot scan c: disk I/O error"}, status: 500, code: "internal", logged: true, excludes: []string{"disk I/O", "scan"}},
 		{name: "a join whose scan failed part way", err: &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: "scan c: disk I/O error"}, status: 500, code: "internal", logged: true, excludes: []string{"disk I/O"}},
 		{name: "a join whose scan failed to close", err: &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: "close scan c: disk I/O error"}, status: 500, code: "internal", logged: true, excludes: []string{"disk I/O"}},
 		{name: "a join that could not load the fields of a source", err: &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: "cannot load fields for c: disk I/O error"}, status: 500, code: "internal", logged: true, excludes: []string{"disk I/O"}},
 		{name: "a join that could not load the fields of a wildcard", err: &dal.JoinValidationError{Category: "join_plan", Path: "columns", Message: "cannot load wildcard fields: disk I/O error"}, status: 500, code: "internal", logged: true, excludes: []string{"disk I/O"}},
 		{name: "a join whose output could not be encoded", err: &dal.JoinValidationError{Category: "join_plan", Path: "columns", Message: "output is not JSON serializable: unsupported value"}, status: 500, code: "internal", logged: true, excludes: []string{"unsupported value"}},
-		{name: "a join with an expression of a type it does not evaluate", err: &dal.JoinValidationError{Category: "join_plan", Path: "where", Message: "unsupported expression dal.Param"}, status: 400, code: "invalid_dtql", contains: []string{"dal.Param"}},
-		{name: "a join with a condition of a type it does not evaluate", err: &dal.JoinValidationError{Category: "join_plan", Path: "where", Message: "unsupported condition dal.IsNullCondition"}, status: 400, code: "invalid_dtql", contains: []string{"dal.IsNullCondition"}},
-		{name: "a join with an expression of a type it does not evaluate, wrapped", err: fmt.Errorf("joining: %w", &dal.JoinValidationError{Category: "join_plan", Path: "where", Message: "unsupported expression dal.Param"}), status: 400, code: "invalid_dtql"},
+		{name: "a join with an expression of a type it does not evaluate", err: &dal.JoinValidationError{Category: "join_plan", Path: "where", Message: "unsupported expression dal.Param"}, status: 400, code: "invalid_tugql", contains: []string{"dal.Param"}},
+		{name: "a join with a condition of a type it does not evaluate", err: &dal.JoinValidationError{Category: "join_plan", Path: "where", Message: "unsupported condition dal.IsNullCondition"}, status: 400, code: "invalid_tugql", contains: []string{"dal.IsNullCondition"}},
+		{name: "a join with an expression of a type it does not evaluate, wrapped", err: fmt.Errorf("joining: %w", &dal.JoinValidationError{Category: "join_plan", Path: "where", Message: "unsupported expression dal.Param"}), status: 400, code: "invalid_tugql"},
 		{name: "a join whose scan failed with the cause of a type refusal", err: &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: "cannot scan c: unsupported expression dal.Param"}, status: 500, code: "internal", logged: true, excludes: []string{"dal.Param"}},
 		{name: "a join whose failure begins like a type refusal and goes on", err: &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: "unsupported expression dal.Param in disk I/O error"}, status: 500, code: "internal", logged: true, excludes: []string{"disk I/O"}},
 		{name: "a join whose failure begins like a type refusal and names no type", err: &dal.JoinValidationError{Category: "join_plan", Path: "from", Message: "unsupported expression "}, status: 500, code: "internal", logged: true},
 		{name: "structured queries unsupported on an engine", err: &joinexec.SourceError{Database: "alpha", Collection: "orders", Err: &core.QueryUnsupportedError{Engine: "postgres"}}, status: 501, code: "query_unsupported"},
 		{name: "a source of a long name that the database does not declare", err: &joinexec.SourceError{Database: "alpha", Collection: long, Err: fmt.Errorf("%w: collection %q is not declared by this database", core.ErrNotFound, long)}, status: 404, code: "not_found"},
 		{name: "a source of a long name on an engine that cannot be queried", err: &joinexec.SourceError{Database: "alpha", Collection: long, Err: &core.QueryUnsupportedError{Engine: long}}, status: 501, code: "query_unsupported"},
-		{name: "a source of a long name that the document spells wrongly", err: &joinexec.SourceError{Database: long, Collection: long, Err: fmt.Errorf("%w: %s", core.ErrInvalidDTQL, long)}, status: 400, code: "invalid_dtql"},
+		{name: "a source of a long name that the document spells wrongly", err: &joinexec.SourceError{Database: long, Collection: long, Err: fmt.Errorf("%w: %s", core.ErrInvalidTugQL, long)}, status: 400, code: "invalid_tugql"},
 		{name: "a source with access policies asked for more than one source", err: &joinexec.SourceError{Database: "alpha", Collection: "orders", Err: core.ErrProtectedSingleSource}, status: 422, code: "authorization_unsupported", contains: []string{"one source at a time"}},
 		{name: "a source with access policies asked for more than one source, wrapped", err: fmt.Errorf("reading: %w", core.ErrProtectedSingleSource), status: 422, code: "authorization_unsupported"},
 		{name: "an error nothing knows", err: errors.New("disk exploded"), status: 500, code: "internal", logged: true, excludes: []string{"disk exploded"}},
@@ -300,9 +300,9 @@ func TestRelationalHandlerMapsEveryErrorOfTheExecutor(t *testing.T) {
 			var logs bytes.Buffer
 			fake := &relFakeExecutor{err: tc.err}
 			_, host := relFakeServer(t, fake, relFakeDefaultMounts(), WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
-			for _, path := range []string{"/v1/databases/alpha/dtql", "/v1/dtql"} {
+			for _, path := range []string{"/v1/databases/alpha/tugql", "/v1/tugql"} {
 				doc := relFakeJoin
-				if path == "/v1/dtql" {
+				if path == "/v1/tugql" {
 					doc = relFakeAcross
 				}
 				resp := relFakeDo(t, host, http.MethodPost, path, "", doc, nil)
@@ -422,13 +422,13 @@ func TestRelationalHandlerAuthorisesBeforeItCallsTheExecutor(t *testing.T) {
 		status                 int
 		naming                 string
 	}{
-		{"no token", "/v1/dtql", "", relFakeAcross, 401, ""},
-		{"second database not granted", "/v1/dtql", "alpha-only", relFakeAcross, 403, "beta"},
-		{"collection not granted on the endpoint", "/v1/databases/alpha/dtql", "orders-only", relFakeJoin, 403, "customers"},
-		{"capability not granted", "/v1/databases/alpha/dtql", "cannot-write", relFakeJoin, 403, "orders"},
-		{"token of another database on the endpoint", "/v1/databases/beta/dtql", "alpha-only", relFakeJoin, 403, "orders"},
-		{"foreign database named on the endpoint", "/v1/databases/alpha/dtql", "both", relFakeAcross, 400, "beta"},
-		{"source without a database", "/v1/dtql", "both", relFakeJoin, 400, "orders"},
+		{"no token", "/v1/tugql", "", relFakeAcross, 401, ""},
+		{"second database not granted", "/v1/tugql", "alpha-only", relFakeAcross, 403, "beta"},
+		{"collection not granted on the endpoint", "/v1/databases/alpha/tugql", "orders-only", relFakeJoin, 403, "customers"},
+		{"capability not granted", "/v1/databases/alpha/tugql", "cannot-write", relFakeJoin, 403, "orders"},
+		{"token of another database on the endpoint", "/v1/databases/beta/tugql", "alpha-only", relFakeJoin, 403, "orders"},
+		{"foreign database named on the endpoint", "/v1/databases/alpha/tugql", "both", relFakeAcross, 400, "beta"},
+		{"source without a database", "/v1/tugql", "both", relFakeJoin, 400, "orders"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := relFakeDo(t, host, http.MethodPost, tc.path, tc.token, tc.doc, nil)
@@ -448,9 +448,9 @@ func TestRelationalHandlerAuthorisesBeforeItCallsTheExecutor(t *testing.T) {
 			status           int
 			code             string
 		}{
-			"403 on /v1/dtql":                 {"/v1/dtql", "from: {database: beta, name: " + long + "}\n", "alpha-only", 403, "forbidden"},
-			"400 for a source without a base": {"/v1/dtql", "from: {name: " + long + "}\n", "both", 400, "invalid_dtql"},
-			"400 for a foreign database":      {"/v1/databases/alpha/dtql", "from: {database: " + strings.Repeat("d", 60) + ", name: orders}\n", "both", 400, "invalid_dtql"},
+			"403 on /v1/tugql":                {"/v1/tugql", "from: {database: beta, name: " + long + "}\n", "alpha-only", 403, "forbidden"},
+			"400 for a source without a base": {"/v1/tugql", "from: {name: " + long + "}\n", "both", 400, "invalid_tugql"},
+			"400 for a foreign database":      {"/v1/databases/alpha/tugql", "from: {database: " + strings.Repeat("d", 60) + ", name: orders}\n", "both", 400, "invalid_tugql"},
 		} {
 			resp := relFakeDo(t, host, http.MethodPost, tc.path, tc.token, tc.doc, nil)
 			if resp.status != tc.status || resp.code() != tc.code || len(resp.raw) > 600 {
@@ -462,7 +462,7 @@ func TestRelationalHandlerAuthorisesBeforeItCallsTheExecutor(t *testing.T) {
 		}
 	})
 	t.Run("a cleared request reaches the executor with the authoriser of the principal", func(t *testing.T) {
-		resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "both", relFakeAcross, nil)
+		resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "both", relFakeAcross, nil)
 		if resp.status != 200 {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
@@ -476,7 +476,7 @@ func TestRelationalHandlerAuthorisesBeforeItCallsTheExecutor(t *testing.T) {
 	})
 	fake.calls = nil
 	t.Run("a collection-scoped token is cleared for its collection only", func(t *testing.T) {
-		resp := relFakeDo(t, host, http.MethodPost, "/v1/databases/alpha/dtql", "orders-only", "from: {name: orders, alias: o}\n", nil)
+		resp := relFakeDo(t, host, http.MethodPost, "/v1/databases/alpha/tugql", "orders-only", "from: {name: orders, alias: o}\n", nil)
 		if resp.status != 200 {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
@@ -487,7 +487,7 @@ func TestRelationalHandlerAuthorisesBeforeItCallsTheExecutor(t *testing.T) {
 	})
 	t.Run("the owner is cleared", func(t *testing.T) {
 		fake.calls = nil
-		if resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", owner, relFakeAcross, nil); resp.status != 200 {
+		if resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", owner, relFakeAcross, nil); resp.status != 200 {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
 	})
@@ -513,7 +513,7 @@ func TestRelationalHandlerHandsTheExecutorTheLeasedDatabasesAndTheLimits(t *test
 		Execution: joinexec.Execution{Route: joinexec.RouteDatabase, RowsReturned: 1, Sources: []joinexec.ExecutionSource{{Database: "alpha", Collection: "orders"}}},
 	}}
 	_, host := relFakeServer(t, fake, relFakeDefaultMounts(), WithQueryLimits(QueryLimits{Timeout: 3 * time.Second, MaxSourceRows: 77, MaxSourceBytes: 1 << 20}))
-	resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", relFakeAcross, nil)
+	resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", relFakeAcross, nil)
 	if resp.status != 200 {
 		t.Fatalf("status %d: %s", resp.status, resp.raw)
 	}
@@ -551,7 +551,7 @@ func TestRelationalHandlerLeasesEveryDatabaseUntilTheRequestEnds(t *testing.T) {
 	}}
 	service, host := relFakeServer(t, fake, relFakeDefaultMounts())
 	done := make(chan relFakeResponse, 1)
-	go func() { done <- relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", relFakeAcross, nil) }()
+	go func() { done <- relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", relFakeAcross, nil) }()
 	<-started
 	for _, id := range []string{"alpha", "beta"} {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -574,7 +574,7 @@ func TestLeaseRelationalDatabasesHoldsOneLeasePerDatabase(t *testing.T) {
 	targets := []relationalTarget{{"gamma", "a"}, {"alpha", "b"}, {"gamma", "c"}, {"beta", "d"}, {"alpha", "e"}}
 	lease := func(endpoint *core.Database, targets []relationalTarget) (leased int, order []string, status int) {
 		held := &leases{}
-		r := httptest.NewRequest("POST", "/v1/dtql", nil)
+		r := httptest.NewRequest("POST", "/v1/tugql", nil)
 		r = r.WithContext(context.WithValue(r.Context(), leasesKey{}, held))
 		w := httptest.NewRecorder()
 		_, order, ok := service.leaseRelationalDatabases(w, r, endpoint, targets)
@@ -631,7 +631,7 @@ func TestRelationalHandlerRefusesAnUndeclaredCollectionBeforeTheExecutor(t *test
 		t.Run(tc.name, func(t *testing.T) {
 			fake := &relFakeExecutor{result: joinexec.Result{Columns: []string{}}}
 			_, host := relFakeServer(t, fake, []*core.Database{relFakeMount("alpha", tc.engine, "")})
-			resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", tc.doc, tc.headers)
+			resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", tc.doc, tc.headers)
 			if resp.status != tc.status || (tc.code != "" && resp.code() != tc.code) {
 				t.Fatalf("status %d code %q, want %d %q: %s", resp.status, resp.code(), tc.status, tc.code, resp.raw)
 			}
@@ -646,7 +646,7 @@ func TestRelationalHandlerRefusesAnUndeclaredCollectionBeforeTheExecutor(t *test
 	t.Run("the collection and database names are clipped", func(t *testing.T) {
 		fake := &relFakeExecutor{}
 		_, host := relFakeServer(t, fake, []*core.Database{relFakeMount("alpha", "sqlite", "")})
-		resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", "from: {database: alpha, name: "+strings.Repeat("g", 5000)+"}\n", nil)
+		resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", "from: {database: alpha, name: "+strings.Repeat("g", 5000)+"}\n", nil)
 		if resp.status != 404 || len(resp.raw) > 400 {
 			t.Fatalf("status %d, %d bytes", resp.status, len(resp.raw))
 		}
@@ -657,7 +657,7 @@ func TestRelationalHandlerRefusesAnUndeclaredCollectionBeforeTheExecutor(t *test
 func TestRelationalHandlerAnswers404ForAnUnmountedDatabase(t *testing.T) {
 	fake := &relFakeExecutor{}
 	_, host := relFakeServer(t, fake, []*core.Database{relFakeMount("alpha", "sqlite", "")})
-	resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", relFakeAcross, nil)
+	resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", relFakeAcross, nil)
 	if resp.status != 404 || resp.code() != "not_found" || !strings.Contains(resp.raw, "beta") || fake.count() != 0 {
 		t.Fatalf("status %d calls %d: %s", resp.status, fake.count(), resp.raw)
 	}
@@ -694,7 +694,7 @@ func TestRelationalHandlerRefusesEnginesTheGuardOrTheListLeavesOut(t *testing.T)
 				opts = append(opts, WithQueryLimits(QueryLimits{JoinEngines: tc.engines}))
 			}
 			_, host := relFakeServer(t, fake, tc.mounts, opts...)
-			resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", relFakeAcross, nil)
+			resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", relFakeAcross, nil)
 			if resp.status != tc.status || (tc.code != "" && resp.code() != tc.code) || (tc.naming != "" && !strings.Contains(resp.raw, tc.naming)) {
 				t.Fatalf("status %d code %q, want %d %q naming %q: %s", resp.status, resp.code(), tc.status, tc.code, tc.naming, resp.raw)
 			}
@@ -793,7 +793,7 @@ columns:
 			if !ok {
 				t.Fatal("the gate has no slot")
 			}
-			resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", tc.doc, nil)
+			resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", tc.doc, nil)
 			if resp.status != 503 || resp.code() != "query_capacity" || resp.header.Get("Retry-After") != "1" || !strings.Contains(resp.raw, string(tc.route)) {
 				t.Fatalf("with the %s slots held: status %d: %s", tc.route, resp.status, resp.raw)
 			}
@@ -802,7 +802,7 @@ columns:
 			if !ok {
 				t.Fatal("the slots of one route are held by the other")
 			}
-			resp = relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", tc.doc, nil)
+			resp = relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", tc.doc, nil)
 			if resp.status != 200 {
 				t.Fatalf("with only the %s slots held: status %d: %s", tc.other, resp.status, resp.raw)
 			}
@@ -826,7 +826,7 @@ columns:
 func TestRelationalHandlerAnswersAnEmptyResult(t *testing.T) {
 	fake := &relFakeExecutor{result: joinexec.Result{Records: []record.Record{}, Columns: []string{}, Execution: joinexec.Execution{Route: joinexec.RouteInMemory, Sources: []joinexec.ExecutionSource{}}}}
 	_, host := relFakeServer(t, fake, relFakeDefaultMounts())
-	resp := relFakeDo(t, host, http.MethodPost, "/v1/databases/alpha/dtql", "", relFakeJoin, nil)
+	resp := relFakeDo(t, host, http.MethodPost, "/v1/databases/alpha/tugql", "", relFakeJoin, nil)
 	if resp.status != 200 || !strings.Contains(resp.raw, `"records":[]`) || !strings.Contains(resp.raw, `"columns":[]`) {
 		t.Fatalf("status %d: %s", resp.status, resp.raw)
 	}
@@ -838,7 +838,7 @@ func TestRelationalHandlerCacheHeaderFollowsTheSmallestTTLOfTheDatabasesRead(t *
 	mounts := []*core.Database{relFakeMount("alpha", "sqlite", "120s"), relFakeMount("beta", "sqlite", "30s")}
 	_, host := relFakeServer(t, fake, mounts, WithReadOnly(true))
 	query := "?q=" + url.QueryEscape(relFakeAcross)
-	resp := relFakeDo(t, host, http.MethodGet, "/v1/dtql"+query, "", "", nil)
+	resp := relFakeDo(t, host, http.MethodGet, "/v1/tugql"+query, "", "", nil)
 	if resp.status != 200 || resp.header.Get("Cache-Control") != "public, max-age=30, s-maxage=30" {
 		t.Fatalf("status %d Cache-Control %q: %s", resp.status, resp.header.Get("Cache-Control"), resp.raw)
 	}
@@ -846,21 +846,21 @@ func TestRelationalHandlerCacheHeaderFollowsTheSmallestTTLOfTheDatabasesRead(t *
 		t.Fatalf("Vary = %q", got)
 	}
 	// The answer of the per-database endpoint reads the one database of its path.
-	resp = relFakeDo(t, host, http.MethodGet, "/v1/databases/alpha/dtql?q="+url.QueryEscape(relFakeJoin), "", "", nil)
+	resp = relFakeDo(t, host, http.MethodGet, "/v1/databases/alpha/tugql?q="+url.QueryEscape(relFakeJoin), "", "", nil)
 	if resp.header.Get("Cache-Control") != "public, max-age=120, s-maxage=120" {
 		t.Fatalf("Cache-Control %q", resp.header.Get("Cache-Control"))
 	}
-	if resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", relFakeAcross, nil); resp.header.Get("Cache-Control") != "no-store" || !strings.Contains(resp.header.Get("Vary"), "Accept") {
+	if resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", relFakeAcross, nil); resp.header.Get("Cache-Control") != "no-store" || !strings.Contains(resp.header.Get("Vary"), "Accept") {
 		t.Fatalf("POST: Cache-Control %q Vary %q", resp.header.Get("Cache-Control"), resp.header.Get("Vary"))
 	}
 }
 
-// The URL form of /v1/dtql is a read that defaults to no-store before any
+// The URL form of /v1/tugql is a read that defaults to no-store before any
 // authentication or lookup, as the per-database forms do.
 func TestCrossDatabaseEndpointDefaultsToNoStoreBeforeAuthentication(t *testing.T) {
 	fake := &relFakeExecutor{}
 	_, host := relFakeServer(t, fake, relFakeDefaultMounts(), WithAuth(&auth.Config{OwnerToken: "t"}))
-	resp := relFakeDo(t, host, http.MethodGet, "/v1/dtql?q=x", "", "", nil)
+	resp := relFakeDo(t, host, http.MethodGet, "/v1/tugql?q=x", "", "", nil)
 	if resp.status != 401 || resp.header.Get("Cache-Control") != "no-store" {
 		t.Fatalf("status %d Cache-Control %q", resp.status, resp.header.Get("Cache-Control"))
 	}
@@ -868,11 +868,11 @@ func TestCrossDatabaseEndpointDefaultsToNoStoreBeforeAuthentication(t *testing.T
 		method, path string
 		want         bool
 	}{
-		{"GET", "/v1/dtql", true},
-		{"HEAD", "/v1/dtql", true},
-		{"POST", "/v1/dtql", false},
-		{"GET", "/v1/dtql/", false},
-		{"GET", "/v1/databases/x/dtql", true},
+		{"GET", "/v1/tugql", true},
+		{"HEAD", "/v1/tugql", true},
+		{"POST", "/v1/tugql", false},
+		{"GET", "/v1/tugql/", false},
+		{"GET", "/v1/databases/x/tugql", true},
 		{"GET", "/v1/databases/x/records/a/b", false},
 	} {
 		r := httptest.NewRequest(tc.method, tc.path, nil)
@@ -883,11 +883,11 @@ func TestCrossDatabaseEndpointDefaultsToNoStoreBeforeAuthentication(t *testing.T
 }
 
 // A body over the limit is a 400 on both endpoints and a GET with no q is too.
-func TestDTQLRequestsThatCarryNoDocument(t *testing.T) {
+func TestTugQLRequestsThatCarryNoDocument(t *testing.T) {
 	fake := &relFakeExecutor{}
 	_, host := relFakeServer(t, fake, relFakeDefaultMounts())
 	huge := strings.Repeat("x", 2<<20)
-	for _, path := range []string{"/v1/databases/alpha/dtql", "/v1/dtql"} {
+	for _, path := range []string{"/v1/databases/alpha/tugql", "/v1/tugql"} {
 		if resp := relFakeDo(t, host, http.MethodPost, path, "", huge, nil); resp.status != 400 || !strings.Contains(resp.raw, "failed to read body") {
 			t.Errorf("%s: oversized body: status %d: %s", path, resp.status, resp.raw)
 		}
@@ -897,14 +897,14 @@ func TestDTQLRequestsThatCarryNoDocument(t *testing.T) {
 		if resp := relFakeDo(t, host, http.MethodPost, path, "", "", nil); resp.status != 400 {
 			t.Errorf("%s: empty body: status %d: %s", path, resp.status, resp.raw)
 		}
-		if resp := relFakeDo(t, host, http.MethodPost, path, "", `{"query": "from: {name: x}", "nope": 1}`, map[string]string{"Content-Type": "application/json"}); resp.status != 400 || resp.code() != "invalid_dtql" {
+		if resp := relFakeDo(t, host, http.MethodPost, path, "", `{"query": "from: {name: x}", "nope": 1}`, map[string]string{"Content-Type": "application/json"}); resp.status != 400 || resp.code() != "invalid_tugql" {
 			t.Errorf("%s: bad JSON: status %d: %s", path, resp.status, resp.raw)
 		}
-		if resp := relFakeDo(t, host, http.MethodPost, path, "", "- a list\n", nil); resp.status != 400 || resp.code() != "invalid_dtql" {
-			t.Errorf("%s: not a DTQL document: status %d: %s", path, resp.status, resp.raw)
+		if resp := relFakeDo(t, host, http.MethodPost, path, "", "- a list\n", nil); resp.status != 400 || resp.code() != "invalid_tugql" {
+			t.Errorf("%s: not a TugQL document: status %d: %s", path, resp.status, resp.raw)
 		}
 	}
-	if resp := relFakeDo(t, host, http.MethodPost, "/v1/databases/nowhere/dtql", "", relFakeJoin, nil); resp.status != 404 || resp.code() != "not_found" {
+	if resp := relFakeDo(t, host, http.MethodPost, "/v1/databases/nowhere/tugql", "", relFakeJoin, nil); resp.status != 404 || resp.code() != "not_found" {
 		t.Errorf("a database that is not mounted: status %d: %s", resp.status, resp.raw)
 	}
 	if fake.count() != 0 {
@@ -919,7 +919,7 @@ func TestRelationalTargetsSettlesTheDatabaseOfEverySource(t *testing.T) {
 	if refusal != "" || len(targets) != 2 || targets[0] != (relationalTarget{"alpha", "a"}) || targets[1] != (relationalTarget{"alpha", "b"}) {
 		t.Fatalf("targets = %v, refusal = %q", targets, refusal)
 	}
-	if _, refusal := relationalTargets(core.Profile{Sources: []core.ProfileSource{{Database: strings.Repeat("d", 500), Collection: "b"}}}, alpha); !strings.Contains(refusal, "/v1/dtql") || len(refusal) > 300 {
+	if _, refusal := relationalTargets(core.Profile{Sources: []core.ProfileSource{{Database: strings.Repeat("d", 500), Collection: "b"}}}, alpha); !strings.Contains(refusal, "/v1/tugql") || len(refusal) > 300 {
 		t.Fatalf("refusal = %q", refusal)
 	}
 	if _, refusal := relationalTargets(core.Profile{Sources: []core.ProfileSource{{Collection: strings.Repeat("c", 500)}}}, nil); !strings.Contains(refusal, "names its database") || len(refusal) > 300 {
@@ -974,7 +974,7 @@ func TestWithoutDefaultSchemaDropsOnlyTheDefaultSchemaOfTheRootSource(t *testing
 	const bare = "from: {name: Customer}\norderBy: [{field: id}]\n"
 	schemaOf := func(t *testing.T, doc []byte) string {
 		t.Helper()
-		query, err := dtql.Deserialize(doc)
+		query, err := tugql.Deserialize(doc)
 		if err != nil {
 			t.Fatalf("Deserialize(%q): %v", doc, err)
 		}
@@ -1030,7 +1030,7 @@ func TestWithoutDefaultSchemaDropsOnlyTheDefaultSchemaOfTheRootSource(t *testing
 	})
 	t.Run("the rest of the document is kept", func(t *testing.T) {
 		got := withoutDefaultSchema([]byte("from: {schema: main, name: Customer, alias: c}\nwhere: {op: '>', left: {field: n, source: c}, right: {value: 1}}\nlimit: 5\ncolumns: [{field: id, source: c}]\n"), "sqlite")
-		query, err := dtql.Deserialize(got)
+		query, err := tugql.Deserialize(got)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1045,7 +1045,7 @@ func TestWithoutDefaultSchemaDropsOnlyTheDefaultSchemaOfTheRootSource(t *testing
 func TestWithoutOwnDatabaseDropsOnlyTheEndpointsDatabaseOfTheRootSource(t *testing.T) {
 	databaseOf := func(t *testing.T, doc []byte) string {
 		t.Helper()
-		query, err := dtql.Deserialize(doc)
+		query, err := tugql.Deserialize(doc)
 		if err != nil {
 			t.Fatalf("Deserialize(%q): %v", doc, err)
 		}
@@ -1099,7 +1099,7 @@ func TestWithoutOwnDatabaseDropsOnlyTheEndpointsDatabaseOfTheRootSource(t *testi
 	})
 	t.Run("the rest of the document is kept", func(t *testing.T) {
 		got := withoutOwnDatabase([]byte("from: {database: chinook, name: Customer, alias: c}\nwhere: {op: '>', left: {field: n, source: c}, right: {value: 1}}\nlimit: 5\ncolumns: [{field: id, source: c}]\n"), "chinook")
-		query, err := dtql.Deserialize(got)
+		query, err := tugql.Deserialize(got)
 		if err != nil {
 			t.Fatal(err)
 		}

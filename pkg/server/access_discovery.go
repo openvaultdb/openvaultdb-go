@@ -5,7 +5,7 @@ import (
 	"sort"
 
 	"github.com/dal-go/dalgo/access"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 )
 
@@ -57,7 +57,7 @@ func (s *Server) handleAccessLayers(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, map[string]any{
 			"layerId": sourceLayerID(source), "source": source, "aclState": state, "modes": modes, "formats": []string{}, "capabilities": capabilities, "required": true, "opaque": !capabilities.List,
-			"executionClasses": []string{"dtql"},
+			"executionClasses": []string{"tugql"},
 			"enforcement":      map[string]bool{"structuredQuery": true, "fieldReferences": true, "transactionalEvidence": protected, "wholeRecordCAS": protected, "remoteEvidence": protected, "atomicBatch": false},
 			"limits":           map[string]int{"queryRows": 1000, "queryOffset": 10000, "bufferBytes": 8 << 20, "executionMilliseconds": 10000, "dryRunMilliseconds": 2000, "sampleRows": 100, "operations": 100, "columns": 32, "responseBytes": 256 << 10, "maxMaskStages": 1024, "maxMaskPatterns": 4096, "maxMaskPatternBytes": 128},
 		})

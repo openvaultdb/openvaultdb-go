@@ -194,8 +194,8 @@ func TestAuth_ConnectFlowAndScopedEnforcement(t *testing.T) {
 		{"read other collection denied", http.MethodGet, "/v1/databases/dev/records/secrets/s1", "", http.StatusForbidden},
 		{"write granted collection", http.MethodPut, "/v1/databases/dev/records/notes/n2", `{"data":{"text":"two"}}`, http.StatusNoContent},
 		{"delete not granted", http.MethodDelete, "/v1/databases/dev/records/notes/n2", "", http.StatusForbidden},
-		{"scoped grant can query its DTQL collection", http.MethodPost, "/v1/databases/dev/dtql", "from:\n  name: notes\n", http.StatusOK},
-		{"scoped DTQL grant cannot query another collection", http.MethodPost, "/v1/databases/dev/dtql", "from:\n  name: secrets\n", http.StatusForbidden},
+		{"scoped grant can query its TugQL collection", http.MethodPost, "/v1/databases/dev/tugql", "from:\n  name: notes\n", http.StatusOK},
+		{"scoped TugQL grant cannot query another collection", http.MethodPost, "/v1/databases/dev/tugql", "from:\n  name: secrets\n", http.StatusForbidden},
 		{"query granted collection", http.MethodPost, "/v1/databases/dev/query", `{"collection":"notes"}`, http.StatusOK},
 		{"query other collection denied", http.MethodPost, "/v1/databases/dev/query", `{"collection":"secrets"}`, http.StatusForbidden},
 		{"databases list denied", http.MethodGet, "/v1/databases", "", http.StatusForbidden},
@@ -224,16 +224,16 @@ func TestAuth_ConnectFlowAndScopedEnforcement(t *testing.T) {
 	}
 }
 
-func TestAuth_UnscopedGrantCanUseDTQL(t *testing.T) {
+func TestAuth_UnscopedGrantCanUseTugQL(t *testing.T) {
 	ts := startAuthServer(t)
 	if status, _ := request(t, ts, http.MethodPut, "/v1/databases/dev/records/notes/n1", ownerToken,
 		`{"data":{"text":"x"}}`); status != http.StatusNoContent {
 		t.Fatal("seed failed")
 	}
 	appToken := connectFlow(t, ts, "records:read")
-	status, body := request(t, ts, http.MethodPost, "/v1/databases/dev/dtql", appToken, "from:\n  name: notes\n")
+	status, body := request(t, ts, http.MethodPost, "/v1/databases/dev/tugql", appToken, "from:\n  name: notes\n")
 	if status != http.StatusOK {
-		t.Fatalf("dtql with unscoped read: %d %s", status, body)
+		t.Fatalf("tugql with unscoped read: %d %s", status, body)
 	}
 }
 

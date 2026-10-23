@@ -162,7 +162,7 @@ func source(database, name, alias string) dal.CollectionRef {
 }
 
 // namedJoin is a join of orders and customers of the database, every source of which names
-// it, as every source of a document of /v1/dtql does.
+// it, as every source of a document of /v1/tugql does.
 func namedJoin(database string) dal.StructuredQuery {
 	orders := source(database, "orders", "o")
 	customers := source(database, "customers", "c")
@@ -245,7 +245,7 @@ func nestedJoin(database string) dal.StructuredQuery {
 }
 
 // TestAJoinOfOneDatabaseIsHandedToAServerMountWithoutTheDatabaseNamesOfItsSources: every
-// source of a document of /v1/dtql names its database, and the compiler of the adapter
+// source of a document of /v1/tugql names its database, and the compiler of the adapter
 // declines a join whose source does, so DALgo would read each table whole, with no WHERE,
 // under a bound of its own, and join them in the transaction. The source guard has checked
 // that the name is the mount's own, so the document is handed to the mount of a server

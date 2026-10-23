@@ -14,44 +14,41 @@ import (
 
 	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/dalgo/dal"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 	"gopkg.in/yaml.v3"
 )
 
-// crossDatabaseDTQLPath is the endpoint that takes documents which read several
+// crossDatabaseTugQLPath is the endpoint that takes documents which read several
 // databases. The per-database endpoint takes the others.
-const crossDatabaseDTQLPath = "/v1/dtql"
-
-// crossDatabaseTugQLPath is the canonical endpoint for cross-database TugQL queries.
 const crossDatabaseTugQLPath = "/v1/tugql"
 
-var streamDTQLQuery = func(db *core.Database, ctx context.Context, query dal.StructuredQuery, emit func(core.Record) error) error {
-	return db.StreamDTQLQuery(ctx, query, emit)
+var streamTugQLQuery = func(db *core.Database, ctx context.Context, query dal.StructuredQuery, emit func(core.Record) error) error {
+	return db.StreamTugQLQuery(ctx, query, emit)
 }
 
-// handleDTQL authenticates a bounded DTQL query and executes it through the
+// handleTugQL authenticates a bounded TugQL query and executes it through the
 // mounted database's secured DALgo handle. A document is classified once, after
 // the two qualifiers of its root source that name what the endpoint supplies are
 // dropped (the default schema of the engine and the endpoint's own database): a
 // document of one source with no other relational feature takes the
 // single-collection path, whose records carry keys, and every other document the
-// classifier accepts is answered by serveRelationalDTQL, a document whose only
+// classifier accepts is answered by serveRelationalTugQL, a document whose only
 // relational feature is a subquery included, so one query has one answer. The
 // classifier's own refusals apply to both.
-func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleTugQL(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	db := s.db(w, r)
 	if db == nil {
 		return
 	}
-	doc, ok := s.readDTQLDocument(w, r)
+	doc, ok := s.readTugQLDocument(w, r)
 	if !ok {
 		return
 	}
-	if s.providerRequestRestricted(db) && !validProviderDTQLWire(doc) {
+	if s.providerRequestRestricted(db) && !validProviderTugQLWire(doc) {
 		refuseProviderRequest(w, s.providerProfilesByDB[db].RequestProfile)
 		return
 	}
@@ -59,23 +56,23 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 	if db.NativePostgresReadOnly() {
 		doc = exactIntegerValues(doc)
 	} else if hasUnsafeIntegerValue(doc) {
-		writeError(w, http.StatusBadRequest, "invalid_dtql", errUnsafeIntegerValue)
+		writeError(w, http.StatusBadRequest, "invalid_tugql", errUnsafeIntegerValue)
 		return
 	}
 	if s.boundedImmutable(db) {
 		doc = withoutOwnDatabase(doc, r.PathValue("db"))
 	}
-	query, profile, err := classifyDTQLDocument(doc)
+	query, profile, err := classifyTugQLDocument(doc)
 	if err != nil {
 		s.writeMappedError(w, r, clippedError{err})
 		return
 	}
-	if s.providerRequestRestricted(db) && !validProviderDTQL(db, query, profile, s.providerProfilesByDB[db].RequestProfile) {
+	if s.providerRequestRestricted(db) && !validProviderTugQL(db, query, profile, s.providerProfilesByDB[db].RequestProfile) {
 		refuseProviderRequest(w, s.providerProfilesByDB[db].RequestProfile)
 		return
 	}
 	if profile.Kind == core.ProfileRelational {
-		s.serveRelationalDTQL(w, r, db, query, profile)
+		s.serveRelationalTugQL(w, r, db, query, profile)
 		return
 	}
 	// A document of this kind reads one plain collection and no other (no join, no
@@ -90,7 +87,7 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if hasPagingHeaders(r) {
-		s.handlePagedDTQL(w, r, db, query, doc)
+		s.handlePagedTugQL(w, r, db, query, doc)
 		return
 	}
 	capture, rightsErr := s.singleRights(db, collection)
@@ -132,17 +129,17 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 			Data map[string]any `json:"data,omitempty"`
 		}{Key: rec.Key.String(), Data: data})
 	}
-	err = streamDTQLQuery(db, ctx, query, writeRecord)
+	err = streamTugQLQuery(db, ctx, query, writeRecord)
 	if err != nil {
 		err = hiddenAsDenied(db, err)
 		if errors.Is(err, access.ErrAccessDenied) {
 			if stream.started {
-				op := api.Operation{ID: "q1", Action: "query", Resource: az.Resource{DatabaseID: db.ID(), Path: "/" + collection, Table: collection}, ExecutionClass: az.ExecutionDTQL, Query: &api.Query{Format: "dtql-yaml", Text: string(doc)}}
+				op := api.Operation{ID: "q1", Action: "query", Resource: az.Resource{DatabaseID: db.ID(), Path: "/" + collection, Table: collection}, ExecutionClass: executionTugQL, Query: &api.Query{Format: "tugql-yaml", Text: string(doc)}}
 				s.finishStreamErrorOrAbort(w, r, stream, func(w http.ResponseWriter) { s.writeQueryAuthorizationError(w, r, db, op, err) })
 				return
 			}
 			clearWriteDeadline()
-			op := api.Operation{ID: "q1", Action: "query", Resource: az.Resource{DatabaseID: db.ID(), Path: "/" + collection, Table: collection}, ExecutionClass: az.ExecutionDTQL, Query: &api.Query{Format: "dtql-yaml", Text: string(doc)}}
+			op := api.Operation{ID: "q1", Action: "query", Resource: az.Resource{DatabaseID: db.ID(), Path: "/" + collection, Table: collection}, ExecutionClass: executionTugQL, Query: &api.Query{Format: "tugql-yaml", Text: string(doc)}}
 			s.writeQueryAuthorizationError(w, r, db, op, err)
 			return
 		}
@@ -185,7 +182,7 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 		footer["providerReads"] = evidence
 	}
 	attachRights(footer, capture.rights, capture.allUsed())
-	if err := finishDTQLStream(stream, footer); err != nil {
+	if err := finishTugQLStream(stream, footer); err != nil {
 		if stream.started {
 			s.finishStreamErrorOrAbort(w, r, stream, func(w http.ResponseWriter) { s.writeStreamMappedError(w, r, err) })
 			return
@@ -196,24 +193,24 @@ func (s *Server) handleDTQL(w http.ResponseWriter, r *http.Request) {
 }
 
 var (
-	finishDTQLStream    = func(s *jsonRowStream, footer map[string]any) error { return s.Finish(footer) }
-	marshalDTQLURLBody  = json.Marshal
-	encodeDTQLParamNode = func(node *yaml.Node, value any) error { return node.Encode(value) }
+	finishTugQLStream    = func(s *jsonRowStream, footer map[string]any) error { return s.Finish(footer) }
+	marshalTugQLURLBody  = json.Marshal
+	encodeTugQLParamNode = func(node *yaml.Node, value any) error { return node.Encode(value) }
 )
 
-// readDTQLDocument returns the DTQL document of a request: the q parameter of a
+// readTugQLDocument returns the TugQL document of a request: the q parameter of a
 // GET, or the body of a POST (with its parameters bound when the body is JSON).
 // It answers the 4xx of a request that carries none and reports false.
-func (s *Server) readDTQLDocument(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
-	return s.readDTQLDocumentForClassification(w, r, false)
+func (s *Server) readTugQLDocument(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	return s.readTugQLDocumentForClassification(w, r, false)
 }
 
-func (s *Server) readDTQLDocumentForClassification(w http.ResponseWriter, r *http.Request, classifySources bool) ([]byte, bool) {
+func (s *Server) readTugQLDocumentForClassification(w http.ResponseWriter, r *http.Request, classifySources bool) ([]byte, bool) {
 	if r.Method == http.MethodGet {
-		doc, err := dtqlFromURL(r.URL)
+		doc, err := tugqlFromURL(r.URL)
 		if err != nil {
 			status := http.StatusBadRequest
-			if errors.Is(err, errDTQLURLTooLong) {
+			if errors.Is(err, errTugQLURLTooLong) {
 				status = http.StatusRequestURITooLong
 			}
 			writeError(w, status, "bad_request", clipText(err.Error(), maxRefusalText))
@@ -227,7 +224,7 @@ func (s *Server) readDTQLDocumentForClassification(w http.ResponseWriter, r *htt
 		return nil, false
 	}
 	if len(doc) == 0 {
-		writeError(w, http.StatusBadRequest, "bad_request", "body must contain a DTQL YAML document")
+		writeError(w, http.StatusBadRequest, "bad_request", "body must contain a TugQL YAML document")
 		return nil, false
 	}
 	// Relational source classification reads metadata first, then applies each
@@ -237,9 +234,9 @@ func (s *Server) readDTQLDocumentForClassification(w http.ResponseWriter, r *htt
 		if classifySources {
 			doc = withoutContinuationFields(doc, true)
 		}
-		doc, err = bindDTQLParameters(doc)
+		doc, err = bindTugQLParameters(doc)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_dtql", clipText(err.Error(), maxRefusalText))
+			writeError(w, http.StatusBadRequest, "invalid_tugql", clipText(err.Error(), maxRefusalText))
 			return nil, false
 		}
 	}
@@ -258,66 +255,66 @@ type clippedError struct{ err error }
 func (e clippedError) Error() string { return clipText(e.err.Error(), maxRefusalText) }
 func (e clippedError) Unwrap() error { return e.err }
 
-// classifyDTQLDocument deserialises a document and classifies it. The error of
-// a document that is not DTQL, or that the classifier refuses, wraps
-// core.ErrInvalidDTQL.
-func classifyDTQLDocument(doc []byte) (dal.StructuredQuery, core.Profile, error) {
-	query, err := core.DeserializeDTQL(doc)
+// classifyTugQLDocument deserialises a document and classifies it. The error of
+// a document that is not TugQL, or that the classifier refuses, wraps
+// core.ErrInvalidTugQL.
+func classifyTugQLDocument(doc []byte) (dal.StructuredQuery, core.Profile, error) {
+	query, err := core.DeserializeTugQL(doc)
 	if err != nil {
 		return nil, core.Profile{}, err
 	}
-	profile, err := core.ClassifyDTQL(query)
+	profile, err := core.ClassifyTugQL(query)
 	if err != nil {
 		return nil, core.Profile{}, err
 	}
 	return query, profile, nil
 }
 
-var errDTQLURLTooLong = errors.New("DTQL URL exceeds 8 KiB limit")
+var errTugQLURLTooLong = errors.New("TugQL URL exceeds 8 KiB limit")
 
-// dtqlFromURL accepts a single YAML q value and an optional JSON parameters
+// tugqlFromURL accepts a single YAML q value and an optional JSON parameters
 // object. The same binder and validator handle POST and GET.
-func dtqlFromURL(u *url.URL) ([]byte, error) {
+func tugqlFromURL(u *url.URL) ([]byte, error) {
 	if len(u.RequestURI()) > 8<<10 {
-		return nil, errDTQLURLTooLong
+		return nil, errTugQLURLTooLong
 	}
 	values, err := url.ParseQuery(u.RawQuery)
 	if err != nil {
-		return nil, fmt.Errorf("invalid DTQL URL query: %w", err)
+		return nil, fmt.Errorf("invalid TugQL URL query: %w", err)
 	}
 	for name := range values {
 		if name != "q" && name != "parameters" {
-			return nil, fmt.Errorf("unsupported DTQL URL parameter %q", name)
+			return nil, fmt.Errorf("unsupported TugQL URL parameter %q", name)
 		}
 	}
 	query := values["q"]
 	if len(query) != 1 || strings.TrimSpace(query[0]) == "" {
-		return nil, errors.New("DTQL URL requires exactly one nonempty q parameter")
+		return nil, errors.New("TugQL URL requires exactly one nonempty q parameter")
 	}
 	parameters := json.RawMessage(`{}`)
 	if raw, ok := values["parameters"]; ok {
 		if len(raw) != 1 || raw[0] == "" {
-			return nil, errors.New("DTQL URL requires one JSON parameters object")
+			return nil, errors.New("TugQL URL requires one JSON parameters object")
 		}
 		var object map[string]json.RawMessage
 		if err := json.Unmarshal([]byte(raw[0]), &object); err != nil || object == nil {
-			return nil, errors.New("DTQL URL parameters must be a JSON object")
+			return nil, errors.New("TugQL URL parameters must be a JSON object")
 		}
 		parameters = json.RawMessage(raw[0])
 	}
-	body, err := marshalDTQLURLBody(struct {
+	body, err := marshalTugQLURLBody(struct {
 		Query      string          `json:"query"`
 		Parameters json.RawMessage `json:"parameters"`
 	}{Query: query[0], Parameters: parameters})
 	if err != nil {
-		return nil, fmt.Errorf("invalid DTQL URL parameters: %w", err)
+		return nil, fmt.Errorf("invalid TugQL URL parameters: %w", err)
 	}
-	return bindDTQLParameters(body)
+	return bindTugQLParameters(body)
 }
 
-// bindDTQLParameters replaces parsed DTQL parameter nodes with JSON values.
+// bindTugQLParameters replaces parsed TugQL parameter nodes with JSON values.
 // Values never enter YAML or SQL as text, so a string cannot change query shape.
-func bindDTQLParameters(body []byte) ([]byte, error) {
+func bindTugQLParameters(body []byte) ([]byte, error) {
 	var payload struct {
 		Query      string                     `json:"query"`
 		Parameters map[string]json.RawMessage `json:"parameters"`
@@ -325,20 +322,20 @@ func bindDTQLParameters(body []byte) ([]byte, error) {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&payload); err != nil {
-		return nil, fmt.Errorf("invalid DTQL JSON: %w", err)
+		return nil, fmt.Errorf("invalid TugQL JSON: %w", err)
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
-		return nil, errors.New("DTQL JSON must contain one object")
+		return nil, errors.New("TugQL JSON must contain one object")
 	}
 	if strings.TrimSpace(payload.Query) == "" {
-		return nil, errors.New("query must contain DTQL YAML")
+		return nil, errors.New("query must contain TugQL YAML")
 	}
 	if len(payload.Parameters) > 64 {
-		return nil, errors.New("too many DTQL parameters")
+		return nil, errors.New("too many TugQL parameters")
 	}
 	var query yaml.Node
 	if err := yaml.Unmarshal([]byte(payload.Query), &query); err != nil {
-		return nil, fmt.Errorf("invalid DTQL YAML: %w", err)
+		return nil, fmt.Errorf("invalid TugQL YAML: %w", err)
 	}
 	used := make(map[string]bool, len(payload.Parameters))
 	var visit func(*yaml.Node) error
@@ -349,7 +346,7 @@ func bindDTQLParameters(body []byte) ([]byte, error) {
 			if !ok {
 				return fmt.Errorf("parameter %q is not bound", name)
 			}
-			value, err := decodeDTQLParameter(raw)
+			value, err := decodeTugQLParameter(raw)
 			if err != nil {
 				return fmt.Errorf("invalid parameter %q: %w", name, err)
 			}
@@ -362,16 +359,16 @@ func bindDTQLParameters(body []byte) ([]byte, error) {
 					return fmt.Errorf("parameter %q has too many values", name)
 				}
 				for _, item := range values {
-					if item == nil || !isDTQLScalar(item) {
+					if item == nil || !isTugQLScalar(item) {
 						return fmt.Errorf("parameter %q must contain only non-null scalars", name)
 					}
 				}
 				key = "values"
-			} else if !isDTQLScalar(value) {
+			} else if !isTugQLScalar(value) {
 				return fmt.Errorf("parameter %q must be a scalar or array", name)
 			}
 			var bound yaml.Node
-			if err := encodeDTQLParamNode(&bound, value); err != nil {
+			if err := encodeTugQLParamNode(&bound, value); err != nil {
 				return err
 			}
 			node.Content[0].Value = key
@@ -397,22 +394,22 @@ func bindDTQLParameters(body []byte) ([]byte, error) {
 	return yaml.Marshal(&query)
 }
 
-// decodeDTQLParameter decodes the JSON value of a parameter. A number written as
+// decodeTugQLParameter decodes the JSON value of a parameter. A number written as
 // an integer that fits 64 bits is kept as that integer (int64), so a large ID is
 // not rounded through float64: DALgo then refuses one outside JavaScript's safe
 // range as a value on most engines, and a native PostgreSQL database compares it
 // exactly (exactIntegerValues). Every other number is a float64, as before.
-func decodeDTQLParameter(raw json.RawMessage) (any, error) {
+func decodeTugQLParameter(raw json.RawMessage) (any, error) {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	var value any
 	if err := decoder.Decode(&value); err != nil {
 		return nil, err
 	}
-	return dtqlParameterNumbers(value)
+	return tugqlParameterNumbers(value)
 }
 
-func dtqlParameterNumbers(value any) (any, error) {
+func tugqlParameterNumbers(value any) (any, error) {
 	switch v := value.(type) {
 	case json.Number:
 		if integer, err := strconv.ParseInt(v.String(), 10, 64); err == nil {
@@ -425,7 +422,7 @@ func dtqlParameterNumbers(value any) (any, error) {
 		return number, nil
 	case []any:
 		for i, item := range v {
-			converted, err := dtqlParameterNumbers(item)
+			converted, err := tugqlParameterNumbers(item)
 			if err != nil {
 				return nil, err
 			}
@@ -435,7 +432,7 @@ func dtqlParameterNumbers(value any) (any, error) {
 	return value, nil
 }
 
-func isDTQLScalar(value any) bool {
+func isTugQLScalar(value any) bool {
 	switch value.(type) {
 	case string, bool, float64, int64:
 		return true

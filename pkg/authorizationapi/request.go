@@ -1,4 +1,4 @@
-// Package authorizationapi validates the DTQL authorization HTTP ingress.
+// Package authorizationapi validates the TugQL authorization HTTP ingress.
 // These descriptions carry no authenticated identity or execution authority.
 package authorizationapi
 
@@ -14,7 +14,7 @@ import (
 
 	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/dalgo/dal"
-	"github.com/dal-go/dalgo/dtql/authorization"
+	"github.com/dal-go/dalgo/tugql/authorization"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 )
 
@@ -314,7 +314,7 @@ func (o *Operation) Normalize(database string) error {
 		columns[fieldKey(field)] = true
 	}
 	switch o.ExecutionClass {
-	case ExecutionTugQL, authorization.ExecutionDTQL, authorization.ExecutionNativeSQL, authorization.ExecutionNativeGraphQL:
+	case ExecutionTugQL, authorization.ExecutionNativeSQL, authorization.ExecutionNativeGraphQL:
 		if o.Callable != nil {
 			return fmt.Errorf("callable requires stored_procedure")
 		}
@@ -400,14 +400,14 @@ func (o *Operation) Normalize(database string) error {
 }
 
 func (q Query) Parse(table string) (dal.StructuredQuery, error) {
-	if q.Format != "dtql-yaml" || len(q.Text) == 0 || len(q.Text) > MaxRequestBytes {
+	if q.Format != "tugql-yaml" || len(q.Text) == 0 || len(q.Text) > MaxRequestBytes {
 		return nil, fmt.Errorf("invalid query format or size")
 	}
 	// Parameter binding must never be confused with trusted policy variables.
 	if len(q.Parameters) != 0 {
 		return nil, fmt.Errorf("query parameters are not supported in this profile")
 	}
-	query, collection, err := core.ParseDTQL([]byte(q.Text))
+	query, collection, err := core.ParseTugQL([]byte(q.Text))
 	if err != nil {
 		return nil, err
 	}

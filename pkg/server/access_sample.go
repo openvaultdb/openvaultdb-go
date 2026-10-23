@@ -9,7 +9,7 @@ import (
 
 	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/dalgo/dal"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"

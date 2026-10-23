@@ -14,16 +14,16 @@ import (
 // divergence file that pins a message holds the answer to it as well. The helpers of this
 // file all start with relIntMatcher so they cannot clash with the others of the package.
 
-// relIntMatcherAnswer is a 400 invalid_dtql with the message given.
+// relIntMatcherAnswer is a 400 invalid_tugql with the message given.
 func relIntMatcherAnswer(message string) relHTTPResponse {
 	return relHTTPResponse{
 		status: http.StatusBadRequest,
-		body:   map[string]any{"error": map[string]any{"code": "invalid_dtql", "message": message}},
+		body:   map[string]any{"error": map[string]any{"code": "invalid_tugql", "message": message}},
 	}
 }
 
 func TestTheCorpusMatcherHoldsAnErrorAnswerToTheMessageOfItsFixture(t *testing.T) {
-	dir := filepath.Join(relIntDalgoDir(t), "dtql", "testdata", "subqueries")
+	dir := filepath.Join(relIntDalgoDir(t), "tugql", "testdata", "subqueries")
 	var fixture relIntCase
 	for _, c := range relIntLoadCases(t, "subqueries", dir) {
 		if c.id == "subqueries/scope-ambiguous" {
@@ -53,7 +53,7 @@ func TestTheCorpusMatcherHoldsAnErrorAnswerToTheMessageOfItsFixture(t *testing.T
 // An entry of the divergence file that pins a message, a route or rows holds the answer to
 // each, and says which one differs.
 func TestTheCorpusTestHoldsADivergenceEntryToEveryPinItHas(t *testing.T) {
-	refused := relIntDivergence{Status: http.StatusBadRequest, Code: "invalid_dtql", Message: "ambiguous unqualified field X"}
+	refused := relIntDivergence{Status: http.StatusBadRequest, Code: "invalid_tugql", Message: "ambiguous unqualified field X"}
 	answered := func(route string, rows ...map[string]any) relHTTPResponse {
 		records := make([]any, len(rows))
 		for i, row := range rows {
@@ -70,7 +70,7 @@ func TestTheCorpusTestHoldsADivergenceEntryToEveryPinItHas(t *testing.T) {
 	}{
 		"the status, the code and the message": {refused, relIntMatcherAnswer("scope at columns[0]: ambiguous unqualified field X"), ""},
 		"another message":                      {refused, relIntMatcherAnswer("scope at columns[0]: unqualified field Y"), "the message holds"},
-		"another status":                       {refused, answered("database"), "says status 400 invalid_dtql"},
+		"another status":                       {refused, answered("database"), "says status 400 invalid_tugql"},
 		"another code":                         {relIntDivergence{Status: http.StatusBadRequest, Code: "bad_request"}, relIntMatcherAnswer("x"), "says status 400 bad_request"},
 		"no code and no message pinned":        {relIntDivergence{Status: http.StatusBadRequest}, relIntMatcherAnswer("anything"), ""},
 		"the route":                            {relIntDivergence{Status: http.StatusOK, Route: "database"}, answered("database"), ""},

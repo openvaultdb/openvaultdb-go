@@ -57,13 +57,13 @@ func relIntFieldsServer(t *testing.T) string {
 
 // relIntFieldsEachRoute posts doc to both engines on both endpoints and hands each
 // answer to check. The document names no database: the per-database endpoint reads it
-// as it is and /v1/dtql gets the database written into every source.
+// as it is and /v1/tugql gets the database written into every source.
 func relIntFieldsEachRoute(t *testing.T, base, doc string, check func(t *testing.T, resp relHTTPResponse)) {
 	t.Helper()
 	for _, engine := range relIntEngines {
 		for _, endpoint := range []struct{ name, path, database string }{
-			{"per-database endpoint", "/v1/databases/" + engine.id + "/dtql", ""},
-			{"/v1/dtql", "/v1/dtql", engine.id},
+			{"per-database endpoint", "/v1/databases/" + engine.id + "/tugql", ""},
+			{"/v1/tugql", "/v1/tugql", engine.id},
 		} {
 			t.Run(engine.name+", "+endpoint.name, func(t *testing.T) {
 				check(t, relHTTPPost(t, base, endpoint.path, "", string(relIntRewrite(t, []byte(doc), endpoint.database))))
@@ -212,8 +212,8 @@ func TestANestedPathOfAnObjectFieldIsReadOnAStrictMount(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, endpoint := range []struct{ name, path, database string }{
-				{"per-database endpoint", "/v1/databases/people/dtql", ""},
-				{"/v1/dtql", "/v1/dtql", "people"},
+				{"per-database endpoint", "/v1/databases/people/tugql", ""},
+				{"/v1/tugql", "/v1/tugql", "people"},
 			} {
 				t.Run(endpoint.name, func(t *testing.T) {
 					relIntRowsAre(t, relHTTPPost(t, base, endpoint.path, "", string(relIntRewrite(t, []byte(tc.doc), endpoint.database))), tc.want)
@@ -241,7 +241,7 @@ func TestAnAliasOfTheSelectListDoesNotHideAnUnqualifiedFieldOutsideAnAggregate(t
 			"columns: [{field: mood, source: n, as: person_id}, {binary: {op: '+', left: {field: person_id}, right: {value: 1}}, as: other}]\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			relIntScopeRefused(t, relHTTPPost(t, base, "/v1/dtql", "", doc), "person_id", "qualify")
+			relIntScopeRefused(t, relHTTPPost(t, base, "/v1/tugql", "", doc), "person_id", "qualify")
 		})
 	}
 }
@@ -268,8 +268,8 @@ func TestARefusalInsideADerivedSourceInTheBasePositionIsAClientError(t *testing.
 		t.Run(name, func(t *testing.T) {
 			relIntFieldsEachRoute(t, base, tc.doc, func(t *testing.T, resp relHTTPResponse) {
 				message := resp.errorField("message")
-				if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || !strings.Contains(message, tc.says) || resp.body["records"] != nil {
-					t.Fatalf("status %d, want a 400 invalid_dtql that says %q: %s", resp.status, tc.says, resp.raw)
+				if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" || !strings.Contains(message, tc.says) || resp.body["records"] != nil {
+					t.Fatalf("status %d, want a 400 invalid_tugql that says %q: %s", resp.status, tc.says, resp.raw)
 				}
 				if !strings.Contains(message, "at from.query.columns[0]") {
 					t.Fatalf("the message does not give the path under the derived source: %s", resp.raw)
@@ -310,7 +310,7 @@ func TestWhatTheFieldChecksDoNotReachIsReadAsItAlwaysWas(t *testing.T) {
 		}
 	}
 	people := relIntServe(t, map[string]*core.Database{"people": db})
-	wildcard := relHTTPPost(t, people, "/v1/databases/people/dtql", "",
+	wildcard := relHTTPPost(t, people, "/v1/databases/people/tugql", "",
 		"from: {name: Person, alias: p}\nwhere: {exists: {query: {from: {name: Person, alias: x}}}}\norderBy: [{field: name, source: p}]\n"+
 			"columns: [{wildcard: {source: p, exclude: [none]}}]\n")
 	relIntRowsAre(t, wildcard, []map[string]any{{"name": "Ada", "nick": "ada"}, {"name": "Bea"}})
@@ -321,7 +321,7 @@ func TestWhatTheFieldChecksDoNotReachIsReadAsItAlwaysWas(t *testing.T) {
 	// The streaming plan is DALgo's for a flat join of two sources that each name their
 	// database, with no subquery, no ORDER BY and no aggregation: it projects the wildcard
 	// from the list the mount supplied, and writes a null for the field a record lacks.
-	streamed := relHTTPPost(t, people, "/v1/dtql", "",
+	streamed := relHTTPPost(t, people, "/v1/tugql", "",
 		"from: {database: people, name: Person, alias: p, joins: [{type: inner, from: {database: people, name: Person, alias: q}, "+
 			"on: [{left: {field: name, source: p}, op: '==', right: {field: name, source: q}}]}]}\n"+
 			"columns: [{wildcard: {source: p, exclude: [none]}}]\n")
@@ -352,7 +352,7 @@ func TestWhatTheFieldChecksDoNotReachIsReadAsItAlwaysWas(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			relIntRowsAre(t, relHTTPPost(t, sales, "/v1/databases/gitdb/dtql", "", tc.doc), tc.want)
+			relIntRowsAre(t, relHTTPPost(t, sales, "/v1/databases/gitdb/tugql", "", tc.doc), tc.want)
 		})
 	}
 }
@@ -369,8 +369,8 @@ func TestAnAliasWhoseExpressionNamesAnotherColumnIsRefusedInsteadOfBeingReadAsIt
 		"columns:\n  - {field: CustomerId, as: customer}\n  - {aggregate: {function: count, args: [{star: true}]}, as: CustomerId}\n"
 	relIntFieldsEachRoute(t, base, doc, func(t *testing.T, resp relHTTPResponse) {
 		message := resp.errorField("message")
-		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || !strings.Contains(message, "customer") || resp.body["records"] != nil {
-			t.Fatalf("status %d, want a 400 invalid_dtql that names customer: %s", resp.status, resp.raw)
+		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" || !strings.Contains(message, "customer") || resp.body["records"] != nil {
+			t.Fatalf("status %d, want a 400 invalid_tugql that names customer: %s", resp.status, resp.raw)
 		}
 	})
 }
@@ -379,7 +379,7 @@ func TestAnAliasWhoseExpressionNamesAnotherColumnIsRefusedInsteadOfBeingReadAsIt
 // the column selects, as one SQLite database sorts it when it runs the whole document: on
 // the database route, and in memory on a source that supplies its fields (it was refused as
 // an unavailable field on the per-database endpoint, and answered in the order the records
-// were read on /v1/dtql, before the name was replaced by the field).
+// were read on /v1/tugql, before the name was replaced by the field).
 func TestOrderByTheAliasOfAColumnOfAQueryThatDoesNotAggregateIsSortedByTheFieldItSelects(t *testing.T) {
 	base := relIntFieldsServer(t)
 	doc := "from: {name: Customer, alias: c}\norderBy: [{field: name, desc: true}]\ncolumns: [{field: FirstName, source: c, as: name}]\n"
@@ -387,10 +387,10 @@ func TestOrderByTheAliasOfAColumnOfAQueryThatDoesNotAggregateIsSortedByTheFieldI
 		name, path, database string
 		route                string
 	}{
-		{"sqlite, per-database endpoint", "/v1/databases/litedb/dtql", "", "database"},
-		{"sqlite, /v1/dtql", "/v1/dtql", "litedb", "database"},
-		{"ingitdb, per-database endpoint", "/v1/databases/gitdb/dtql", "", "in-memory"},
-		{"ingitdb, /v1/dtql", "/v1/dtql", "gitdb", "in-memory"},
+		{"sqlite, per-database endpoint", "/v1/databases/litedb/tugql", "", "database"},
+		{"sqlite, /v1/tugql", "/v1/tugql", "litedb", "database"},
+		{"ingitdb, per-database endpoint", "/v1/databases/gitdb/tugql", "", "in-memory"},
+		{"ingitdb, /v1/tugql", "/v1/tugql", "gitdb", "in-memory"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := relHTTPPost(t, base, tc.path, "", string(relIntRewrite(t, []byte(doc), tc.database)))
@@ -408,7 +408,7 @@ func TestOrderByTheAliasOfAFieldOfAMountWithNoFieldListIsSortedByThatField(t *te
 	base := relIntScopeServer(t)
 	const join = "from: {database: shop, name: Orders, alias: o, joins: [{type: inner, from: {database: notes, name: Note, alias: n}, " +
 		"on: [{left: {field: person_id, source: o}, op: '==', right: {field: person_id, source: n}}]}]}\n"
-	resp := relHTTPPost(t, base, "/v1/dtql", "", join+"where: {exists: {query: {from: {database: shop, name: Orders, alias: x}}}}\n"+
+	resp := relHTTPPost(t, base, "/v1/tugql", "", join+"where: {exists: {query: {from: {database: shop, name: Orders, alias: x}}}}\n"+
 		"orderBy: [{field: person_id}]\ncolumns: [{field: mood, source: n, as: person_id}]\n")
 	relIntRowsAre(t, resp, []map[string]any{{"person_id": "busy"}, {"person_id": "calm"}})
 }

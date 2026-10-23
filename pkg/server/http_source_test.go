@@ -50,8 +50,8 @@ func TestLiveHTTPSourceEndpoints(t *testing.T) {
 	for _, route := range []struct{ method, path, body string }{
 		{"POST", "/v1/databases/ecb/query", `{"collection":"daily"}`},
 		{"GET", "/v1/databases/ecb/query?q=" + url.QueryEscape(`{"collection":"daily"}`), ""},
-		{"POST", "/v1/databases/ecb/dtql", query},
-		{"GET", "/v1/databases/ecb/dtql?q=" + url.QueryEscape(query), ""},
+		{"POST", "/v1/databases/ecb/tugql", query},
+		{"GET", "/v1/databases/ecb/tugql?q=" + url.QueryEscape(query), ""},
 	} {
 		w := retentionRequest(handler, route.method, route.path, route.body, nil)
 		if w.Code != 200 || w.Header().Get("Cache-Control") != "no-store" || !strings.Contains(w.Body.String(), "001.23000") || !strings.Contains(w.Body.String(), "sourceRights") || !strings.Contains(w.Body.String(), "usedSourceIds") {
@@ -101,8 +101,8 @@ func TestLiveHTTPSourceEndpoints(t *testing.T) {
 		}
 	})
 	for _, header := range []http.Header{{"OVDB-Page-Size": {"1"}}, {"OVDB-Page-Token": {""}}, {"OVDB-Page-Close": {"true", "true"}}} {
-		assertRetentionRefusal(t, retentionRequest(handler, "POST", "/v1/databases/ecb/dtql", query, header))
-		assertRetentionRefusal(t, retentionRequest(handler, "POST", "/v1/dtql", "from: {database: ecb, name: daily}\n", header))
+		assertRetentionRefusal(t, retentionRequest(handler, "POST", "/v1/databases/ecb/tugql", query, header))
+		assertRetentionRefusal(t, retentionRequest(handler, "POST", "/v1/tugql", "from: {database: ecb, name: daily}\n", header))
 	}
 	body = "<malformed synthetic-private-value>"
 	w := retentionRequest(handler, "POST", "/v1/databases/ecb/query", `{"collection":"daily"}`, nil)

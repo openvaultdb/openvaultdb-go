@@ -17,7 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func pagedDTQL(t *testing.T, url, doc string, size int, token string) (int, map[string]any) {
+func pagedTugQL(t *testing.T, url, doc string, size int, token string) (int, map[string]any) {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(doc))
 	if err != nil {
@@ -36,7 +36,7 @@ func pagedDTQL(t *testing.T, url, doc string, size int, token string) (int, map[
 	return resp.StatusCode, body
 }
 
-func closePagedDTQL(t *testing.T, url, doc string, size int, token string) int {
+func closePagedTugQL(t *testing.T, url, doc string, size int, token string) int {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(doc))
 	if err != nil {
@@ -53,9 +53,9 @@ func closePagedDTQL(t *testing.T, url, doc string, size int, token string) int {
 	return resp.StatusCode
 }
 
-func TestDTQLSnapshotPagesDoNotMixWrites(t *testing.T) {
+func TestTugQLSnapshotPagesDoNotMixWrites(t *testing.T) {
 	base := startTestServer(t, schemalessManifest)
-	url := base + "/v1/databases/testdb/dtql"
+	url := base + "/v1/databases/testdb/tugql"
 	for i := 1; i <= 3; i++ {
 		resp := doRequest(t, http.MethodPut, fmt.Sprintf("%s/v1/databases/testdb/records/items/i%d", base, i),
 			map[string]any{"data": map[string]any{"rank": i}})
@@ -63,7 +63,7 @@ func TestDTQLSnapshotPagesDoNotMixWrites(t *testing.T) {
 		drainClose(resp)
 	}
 	doc := "from: {name: items}\norderBy: [{field: rank}]\n"
-	status, first := pagedDTQL(t, url, doc, 1, "")
+	status, first := pagedTugQL(t, url, doc, 1, "")
 	if status != http.StatusOK || len(first["records"].([]any)) != 1 {
 		t.Fatalf("first page: %d %#v", status, first)
 	}
@@ -76,7 +76,7 @@ func TestDTQLSnapshotPagesDoNotMixWrites(t *testing.T) {
 		map[string]any{"data": map[string]any{"rank": 4}})
 	mustStatus(t, resp, http.StatusNoContent)
 	drainClose(resp)
-	status, second := pagedDTQL(t, url, doc, 1, token)
+	status, second := pagedTugQL(t, url, doc, 1, token)
 	if status != http.StatusOK {
 		t.Fatalf("second page: %d %#v", status, second)
 	}
@@ -84,25 +84,25 @@ func TestDTQLSnapshotPagesDoNotMixWrites(t *testing.T) {
 	if secondRow["key"] != "items/i2" || secondRow["data"].(map[string]any)["rank"] != float64(2) {
 		t.Fatalf("second page changed after write: %#v", secondRow)
 	}
-	status, replay := pagedDTQL(t, url, doc, 1, token)
+	status, replay := pagedTugQL(t, url, doc, 1, token)
 	if status != http.StatusOK || replay["nextPageToken"] != second["nextPageToken"] ||
 		replay["records"].([]any)[0].(map[string]any)["data"].(map[string]any)["rank"] != float64(2) {
 		t.Fatalf("retried page differs: %d %#v", status, replay)
 	}
 	finalToken := second["nextPageToken"].(string)
-	status, final := pagedDTQL(t, url, doc, 1, finalToken)
+	status, final := pagedTugQL(t, url, doc, 1, finalToken)
 	if status != http.StatusOK || final["nextPageToken"] != nil || final["records"].([]any)[0].(map[string]any)["key"] != "items/i3" {
 		t.Fatalf("final page: %d %#v", status, final)
 	}
-	status, finalRetry := pagedDTQL(t, url, doc, 1, finalToken)
+	status, finalRetry := pagedTugQL(t, url, doc, 1, finalToken)
 	if status != http.StatusOK || finalRetry["nextPageToken"] != nil || finalRetry["records"].([]any)[0].(map[string]any)["key"] != "items/i3" {
 		t.Fatalf("final page retry: %d %#v", status, finalRetry)
 	}
 }
 
-func TestDTQLSnapshotRejectsChangedQuery(t *testing.T) {
+func TestTugQLSnapshotRejectsChangedQuery(t *testing.T) {
 	base := startTestServer(t, schemalessManifest)
-	url := base + "/v1/databases/testdb/dtql"
+	url := base + "/v1/databases/testdb/tugql"
 	for _, id := range []string{"i1", "i2"} {
 		resp := doRequest(t, http.MethodPut, base+"/v1/databases/testdb/records/items/"+id,
 			map[string]any{"data": map[string]any{"rank": 1}})
@@ -110,59 +110,59 @@ func TestDTQLSnapshotRejectsChangedQuery(t *testing.T) {
 		drainClose(resp)
 	}
 	doc := "from: {name: items}\n"
-	_, first := pagedDTQL(t, url, doc, 1, "")
+	_, first := pagedTugQL(t, url, doc, 1, "")
 	token := first["nextPageToken"].(string)
-	status, mismatch := pagedDTQL(t, url, doc+"#changed\n", 1, token)
+	status, mismatch := pagedTugQL(t, url, doc+"#changed\n", 1, token)
 	if status != http.StatusBadRequest || mismatch["error"].(map[string]any)["code"] != "bad_request" {
 		t.Fatalf("changed query: %d %#v", status, mismatch)
 	}
-	status, next := pagedDTQL(t, url, doc, 1, token)
+	status, next := pagedTugQL(t, url, doc, 1, token)
 	if status != http.StatusOK || len(next["records"].([]any)) != 1 {
 		t.Fatalf("valid continuation: %d %#v", status, next)
 	}
 }
 
-func TestDTQLSnapshotCloseReusesCapacity(t *testing.T) {
+func TestTugQLSnapshotCloseReusesCapacity(t *testing.T) {
 	base := startTestServer(t, schemalessManifest)
-	url := base + "/v1/databases/testdb/dtql"
+	url := base + "/v1/databases/testdb/tugql"
 	doc := "from: {name: items}\n"
-	_, first := pagedDTQL(t, url, doc, 1, "")
-	_, second := pagedDTQL(t, url, doc, 1, "")
-	status, capacity := pagedDTQL(t, url, doc, 1, "")
+	_, first := pagedTugQL(t, url, doc, 1, "")
+	_, second := pagedTugQL(t, url, doc, 1, "")
+	status, capacity := pagedTugQL(t, url, doc, 1, "")
 	if status != http.StatusServiceUnavailable || capacity["error"].(map[string]any)["code"] != "snapshot_capacity" {
 		t.Fatalf("capacity before close: %d %#v", status, capacity)
 	}
 	firstToken := first["snapshotToken"].(string)
-	if status := closePagedDTQL(t, url, doc, 1, firstToken+"x"); status != http.StatusBadRequest {
+	if status := closePagedTugQL(t, url, doc, 1, firstToken+"x"); status != http.StatusBadRequest {
 		t.Fatalf("invalid close status = %d", status)
 	}
-	status, stillFull := pagedDTQL(t, url, doc, 1, "")
+	status, stillFull := pagedTugQL(t, url, doc, 1, "")
 	if status != http.StatusServiceUnavailable || stillFull["error"].(map[string]any)["code"] != "snapshot_capacity" {
 		t.Fatalf("invalid close freed capacity: %d %#v", status, stillFull)
 	}
-	if status := closePagedDTQL(t, url, doc, 1, firstToken); status != http.StatusNoContent {
+	if status := closePagedTugQL(t, url, doc, 1, firstToken); status != http.StatusNoContent {
 		t.Fatalf("close status = %d", status)
 	}
-	if status := closePagedDTQL(t, url, doc, 1, firstToken); status != http.StatusNoContent {
+	if status := closePagedTugQL(t, url, doc, 1, firstToken); status != http.StatusNoContent {
 		t.Fatalf("repeated close status = %d", status)
 	}
-	status, expired := pagedDTQL(t, url, doc, 1, firstToken)
+	status, expired := pagedTugQL(t, url, doc, 1, firstToken)
 	if status != http.StatusGone || expired["error"].(map[string]any)["code"] != "snapshot_expired" {
 		t.Fatalf("page after close: %d %#v", status, expired)
 	}
-	status, third := pagedDTQL(t, url, doc, 1, "")
+	status, third := pagedTugQL(t, url, doc, 1, "")
 	if status != http.StatusOK || third["snapshotToken"] == nil {
 		t.Fatalf("capacity after close: %d %#v", status, third)
 	}
-	if status := closePagedDTQL(t, url, doc, 1, second["snapshotToken"].(string)); status != http.StatusNoContent {
+	if status := closePagedTugQL(t, url, doc, 1, second["snapshotToken"].(string)); status != http.StatusNoContent {
 		t.Fatalf("second close status = %d", status)
 	}
-	if status := closePagedDTQL(t, url, doc, 1, third["snapshotToken"].(string)); status != http.StatusNoContent {
+	if status := closePagedTugQL(t, url, doc, 1, third["snapshotToken"].(string)); status != http.StatusNoContent {
 		t.Fatalf("third close status = %d", status)
 	}
 }
 
-func TestDTQLSnapshotStreamsLargeSQLiteResult(t *testing.T) {
+func TestTugQLSnapshotStreamsLargeSQLiteResult(t *testing.T) {
 	if testing.Short() {
 		t.Skip("120k-row disk spool acceptance")
 	}
@@ -205,12 +205,12 @@ func TestDTQLSnapshotStreamsLargeSQLiteResult(t *testing.T) {
 	defer srv.CloseSnapshots()
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
-	url := ts.URL + "/v1/databases/large/dtql"
+	url := ts.URL + "/v1/databases/large/tugql"
 	doc := "from: {name: items}\norderBy: [{field: id}]\n"
 	count := 0
 	token := ""
 	for {
-		status, body := pagedDTQL(t, url, doc, 1000, token)
+		status, body := pagedTugQL(t, url, doc, 1000, token)
 		if status != http.StatusOK {
 			t.Fatalf("page after %d rows: %d %#v", count, status, body)
 		}
@@ -226,7 +226,7 @@ func TestDTQLSnapshotStreamsLargeSQLiteResult(t *testing.T) {
 	}
 }
 
-func TestDTQLSnapshotCORSAndShutdown(t *testing.T) {
+func TestTugQLSnapshotCORSAndShutdown(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("TMPDIR", dir)
 	manifestPath := filepath.Join(dir, "db.yaml")
@@ -241,7 +241,7 @@ func TestDTQLSnapshotCORSAndShutdown(t *testing.T) {
 	srv := server.New("test", map[string]*core.Database{db.ID(): db}, server.WithCORS(server.ParseCORSOrigins([]string{"https://example.test"})))
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
-	preflight, err := http.NewRequest(http.MethodOptions, ts.URL+"/v1/databases/testdb/dtql", nil)
+	preflight, err := http.NewRequest(http.MethodOptions, ts.URL+"/v1/databases/testdb/tugql", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,18 +263,18 @@ func TestDTQLSnapshotCORSAndShutdown(t *testing.T) {
 		mustStatus(t, resp, http.StatusNoContent)
 		drainClose(resp)
 	}
-	url := ts.URL + "/v1/databases/testdb/dtql"
+	url := ts.URL + "/v1/databases/testdb/tugql"
 	doc := "from: {name: items}\n"
-	_, first := pagedDTQL(t, url, doc, 1, "")
+	_, first := pagedTugQL(t, url, doc, 1, "")
 	token := first["nextPageToken"].(string)
 	srv.CloseSnapshots()
-	status, expired := pagedDTQL(t, url, doc, 1, token)
+	status, expired := pagedTugQL(t, url, doc, 1, token)
 	if status != http.StatusGone || expired["error"].(map[string]any)["code"] != "snapshot_expired" {
 		t.Fatalf("token after shutdown cleanup: %d %#v", status, expired)
 	}
 }
 
-func TestDTQLSnapshotRestartSweep(t *testing.T) {
+func TestTugQLSnapshotRestartSweep(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("TMPDIR", dir)
 	snapshotDir := filepath.Join(dir, fmt.Sprintf("ovdb-query-snapshots-%d", os.Getuid()))

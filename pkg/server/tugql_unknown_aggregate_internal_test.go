@@ -14,7 +14,7 @@ const unknownAggMarker = "zzmarkerfn"
 // TestAnUnknownAggregateNameIsRefusedWithABuiltMessageThatDoesNotRepeatIt: an
 // aggregate function that DALgo does not know, in a column, in HAVING and in ORDER
 // BY, is refused by DALgo's deserializer before the classifier looks at the
-// document, with the caller's text quoted. The answer is the 400 invalid_dtql it
+// document, with the caller's text quoted. The answer is the 400 invalid_tugql it
 // always was, with a message built here that names the functions the profile
 // has and none of the caller's text, in every spelling of the name, on both
 // endpoints and by POST and GET.
@@ -33,13 +33,13 @@ func TestAnUnknownAggregateNameIsRefusedWithABuiltMessageThatDoesNotRepeatIt(t *
 		for _, spelling := range []string{unknownAggMarker, strings.ToUpper(unknownAggMarker), "Zz\"Marker", "median"} {
 			document := strings.ReplaceAll(doc, "NAME", "\""+strings.ReplaceAll(spelling, `"`, `\"`)+"\"")
 			for _, route := range []struct{ name, method, path, body string }{
-				{"POST /v1/dtql", http.MethodPost, "/v1/dtql", document},
-				{"GET /v1/dtql", http.MethodGet, "/v1/dtql?q=" + url.QueryEscape(document), ""},
-				{"POST per-database", http.MethodPost, "/v1/databases/alpha/dtql", strings.ReplaceAll(document, "database: alpha, ", "")},
+				{"POST /v1/tugql", http.MethodPost, "/v1/tugql", document},
+				{"GET /v1/tugql", http.MethodGet, "/v1/tugql?q=" + url.QueryEscape(document), ""},
+				{"POST per-database", http.MethodPost, "/v1/databases/alpha/tugql", strings.ReplaceAll(document, "database: alpha, ", "")},
 			} {
 				t.Run(position+"/"+spelling+"/"+route.name, func(t *testing.T) {
 					resp := relFakeDo(t, host, route.method, route.path, "", route.body, nil)
-					if resp.status != http.StatusBadRequest || resp.code() != "invalid_dtql" {
+					if resp.status != http.StatusBadRequest || resp.code() != "invalid_tugql" {
 						t.Fatalf("status %d: %s", resp.status, resp.raw)
 					}
 					message, _ := resp.errorDetail()["message"].(string)

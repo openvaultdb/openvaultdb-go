@@ -65,7 +65,7 @@ func (d *Database) NativePostgresReadOnly() bool { return d.nativePostgres }
 
 func validateNativeIdentifier(value string) error {
 	if value == "" || len(value) > 63 || !utf8.ValidString(value) || strings.IndexByte(value, 0) >= 0 {
-		return fmt.Errorf("%w: PostgreSQL identifier is not valid UTF-8, is empty, contains NUL, or exceeds 63 bytes", ErrInvalidDTQL)
+		return fmt.Errorf("%w: PostgreSQL identifier is not valid UTF-8, is empty, contains NUL, or exceeds 63 bytes", ErrInvalidTugQL)
 	}
 	return nil
 }

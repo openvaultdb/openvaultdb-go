@@ -6,7 +6,7 @@ import (
 	"github.com/dal-go/dalgo/dal"
 )
 
-// A document of /v1/dtql names the database of every source, and the endpoint of a
+// A document of /v1/tugql names the database of every source, and the endpoint of a
 // database hands the mount the document as it was written, so a join of the mount
 // arrives with the database named on each of its sources. The compiler of the adapter
 // of a PostgreSQL mount declines such a join (a source in a named database needs the

@@ -15,7 +15,7 @@ import (
 
 	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/dalgo/dal"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 	"github.com/dal-go/record"
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
@@ -94,7 +94,7 @@ func TestAccessInspectAndEvaluateCoverageBatch9(t *testing.T) {
 	defer srvAuth.CloseSnapshots()
 	srvAuth.authCfg = &auth.Config{}
 	reqAuth := httptest.NewRequest(http.MethodPost, "/v1/databases/disc_db/access:evaluate", strings.NewReader(`{
-		"apiVersion": "dtql.org/authorization/v1",
+		"apiVersion": "tugql.org/authorization/v1",
 		"mode": "inspect",
 		"operations": [{"id": "op1", "action": "query", "resource": {"databaseId": "disc_db", "path": "/users", "table": "users"}}]
 	}`))
@@ -127,7 +127,7 @@ func TestAccessInspectAndEvaluateCoverageBatch9(t *testing.T) {
 	k := record.NewKeyWithID("users", "1")
 	recOversize := httptest.NewRecorder()
 	reqOversize := httptest.NewRequest(http.MethodPatch, "/v1/databases/disc_db/records/users/1", strings.NewReader(strings.Repeat("X", int(api.MaxRequestBytes)+100)))
-	reqOversize.Header.Set("Content-Type", "application/vnd.dtql.operation+json")
+	reqOversize.Header.Set("Content-Type", "application/vnd.tugql.operation+json")
 	srv.updateProtected(recOversize, reqOversize, db, k, &scriptedExecutor{})
 	if recOversize.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 on oversize update body, got %d", recOversize.Code)
@@ -135,7 +135,7 @@ func TestAccessInspectAndEvaluateCoverageBatch9(t *testing.T) {
 
 	recMismatch := httptest.NewRecorder()
 	reqMismatch := httptest.NewRequest(http.MethodPatch, "/v1/databases/disc_db/records/users/1", strings.NewReader(`{"action":"insert"}`))
-	reqMismatch.Header.Set("Content-Type", "application/vnd.dtql.operation+json")
+	reqMismatch.Header.Set("Content-Type", "application/vnd.tugql.operation+json")
 	srv.updateProtected(recMismatch, reqMismatch, db, k, &scriptedExecutor{})
 	if recMismatch.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 on action mismatch in updateProtected, got %d", recMismatch.Code)
@@ -203,7 +203,7 @@ func TestAccessInspectAndEvaluateCoverageBatch9(t *testing.T) {
 
 	rec642 := httptest.NewRecorder()
 	req642 := httptest.NewRequest(http.MethodPost, "/v1/databases/disc_db/access:evidence", strings.NewReader(`{
-		"apiVersion": "dtql.org/authorization/v1",
+		"apiVersion": "tugql.org/authorization/v1",
 		"resource": {"databaseId": "disc_db", "path": "/users", "table": "users", "rowId": ""},
 		"requiredFields": [["name"]]
 	}`))
@@ -279,7 +279,7 @@ func TestAccessSampleCoverageBatch9(t *testing.T) {
 	// 1. line 30: guardOperationFields error
 	rec30 := httptest.NewRecorder()
 	req30 := httptest.NewRequest(http.MethodPost, "/v1/databases/sample_db/access:evaluate", strings.NewReader(`{
-		"apiVersion": "dtql.org/authorization/v1",
+		"apiVersion": "tugql.org/authorization/v1",
 		"mode": "sample",
 		"operations": [{"id": "s1", "action": "query", "resource": {"databaseId": "sample_db", "path": "/users", "table": "users", "columns": [["unknown_field"]]}}],
 		"sample": {"limit": 10, "query": {"from": "users"}}
@@ -290,7 +290,7 @@ func TestAccessSampleCoverageBatch9(t *testing.T) {
 	// 2. line 35: invalid sample query JSON
 	rec35 := httptest.NewRecorder()
 	req35 := httptest.NewRequest(http.MethodPost, "/v1/databases/sample_db/access:evaluate", strings.NewReader(`{
-		"apiVersion": "dtql.org/authorization/v1",
+		"apiVersion": "tugql.org/authorization/v1",
 		"mode": "sample",
 		"operations": [{"id": "s1", "action": "query", "resource": {"databaseId": "sample_db", "path": "/users", "table": "users"}}],
 		"sample": {"limit": 10, "query": {"from": ""}}
@@ -302,23 +302,23 @@ func TestAccessSampleCoverageBatch9(t *testing.T) {
 	}
 }
 
-func TestDTQLAndPagesCoverageBatch9(t *testing.T) {
-	// Not parallel: modifies snapshotTimerAfterFunc, readSnapshotDir, seekSnapshotFile, marshalDTQLURLBody, finishProviderCapture
+func TestTugQLAndPagesCoverageBatch9(t *testing.T) {
+	// Not parallel: modifies snapshotTimerAfterFunc, readSnapshotDir, seekSnapshotFile, marshalTugQLURLBody, finishProviderCapture
 	oldTimer := snapshotTimerAfterFunc
 	oldReadDir := readSnapshotDir
 	oldSeek := seekSnapshotFile
-	oldMarshal := marshalDTQLURLBody
+	oldMarshal := marshalTugQLURLBody
 	oldFinishProv := finishProviderCapture
 	defer func() {
 		snapshotTimerAfterFunc = oldTimer
 		readSnapshotDir = oldReadDir
 		seekSnapshotFile = oldSeek
-		marshalDTQLURLBody = oldMarshal
+		marshalTugQLURLBody = oldMarshal
 		finishProviderCapture = oldFinishProv
 	}()
 
 	m := &manifest.Manifest{
-		Database: manifest.Database{ID: "dtql_b9_db", SchemaMode: schema.ModeStrict, Retention: manifest.RetentionNone},
+		Database: manifest.Database{ID: "tugql_b9_db", SchemaMode: schema.ModeStrict, Retention: manifest.RetentionNone},
 		Storage:  manifest.Storage{Engine: "sqlite", Path: ":memory:"},
 		Schemas:  &schema.Schemas{Collections: map[string]schema.Collection{"users": {Fields: map[string]schema.Field{"name": {Type: schema.TypeString}}}}},
 	}
@@ -326,71 +326,71 @@ func TestDTQLAndPagesCoverageBatch9(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := New("test", map[string]*core.Database{"dtql_b9_db": db})
+	srv := New("test", map[string]*core.Database{"tugql_b9_db": db})
 	defer srv.CloseSnapshots()
 
-	// 1. dtql.go: line 62: refuseProviderRequest when query restricted
+	// 1. tugql.go: line 62: refuseProviderRequest when query restricted
 	srv.providerProfilesByDB[db] = ProviderReadProfile{
 		Collection:     "users",
 		RequestProfile: ECBPublicFreeRequestProfile,
 	}
 	rec62 := httptest.NewRecorder()
-	req62 := httptest.NewRequest(http.MethodPost, "/v1/databases/dtql_b9_db/dtql", strings.NewReader("from: {name: users}\nlimit: 100\n"))
-	req62.SetPathValue("db", "dtql_b9_db")
-	srv.handleDTQL(rec62, req62)
+	req62 := httptest.NewRequest(http.MethodPost, "/v1/databases/tugql_b9_db/tugql", strings.NewReader("from: {name: users}\nlimit: 100\n"))
+	req62.SetPathValue("db", "tugql_b9_db")
+	srv.handleTugQL(rec62, req62)
 	if rec62.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("expected 422 on restricted provider query, got %d", rec62.Code)
 	}
 	delete(srv.providerProfilesByDB, db)
 
-	// 2. dtql.go: lines 164-170: finishProviderCapture error in serveDTQL
+	// 2. tugql.go: lines 164-170: finishProviderCapture error in serveTugQL
 	finishProviderCapture = func(pc *providerCapture, used []string) (*providerreads.Envelope, error) {
 		return nil, errors.New("finish provider capture failure")
 	}
 	rec164 := httptest.NewRecorder()
-	req164 := httptest.NewRequest(http.MethodPost, "/v1/databases/dtql_b9_db/dtql", strings.NewReader("from: {name: users}\n"))
-	req164.SetPathValue("db", "dtql_b9_db")
+	req164 := httptest.NewRequest(http.MethodPost, "/v1/databases/tugql_b9_db/tugql", strings.NewReader("from: {name: users}\n"))
+	req164.SetPathValue("db", "tugql_b9_db")
 	req164.Header.Set("Accept", queryErrorStreamMediaType)
-	srv.handleDTQL(rec164, req164)
+	srv.handleTugQL(rec164, req164)
 	finishProviderCapture = oldFinishProv
 
-	// 3. dtql.go: line 274: invalid URL query string
-	uBad, _ := dtqlFromURL(httptest.NewRequest(http.MethodGet, "/v1/databases/dtql_b9_db/dtql?%zz=1", nil).URL)
+	// 3. tugql.go: line 274: invalid URL query string
+	uBad, _ := tugqlFromURL(httptest.NewRequest(http.MethodGet, "/v1/databases/tugql_b9_db/tugql?%zz=1", nil).URL)
 	if uBad != nil {
 		t.Fatal("expected error on invalid query escape")
 	}
 
-	// 4. dtql.go: line 301: marshalDTQLURLBody error
-	marshalDTQLURLBody = func(v any) ([]byte, error) { return nil, errors.New("marshal error") }
-	uMarshal, _ := dtqlFromURL(httptest.NewRequest(http.MethodGet, "/v1/databases/dtql_b9_db/dtql?q=from:+users", nil).URL)
+	// 4. tugql.go: line 301: marshalTugQLURLBody error
+	marshalTugQLURLBody = func(v any) ([]byte, error) { return nil, errors.New("marshal error") }
+	uMarshal, _ := tugqlFromURL(httptest.NewRequest(http.MethodGet, "/v1/databases/tugql_b9_db/tugql?q=from:+users", nil).URL)
 	if uMarshal != nil {
-		t.Fatal("expected error on marshalDTQLURLBody failure")
+		t.Fatal("expected error on marshalTugQLURLBody failure")
 	}
-	marshalDTQLURLBody = oldMarshal
+	marshalTugQLURLBody = oldMarshal
 
-	// 5. dtql.go: line 342: invalid parameter JSON
-	_, errParamJSON := bindDTQLParameters([]byte(`{"query":"from: users\nwhere: {param: p}\n","parameters":{"p":1e999999999999999999999999999999}}`))
+	// 5. tugql.go: line 342: invalid parameter JSON
+	_, errParamJSON := bindTugQLParameters([]byte(`{"query":"from: users\nwhere: {param: p}\n","parameters":{"p":1e999999999999999999999999999999}}`))
 	if errParamJSON == nil {
 		t.Fatal("expected error on invalid parameter json")
 	}
 
-	// 6. dtql.go: line 357: parameter with []any values
-	boundArr, errArr := bindDTQLParameters([]byte(`{"query":"from: users\nwhere: {param: p}\n","parameters":{"p":["a","b"]}}`))
+	// 6. tugql.go: line 357: parameter with []any values
+	boundArr, errArr := bindTugQLParameters([]byte(`{"query":"from: users\nwhere: {param: p}\n","parameters":{"p":["a","b"]}}`))
 	if errArr != nil || !strings.Contains(string(boundArr), "values") {
 		t.Fatalf("expected bound values array, got %v: %s", errArr, string(boundArr))
 	}
 
-	// 7. dtql_pages.go: line 193: collections error
+	// 7. tugql_pages.go: line 193: collections error
 	qUnsupported := dal.From(dal.NewQualifiedRootCollectionRef("public", "users", "")).NewQuery().SelectColumns()
 	rec193 := httptest.NewRecorder()
-	req193 := httptest.NewRequest(http.MethodPost, "/v1/databases/dtql_b9_db/dtql", nil)
+	req193 := httptest.NewRequest(http.MethodPost, "/v1/databases/tugql_b9_db/tugql", nil)
 	req193.Header.Set("OVDB-Page-Size", "10")
-	srv.handlePagedDTQL(rec193, req193, db, qUnsupported, []byte("..."))
+	srv.handlePagedTugQL(rec193, req193, db, qUnsupported, []byte("..."))
 	if rec193.Code != http.StatusBadRequest && rec193.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("expected 400/422 on unsupported collection in paged DTQL, got %d", rec193.Code)
+		t.Fatalf("expected 400/422 on unsupported collection in paged TugQL, got %d", rec193.Code)
 	}
 
-	// 8. dtql_pages.go: lines 231-235: database unmounted during snapshot capture
+	// 8. tugql_pages.go: lines 231-235: database unmounted during snapshot capture
 	mPaged := &manifest.Manifest{
 		Database: manifest.Database{ID: "paged_db", SchemaMode: schema.ModeStrict},
 		Storage:  manifest.Storage{Engine: "sqlite"},
@@ -398,12 +398,12 @@ func TestDTQLAndPagesCoverageBatch9(t *testing.T) {
 	}
 	dbUnmounted, _ := core.Open(mPaged, emptyQueryDB{}, []schema.Mode{schema.ModeStrict}, "")
 	rec231 := httptest.NewRecorder()
-	srv.handlePagedDTQL(rec231, req193, dbUnmounted, dal.From(dal.NewRootCollectionRef("users", "")).NewQuery().SelectColumns(), []byte("from: users"))
+	srv.handlePagedTugQL(rec231, req193, dbUnmounted, dal.From(dal.NewRootCollectionRef("users", "")).NewQuery().SelectColumns(), []byte("from: users"))
 	if rec231.Code != http.StatusGone {
-		t.Fatalf("expected 410 on unmounted db in handlePagedDTQL, got %d", rec231.Code)
+		t.Fatalf("expected 410 on unmounted db in handlePagedTugQL, got %d", rec231.Code)
 	}
 
-	// 9. dtql_pages.go: line 241: snapshot timer execution
+	// 9. tugql_pages.go: line 241: snapshot timer execution
 	snapshotTimerAfterFunc = func(d time.Duration, f func()) *time.Timer {
 		f() // synchronously run callback
 		return time.NewTimer(time.Hour)
@@ -413,14 +413,14 @@ func TestDTQLAndPagesCoverageBatch9(t *testing.T) {
 	srv.expireSnapshot(snapExp)
 	snapshotTimerAfterFunc = oldTimer
 
-	// 10. dtql_pages.go: line 328: prepareSnapshotDir with non-snapshot directory entry
+	// 10. tugql_pages.go: line 328: prepareSnapshotDir with non-snapshot directory entry
 	readSnapshotDir = func(name string) ([]os.DirEntry, error) {
 		return []os.DirEntry{&fakeDirEntry{name: "not-snapshot.txt"}}, nil
 	}
 	_, _ = prepareSnapshotDir()
 	readSnapshotDir = oldReadDir
 
-	// 11. dtql_pages.go: lines 446-450: snap.path missing
+	// 11. tugql_pages.go: lines 446-450: snap.path missing
 	dbRet, _ := retentionFixture(t, "sqlite", "")
 	srv.dbs[dbRet.ID()] = dbRet
 	snapID := base64.RawURLEncoding.EncodeToString([]byte("01234567890123456789012345678901"))
@@ -440,7 +440,7 @@ func TestDTQLAndPagesCoverageBatch9(t *testing.T) {
 		t.Fatalf("expected 410 on missing snapshot file, got %d", rec446.Code)
 	}
 
-	// 12. dtql_pages.go: lines 452-457: seekSnapshotFile fails
+	// 12. tugql_pages.go: lines 452-457: seekSnapshotFile fails
 	tmpDir := t.TempDir()
 	snapRealFile := filepath.Join(tmpDir, "snap.jsonl")
 	_ = os.WriteFile(snapRealFile, []byte(`{"key":"1"}`+"\n"), 0o644)
@@ -463,7 +463,7 @@ func TestDTQLAndPagesCoverageBatch9(t *testing.T) {
 	}
 	seekSnapshotFile = oldSeek
 
-	// 13. dtql_pages.go: lines 467-472: truncated file in serveSnapshotPage
+	// 13. tugql_pages.go: lines 467-472: truncated file in serveSnapshotPage
 	snapSeek.bytes = 1000 // claims 1000 bytes, but file has only 15
 	rec467 := httptest.NewRecorder()
 	tokSeek := srv.pageToken(snapID, 14, dbRet.ID(), [32]byte{}, [32]byte{}, 10)
@@ -472,7 +472,7 @@ func TestDTQLAndPagesCoverageBatch9(t *testing.T) {
 		t.Fatalf("expected 410 on damaged snapshot file, got %d", rec467.Code)
 	}
 
-	// 14. dtql_pages.go: line 475: multi-row file where second row exceeds maxPageBytes
+	// 14. tugql_pages.go: line 475: multi-row file where second row exceeds maxPageBytes
 	twoRowsFile := filepath.Join(tmpDir, "two_rows.jsonl")
 	hugeLine := strings.Repeat("B", maxPageBytes+10)
 	_ = os.WriteFile(twoRowsFile, []byte(`{"k":"1"}`+"\n"+hugeLine+"\n"), 0o644)
@@ -594,16 +594,16 @@ func TestRecordsAndRelationalCoverageBatch9(t *testing.T) {
 	srv.executeQuery(rec415, req415, dbEmpty, core.Query{Collection: "users"})
 	finishProviderCapture = oldFinishProv
 
-	// 5. dtql_relational.go: line 185: serverCaptureRights error
+	// 5. tugql_relational.go: line 185: serverCaptureRights error
 	serverCaptureRights = func(s *Server, dbs map[string]*core.Database, targets []relationalTarget) (rightsCapture, error) {
 		return rightsCapture{}, errors.New("relational capture rights error")
 	}
 	rec185 := httptest.NewRecorder()
-	req185 := httptest.NewRequest(http.MethodPost, "/v1/dtql", strings.NewReader(`{"from":{"name":"users"}}`))
-	srv.serveRelationalDTQL(rec185, req185, db, dal.From(dal.NewRootCollectionRef("users", "")).NewQuery().SelectColumns(), core.Profile{Kind: core.ProfileRelational, Sources: []core.ProfileSource{{Collection: "users"}}})
+	req185 := httptest.NewRequest(http.MethodPost, "/v1/tugql", strings.NewReader(`{"from":{"name":"users"}}`))
+	srv.serveRelationalTugQL(rec185, req185, db, dal.From(dal.NewRootCollectionRef("users", "")).NewQuery().SelectColumns(), core.Profile{Kind: core.ProfileRelational, Sources: []core.ProfileSource{{Collection: "users"}}})
 	serverCaptureRights = oldCapture
 
-	// 6. dtql_relational.go: lines 270-271: finishRelationalStream error when stream.started == true
+	// 6. tugql_relational.go: lines 270-271: finishRelationalStream error when stream.started == true
 	srv.joinStreamExecute = func(_ context.Context, _ dal.StructuredQuery, _ joinexec.Profile, _ string, _ joinexec.Registry, _ joinexec.Authorize, _ joinexec.Limits, emit func(record.Record) error, _ ...joinexec.Option) (joinexec.StreamResult, error) {
 		_ = emit(record.NewRecordWithData(record.NewKeyWithID("users", "1"), map[string]any{"id": "1"}))
 		return joinexec.StreamResult{Columns: []string{"id"}}, nil
@@ -612,9 +612,9 @@ func TestRecordsAndRelationalCoverageBatch9(t *testing.T) {
 		return errors.New("finish relational stream error")
 	}
 	rec270 := httptest.NewRecorder()
-	req270 := httptest.NewRequest(http.MethodPost, "/v1/dtql", strings.NewReader(`{"from":{"name":"users"}}`))
+	req270 := httptest.NewRequest(http.MethodPost, "/v1/tugql", strings.NewReader(`{"from":{"name":"users"}}`))
 	req270.Header.Set("Accept", queryErrorStreamMediaType)
-	srv.serveRelationalDTQL(rec270, req270, db, dal.From(dal.NewRootCollectionRef("users", "")).NewQuery().SelectColumns(), core.Profile{Kind: core.ProfileRelational, Sources: []core.ProfileSource{{Collection: "users"}}})
+	srv.serveRelationalTugQL(rec270, req270, db, dal.From(dal.NewRootCollectionRef("users", "")).NewQuery().SelectColumns(), core.Profile{Kind: core.ProfileRelational, Sources: []core.ProfileSource{{Collection: "users"}}})
 	finishRelationalStream = oldFinishRel
 }
 
@@ -681,9 +681,9 @@ func TestPostgresWireAndProviderReadsAndHumanCoverageBatch9(t *testing.T) {
 		t.Fatal("expected false for invalid wire group")
 	}
 
-	// validProviderDTQL with q.From().Base() not CollectionRef
+	// validProviderTugQL with q.From().Base() not CollectionRef
 	qNotCol := dal.From(nil).NewQuery().SelectColumns()
-	if validProviderDTQL(db, qNotCol, core.Profile{}, ECBPublicFreeRequestProfile) {
+	if validProviderTugQL(db, qNotCol, core.Profile{}, ECBPublicFreeRequestProfile) {
 		t.Fatal("expected false for table ref source")
 	}
 

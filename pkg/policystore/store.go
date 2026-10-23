@@ -57,7 +57,7 @@ var (
 	rootOpen           = func(root *os.Root, name string) (*os.File, error) { return root.Open(name) }
 	syncDirFn          = syncDir
 	ioReadAll          = io.ReadAll
-	marshalPolicy      = access.MarshalDTQLPolicyJSON
+	marshalPolicy      = access.MarshalTugQLPolicyJSON
 	loadPolicyFiles    = access.LoadPolicyFiles
 )
 
@@ -246,7 +246,7 @@ func (s *Store) loadGeneration(ctx context.Context, revision string) (Snapshot, 
 		if digest(body) != entry.Revision {
 			return Snapshot{}, fmt.Errorf("policy document digest mismatch")
 		}
-		doc, err := access.ParseDTQLPolicy(body)
+		doc, err := access.ParseTugQLPolicy(body)
 		if err != nil {
 			return Snapshot{}, err
 		}
@@ -294,7 +294,7 @@ func (s *Store) checkpoint(phase string) error {
 // Activate publishes one complete set using whole-owner CAS. expected is empty
 // only for first activation. Per-document administration can merge under this
 // same owner lock in a future management API; public ETags are document hashes.
-func (s *Store) Activate(ctx context.Context, expected string, documents []access.DTQLDocument) (Snapshot, error) {
+func (s *Store) Activate(ctx context.Context, expected string, documents []access.TugQLDocument) (Snapshot, error) {
 	if len(documents) == 0 || len(documents) > maxPolicies {
 		return Snapshot{}, fmt.Errorf("generation requires 1..100 policies")
 	}

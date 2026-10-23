@@ -16,7 +16,7 @@ import (
 
 	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/dalgo/dal"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 	"github.com/dal-go/record"
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
@@ -367,13 +367,13 @@ func TestSourceRightsAndAccessCoverageBatch7(t *testing.T) {
 	}
 	recAcc := httptest.NewRecorder()
 	evalBody := `{
-		"apiVersion": "dtql.org/authorization/v1",
+		"apiVersion": "tugql.org/authorization/v1",
 		"mode": "plan",
 		"diagnosticLevel": "references",
 		"operations": [{
 			"id": "op1",
 			"action": "get",
-			"executionClass": "dtql",
+			"executionClass": "tugql",
 			"resource": {"databaseId": "acc_db", "path": "/items/1"}
 		}],
 		"subject": {"kind": "user", "id": "u1", "realm": "default"},
@@ -413,7 +413,7 @@ func (d *oneRowThenErrDB) ExecuteQueryToRecordsReader(context.Context, dal.Query
 }
 
 func TestStreamingStartedErrorBranchesCoverageBatch7(t *testing.T) {
-	// Tests dtql.go (lines 128-179) and records.go (lines 384-426)
+	// Tests tugql.go (lines 128-179) and records.go (lines 384-426)
 	m := &manifest.Manifest{
 		Database: manifest.Database{ID: "stream_db", SchemaMode: schema.ModeStrict, Retention: manifest.RetentionNone},
 		Storage:  manifest.Storage{Engine: "sqlite", Path: ":memory:"},
@@ -437,19 +437,19 @@ func TestStreamingStartedErrorBranchesCoverageBatch7(t *testing.T) {
 			}
 			srv := New("test", map[string]*core.Database{"stream_db": db})
 
-			// 1. handleDTQL
-			recDTQL := httptest.NewRecorder()
-			reqDTQL := httptest.NewRequest(http.MethodPost, "/v1/databases/stream_db/dtql", strings.NewReader("from: {name: users}\n"))
-			reqDTQL.SetPathValue("db", "stream_db")
+			// 1. handleTugQL
+			recTugQL := httptest.NewRecorder()
+			reqTugQL := httptest.NewRequest(http.MethodPost, "/v1/databases/stream_db/tugql", strings.NewReader("from: {name: users}\n"))
+			reqTugQL.SetPathValue("db", "stream_db")
 			if tc.terminal {
-				reqDTQL.Header.Set("Accept", queryErrorStreamMediaType)
+				reqTugQL.Header.Set("Accept", queryErrorStreamMediaType)
 			}
-			srv.handleDTQL(recDTQL, reqDTQL)
-			if recDTQL.Code != tc.wantCode {
-				t.Fatalf("handleDTQL expected %d, got %d", tc.wantCode, recDTQL.Code)
+			srv.handleTugQL(recTugQL, reqTugQL)
+			if recTugQL.Code != tc.wantCode {
+				t.Fatalf("handleTugQL expected %d, got %d", tc.wantCode, recTugQL.Code)
 			}
-			if tc.expectCode != "" && !strings.Contains(recDTQL.Body.String(), tc.expectCode) {
-				t.Fatalf("expected error code %s in body: %s", tc.expectCode, recDTQL.Body.String())
+			if tc.expectCode != "" && !strings.Contains(recTugQL.Body.String(), tc.expectCode) {
+				t.Fatalf("expected error code %s in body: %s", tc.expectCode, recTugQL.Body.String())
 			}
 
 			// 2. executeQuery (records.go)
@@ -474,7 +474,7 @@ func TestStreamingStartedErrorBranchesCoverageBatch7(t *testing.T) {
 		}
 		srv := New("test", map[string]*core.Database{"stream_db": db})
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/v1/databases/stream_db/dtql", strings.NewReader("from: {name: users}\n"))
+		req := httptest.NewRequest(http.MethodPost, "/v1/databases/stream_db/tugql", strings.NewReader("from: {name: users}\n"))
 		req.SetPathValue("db", "stream_db")
 		defer func() {
 			r := recover()
@@ -482,11 +482,11 @@ func TestStreamingStartedErrorBranchesCoverageBatch7(t *testing.T) {
 				t.Fatalf("expected http.ErrAbortHandler panic, got %v", r)
 			}
 		}()
-		srv.handleDTQL(rec, req)
+		srv.handleTugQL(rec, req)
 	})
 }
 
-func TestDTQLPagesCoverageBatch7(t *testing.T) {
+func TestTugQLPagesCoverageBatch7(t *testing.T) {
 	// Not parallel: modifies readSnapshotRand
 	oldRand := readSnapshotRand
 	defer func() { readSnapshotRand = oldRand }()
@@ -506,43 +506,43 @@ func TestDTQLPagesCoverageBatch7(t *testing.T) {
 	// 1. OVDB-Page-Size invalid (0 or 1001) (line 150)
 	for _, size := range []string{"0", "1001", "abc"} {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/v1/databases/pages_db/dtql", strings.NewReader("from: {name: users}\n"))
+		req := httptest.NewRequest(http.MethodPost, "/v1/databases/pages_db/tugql", strings.NewReader("from: {name: users}\n"))
 		req.SetPathValue("db", "pages_db")
 		req.Header.Set("OVDB-Page-Size", size)
-		srv.handleDTQL(rec, req)
+		srv.handleTugQL(rec, req)
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400 for bad page size %s, got %d", size, rec.Code)
 		}
 	}
 
-	// 2. Query with Limit/Offset != 0 in paged DTQL (lines 154-156)
+	// 2. Query with Limit/Offset != 0 in paged TugQL (lines 154-156)
 	recLimit := httptest.NewRecorder()
-	reqLimit := httptest.NewRequest(http.MethodPost, "/v1/databases/pages_db/dtql", strings.NewReader("from: {name: users}\nlimit: 10\n"))
+	reqLimit := httptest.NewRequest(http.MethodPost, "/v1/databases/pages_db/tugql", strings.NewReader("from: {name: users}\nlimit: 10\n"))
 	reqLimit.SetPathValue("db", "pages_db")
 	reqLimit.Header.Set("OVDB-Page-Size", "10")
-	srv.handleDTQL(recLimit, reqLimit)
+	srv.handleTugQL(recLimit, reqLimit)
 	if recLimit.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for paged DTQL with limit, got %d", recLimit.Code)
+		t.Fatalf("expected 400 for paged TugQL with limit, got %d", recLimit.Code)
 	}
 
 	// 3. OVDB-Page-Close invalid value (lines 161-163)
 	recCloseBad := httptest.NewRecorder()
-	reqCloseBad := httptest.NewRequest(http.MethodPost, "/v1/databases/pages_db/dtql", strings.NewReader("from: {name: users}\n"))
+	reqCloseBad := httptest.NewRequest(http.MethodPost, "/v1/databases/pages_db/tugql", strings.NewReader("from: {name: users}\n"))
 	reqCloseBad.SetPathValue("db", "pages_db")
 	reqCloseBad.Header.Set("OVDB-Page-Size", "10")
 	reqCloseBad.Header.Set("OVDB-Page-Close", "maybe")
-	srv.handleDTQL(recCloseBad, reqCloseBad)
+	srv.handleTugQL(recCloseBad, reqCloseBad)
 	if recCloseBad.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for OVDB-Page-Close maybe, got %d", recCloseBad.Code)
 	}
 
 	// 4. OVDB-Page-Close true with missing token (lines 167-169)
 	recCloseNoTok := httptest.NewRecorder()
-	reqCloseNoTok := httptest.NewRequest(http.MethodPost, "/v1/databases/pages_db/dtql", strings.NewReader("from: {name: users}\n"))
+	reqCloseNoTok := httptest.NewRequest(http.MethodPost, "/v1/databases/pages_db/tugql", strings.NewReader("from: {name: users}\n"))
 	reqCloseNoTok.SetPathValue("db", "pages_db")
 	reqCloseNoTok.Header.Set("OVDB-Page-Size", "10")
 	reqCloseNoTok.Header.Set("OVDB-Page-Close", "true")
-	srv.handleDTQL(recCloseNoTok, reqCloseNoTok)
+	srv.handleTugQL(recCloseNoTok, reqCloseNoTok)
 	if recCloseNoTok.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for OVDB-Page-Close without token, got %d", recCloseNoTok.Code)
 	}
@@ -552,10 +552,10 @@ func TestDTQLPagesCoverageBatch7(t *testing.T) {
 	defer srvDirErr.CloseSnapshots()
 	srvDirErr.snapshotDirErr = errors.New("dir error")
 	recDirErr := httptest.NewRecorder()
-	reqDirErr := httptest.NewRequest(http.MethodPost, "/v1/databases/pages_db/dtql", strings.NewReader("from: {name: users}\n"))
+	reqDirErr := httptest.NewRequest(http.MethodPost, "/v1/databases/pages_db/tugql", strings.NewReader("from: {name: users}\n"))
 	reqDirErr.SetPathValue("db", "pages_db")
 	reqDirErr.Header.Set("OVDB-Page-Size", "10")
-	srvDirErr.handleDTQL(recDirErr, reqDirErr)
+	srvDirErr.handleTugQL(recDirErr, reqDirErr)
 	if recDirErr.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500 on snapshotDirErr, got %d", recDirErr.Code)
 	}
@@ -565,10 +565,10 @@ func TestDTQLPagesCoverageBatch7(t *testing.T) {
 		return 0, errors.New("rand id error")
 	}
 	recIdErr := httptest.NewRecorder()
-	reqIdErr := httptest.NewRequest(http.MethodPost, "/v1/databases/pages_db/dtql", strings.NewReader("from: {name: users}\n"))
+	reqIdErr := httptest.NewRequest(http.MethodPost, "/v1/databases/pages_db/tugql", strings.NewReader("from: {name: users}\n"))
 	reqIdErr.SetPathValue("db", "pages_db")
 	reqIdErr.Header.Set("OVDB-Page-Size", "10")
-	srv.handleDTQL(recIdErr, reqIdErr)
+	srv.handleTugQL(recIdErr, reqIdErr)
 	if recIdErr.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500 on newSnapshotIdentity error, got %d", recIdErr.Code)
 	}
@@ -632,7 +632,7 @@ func TestAccessDiscoveryAndInspectCoverageBatch7(t *testing.T) {
 	opExists := api.Operation{
 		ID:             "e1",
 		Action:         "exists",
-		ExecutionClass: az.ExecutionDTQL,
+		ExecutionClass: executionTugQL,
 		Resource: az.Resource{
 			DatabaseID: "disc_db",
 			Table:      "users",

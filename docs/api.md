@@ -11,7 +11,7 @@ small: just enough for DALgo-backed Sneat CRUD validation. Versioned under `/v1`
   non-empty, must not be `.` or `..`, must not contain control characters (U+0000–U+001F,
   U+007F), and must not contain a `.` or `..` component between `/` or `\` separators
   (e.g. an id `%2E%2E%2F%2E%2E%2Fp2`, decoded `../../p2`, is rejected). The same rule applies
-  to batch `key`s, query `collection`/`parent` and DTQL collection names, on every engine.
+  to batch `key`s, query `collection`/`parent` and TugQL collection names, on every engine.
   Capabilities scope the key's (or query parent's) root collection.
 - **Record body**: the record's data as a JSON object.
 - **Errors**: non-2xx responses carry `{"error": {"code": "<machine-code>", "message": "..."}}`.
@@ -31,7 +31,7 @@ small: just enough for DALgo-backed Sneat CRUD validation. Versioned under `/v1`
     writes the mount, whatever the failure; see [A mount whose database cannot be reached](#structured-queries-on-a-postgresql-mount-preview)
   - `500 internal` — unexpected server/engine error (details are logged server-side, not returned)
   - `501 not_supported` — operation not in MVP
-  - `501 query_unsupported` — a structured query (`/query`, `/dtql`) on a storage engine not yet
+  - `501 query_unsupported` — a structured query (`/query`, `/tugql`) on a storage engine not yet
     cleared for queries: a `mysql` mount, and a `postgres` mount that opened while the preview
     switch was off (see [Structured queries on a PostgreSQL mount](#structured-queries-on-a-postgresql-mount-preview)).
     Key reads and writes keep working there
@@ -56,7 +56,7 @@ without a token, but hide the database catalog and profiles:
   with capabilities per the spec taxonomy, optionally collection-scoped:
   `records:read`, `records:write:contacts`, `records:delete`,
   `collections:read`, `schema:read`. Reads/queries need `records:read`;
-  `/dtql` accepts a collection-scoped grant after validating its target. Missing/invalid token → `401 unauthorized`;
+  `/tugql` accepts a collection-scoped grant after validating its target. Missing/invalid token → `401 unauthorized`;
   insufficient capability → `403 forbidden`.
 
 Connect flow (OAuth-style, dev consent page):
@@ -132,7 +132,7 @@ GET /v1/databases
 → 200 {"databases":[{"id":"sneat-dev","engine":"ingitdb","schemaMode":"schemaless"}, ...]}
 
 GET /v1/databases/{db}
-→ 200 {"id":"...","serverId":"...","retention":"none","engine":"...","schemaMode":"...","collections":["..."],"schemas":{"collections":{"...":{"fields":{"...":{"type":"decimal","decimal":{"precision":19,"scale":4,"storage":"text"}}}}}},"capabilities":{"read":true,"query":true,"dtql":true,"dtqlStreaming":true,"dtqlStreamingErrors":true,"write":true,"delete":true,"reset":false,"persistent":true,"joins":true,"aggregation":true}}   // declared collections and optional declared field metadata
+→ 200 {"id":"...","serverId":"...","retention":"none","engine":"...","schemaMode":"...","collections":["..."],"schemas":{"collections":{"...":{"fields":{"...":{"type":"decimal","decimal":{"precision":19,"scale":4,"storage":"text"}}}}}},"capabilities":{"read":true,"query":true,"tugql":true,"tugqlStreaming":true,"tugqlStreamingErrors":true,"write":true,"delete":true,"reset":false,"persistent":true,"joins":true,"aggregation":true}}   // declared collections and optional declared field metadata
 
 GET /v1/databases/{db}/inferred-schema
 → 200 inferred schema catalogue JSON (see pkg/inferred); 404 for strict databases
@@ -184,7 +184,7 @@ DELETE /v1/databases/{db}/records/{key...}
 The server refuses these requests **before the storage adapter is called** (the adapter sees
 nothing of them). They apply to every route that reads a record by key or writes: the six
 `/records/{key...}` methods, `/read?key=`, `/batch`, the protected `PATCH` with
-`Content-Type: application/vnd.dtql.operation+json`, and the authorization endpoints that read
+`Content-Type: application/vnd.tugql.operation+json`, and the authorization endpoints that read
 by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
 
 - **Collections on engines whose adapter builds SQL** (`sqlite`, `postgres`, `mysql`; an engine
@@ -196,7 +196,7 @@ by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
   - The **key routes** (`/records/{key...}` except the protected `PATCH`, `/read?key=`, `/batch`)
     take both spellings. They are the same collection: a grant scoped to either spelling covers a
     key written in either, and the adapter is given the public name.
-  - The **query routes** (`/query`, `/dtql`) and the **by-key authorization routes** (the
+  - The **query routes** (`/query`, `/tugql`) and the **by-key authorization routes** (the
     protected `PATCH`, `/access/evaluate` and `/access/evidence`) take the canonical name only.
     The quoted spelling of a SQLite key names the table whose name carries the quote characters,
     not the declared collection, so on these routes it is answered as a collection the database
@@ -240,13 +240,13 @@ by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
   outside the name rule, and it is checked before the question whether the database declares the
   collection, so a name that long is never a `404`. A field of a write (the top-level keys of
   `data`, the `fieldName` of an update and every segment of its `fieldPath`) is `400 bad_request`
-  before any statement. A field of a query is `400 invalid_dtql` before any statement wherever the
-  query or the document is handed to the mount: `/query`, `/dtql`, and a relational document that
+  before any statement. A field of a query is `400 invalid_tugql` before any statement wherever the
+  query or the document is handed to the mount: `/query`, `/tugql`, and a relational document that
   runs in the database (a source alias over the same length is refused the same way). A document
   that the server evaluates itself (a join across databases, a document with a subquery) hands
   each mount a plain scan, which holds no field name: it reads the field list of each
   PostgreSQL source from the catalog first, and a name that no column has is an unknown field
-  (`400 invalid_dtql`, a message that does not give the limit), or a null inside a scalar subquery
+  (`400 invalid_tugql`, a message that does not give the limit), or a null inside a scalar subquery
   of one source (see "Fields that no source has"). The name is never written into a statement on
   any route. The human page of a collection (`GET /ovdb/dbs/{db}/collections/{collection}`) takes a
   name from the request too: for a name the database does not declare, one of 64 bytes or more
@@ -269,7 +269,7 @@ by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
   subcollection `b` under record `x` of collection `a`, never a top-level collection `b`. The
   key rule alone applies to them, and the capability is checked on the root collection (`a`).
 - **Field names, on every engine.** Every field name a write carries that can become a column
-  must pass the same rule as the names in `/query` and `/dtql`: dot-separated segments of
+  must pass the same rule as the names in `/query` and `/tugql`: dot-separated segments of
   letters, digits, underscore and hyphen (Unicode letters allowed), each optionally starting with
   `$` before a letter (`$id`), at most 256 bytes (63 on a `postgres` mount, see above), no `--`.
   (The adapter of `postgres` and `mysql` accepts less; see above.) That covers the top-level keys of
@@ -341,11 +341,11 @@ by key (`/access/evaluate` inspection and sampling, `/access/evidence`).
   A sample asks the policies about its query before it checks the collections the query names,
   so what the policies answer (a denial, or a result they cannot decide) is the same whichever
   collection the query names. The routes check an operation in one order: its field names, then
-  whether the protected session supports it (an execution class other than `dtql`, or an action
+  whether the protected session supports it (an execution class other than `tugql`, or an action
   or change it cannot carry: `422 authorization_unsupported`), and its table last, so that
   answer is the same for every table.
-  `/query` and `/dtql` answer `403 ACCESS_DENIED` with the generic message (see
-  [DTQL](#dtql)). These routes give the coordinator the collection as written, which is why they
+  `/query` and `/tugql` answer `403 ACCESS_DENIED` with the generic message (see
+  [TugQL](#tugql)). These routes give the coordinator the collection as written, which is why they
   take the canonical name only.
 
 ### Update operation object
@@ -412,18 +412,18 @@ GET /v1/databases/{db}/query?q=<percent-encoded-JSON-query>
 ```
 
 The `q` value is the same JSON object accepted by `POST /query`, URL-encoded
-once. It is limited to 1 MiB, and so is the body of a `POST`, as it is for the DTQL
+once. It is limited to 1 MiB, and so is the body of a `POST`, as it is for the TugQL
 endpoints: the body is read whole up to 1 MiB, and one byte more is `400 bad_request` (`failed to
-read body: ...`), the answer the DTQL endpoints give for a body over their cap. Query results remain
+read body: ...`), the answer the TugQL endpoints give for a body over their cap. Query results remain
 subject to the server's 8 MiB result buffer: a result larger than it is `422 query_budget_exceeded`
 (`error.budget` names the bound, `response_bytes`, with its limit and the route `database`) and
-`error.hint` says to narrow the read with a filter or a smaller limit, and that a DTQL read can also
-select fewer columns and, on a mount without access policies, read the result in pages (the DTQL
-endpoint pages a complete result, see [DTQL](#dtql); `/query` has no column selection, and paging
+`error.hint` says to narrow the read with a filter or a smaller limit, and that a TugQL read can also
+select fewer columns and, on a mount without access policies, read the result in pages (the TugQL
+endpoint pages a complete result, see [TugQL](#tugql); `/query` has no column selection, and paging
 is refused on a mount with access policies). It is a request the client can change, so it is not
 logged as an error. A result of exactly the buffer is answered. For a public, unprotected mounted database, embedders can
 set `database.cache_ttl: 24h` in that database's manifest and run the server
-with `server.WithReadOnly(true)`. Successful GET `/read`, `/query`, and `/dtql`
+with `server.WithReadOnly(true)`. Successful GET `/read`, `/query`, and `/tugql`
 responses then send `Cache-Control: public, max-age=N, s-maxage=N`, where N is
 that database's duration in seconds. The duration must be whole seconds from
 `0s` through `8760h`; absent or `0s` disables public caching. These URL-query forms
@@ -442,13 +442,13 @@ With a `parent`, the read capability is checked on the parent's root collection 
 
 Structured queries run on `sqlite`, `ingitdb` and `firestore` mounts, and on a `postgres` mount
 while the preview switch is on (below). On a `mysql` mount, and on a `postgres` mount that opened
-with the switch off, `/query` and `/dtql` answer `501 query_unsupported` (the message names the
-engine), and the database's metadata advertises `query: false` and `dtql: false`. Key reads and
+with the switch off, `/query` and `/tugql` answer `501 query_unsupported` (the message names the
+engine), and the database's metadata advertises `query: false` and `tugql: false`. Key reads and
 writes are unaffected, subject to [Names the server accepts](#names-the-server-accepts).
 
 #### Structured queries on a PostgreSQL mount (preview)
 
-A `postgres` mount answers `/query`, `/dtql` and the relational documents of `/v1/dtql` only when
+A `postgres` mount answers `/query`, `/tugql` and the relational documents of `/v1/tugql` only when
 the environment of the server holds `OVDB_PREVIEW_POSTGRES_QUERIES=1` (exactly the value `1`). The
 mount reads it once, when it opens: a change of the environment later changes nothing for an open
 mount. Without it the mount answers as it did before the preview existed, with the `501` above. The
@@ -464,7 +464,7 @@ turns it on fails to mount. Records of a query carry the key they were written u
 
 What a client sees. Where the adapter can run a document (filters, order, limit, grouping,
 aggregates and joins of one database) it runs on the server, as one statement, and the answer
-reports `execution.route: "database"`. A document of `/v1/dtql` names the database of every source,
+reports `execution.route: "database"`. A document of `/v1/tugql` names the database of every source,
 and the adapter does not write a join whose sources name one as a single statement, so the server
 hands the mount a join of its own database without those names; nothing else of the document
 changes. A document with a subquery, and a join across databases, runs in the engine of this
@@ -476,22 +476,22 @@ its own (10,000 rows and 16 MiB of the tables together), and the answer still re
 bound is `422 query_budget_exceeded` and names it (its `hint` follows the route: it does not tell
 the caller to filter, because no filter reaches a read of a whole table, and says to join columns
 of the same type, to name the columns or to join a smaller table), and a document it cannot run (a field or an alias
-that is wrong, an alias used twice) is `400 invalid_dtql`. A document the adapter cannot compile
+that is wrong, an alias used twice) is `400 invalid_tugql`. A document the adapter cannot compile
 otherwise is `422 query_unsupported` with the message `the storage engine cannot run this query`.
 
 What the tables of the mount do not hold is the caller's mistake, and it is a refusal, never a
 failure of the server: a `postgres` mount is strict, so the check always applies. A field that no
 column of a declared collection has, and a qualifier that no source of the query has, are `400
-invalid_dtql`, refused before the driver is reached. A strict mount holds the key column `id` and
+invalid_tugql`, refused before the driver is reached. A strict mount holds the key column `id` and
 the fields its manifest declares, each under the name the server folds it to, so a dotted name is no
 column; a source is named by its alias, or by its collection when it has none. A column of the
 select list may carry an alias, and a name that is only that alias is read as the alias in `having`
 and in `orderBy`, outside the argument of an aggregate and in the spelling the column wrote it;
 anywhere else (a column, `where`, `groupBy`, an aggregate's argument) it is a name no column has,
 and is refused like any other. A source alias longer than 63 bytes, the most PostgreSQL holds in a
-name, is `400 invalid_dtql` as well, and the message gives the limit and not the alias. A value that
+name, is `400 invalid_tugql` as well, and the message gives the limit and not the alias. A value that
 the server cannot read as the type of its column (a word compared with an integer field, a number or
-a boolean compared with a text field) is `400 invalid_dtql` too: the server refuses it with a
+a boolean compared with a text field) is `400 invalid_tugql` too: the server refuses it with a
 SQLSTATE of class 22, or 42883, 42804, 42703 or 42P18, which is read from the error by type and
 never from its text. The message of that answer is fixed (`a value or a name of the query does not
 fit the field it is used with`), it repeats nothing of the request or of the server, and nothing is
@@ -509,7 +509,7 @@ TLS handshake, a server that rejects the connection, a connection string that ca
 answer is `503 database_unavailable` with the message `the database of this mount cannot be reached`.
 It is the same status, code and message for every such failure and on every route that reads or
 writes the mount: a key read (`/records`, `/read`, `HEAD` too, which has no body), a write or a
-batch, the metadata of the database, `/query`, `/dtql` and a relational document of `/v1/dtql`. The
+batch, the metadata of the database, `/query`, `/tugql` and a relational document of `/v1/tugql`. The
 answer holds nothing of the connection: not the connection string, the host, the port, the user,
 the password, the database name, the kind of failure or a driver's text. The server logs one `ERROR`
 line, `database unreachable`, with the method, the path, the ID of the mount (`database`) and the
@@ -517,7 +517,7 @@ adapter's own fixed sentence for the failure (`reason`, for example `dalgo2postg
 not be reached`, or with the SQLSTATE code of a server that answered); nothing of the connection
 string is in it either. A request that was canceled, or that ran past its deadline, is not this
 failure: it keeps its own answer (`504 query_timeout` on a relational document). The routes that
-read one collection decide on the request itself: `/dtql` and a paged capture give the read a
+read one collection decide on the request itself: `/tugql` and a paged capture give the read a
 time of their own (10 seconds, 60 for a paged capture), and a connection attempt that does not
 answer and fails when that time ends is the `503` while the request is alive; `/query` runs under
 the request alone. A relational
@@ -536,7 +536,7 @@ database included, finds it by either spelling too, and labels the column as the
 A document with a subquery, a join across databases, and a join that DALgo reads table by table
 (above), run in the engine of this server over the names the database holds, which are lower case
 (the field list is the one the adapter reads from the catalog): such a document writes
-`firstname`, and the declared spelling is `400 invalid_dtql` there (a SQLite mount reads the
+`firstname`, and the declared spelling is `400 invalid_tugql` there (a SQLite mount reads the
 declared spelling and refuses the lower-case one). That holds for a field named in the query of an
 `exists` as it does in a join: the field list of the source of that query is read before anything
 is, and a field it does not carry is refused, never answered with no rows. A scalar subquery of one
@@ -546,20 +546,20 @@ in such a subquery on every engine.
 
 A `postgres` mount takes part in a relational document only when `postgres` is in the join engines
 of the query limits (`joinEngines`), which the operator sets; the discovery document lists it, and
-advertises `query`, `dtql`, `joins` and `aggregation` for such a mount, only while the switch is on.
+advertises `query`, `tugql`, `joins` and `aggregation` for such a mount, only while the switch is on.
 
 Supported `op`: `==`, `<`, `<=`, `>`, `>=`, `in`, `array-contains`, `array-contains-any`.
 Queries translate 1:1 to `dal.StructuredQuery` and execute on the DALgo driver's own
 query evaluator — ovdb never evaluates queries itself. Keys-only queries without explicit
 ordering return IDs sorted (limit applied after sorting), matching document-store drivers.
 
-### DTQL
+### TugQL
 
 ```
-POST /v1/databases/{db}/dtql        body: a DTQL-YAML document (max 1 MiB)
+POST /v1/databases/{db}/tugql        body: a TugQL-YAML document (max 1 MiB)
 → 200 {"records":[{"key":"...","data":{...}}, ...],"complete":true}
 
-GET /v1/databases/{db}/dtql?q=<percent-encoded-DTQL-YAML>&parameters=<percent-encoded-JSON-object>
+GET /v1/databases/{db}/tugql?q=<percent-encoded-TugQL-YAML>&parameters=<percent-encoded-JSON-object>
 → 200 {"records":[{"key":"...","data":{...}}, ...],"complete":true}
 ```
 
@@ -574,7 +574,7 @@ unpaged requests separate.
 For a complete result larger than the ordinary 1000-row/8 MiB response, the
 client can opt into **result snapshot paging** on the same endpoint:
 
-1. Send `OVDB-Page-Size: 1..1000` with a DTQL document whose `limit` and
+1. Send `OVDB-Page-Size: 1..1000` with a TugQL document whose `limit` and
    `offset` are zero or omitted. The first request captures the result through
    one DALgo reader into a private temporary file before returning its first
    page. A client can show “Preparing source snapshot” while this request is
@@ -582,7 +582,7 @@ client can opt into **result snapshot paging** on the same endpoint:
 2. The response is `{"records":[...],"snapshotToken":"...","nextPageToken":"...","snapshotExpiresAt":"..."}`.
    The last page omits `nextPageToken`. Each page is at most 7 MiB, even if it
    contains fewer than `OVDB-Page-Size` rows.
-3. Send the identical DTQL document and page size with
+3. Send the identical TugQL document and page size with
    `OVDB-Page-Token: <nextPageToken>` for each subsequent page. Tokens are
    opaque, retryable until expiry, bound to the database and bearer credential, and are
    never placed in URLs. Continue until `nextPageToken` is absent.
@@ -612,15 +612,15 @@ databases currently return `snapshot_unsupported` because cached results
 cannot safely reflect policy changes between pages. Browser CORS preflight
 allows all three paging headers when the origin is allowed.
 
-DTQL is dalgo's native lossless YAML serialization of `dal.StructuredQuery`
-(`github.com/dal-go/dalgo/dtql`). OpenVaultDB validates the target, checks token
+TugQL is dalgo's native lossless YAML serialization of `dal.StructuredQuery`
+(`github.com/dal-go/dalgo/tugql`). OpenVaultDB validates the target, checks token
 capabilities, and executes through the mounted DALgo policy enforcement layers.
-`POST /v1/databases/{db}/dtql` accepts the raw YAML document or
-`Content-Type: application/json` with `{"query":"<DTQL YAML>","parameters":{"Name":1}}`.
+`POST /v1/databases/{db}/tugql` accepts the raw YAML document or
+`Content-Type: application/json` with `{"query":"<TugQL YAML>","parameters":{"Name":1}}`.
 The JSON form binds named scalar or scalar-array values to `{param: Name}`
 expressions. Bindings are parsed as values, so their text cannot alter the
 query structure. Missing, unused, null, object, and oversized array bindings
-are rejected. Database metadata advertises `queryFormat: dtql-yaml+json`;
+are rejected. Database metadata advertises `queryFormat: tugql-yaml+json`;
 raw YAML remains accepted for existing clients.
 The profile of a document of one plain collection is a single unaliased root collection with
 field projection, filtering, ordering, and pagination. A document that joins, groups, aliases or
@@ -632,7 +632,7 @@ at 8 MiB (a larger result is `422 query_budget_exceeded` with a hint to narrow o
 as for `/query`, and is not logged as an error). Rows are filtered before pagination; column restrictions also apply to
 explicit projections, caller filters, and ordering. Denial returns HTTP 403 with
 `error.code: ACCESS_DENIED` and a generic message. The first slice does not expose
-policy diagnostics or implement the full DTQL blocker response contract.
+policy diagnostics or implement the full TugQL blocker response contract.
 
 A document of one collection can read others in a subquery, so the `records:read` capability is
 checked for every collection a document reads (its root source, every joined or derived source
@@ -640,7 +640,7 @@ and every subquery, wherever it sits), not only for the one it names first: a co
 grant covers a document only when it covers each of them, each named as the document writes it.
 The owner token is not scoped.
 
-On `/query` and `/dtql` a mount with access policies does not say which collections it declares:
+On `/query` and `/tugql` a mount with access policies does not say which collections it declares:
 a query or document of a collection the database does not declare is answered as one of a
 declared collection the policy denies (`403 ACCESS_DENIED`, the same body), and so is one that
 names a spelling that is not the canonical name, such as the quoted spelling of a declared
@@ -659,17 +659,17 @@ from:
 
 ### Query profile and relational documents
 
-DTQL documents are read by two endpoints. Both take the same body (a raw DTQL-YAML document, or
-`Content-Type: application/json` with `{"query": "<DTQL YAML>", "parameters": {...}}`) and the same
+TugQL documents are read by two endpoints. Both take the same body (a raw TugQL-YAML document, or
+`Content-Type: application/json` with `{"query": "<TugQL YAML>", "parameters": {...}}`) and the same
 GET form (`?q=` and `?parameters=`, URI at most 8 KiB, `414` beyond that).
 
 ```
-POST|GET /v1/databases/{db}/dtql     the sources of the document belong to {db}
-POST|GET /v1/dtql                    the document reads one or several databases
+POST|GET /v1/databases/{db}/tugql     the sources of the document belong to {db}
+POST|GET /v1/tugql                    the document reads one or several databases
 ```
 
 A document of one plain collection (no alias, join, grouping, aggregate or subquery, and a root
-that names no database or names `{db}` itself) is answered as described under [DTQL](#dtql), with
+that names no database or names `{db}` itself) is answered as described under [TugQL](#tugql), with
 a key on every record. Any other document the classifier accepts is **relational**: a join, a
 `groupBy`, a `having`, an aggregate, a column alias, a null test (`isNull`, `isNotNull`), a column
 qualified with its `source`, a computed column, a subquery of any kind (a derived source, a
@@ -690,7 +690,7 @@ server does, from the configuration it runs with:
       "apiUrl": "http://localhost:8080/v1/databases/chinook",
       "capabilities": {
         "aggregation": true,
-        "dtql": true,
+        "tugql": true,
         "joins": true,
         "query": true,
         "read": true,
@@ -698,8 +698,8 @@ server does, from the configuration it runs with:
         "delete": true,
         "reset": false,
         "persistent": true,
-        "dtqlStreaming": true,
-        "dtqlStreamingErrors": true
+        "tugqlStreaming": true,
+        "tugqlStreamingErrors": true
       },
       "id": "chinook",
       "url": "http://localhost:8080/ovdb/dbs/chinook"
@@ -708,7 +708,7 @@ server does, from the configuration it runs with:
       "apiUrl": "http://localhost:8080/v1/databases/countries",
       "capabilities": {
         "aggregation": true,
-        "dtql": true,
+        "tugql": true,
         "joins": true,
         "query": true,
         "read": true,
@@ -716,8 +716,8 @@ server does, from the configuration it runs with:
         "delete": true,
         "reset": false,
         "persistent": true,
-        "dtqlStreaming": true,
-        "dtqlStreamingErrors": true
+        "tugqlStreaming": true,
+        "tugqlStreamingErrors": true
       },
       "id": "countries",
       "url": "http://localhost:8080/ovdb/dbs/countries"
@@ -726,7 +726,7 @@ server does, from the configuration it runs with:
       "apiUrl": "http://localhost:8080/v1/databases/crm",
       "capabilities": {
         "aggregation": false,
-        "dtql": true,
+        "tugql": true,
         "joins": false,
         "query": true,
         "read": true,
@@ -734,8 +734,8 @@ server does, from the configuration it runs with:
         "delete": true,
         "reset": false,
         "persistent": true,
-        "dtqlStreaming": true,
-        "dtqlStreamingErrors": true
+        "tugqlStreaming": true,
+        "tugqlStreamingErrors": true
       },
       "id": "crm",
       "url": "http://localhost:8080/ovdb/dbs/crm"
@@ -744,7 +744,7 @@ server does, from the configuration it runs with:
       "apiUrl": "http://localhost:8080/v1/databases/events",
       "capabilities": {
         "aggregation": false,
-        "dtql": true,
+        "tugql": true,
         "joins": false,
         "query": true,
         "read": true,
@@ -752,8 +752,8 @@ server does, from the configuration it runs with:
         "delete": true,
         "reset": false,
         "persistent": true,
-        "dtqlStreaming": true,
-        "dtqlStreamingErrors": true
+        "tugqlStreaming": true,
+        "tugqlStreamingErrors": true
       },
       "id": "events",
       "url": "http://localhost:8080/ovdb/dbs/events"
@@ -762,7 +762,7 @@ server does, from the configuration it runs with:
   "name": "OpenVaultDB",
   "protocol": "openvaultdb/0.1",
   "query": {
-    "endpoint": "/v1/dtql",
+    "endpoint": "/v1/tugql",
     "features": {
       "aggregates": [
         "count",
@@ -789,7 +789,7 @@ server does, from the configuration it runs with:
       "errorField": "error",
       "errorCompletion": false
     },
-    "format": "dtql-yaml+json",
+    "format": "tugql-yaml+json",
     "joinEngines": [
       "sqlite",
       "ingitdb"
@@ -820,7 +820,7 @@ server does, from the configuration it runs with:
   profile, see [Launch limits](#launch-limits)); `crossDatabase` is true (one document may read
   several mounted databases); `externalSources`, `windowFunctions` and `protectedDatabases` are
   false (see [Launch limits](#launch-limits)); `fieldNames` is `plain`.
-- `streaming`: DTQL and structured `/query` responses send rows as the DALgo reader produces
+- `streaming`: TugQL and structured `/query` responses send rows as the DALgo reader produces
   them. Every successful response ends with `"complete": true`; clients should accept only a
   fully decoded object with that field.
 - Late stream errors normally abort the JSON response, which leaves it invalid rather than
@@ -832,7 +832,7 @@ server does, from the configuration it runs with:
 - `limits`: what one request may ask for, each value the one the server enforces. `timeoutMs`,
   `maxSourceRows` and `maxSourceBytes` are the server's configuration (`QueryLimits`);
   `maxResultRows` and `maxResultBytes` bound the answer. `maxRequestBytes` is the most bytes of the
-  body of a `POST` to `/query` or to a DTQL endpoint (1 MiB; a body over it is `400 bad_request`). `maxSources` is the most collection reads
+  body of a `POST` to `/query` or to a TugQL endpoint (1 MiB; a body over it is `400 bad_request`). `maxSources` is the most collection reads
   one document makes, `maxSubqueryDepth` the most levels of subquery below the outermost query, and
   `maxLimit` and `maxOffset` the largest `limit` and `offset` of the outermost query. The
   remaining three bound the in-memory route: `maxInMemoryJoinRows` and `maxInMemoryJoinBytes` the most rows
@@ -853,16 +853,16 @@ source read or snapshot admission. Native databases with the legacy default poli
 
 Each database in the list (listed when auth is off) and the metadata of a database
 (`GET /v1/databases/{db}`, the way to read it when auth is on) carry two booleans, `joins` and
-`aggregation`, in the `capabilities` map beside `read`, `query`, `dtql`, `write` and `delete`. They are true
+`aggregation`, in the `capabilities` map beside `read`, `query`, `tugql`, `write` and `delete`. They are true
 when a relational document that names the database is not refused for the database itself: its
 engine is in `joinEngines`, it has no access policies and it is not a GitHub-backed inGitDB
-mount. `dtqlStreaming` and `dtqlStreamingErrors` advertise streamed query responses and the
+mount. `tugqlStreaming` and `tugqlStreamingErrors` advertise streamed query responses and the
 opt-in error-footer protocol. The same map states four more
 flags. `read` is true when keyed record reads (`Get`, `Exists`) are served. A read-only mount, a
-native PostgreSQL or HTTP source, refuses them, so it reports `read: false`. `query` and `dtql` are
+native PostgreSQL or HTTP source, refuses them, so it reports `read: false`. `query` and `tugql` are
 the query surface and do not depend on `read`: a read-only mount that can be queried reports
-`dtql: true` while `read` stays `false`. Clients browse or search such a database through `query` and
-`dtql`, and must not gate browsing on `read`. `write` and `delete` carry one value: they are false
+`tugql: true` while `read` stays `false`. Clients browse or search such a database through `query` and
+`tugql`, and must not gate browsing on `read`. `write` and `delete` carry one value: they are false
 when the server runs with `--read-only` or the mount is read-only. `reset` is `false` for a
 server-hosted database, and `persistent` is `true`, as the data outlives the process. The value comes from the check the
 relational handler applies to the request, so a client that reads `joins: true` is not refused by
@@ -878,7 +878,7 @@ Tags do not grant access or select a storage engine.
 {
   "capabilities": {
     "aggregation": true,
-    "dtql": true,
+    "tugql": true,
     "joins": true,
     "query": true,
     "read": true,
@@ -886,19 +886,20 @@ Tags do not grant access or select a storage engine.
     "delete": true,
     "reset": false,
     "persistent": true,
-    "dtqlStreaming": true,
-    "dtqlStreamingErrors": true
+    "tugqlStreaming": true,
+    "tugqlStreamingErrors": true
   },
   "collections": [
     "Customer",
     "Invoice"
   ],
   "endpoints": {
+    "tugql": "http://localhost:8080/v1/databases/chinook/tugql",
     "dtql": "http://localhost:8080/v1/databases/chinook/dtql"
   },
   "engine": "sqlite",
   "id": "chinook",
-  "queryFormat": "dtql-yaml+json",
+  "queryFormat": "tugql-yaml+json",
   "schemaMode": "strict",
   "serverId": "",
   "schemas": {
@@ -941,11 +942,11 @@ document: a relational document that names it is refused with the same code.
 
 #### Requests and answers
 
-On `/v1/databases/{db}/dtql` a source that names no database belongs to `{db}`, and a source that
-names another database is `400 invalid_dtql` whose message points to `/v1/dtql`. On `/v1/dtql`
-every source names its database, and one that does not is `400 invalid_dtql`.
+On `/v1/databases/{db}/tugql` a source that names no database belongs to `{db}`, and a source that
+names another database is `400 invalid_tugql` whose message points to `/v1/tugql`. On `/v1/tugql`
+every source names its database, and one that does not is `400 invalid_tugql`.
 
-<!-- doc-example method=POST path=/v1/databases/chinook/dtql status=200 -->
+<!-- doc-example method=POST path=/v1/databases/chinook/tugql status=200 -->
 ```yaml
 from:
   name: Invoice
@@ -1044,7 +1045,7 @@ query_budget_exceeded`), never cut short. The paging headers of the snapshot pro
 
 A grouping and an aggregate:
 
-<!-- doc-example method=POST path=/v1/databases/chinook/dtql status=200 -->
+<!-- doc-example method=POST path=/v1/databases/chinook/tugql status=200 -->
 ```yaml
 from:
   name: Invoice
@@ -1109,7 +1110,7 @@ columns:
 
 A left join keeps the rows of its left side that have no match:
 
-<!-- doc-example method=POST path=/v1/databases/chinook/dtql status=200 -->
+<!-- doc-example method=POST path=/v1/databases/chinook/tugql status=200 -->
 ```yaml
 from:
   name: Customer
@@ -1175,7 +1176,7 @@ columns:
 A subquery. The root of this document names the database of the endpoint it is posted to, which
 is read as if it named none (see [Launch rulings](#launch-rulings)):
 
-<!-- doc-example method=POST path=/v1/databases/chinook/dtql status=200 -->
+<!-- doc-example method=POST path=/v1/databases/chinook/tugql status=200 -->
 ```yaml
 from:
   database: chinook
@@ -1253,7 +1254,7 @@ A derived source on the edge of a join is read again for every row on its left, 
 counts against the source budget (`maxSourceRows`, `maxSourceBytes`). In this document five
 invoices meet a derived source over three customers, so the customers are read fifteen times:
 
-<!-- doc-example method=POST path=/v1/databases/chinook/dtql status=200 -->
+<!-- doc-example method=POST path=/v1/databases/chinook/tugql status=200 -->
 ```yaml
 from:
   name: Invoice
@@ -1338,9 +1339,9 @@ columns:
 
 A correlated subquery is likewise evaluated for every row of the outer query, and its reads count against the same budget.
 
-A document that reads several databases goes to `/v1/dtql`, with every source naming its database:
+A document that reads several databases goes to `/v1/tugql`, with every source naming its database:
 
-<!-- doc-example method=POST path=/v1/dtql status=200 -->
+<!-- doc-example method=POST path=/v1/tugql status=200 -->
 ```yaml
 from:
   database: chinook
@@ -1418,13 +1419,13 @@ joins the sources of the mounted databases.
 that database. A document read in memory reads each source on its own, so the sources need not
 reflect the same moment: a write that lands between two reads can show in one source and not in
 the other. There is no transaction across databases, and a source's own external writes during its
-one read are not excluded (the same statement the [snapshot paging](#dtql) contract makes).
+one read are not excluded (the same statement the [snapshot paging](#tugql) contract makes).
 
 #### Fields, ordering and aliases
 
 A document that runs in memory reads each source through the mount of its database, and what a
 name means there depends on what the mount can say about the fields of its collections. A
-document that a rule below refuses is answered `400 invalid_dtql` before any source is read; it is
+document that a rule below refuses is answered `400 invalid_tugql` before any source is read; it is
 never answered with the value of another field, or in an order that ignores part of the
 document.
 
@@ -1457,10 +1458,10 @@ document engine, and this server does not change it.
 
 **A field without its `source`.** A document that reads several sources and names a field without
 its source is accepted only when every source of that query has a known field list and exactly
-one of them carries the field. Two carrying it is a `400 invalid_dtql` naming the field; a source
-with no list is a `400 invalid_dtql` that says to qualify the field with its source. A join
+one of them carries the field. Two carrying it is a `400 invalid_tugql` naming the field; a source
+with no list is a `400 invalid_tugql` that says to qualify the field with its source. A join
 document with no subquery or derived source never reaches the engine with an unqualified field:
-the DTQL parser refuses it first (`unqualified JOIN field requires schema metadata`, which does
+the TugQL parser refuses it first (`unqualified JOIN field requires schema metadata`, which does
 not name the field).
 
 In a query that aggregates (it has a `groupBy`, a `having` or an aggregate), a bare name in
@@ -1473,7 +1474,7 @@ refused as unavailable). In the columns, an unqualified
 field that an earlier column carries as its alias (or selects under that name) would be read as
 that column and not as the field, so it is refused too: rename the alias, or qualify the field.
 
-<!-- doc-example method=POST path=/v1/dtql status=400 -->
+<!-- doc-example method=POST path=/v1/tugql status=400 -->
 ```yaml
 from:
   database: chinook
@@ -1497,7 +1498,7 @@ columns:
 ```json
 {
   "error": {
-    "code": "invalid_dtql",
+    "code": "invalid_tugql",
     "message": "scope at groupBy[0]: cannot read the unqualified field region from a source other than the first in a query that aggregates: qualify the field with its source"
   }
 }
@@ -1506,15 +1507,15 @@ columns:
 **Wildcards.** A wildcard of a source in a document that DALgo evaluates stands for the columns of
 its table (SQLite, `id` included) or the declared fields (strict inGitDB), minus the names it
 excludes; on the database route the SQL database expands it as before. A wildcard of a source that
-supplies no field list is `400 invalid_dtql` (`join_plan at ...: wildcard expansion requires
+supplies no field list is `400 invalid_tugql` (`join_plan at ...: wildcard expansion requires
 ordered schema metadata`), inside a derived source too, where the path names the derived source
 (`from.query.columns[0]`). (A wildcard in a document of one source that is handed whole to an
 inGitDB mount is the `500` above.)
 
 **Fields that no source has.** A field of the query itself that no source of a document that DALgo
-evaluates has is a `400 invalid_dtql` (`... is unavailable`, or `unknown field` in `orderBy`), as on
+evaluates has is a `400 invalid_tugql` (`... is unavailable`, or `unknown field` in `orderBy`), as on
 the database route. A field that no source has, in the `where`, `groupBy`, `having` or `orderBy` of an
-`exists` test whose one source supplies a field list, is a `400 invalid_dtql` (`unknown field ...`,
+`exists` test whose one source supplies a field list, is a `400 invalid_tugql` (`unknown field ...`,
 ending `the source does not carry it`, or, for an unqualified field, `no source of the query carries
 it`); a column the `exists` query selects is not looked at, as it does not
 change whether it finds a row. Inside a scalar
@@ -1536,7 +1537,7 @@ the source's own field wins over a column that is called so.
 - The alias of a column that is an expression (arithmetic, a function) is refused when the document
   is not run whole by a SQL database: order by the fields of the expression.
 - A name that is neither an alias nor a field of any source that supplies a field list is a
-  `400 invalid_dtql` (`unknown field`) before anything is read, for a document of one source as for
+  `400 invalid_tugql` (`unknown field`) before anything is read, for a document of one source as for
   several, and whether or not the document is handed whole to a mount. So is a field that names its
   source (`{field: nope, source: c}`) when the list of that source does not carry it. A source that
   supplies no field list (see above) cannot be checked, and the name is left to its mount.
@@ -1545,11 +1546,11 @@ the source's own field wins over a column that is called so.
   field list, as in SQLite when the table has a column of that name, and is unknown where it does not.
   Where the one source supplies no field list nothing can say whether the name is the field or the
   alias (SQLite reads the alias when its table has no such column), and the name is a
-  `400 invalid_dtql` that says to qualify the field with its source. A name that no column carries
+  `400 invalid_tugql` that says to qualify the field with its source. A name that no column carries
   is left to the mount, as above, and so is the name of a column that selects the field of the same
   name (`{field: x, as: x}`), which is that field read either way.
 - A `source` that names no source of the query, in `orderBy` and in every other clause, is a
-  `400 invalid_dtql` (`query_scope at orderBy[0].source: unknown alias "zzz"`) on both endpoints, for
+  `400 invalid_tugql` (`query_scope at orderBy[0].source: unknown alias "zzz"`) on both endpoints, for
   a document that is handed whole to a mount too. The source of a query around a subquery is one the
   subquery may name. The qualifier of a source that has an alias is the alias, and the name of its
   collection only when it has none. (A document of one source that a SQLite database runs whole, the
@@ -1560,7 +1561,7 @@ the source's own field wins over a column that is called so.
   endpoint, a join, a subquery or derived source, a null test, a scan clause, and an ordering
   expression beside it) DALgo does not know the key: over a source with a field list it would refuse
   it, and over one with none it would read it as a null and sort by nothing. An `orderBy` of `$id`,
-  or of the alias of a column that selects `$id`, in such a document is a `400 invalid_dtql` that
+  or of the alias of a column that selects `$id`, in such a document is a `400 invalid_tugql` that
   says to order by a field.
 - An ordering expression that is not a plain field (arithmetic) is applied on every route: a
   document of one source that would be handed whole to a mount is evaluated by DALgo instead, so
@@ -1569,7 +1570,7 @@ the source's own field wins over a column that is called so.
   policies is not run by a relational document at all, so the endpoints answer its documents
   `422 authorization_unsupported` before any of this applies.)
 
-<!-- doc-example method=POST path=/v1/dtql status=200 -->
+<!-- doc-example method=POST path=/v1/tugql status=200 -->
 ```yaml
 from:
   database: chinook
@@ -1641,7 +1642,7 @@ columns:
 
 The same document ordered by the alias of an expression, or by a name nobody carries, is refused:
 
-<!-- doc-example method=POST path=/v1/dtql status=400 -->
+<!-- doc-example method=POST path=/v1/tugql status=400 -->
 ```yaml
 from: {database: chinook, name: Invoice, alias: i}
 where: {exists: {query: {from: {database: countries, name: Country, alias: k}}}}
@@ -1653,13 +1654,13 @@ columns:
 ```json
 {
   "error": {
-    "code": "invalid_dtql",
+    "code": "invalid_tugql",
     "message": "scope at orderBy[0]: cannot order by doubled, the alias of a column that is not a field, when the document is not run whole by a SQL database: order by the fields of its expression"
   }
 }
 ```
 
-<!-- doc-example method=POST path=/v1/dtql status=400 -->
+<!-- doc-example method=POST path=/v1/tugql status=400 -->
 ```yaml
 from:
   database: chinook
@@ -1682,7 +1683,7 @@ columns:
 ```json
 {
   "error": {
-    "code": "invalid_dtql",
+    "code": "invalid_tugql",
     "message": "shape at orderBy[0]: unknown field \"nope\" in ORDER BY: no source of the query carries it, and no column has it as its alias"
   }
 }
@@ -1696,14 +1697,14 @@ Three rulings shape what a relational document does at launch.
    authorization_unsupported` before any name is looked up, whichever collections it names. Joins,
    grouping, aliases and subqueries over such a database come after launch; a document of one plain
    collection is still read through the policy.
-2. On `/v1/databases/{db}/dtql` a document whose only relational feature is a subquery is
+2. On `/v1/databases/{db}/tugql` a document whose only relational feature is a subquery is
    relational: it is answered with `columns` and `execution` and with no record keys.
-3. On `/v1/databases/{db}/dtql` a document of one source whose root names `{db}` itself is read as
+3. On `/v1/databases/{db}/tugql` a document of one source whose root names `{db}` itself is read as
    if it named none. The ruling holds for a `database` key written plainly: a key written through a
    YAML alias or a merge key is not recognised, and the document is answered as a relational
    one.
 
-<!-- doc-example method=POST path=/v1/databases/crm/dtql status=422 -->
+<!-- doc-example method=POST path=/v1/databases/crm/tugql status=422 -->
 ```yaml
 from:
   name: orders
@@ -1727,7 +1728,7 @@ columns:
 #### Launch limits
 
 - A relational document holds the strict field-name rule on every engine: a field name with a
-  space, or any name outside the plain-name rule, is `400 invalid_dtql` on a relational document
+  space, or any name outside the plain-name rule, is `400 invalid_tugql` on a relational document
   even on SQLite, where a document of one plain collection accepts it.
 - A relational answer is not passed through the schema coercion of the single-collection path: a
   declared boolean of a SQLite mount is `0` or `1` in a relational row and `true` or `false` in a
@@ -1735,7 +1736,7 @@ columns:
 - The profile has inner and left joins only, at most 8 sources and a subquery nesting of at most 4;
   `limit` is at most 1000 and `offset` at most 10000 on the outermost query (`maxSources`,
   `maxSubqueryDepth`, `maxLimit` and `maxOffset` of `limits`). Other shapes are
-  `400 invalid_dtql` with the reason of the classifier.
+  `400 invalid_tugql` with the reason of the classifier.
 - The server joins only the databases mounted on it: `externalSources` is false. Window functions
   are not supported. A condition that the storage engine cannot run is `422 query_unsupported`.
 - Only the engines in `joinEngines` take part. A GitHub-backed inGitDB mount never does.
@@ -1744,7 +1745,7 @@ columns:
   that is not ASCII are read as a function of the profile and answered: `ſum` (U+017F) is `sum`
   and `mın` (U+0131) is `min`. Any other name with a byte of 0x80 or above is refused. `first` and
   `last` are not in the profile: a document that uses either, in any position, is
-  `400 invalid_dtql` before anything is read. Where the classifier refuses it the message names the
+  `400 invalid_tugql` before anything is read. Where the classifier refuses it the message names the
   function; where DALgo's parser refuses it first (`first` in `groupBy`, or inside another
   aggregate) the message is DALgo's. An aggregate function that DALgo does not know is refused in
   every position with one built message that lists the functions of the profile and repeats none of
@@ -1758,7 +1759,7 @@ columns:
 | Status | `error.code` | Meaning |
 | --- | --- | --- |
 | `400` | `invalid_key` | A collection name of a source outside the name rule (a control character, a relative path component such as `..`). |
-| `400` | `invalid_dtql` | Not a DTQL document, or outside the profile; a source without a database on `/v1/dtql`; a source of another database on the per-database endpoint; a field name outside the strict rule; a column the database does not have; a shape DALgo cannot join. The message holds the reason, clipped. |
+| `400` | `invalid_tugql` | Not a TugQL document, or outside the profile; a source without a database on `/v1/tugql`; a source of another database on the per-database endpoint; a field name outside the strict rule; a column the database does not have; a shape DALgo cannot join. The message holds the reason, clipped. |
 | `400` / `414` | `bad_request` | A malformed body or GET form; a GET URI over 8 KiB is `414`. |
 | `403` | `forbidden` | With auth on, the token does not grant `records:read` on a collection of a database the document names. |
 | `404` | `not_found` | A database that is not mounted, or a collection of a database on an engine that builds SQL that the database does not declare. |
@@ -1773,7 +1774,7 @@ columns:
 | `503` | `database_unavailable` | The database server of a `postgres` mount cannot be reached; see [A mount whose database cannot be reached](#structured-queries-on-a-postgresql-mount-preview). |
 | `500` | `internal` | A fault of the server, logged and not described. |
 
-<!-- doc-example method=POST path=/v1/dtql status=400 -->
+<!-- doc-example method=POST path=/v1/tugql status=400 -->
 ```yaml
 from:
   name: Customer
@@ -1781,13 +1782,13 @@ from:
 ```json
 {
   "error": {
-    "code": "invalid_dtql",
+    "code": "invalid_tugql",
     "message": "this endpoint reads several databases, so every source names its database: collection \"Customer\" does not"
   }
 }
 ```
 
-<!-- doc-example method=POST path=/v1/dtql status=400 -->
+<!-- doc-example method=POST path=/v1/tugql status=400 -->
 ```yaml
 from:
   database: chinook
@@ -1797,12 +1798,12 @@ from:
 {
   "error": {
     "code": "invalid_key",
-    "message": "invalid or unsupported DTQL query: relational profile: collection-name at from: invalid key: segment \"..\" contains a relative path component"
+    "message": "invalid or unsupported TugQL query: relational profile: collection-name at from: invalid key: segment \"..\" contains a relative path component"
   }
 }
 ```
 
-<!-- doc-example method=POST path=/v1/dtql status=422 -->
+<!-- doc-example method=POST path=/v1/tugql status=422 -->
 ```yaml
 from:
   database: events
@@ -1817,7 +1818,7 @@ from:
 }
 ```
 
-<!-- doc-example method=POST path=/v1/dtql status=422 headers=OVDB-Page-Size=10 -->
+<!-- doc-example method=POST path=/v1/tugql status=422 headers=OVDB-Page-Size=10 -->
 ```yaml
 from:
   database: chinook
@@ -1987,7 +1988,7 @@ const resp = await fetch('http://localhost:6832/v1/databases/mydb/records/notes/
 ## Explicitly not in MVP
 
 Auth (server binds 127.0.0.1 by default), cursors/offset, projections, group-by
-on `/query` (grouping and joins are in the relational DTQL documents above),
+on `/query` (grouping and joins are in the relational TugQL documents above),
 collection-group queries, update preconditions, server-side transactions with
 read-your-writes across HTTP round-trips (driver buffers writes client-side instead),
 optimistic concurrency.

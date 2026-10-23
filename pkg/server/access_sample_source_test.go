@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/dal-go/dalgo/access"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
@@ -40,11 +40,11 @@ func TestSampleIsAnsweredAlikeWhileThePolicySourceIsUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc, err := access.ParseDTQLPolicy([]byte(aclPolicy("upper", "country", "IE")))
+	doc, err := access.ParseTugQLPolicy([]byte(aclPolicy("upper", "country", "IE")))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = store.Activate(ctx, "", []access.DTQLDocument{doc}); err != nil {
+	if _, err = store.Activate(ctx, "", []access.TugQLDocument{doc}); err != nil {
 		t.Fatal(err)
 	}
 	aclWriteFile(t, path, base+"acl: {enabled: true}\nacl_store: {path: owner}\n")
@@ -65,7 +65,7 @@ func TestSampleIsAnsweredAlikeWhileThePolicySourceIsUnavailable(t *testing.T) {
 	sample := func(table string) hiddenSourceAnswer {
 		op := writeGuardProtectedOp("update", "/"+table, writeGuardProtectedSet("name"))
 		data, _ := json.Marshal(api.Request{APIVersion: az.APIVersion, Mode: az.ModeSample, DiagnosticLevel: "ordinary", Operations: []api.Operation{op},
-			Sample: &api.Sample{Limit: 1, Query: api.Query{Format: "dtql-yaml", Text: "from: {name: '" + table + "'}\n"}}})
+			Sample: &api.Sample{Limit: 1, Query: api.Query{Format: "tugql-yaml", Text: "from: {name: '" + table + "'}\n"}}})
 		return hiddenSourceAsk(t, ts, ownerToken, "POST", "/v1/databases/crm/access/evaluate", string(data), map[string]string{"Content-Type": "application/json"})
 	}
 	// The policy source is readable: an undeclared table is answered as a declared

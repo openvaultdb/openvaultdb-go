@@ -207,7 +207,7 @@ func TestNativePostgresProjectionTypesFollowAliasesJoinsAndSubqueries(t *testing
 
 func TestNativePostgresProjectionTypesFollowParsedDerivedDocuments(t *testing.T) {
 	db := nativePostgresProjectionTestDatabase(t)
-	query, err := core.DeserializeDTQL([]byte(`from:
+	query, err := core.DeserializeTugQL([]byte(`from:
   query:
     as: d
     from: {schema: 'sales data', name: 'Order Details', alias: o}
@@ -246,7 +246,7 @@ columns: [{field: order_id, source: d, as: order_key}, {field: created, source: 
 		Execution: joinexec.Execution{Route: joinexec.RouteInMemory, Sources: []joinexec.ExecutionSource{{Database: "samples", Collection: id}}},
 	}}
 	_, host := relFakeServer(t, fake, []*core.Database{db})
-	response := relFakeDo(t, host, http.MethodPost, "/v1/databases/samples/dtql", "", document, nil)
+	response := relFakeDo(t, host, http.MethodPost, "/v1/databases/samples/tugql", "", document, nil)
 	if response.status != http.StatusOK {
 		t.Fatalf("derived relational response: %d %s", response.status, response.raw)
 	}

@@ -58,7 +58,7 @@ func TestJSONRowStreamDoesNotAppendErrorFooterAfterTransportFailure(t *testing.T
 			t.Fatalf("stream tried to repair a failed write: writes=%d body=%q", writer.writes, writer.body.String())
 		}
 	}()
-	service.finishStreamErrorOrAbort(writer, httptest.NewRequest(http.MethodPost, "/v1/dtql", nil), stream, func(w http.ResponseWriter) {
+	service.finishStreamErrorOrAbort(writer, httptest.NewRequest(http.MethodPost, "/v1/tugql", nil), stream, func(w http.ResponseWriter) {
 		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
 	})
 }

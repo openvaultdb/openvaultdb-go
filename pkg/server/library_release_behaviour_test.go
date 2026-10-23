@@ -10,7 +10,7 @@ import (
 // TestAScanOrderOverAHiddenFieldIsRefusedOnALayeredACLMount: a field list of a
 // policy holds the fields of a scan order as it holds those of a join condition
 // (dalgo v0.89.6). On this server a scan bound never reaches the library: the
-// relational profile refuses it on every mount, with the 400 invalid_dtql a
+// relational profile refuses it on every mount, with the 400 invalid_tugql a
 // mount without policies gives, so a caller learns nothing from the policy. The
 // hidden field of a join condition is held by the shapes of
 // TestRelationalShapesOverALayeredACLMountAreRefusedWithOneAnswer (the join ON
@@ -26,9 +26,9 @@ func TestAScanOrderOverAHiddenFieldIsRefusedOnALayeredACLMount(t *testing.T) {
 		} {
 			for _, caller := range relIntCallers {
 				t.Run(fmt.Sprintf("%s, %s, %s", protected, shape.name, caller.name), func(t *testing.T) {
-					resp := relHTTPPost(t, base, "/v1/databases/"+protected+"/dtql", caller.token, shape.doc)
-					if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || resp.body["records"] != nil {
-						t.Fatalf("status %d, want a 400 invalid_dtql with no rows: %s", resp.status, resp.raw)
+					resp := relHTTPPost(t, base, "/v1/databases/"+protected+"/tugql", caller.token, shape.doc)
+					if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" || resp.body["records"] != nil {
+						t.Fatalf("status %d, want a 400 invalid_tugql with no rows: %s", resp.status, resp.raw)
 					}
 					for _, leak := range []string{"secret", "hidden", "Customer 0"} {
 						if strings.Contains(resp.raw, leak) {

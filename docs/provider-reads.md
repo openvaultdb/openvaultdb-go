@@ -1,7 +1,7 @@
 # Provider read observations v1
 
 This foundation supplies an **opt-in producer and Go evidence validator**, not
-public ECB activation. Ordinary JSON query and DTQL responses from an admitted
+public ECB activation. Ordinary JSON query and TugQL responses from an admitted
 HTTP instance can include the closed `providerReads` envelope with format
 `ovdb-provider-read/1`. Legacy instances omit it. Opted-in database discovery
 lists that format in `requiredEvidenceFormats`; consumers must advertise support
@@ -51,7 +51,7 @@ retention, or certify the changing source response as immutable publisher data.
 Strict clients freeze a complete independently admitted plan before awaiting
 credentials or network I/O, then send its fresh 128-bit execution ID as exactly
 one `OVDB-Execution-ID` request header containing 32 lowercase hexadecimal
-characters. On profile-enabled structured query and DTQL routes the producer
+characters. On profile-enabled structured query and TugQL routes the producer
 validates this header before collector reservation or upstream I/O and binds its
 value into `execution.id` and the hashed observation envelope. Empty, malformed,
 comma-coalesced or duplicate values return `400 invalid_execution_id` with
@@ -74,14 +74,14 @@ an independently admitted database `ecb`, canonical collection `daily`, resource
 configuration. The frozen profile applies to every mount of that database
 pointer; a request cannot choose a different policy through a mount alias.
 
-This contract permits only ordinary per-database JSON query and DTQL reads with
+This contract permits only ordinary per-database JSON query and TugQL reads with
 an explicit limit of 1..50. Native string fields `time`, `currency`, `rate` may
-be filtered with `==`, `<`, `<=`, `>`, `>=` or `in`; DTQL also permits AND/OR
+be filtered with `==`, `<`, `<=`, `>`, `>=` or `in`; TugQL also permits AND/OR
 groups and unaliased native field projection. The driver retains its transient
 currency locator when projecting. JSON query has no projection wire field.
 Unknown, duplicate or case-variant options, root qualifiers/aliases, renamed or
 computed columns, ordering, offsets (including zero), cursors, scans, joins,
-subqueries, paging, point/batch/mutation routes and global DTQL use are refused
+subqueries, paging, point/batch/mutation routes and global TugQL use are refused
 before provider I/O. Refusals use `provider_request_unsupported` and no-store;
 malformed documents and invalid execution IDs retain their existing 4xx codes.
 An omitted/zero limit is refused instead of fetching an unbounded result and

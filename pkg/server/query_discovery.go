@@ -10,8 +10,8 @@ import (
 // capabilities of a database. Every value is read from the code that enforces it, so a
 // client is never told a database joins and then refused.
 
-// queryFormat is the document format of the DTQL endpoints.
-const queryFormat = "dtql-yaml+json"
+// queryFormat is the document format of the TugQL endpoints.
+const queryFormat = "tugql-yaml+json"
 
 // advertisesJoins reports whether a client may send a relational document that
 // names db: a join, a grouping, an aggregate, a subquery or a source that names its
@@ -29,7 +29,7 @@ func (s *Server) advertisesJoins(db *core.Database) bool {
 func (s *Server) queryProfile() map[string]any {
 	limits, bounds := s.queryLimits, core.RelationalBounds()
 	return map[string]any{
-		"endpoint": crossDatabaseDTQLPath,
+		"endpoint": crossDatabaseTugQLPath,
 		"format":   queryFormat,
 		"features": map[string]any{
 			"streaming":          true,

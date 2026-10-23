@@ -716,7 +716,7 @@ func (r *run) inMemory(ctx context.Context, query dal.StructuredQuery, doc docum
 
 // withDefaultDatabase binds unqualified source references to the single
 // database selected and authorized by preflight. DALgo's federated executor
-// requires a database on every source, while per-database DTQL intentionally
+// requires a database on every source, while per-database TugQL intentionally
 // permits unqualified collection names.
 func withDefaultDatabase(query dal.StructuredQuery, database string) dal.StructuredQuery {
 	return databaseBoundQuery{StructuredQuery: query, from: bindFromDatabase(query.From(), database)}

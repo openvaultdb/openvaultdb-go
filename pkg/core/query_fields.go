@@ -16,7 +16,7 @@ import (
 // is no column of the collection it belongs to. The adapter of such a mount refuses
 // both itself, but as plain errors it has no type for, which the server can only
 // answer as a failure of its own, with a log record: a mistake of the caller that
-// anyone who may read could make at will. Here it is a 400 invalid_dtql whose
+// anyone who may read could make at will. Here it is a 400 invalid_tugql whose
 // sentence repeats a bounded name and nothing the server said.
 //
 // A qualifier names a source by its identity, the alias or else the collection's
@@ -93,14 +93,14 @@ func (d *Database) errCollectionNameTooLong() error {
 
 // errFieldNameTooLong is the refusal of a field name over the limit of the engine, as
 // the kind of request says: ErrInvalidFieldName for a write (HTTP 400 bad_request) and
-// ErrInvalidDTQL for a query (HTTP 400 invalid_dtql). It gives the limit and not the name.
+// ErrInvalidTugQL for a query (HTTP 400 invalid_tugql). It gives the limit and not the name.
 func (d *Database) errFieldNameTooLong(kind error) error {
 	return fmt.Errorf("%w: a field name is longer than %d bytes, the most the database holds in a name", kind, d.nameLimit())
 }
 
 // errSourceAliasTooLong is the refusal of a source alias over maxServerNameBytes. It gives
 // the limit and not the alias, which can be as long as the request allows.
-var errSourceAliasTooLong = fmt.Errorf("%w: a source alias is longer than %d bytes, the most the database holds in a name", ErrInvalidDTQL, maxServerNameBytes)
+var errSourceAliasTooLong = fmt.Errorf("%w: a source alias is longer than %d bytes, the most the database holds in a name", ErrInvalidTugQL, maxServerNameBytes)
 
 // fieldSource is one source a field of a query can be qualified with.
 type fieldSource struct {
@@ -279,7 +279,7 @@ func (w fieldWalk) reading(on bool) fieldWalk {
 }
 
 func errNoSuchSource(qualifier string) error {
-	return fmt.Errorf("%w: no source of the query is named %q", ErrInvalidDTQL, clipName(qualifier))
+	return fmt.Errorf("%w: no source of the query is named %q", ErrInvalidTugQL, clipName(qualifier))
 }
 
 func (w fieldWalk) field(field dal.FieldRef) error {
@@ -287,7 +287,7 @@ func (w fieldWalk) field(field dal.FieldRef) error {
 		return nil
 	}
 	if w.db.nameTooLong(field.Name()) {
-		return w.db.errFieldNameTooLong(ErrInvalidDTQL)
+		return w.db.errFieldNameTooLong(ErrInvalidTugQL)
 	}
 	source := w.single
 	if qualifier := field.Source(); qualifier != "" {
@@ -305,7 +305,7 @@ func (w fieldWalk) field(field dal.FieldRef) error {
 		return nil
 	}
 	if _, ok := source.columns[w.fold(field.Name())]; !ok {
-		return fmt.Errorf("%w: collection %q has no field %q", ErrInvalidDTQL, clipName(source.collection), clipName(field.Name()))
+		return fmt.Errorf("%w: collection %q has no field %q", ErrInvalidTugQL, clipName(source.collection), clipName(field.Name()))
 	}
 	return nil
 }

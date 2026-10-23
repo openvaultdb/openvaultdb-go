@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
@@ -34,7 +34,7 @@ func TestGuardOperationDeclaresTheCanonicalNameOfACollection(t *testing.T) {
 		return db
 	}
 	operation := func(table string) api.Operation {
-		return api.Operation{ID: "op1", Action: "get", ExecutionClass: az.ExecutionDTQL, Resource: az.Resource{DatabaseID: "crm", Table: table, RowID: "1"}}
+		return api.Operation{ID: "op1", Action: "get", ExecutionClass: executionTugQL, Resource: az.Resource{DatabaseID: "crm", Table: table, RowID: "1"}}
 	}
 	for _, c := range []struct {
 		engine, table string

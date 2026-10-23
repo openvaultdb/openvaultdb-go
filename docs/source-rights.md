@@ -84,13 +84,13 @@ when their effective declaration is identical.
   metadata endpoint. Protected-schema discovery keeps its existing refusal.
 - `/read?key=...` and `/records/{key}` include terms for their authorized root
   recordset beside the existing key/data result.
-- Ordinary `/query` and `/dtql` include complete classified source terms and
+- Ordinary `/query` and `/tugql` include complete classified source terms and
   `usedSourceIds`; even an empty filtered scan counts as considered.
-- Relational `/dtql` and `/v1/dtql` freeze every classified input before running,
+- Relational `/tugql` and `/v1/tugql` freeze every classified input before running,
   including derived/subquery sources. Used IDs come from actual executor source
   evidence. An empty root scan can leave a planned subquery unused. An unexpected
   executed identity fails before output. Existing join/policy/engine refusals hold.
-- Snapshot `/dtql` paging retains the initial inventory with its materialized
+- Snapshot `/tugql` paging retains the initial inventory with its materialized
   spool. Every page/retry returns the same rights and used IDs. Relational
   snapshots remain unsupported, as before.
 - Existing human server/database/collection pages show effective scope, safe

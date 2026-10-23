@@ -3,7 +3,7 @@
 // can prove in its own tests that every collection of a mount answers.
 //
 // EveryCollection reads the metadata of one database and runs a fixed battery
-// of relational DTQL reads on each collection it lists: a bounded read, an
+// of relational TugQL reads on each collection it lists: a bounded read, an
 // unbounded streamed read, a deterministic order, an order by each field, an
 // equality filter on each scalar field of a sampled row, an offset page, and the
 // refusal of values an integer column cannot hold. It returns a Report; a test
@@ -223,7 +223,7 @@ func (j journey) do(method, path string, body []byte, stream bool) (int, []byte,
 	return response.StatusCode, raw, err
 }
 
-// answer is a decoded DTQL response.
+// answer is a decoded TugQL response.
 type answer struct {
 	Records []struct {
 		Data map[string]json.RawMessage `json:"data"`
@@ -350,7 +350,7 @@ func (j journey) collection(id string, meta collectionMetadata) []Check {
 
 var jsonMarshalJourney = json.Marshal
 
-// query posts a DTQL document, as the JSON body {"query": "<document>"}, to the
+// query posts a TugQL document, as the JSON body {"query": "<document>"}, to the
 // per-database endpoint. message is empty when the answer is a 200 without an
 // error; otherwise it says what came back.
 func (j journey) query(document map[string]any, stream bool) (int, answer, string) {
@@ -363,7 +363,7 @@ func (j journey) query(document map[string]any, stream bool) (int, answer, strin
 	if err != nil {
 		return 0, decoded, err.Error()
 	}
-	status, raw, err := j.do(http.MethodPost, "/v1/databases/"+url.PathEscape(j.database)+"/dtql", body, stream)
+	status, raw, err := j.do(http.MethodPost, "/v1/databases/"+url.PathEscape(j.database)+"/tugql", body, stream)
 	if err != nil {
 		return status, decoded, err.Error()
 	}

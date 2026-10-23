@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"github.com/dal-go/dalgo/access"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 	"github.com/dal-go/record"
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
@@ -73,12 +73,12 @@ func TestProtectedHTTPReadInspectUpdate(t *testing.T) {
 			defer ts.Close()
 			// The browser's initial query has no projection; engine-specific
 			// key-order grants must not become nonexistent SQL data columns.
-			initialStatus, initialBody := request(t, ts, "POST", "/v1/databases/crm/dtql", ownerToken, "from: {name: customers}\nlimit: 20\n")
+			initialStatus, initialBody := request(t, ts, "POST", "/v1/databases/crm/tugql", ownerToken, "from: {name: customers}\nlimit: 20\n")
 			if initialStatus != 200 || !strings.Contains(initialBody, "Original") {
 				t.Fatalf("browser query %d %s", initialStatus, initialBody)
 			}
 
-			updateOp := api.Operation{ID: "u1", Action: "update", Resource: az.Resource{DatabaseID: "crm", Path: "/customers/01"}, ExecutionClass: az.ExecutionDTQL, Mutation: &api.Mutation{Changes: []api.Change{{Op: "set", Path: []string{"name"}, Value: json.RawMessage(`"Changed"`)}}}}
+			updateOp := api.Operation{ID: "u1", Action: "update", Resource: az.Resource{DatabaseID: "crm", Path: "/customers/01"}, ExecutionClass: az.ExecutionClass("tugql"), Mutation: &api.Mutation{Changes: []api.Change{{Op: "set", Path: []string{"name"}, Value: json.RawMessage(`"Changed"`)}}}}
 			call := func(method, path, content string, body any) (int, string) {
 				t.Helper()
 				data, _ := json.Marshal(body)
@@ -102,7 +102,7 @@ func TestProtectedHTTPReadInspectUpdate(t *testing.T) {
 			if err != nil || !result.Allowed {
 				t.Fatalf("inspect %v %s", err, body)
 			}
-			status, body = request(t, ts, "POST", "/v1/databases/crm/dtql", ownerToken, "from: {name: customers}\ncolumns: [{field: name}]\n")
+			status, body = request(t, ts, "POST", "/v1/databases/crm/tugql", ownerToken, "from: {name: customers}\ncolumns: [{field: name}]\n")
 			if status != 200 || strings.Contains(body, "Changed") || !strings.Contains(body, "Original") {
 				t.Fatalf("inspect mutated %d %s", status, body)
 			}
@@ -118,7 +118,7 @@ func TestProtectedHTTPReadInspectUpdate(t *testing.T) {
 				t.Fatal(body)
 			}
 			updateOp.Mutation.IfDataRevision = evidence.DataRevision
-			status, body = call("PATCH", "/v1/databases/crm/records/customers/01", "application/vnd.dtql.operation+json", updateOp)
+			status, body = call("PATCH", "/v1/databases/crm/records/customers/01", "application/vnd.tugql.operation+json", updateOp)
 			if status != 200 {
 				t.Fatalf("write %d %s", status, body)
 			}
@@ -129,18 +129,18 @@ func TestProtectedHTTPReadInspectUpdate(t *testing.T) {
 			if err = json.Unmarshal([]byte(body), &success); err != nil || !success.Authorization.Allowed || success.DataRevision == "" || success.DataRevision == evidence.DataRevision {
 				t.Fatal(body)
 			}
-			status, body = call("PATCH", "/v1/databases/crm/records/customers/01", "application/vnd.dtql.operation+json", updateOp)
+			status, body = call("PATCH", "/v1/databases/crm/records/customers/01", "application/vnd.tugql.operation+json", updateOp)
 			if status != 409 {
 				t.Fatalf("stale revision %d %s", status, body)
 			}
-			status, body = request(t, ts, "POST", "/v1/databases/crm/dtql", ownerToken, "from: {name: customers}\ncolumns: [{field: name}]\n")
+			status, body = request(t, ts, "POST", "/v1/databases/crm/tugql", ownerToken, "from: {name: customers}\ncolumns: [{field: name}]\n")
 			if status != 200 || !strings.Contains(body, "Changed") || strings.Contains(body, "Original") {
 				t.Fatalf("read after write %d %s", status, body)
 			}
 			sampleOp := updateOp
 			sampleOp.Resource = az.Resource{DatabaseID: "crm", Path: "/customers"}
 			sampleOp.Mutation = &api.Mutation{Changes: []api.Change{{Op: "set", Path: []string{"name"}, Value: json.RawMessage(`"Sample must not write"`)}}}
-			sample := api.Request{APIVersion: az.APIVersion, Mode: az.ModeSample, DiagnosticLevel: "ordinary", Operations: []api.Operation{sampleOp}, Sample: &api.Sample{Limit: 1, Query: api.Query{Format: "dtql-yaml", Text: "from: {name: customers}\ncolumns: [{field: name}]\n"}}}
+			sample := api.Request{APIVersion: az.APIVersion, Mode: az.ModeSample, DiagnosticLevel: "ordinary", Operations: []api.Operation{sampleOp}, Sample: &api.Sample{Limit: 1, Query: api.Query{Format: "tugql-yaml", Text: "from: {name: customers}\ncolumns: [{field: name}]\n"}}}
 			status, body = call("POST", "/v1/databases/crm/access/evaluate", "application/json", sample)
 			if status != 200 {
 				t.Fatalf("sample %d %s", status, body)
@@ -170,7 +170,7 @@ func TestProtectedHTTPReadInspectUpdate(t *testing.T) {
 			if !refs["upper"] || engine == "ingitdb" && !refs["lower"] {
 				t.Fatalf("owner blockers missing %s", body)
 			}
-			status, body = call("PATCH", "/v1/databases/crm/records/customers/01", "application/vnd.dtql.operation+json", blockedOp)
+			status, body = call("PATCH", "/v1/databases/crm/records/customers/01", "application/vnd.tugql.operation+json", blockedOp)
 			if status != 403 || !strings.Contains(body, `"policyId":"upper"`) || engine == "ingitdb" && !strings.Contains(body, `"policyId":"lower"`) {
 				t.Fatalf("real write blockers %d %s", status, body)
 			}
@@ -198,7 +198,7 @@ func TestProtectedHTTPReadInspectUpdate(t *testing.T) {
 				}
 			}
 			if engine == "sqlite" {
-				unsupportedStatus, unsupportedBody := request(t, ts, "POST", "/v1/databases/crm/dtql", ownerToken, "from: {name: customers}\ncolumns: [{field: name}]\nwhere: {op: '==', left: {field: name}, right: {value: true}}\n")
+				unsupportedStatus, unsupportedBody := request(t, ts, "POST", "/v1/databases/crm/tugql", ownerToken, "from: {name: customers}\ncolumns: [{field: name}]\nwhere: {op: '==', left: {field: name}, right: {value: true}}\n")
 				if unsupportedStatus != 422 || !strings.Contains(unsupportedBody, `"code":"authorization_unsupported"`) {
 					t.Fatalf("unsupported typed query %d %s", unsupportedStatus, unsupportedBody)
 				}
@@ -208,7 +208,7 @@ func TestProtectedHTTPReadInspectUpdate(t *testing.T) {
 				t.Fatal(err)
 			}
 			readCtx := access.WithPrincipal(context.Background(), access.Principal{Roles: []string{"reader"}})
-			persisted, err := reconnected.ExecuteDTQL(readCtx, []byte("from: {name: customers}\ncolumns: [{field: name}]\n"))
+			persisted, err := reconnected.ExecuteTugQL(readCtx, []byte("from: {name: customers}\ncolumns: [{field: name}]\n"))
 			if err != nil || len(persisted) != 1 || persisted[0].Data["name"] != "Changed" {
 				t.Fatalf("remounted protected update %v %v", persisted, err)
 			}
@@ -243,7 +243,7 @@ func TestProtectedHTTPEvidenceConditionalFieldFallback(t *testing.T) {
 			if err = seed.Close(); err != nil {
 				t.Fatal(err)
 			}
-			policy := `apiVersion: dtql.org/access/v1
+			policy := `apiVersion: tugql.org/access/v1
 kind: AccessPolicy
 metadata: {name: conditional-fields}
 target: {database: crm}

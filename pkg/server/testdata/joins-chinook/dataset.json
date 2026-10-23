@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "note": "The rows DALgo's own test builds in code for chinook-nested.dtql.yaml and chinook-hinted.dtql.yaml (join_hint_execute_test.go); the fixtures of dtql/testdata/joins ship no dataset. The tables A, B and C are empty: the two documents that name them fail to parse.",
+  "note": "The rows DALgo's own test builds in code for chinook-nested.tugql.yaml and chinook-hinted.tugql.yaml (join_hint_execute_test.go); the fixtures of tugql/testdata/joins ship no dataset. The tables A, B and C are empty: the two documents that name them fail to parse.",
   "tables": {
     "Invoice": [
       {"InvoiceId": 1, "CustomerId": 10},

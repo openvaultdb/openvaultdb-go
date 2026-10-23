@@ -17,7 +17,7 @@ import (
 
 	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/dalgo/dal"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 	"github.com/openvaultdb/openvaultdb-go/pkg/license"
@@ -205,13 +205,13 @@ func TestProviderReadsAndRequestCoverageBatch8(t *testing.T) {
 		t.Fatal("expected guardProviderRequest to return false for PUT")
 	}
 
-	// 3. provider_request.go: lines 286-333: validProviderDTQL branches
+	// 3. provider_request.go: lines 286-333: validProviderTugQL branches
 	sqBadOffset := dal.From(dal.NewDatabaseCollectionRef("db", "", "daily", "")).NewQuery().Offset(5).SelectColumns()
-	if validProviderDTQL(dbFake, sqBadOffset, core.Profile{Kind: core.ProfileSingleCollection}, ECBPublicFreeRequestProfile) {
+	if validProviderTugQL(dbFake, sqBadOffset, core.Profile{Kind: core.ProfileSingleCollection}, ECBPublicFreeRequestProfile) {
 		t.Fatal("expected false for offset != 0")
 	}
 	sqBadParent := dal.From(dal.NewDatabaseCollectionRef("db", "", "daily", "")).NewQuery().Limit(10).SelectColumns()
-	if validProviderDTQL(dbFake, sqBadParent, core.Profile{Kind: core.ProfileSingleCollection}, ECBPublicFreeRequestProfile) {
+	if validProviderTugQL(dbFake, sqBadParent, core.Profile{Kind: core.ProfileSingleCollection}, ECBPublicFreeRequestProfile) {
 		t.Fatal("expected false for undeclared collection")
 	}
 	// validProviderCondition unsupported
@@ -254,16 +254,16 @@ func TestProviderReadsAndRequestCoverageBatch8(t *testing.T) {
 }
 
 func TestRelationalAndStreamingSeamsCoverageBatch8(t *testing.T) {
-	// Not parallel: modifies finishProviderCapture, captureUsed, finishDTQLStream, finishRecordStream, finishRelationalStream
+	// Not parallel: modifies finishProviderCapture, captureUsed, finishTugQLStream, finishRecordStream, finishRelationalStream
 	oldProv := finishProviderCapture
 	oldUsed := captureUsed
-	oldDTQL := finishDTQLStream
+	oldTugQL := finishTugQLStream
 	oldRec := finishRecordStream
 	oldRel := finishRelationalStream
 	defer func() {
 		finishProviderCapture = oldProv
 		captureUsed = oldUsed
-		finishDTQLStream = oldDTQL
+		finishTugQLStream = oldTugQL
 		finishRecordStream = oldRec
 		finishRelationalStream = oldRel
 	}()
@@ -293,24 +293,24 @@ func TestRelationalAndStreamingSeamsCoverageBatch8(t *testing.T) {
 		t.Fatalf("expected late error footer on finishRecordStream error, got %d: %s", rec1.Code, rec1.Body.String())
 	}
 
-	// 2. finishDTQLStream error while stream.started (dtql.go lines 176-179)
-	finishDTQLStream = func(stream *jsonRowStream, footer map[string]any) error {
-		return errors.New("finish dtql stream failure")
+	// 2. finishTugQLStream error while stream.started (tugql.go lines 176-179)
+	finishTugQLStream = func(stream *jsonRowStream, footer map[string]any) error {
+		return errors.New("finish tugql stream failure")
 	}
 	rec2 := httptest.NewRecorder()
-	req2 := httptest.NewRequest(http.MethodPost, "/v1/databases/seam_db/dtql", strings.NewReader("from: {name: users}\n"))
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/databases/seam_db/tugql", strings.NewReader("from: {name: users}\n"))
 	req2.SetPathValue("db", "seam_db")
 	req2.Header.Set("Accept", queryErrorStreamMediaType)
-	srv.handleDTQL(rec2, req2)
+	srv.handleTugQL(rec2, req2)
 	if rec2.Code != http.StatusOK || !strings.Contains(rec2.Body.String(), "internal") {
-		t.Fatalf("expected late error footer on finishDTQLStream error, got %d: %s", rec2.Code, rec2.Body.String())
+		t.Fatalf("expected late error footer on finishTugQLStream error, got %d: %s", rec2.Code, rec2.Body.String())
 	}
 
-	// 3. finishProviderCapture error while stream.started (records.go:410, dtql.go:163)
+	// 3. finishProviderCapture error while stream.started (records.go:410, tugql.go:163)
 	finishProviderCapture = func(pc *providerCapture, used []string) (*providerreads.Envelope, error) {
 		return nil, errors.New("provider capture finish error")
 	}
-	finishDTQLStream = oldDTQL
+	finishTugQLStream = oldTugQL
 	finishRecordStream = oldRec
 	rec3 := httptest.NewRecorder()
 	req3 := httptest.NewRequest(http.MethodPost, "/v1/databases/seam_db/query", strings.NewReader(`{"collection":"users"}`))
@@ -318,7 +318,7 @@ func TestRelationalAndStreamingSeamsCoverageBatch8(t *testing.T) {
 	req3.Header.Set("Accept", queryErrorStreamMediaType)
 	srv.executeQuery(rec3, req3, db, core.Query{Collection: "users"})
 
-	// 4. captureUsed error in relational stream (dtql_relational.go:282-286)
+	// 4. captureUsed error in relational stream (tugql_relational.go:282-286)
 	captureUsed = func(c rightsCapture, ids []string) ([]string, error) {
 		return nil, errors.New("captureUsed simulated failure")
 	}
@@ -360,7 +360,7 @@ func TestAccessDiscoveryInspectSampleCoverageBatch8(t *testing.T) {
 	}
 	recEv := httptest.NewRecorder()
 	evBody := `{
-		"apiVersion": "dtql.org/authorization/v1",
+		"apiVersion": "tugql.org/authorization/v1",
 		"resource": {"databaseId": "acc_eval_db", "path": "/users/1", "table": "users", "rowId": "1"},
 		"requiredFields": [["name"]]
 	}`
@@ -475,12 +475,12 @@ func (dummyProtectedDB) ConfigureProtectedAccess(participants ...access.Mandator
 	return guardOperationDB{}, &access.EnforcementCoordinator{}, nil
 }
 
-func TestDTQLPagesCoverageBatch8(t *testing.T) {
+func TestTugQLPagesCoverageBatch8(t *testing.T) {
 	dbRet, _ := retentionFixture(t, "sqlite", "")
 	srv := New("test", map[string]*core.Database{dbRet.ID(): dbRet})
 	defer srv.CloseSnapshots()
 
-	// 1. dtql_pages.go: lines 397-400: closeSnapshot with wrong credential / db
+	// 1. tugql_pages.go: lines 397-400: closeSnapshot with wrong credential / db
 	closeID := base64.RawURLEncoding.EncodeToString([]byte("01234567890123456789012345678901"))
 	snap := &querySnapshot{
 		id:        closeID,
@@ -497,7 +497,7 @@ func TestDTQLPagesCoverageBatch8(t *testing.T) {
 		t.Fatalf("expected 403 on closeSnapshotPage credential mismatch, got %d", recClose.Code)
 	}
 
-	// 2. dtql_pages.go: lines 429-432: serveSnapshotPage with actorHash mismatch
+	// 2. tugql_pages.go: lines 429-432: serveSnapshotPage with actorHash mismatch
 	recServe := httptest.NewRecorder()
 	snap.actorHash = [32]byte{2}
 	tokServe := srv.pageToken(closeID, 0, dbRet.ID(), [32]byte{2}, [32]byte{1}, 10)
@@ -506,7 +506,7 @@ func TestDTQLPagesCoverageBatch8(t *testing.T) {
 		t.Fatalf("expected 403 on serveSnapshotPage credential mismatch, got %d", recServe.Code)
 	}
 
-	// 3. dtql_pages.go: lines 474-481: row length + pageBytes > maxPageBytes
+	// 3. tugql_pages.go: lines 474-481: row length + pageBytes > maxPageBytes
 	hugeID := base64.RawURLEncoding.EncodeToString([]byte("01234567890123456789012345678902"))
 	tmpDir := t.TempDir()
 	snapFile := filepath.Join(tmpDir, "huge_row.jsonl")

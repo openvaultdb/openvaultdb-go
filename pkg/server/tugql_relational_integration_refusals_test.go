@@ -15,13 +15,13 @@ import (
 // The helpers of this file all start with relIntRefusals so they cannot clash with the
 // others of the package.
 
-// relIntRefusalsRefused requires the 400 invalid_dtql of a refusal of the document that
+// relIntRefusalsRefused requires the 400 invalid_tugql of a refusal of the document that
 // starts with the category and path given, names the name and says what to do about it.
 func relIntRefusalsRefused(t *testing.T, resp relHTTPResponse, prefix, name string, says ...string) {
 	t.Helper()
 	message := resp.errorField("message")
-	if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || resp.body["records"] != nil || resp.body["execution"] != nil {
-		t.Fatalf("status %d, want a 400 invalid_dtql with no rows: %s", resp.status, resp.raw)
+	if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" || resp.body["records"] != nil || resp.body["execution"] != nil {
+		t.Fatalf("status %d, want a 400 invalid_tugql with no rows: %s", resp.status, resp.raw)
 	}
 	if !strings.HasPrefix(message, prefix) || !strings.Contains(message, name) {
 		t.Fatalf("the message does not start with %q and name %q: %s", prefix, name, resp.raw)
@@ -97,7 +97,7 @@ const relIntRefusalsByName = "from: {name: Customer, alias: c}\norderBy: [{field
 // ORDER BY the alias of a column that is a field of a source, in a query that does not
 // aggregate: the answer is sorted by that field, as the database route of SQLite sorts
 // it, on every route and both endpoints. It was a 400 on the per-database endpoint of an
-// inGitDB mount, and an answer in the order the records were read on /v1/dtql.
+// inGitDB mount, and an answer in the order the records were read on /v1/tugql.
 func TestOrderByTheAliasOfAFieldSortsTheAnswerOnEveryRouteAndEndpoint(t *testing.T) {
 	base := relIntFieldsServer(t)
 	byName := []map[string]any{{"name": "Cy"}, {"name": "Bea"}, {"name": "Ada"}}
@@ -159,8 +159,8 @@ func TestOrderByTheAliasOfAnExpressionIsRefusedWhenTheDocumentIsNotRunWholeByASQ
 	})
 	t.Run("handed whole to an inGitDB mount it is refused, as the mount cannot sort by it", func(t *testing.T) {
 		for _, tc := range []struct{ path, doc string }{
-			{"/v1/databases/gitdb/dtql", "from: {name: Invoice, alias: i}\n" + order + columns},
-			{"/v1/dtql", "from: {database: gitdb, name: Invoice, alias: i}\n" + order + columns},
+			{"/v1/databases/gitdb/tugql", "from: {name: Invoice, alias: i}\n" + order + columns},
+			{"/v1/tugql", "from: {database: gitdb, name: Invoice, alias: i}\n" + order + columns},
 		} {
 			relIntRefusalsRefused(t, relHTTPPost(t, base, tc.path, "", tc.doc), "scope at orderBy[0]: ", "neg", "order by the fields of")
 		}
@@ -180,15 +180,15 @@ func TestOrderByANameNoSourceCarriesIsRefusedBeforeAnythingIsRead(t *testing.T) 
 	)
 	t.Run("a document of one source: the database route of SQLite says it has no such column", func(t *testing.T) {
 		relIntFieldsEachRoute(t, base, plain, func(t *testing.T, resp relHTTPResponse) {
-			if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || resp.body["records"] != nil {
-				t.Fatalf("status %d, want a 400 invalid_dtql: %s", resp.status, resp.raw)
+			if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" || resp.body["records"] != nil {
+				t.Fatalf("status %d, want a 400 invalid_tugql: %s", resp.status, resp.raw)
 			}
 		})
 	})
 	t.Run("handed whole to the inGitDB mount, on both endpoints", func(t *testing.T) {
 		for _, tc := range []struct{ path, doc string }{
-			{"/v1/databases/gitdb/dtql", plain},
-			{"/v1/dtql", strings.Replace(plain, "from: {name: Customer", "from: {database: gitdb, name: Customer", 1)},
+			{"/v1/databases/gitdb/tugql", plain},
+			{"/v1/tugql", strings.Replace(plain, "from: {name: Customer", "from: {database: gitdb, name: Customer", 1)},
 		} {
 			relIntRefusalsRefused(t, relHTTPPost(t, base, tc.path, "", tc.doc), "shape at orderBy[0]: ", `unknown field "nope"`)
 		}
@@ -198,18 +198,18 @@ func TestOrderByANameNoSourceCarriesIsRefusedBeforeAnythingIsRead(t *testing.T) 
 		// was qualified was ignored too: the answer was a 200 in the order the records were read.
 		const qualified = "from: {name: Customer, alias: c}\norderBy: [{field: nope, source: c}]\ncolumns: [{field: FirstName, source: c}]\n"
 		relIntFieldsEachRoute(t, base, qualified, func(t *testing.T, resp relHTTPResponse) {
-			if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || resp.body["records"] != nil {
-				t.Fatalf("status %d, want a 400 invalid_dtql: %s", resp.status, resp.raw)
+			if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" || resp.body["records"] != nil {
+				t.Fatalf("status %d, want a 400 invalid_tugql: %s", resp.status, resp.raw)
 			}
 		})
 		for _, tc := range []struct{ path, doc string }{
-			{"/v1/databases/gitdb/dtql", qualified},
-			{"/v1/dtql", strings.Replace(qualified, "from: {name: Customer", "from: {database: gitdb, name: Customer", 1)},
+			{"/v1/databases/gitdb/tugql", qualified},
+			{"/v1/tugql", strings.Replace(qualified, "from: {name: Customer", "from: {database: gitdb, name: Customer", 1)},
 		} {
 			relIntRefusalsRefused(t, relHTTPPost(t, base, tc.path, "", tc.doc), "shape at orderBy[0]: ", `unknown field "nope"`)
 		}
 		t.Run("the key, which no list carries, is not refused", func(t *testing.T) {
-			resp := relHTTPPost(t, base, "/v1/dtql", "", "from: {database: gitdb, name: Customer, alias: c}\norderBy: [{field: $id, source: c, desc: true}]\ncolumns: [{field: FirstName, source: c}]\n")
+			resp := relHTTPPost(t, base, "/v1/tugql", "", "from: {database: gitdb, name: Customer, alias: c}\norderBy: [{field: $id, source: c, desc: true}]\ncolumns: [{field: FirstName, source: c}]\n")
 			relIntRowsAre(t, resp, []map[string]any{{"FirstName": "Cy"}, {"FirstName": "Bea"}, {"FirstName": "Ada"}})
 		})
 	})
@@ -217,7 +217,7 @@ func TestOrderByANameNoSourceCarriesIsRefusedBeforeAnythingIsRead(t *testing.T) 
 		// The mount's executor reads no key from the data of a record, so ordering by id
 		// left the answer in the order the records were read.
 		doc := strings.Replace(strings.Replace(plain, "field: nope", "field: id", 1), "from: {name: Customer", "from: {database: gitdb, name: Customer", 1)
-		relIntRefusalsRefused(t, relHTTPPost(t, base, "/v1/dtql", "", doc), "shape at orderBy[0]: ", `unknown field "id"`)
+		relIntRefusalsRefused(t, relHTTPPost(t, base, "/v1/tugql", "", doc), "shape at orderBy[0]: ", `unknown field "id"`)
 	})
 	t.Run("in memory, on both engines and both endpoints", func(t *testing.T) {
 		relIntFieldsEachRoute(t, base, inMemry, func(t *testing.T, resp relHTTPResponse) {
@@ -269,8 +269,8 @@ func TestOrderByArithmeticSortsADocumentOfOneSourceOnEveryRouteAndEndpoint(t *te
 		doc := "from: {name: Invoice, alias: i}\n%sorderBy: [" + tc.order + "]\ncolumns: [{field: InvoiceId, source: i}]\n"
 		t.Run(name, func(t *testing.T) {
 			for _, endpoint := range []struct{ name, path, database string }{
-				{"per-database endpoint", "/v1/databases/gitdb/dtql", ""},
-				{"/v1/dtql, which hands the mount the document whole", "/v1/dtql", "gitdb"},
+				{"per-database endpoint", "/v1/databases/gitdb/tugql", ""},
+				{"/v1/tugql, which hands the mount the document whole", "/v1/tugql", "gitdb"},
 			} {
 				t.Run("the inGitDB mount, "+endpoint.name, func(t *testing.T) {
 					resp := relHTTPPost(t, base, endpoint.path, "", string(relIntRewrite(t, []byte(fmt.Sprintf(doc, "")), endpoint.database)))
@@ -290,7 +290,7 @@ func TestOrderByArithmeticSortsADocumentOfOneSourceOnEveryRouteAndEndpoint(t *te
 // name is unknown, and the mount decides: the document is not refused for it.
 func TestOrderByANameOfASourceThatSuppliesNoFieldListIsLeftToTheMount(t *testing.T) {
 	base := relIntScopeServer(t)
-	resp := relHTTPPost(t, base, "/v1/dtql", "", "from: {database: notes, name: Note}\norderBy: [{field: mood}]\n")
+	resp := relHTTPPost(t, base, "/v1/tugql", "", "from: {database: notes, name: Note}\norderBy: [{field: mood}]\n")
 	relIntRowsAre(t, resp, []map[string]any{{"mood": "busy", "person_id": "p2"}, {"mood": "calm", "person_id": "p1"}})
 }
 
@@ -321,13 +321,13 @@ func TestAJoinPlanRefusalInsideADerivedSourceInTheBasePositionIsAClientError(t *
 			"join_plan at from.query.columns[0]: "},
 	} {
 		t.Run(name, func(t *testing.T) {
-			resp := relHTTPPost(t, base, "/v1/dtql", "", tc.doc)
+			resp := relHTTPPost(t, base, "/v1/tugql", "", tc.doc)
 			relIntRefusalsRefused(t, resp, tc.path, wildcardMsg)
 		})
 	}
 
 	t.Run("the same derived source on a join is answered the same way", func(t *testing.T) {
-		resp := relHTTPPost(t, base, "/v1/dtql", "", "from: {database: crm, name: Person, alias: p, joins: [{type: inner, from: {query: {as: n, "+
+		resp := relHTTPPost(t, base, "/v1/tugql", "", "from: {database: crm, name: Person, alias: p, joins: [{type: inner, from: {query: {as: n, "+
 			"from: {database: notes, name: Note, alias: x}, columns: [{wildcard: {source: x, exclude: [none]}}]}}, "+
 			"on: [{left: {field: id, source: p}, op: '==', right: {field: person_id, source: n}}]}]}\ncolumns: [{field: mood, source: n}]\n")
 		relIntRefusalsRefused(t, resp, "join_plan at columns[0]: ", wildcardMsg)

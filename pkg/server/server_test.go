@@ -177,7 +177,7 @@ func TestProtectedGETReadAndQueryAreNeverCacheable(t *testing.T) {
 	for _, endpoint := range []string{
 		"/v1/databases/testdb/read?" + url.Values{"key": {"contacts/c1"}}.Encode(),
 		"/v1/databases/testdb/query?" + url.Values{"q": {`{"collection":"contacts"}`}}.Encode(),
-		"/v1/databases/testdb/dtql?" + url.Values{"q": {"from: {name: contacts}\n"}}.Encode(),
+		"/v1/databases/testdb/tugql?" + url.Values{"q": {"from: {name: contacts}\n"}}.Encode(),
 	} {
 		resp := doRequest(t, http.MethodGet, ts.URL+endpoint, nil)
 		if got := resp.Header.Get("Cache-Control"); got != "no-store" {
@@ -229,45 +229,45 @@ func TestReadOnlyCachesGETResponses(t *testing.T) {
 		t.Fatalf("GET query Cache-Control = %q", got)
 	}
 	drainClose(jsonQuery)
-	const dtql = "from: {name: contacts}\nwhere: {op: '==', left: {field: name}, right: {param: Name}}\n"
-	query := url.Values{"q": {dtql}, "parameters": {`{"Name":"Alice"}`}}.Encode()
-	dtqlResponse := doRequest(t, http.MethodGet, ts.URL+"/v1/databases/testdb/dtql?"+query, nil)
-	mustStatus(t, dtqlResponse, http.StatusOK)
-	if got := dtqlResponse.Header.Get("Cache-Control"); got != "public, max-age=3600, s-maxage=3600" {
-		t.Fatalf("GET dtql Cache-Control = %q", got)
+	const tugql = "from: {name: contacts}\nwhere: {op: '==', left: {field: name}, right: {param: Name}}\n"
+	query := url.Values{"q": {tugql}, "parameters": {`{"Name":"Alice"}`}}.Encode()
+	tugqlResponse := doRequest(t, http.MethodGet, ts.URL+"/v1/databases/testdb/tugql?"+query, nil)
+	mustStatus(t, tugqlResponse, http.StatusOK)
+	if got := tugqlResponse.Header.Get("Cache-Control"); got != "public, max-age=3600, s-maxage=3600" {
+		t.Fatalf("GET tugql Cache-Control = %q", got)
 	}
-	if got := dtqlResponse.Header.Get("Vary"); got != "OVDB-Page-Size, OVDB-Page-Token, OVDB-Page-Close" {
-		t.Fatalf("GET dtql Vary = %q", got)
+	if got := tugqlResponse.Header.Get("Vary"); got != "OVDB-Page-Size, OVDB-Page-Token, OVDB-Page-Close" {
+		t.Fatalf("GET tugql Vary = %q", got)
 	}
 	var result map[string]any
-	decodeJSON(t, dtqlResponse, &result)
+	decodeJSON(t, tugqlResponse, &result)
 	if records := result["records"].([]any); len(records) != 1 {
-		t.Fatalf("GET dtql records = %#v", records)
+		t.Fatalf("GET tugql records = %#v", records)
 	}
-	uncachedResponse := doRequest(t, http.MethodGet, ts.URL+"/v1/databases/uncached/dtql?"+url.Values{"q": {"from: {name: contacts}\n"}}.Encode(), nil)
+	uncachedResponse := doRequest(t, http.MethodGet, ts.URL+"/v1/databases/uncached/tugql?"+url.Values{"q": {"from: {name: contacts}\n"}}.Encode(), nil)
 	mustStatus(t, uncachedResponse, http.StatusOK)
 	if got := uncachedResponse.Header.Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("uncached database Cache-Control = %q", got)
 	}
 	drainClose(uncachedResponse)
-	post := doRequest(t, http.MethodPost, ts.URL+"/v1/databases/testdb/dtql", map[string]any{"query": "from: {name: contacts}\n"})
+	post := doRequest(t, http.MethodPost, ts.URL+"/v1/databases/testdb/tugql", map[string]any{"query": "from: {name: contacts}\n"})
 	mustStatus(t, post, http.StatusOK)
 	if got := post.Header.Get("Cache-Control"); got != "no-store" {
-		t.Fatalf("POST dtql Cache-Control = %q", got)
+		t.Fatalf("POST tugql Cache-Control = %q", got)
 	}
 	drainClose(post)
 	for _, bad := range []string{"q=a&q=b", "q=a&parameters=%5B%5D", "q=a&extra=1", "q=a&parameters=%7Bbad"} {
-		resp := doRequest(t, http.MethodGet, ts.URL+"/v1/databases/testdb/dtql?"+bad, nil)
+		resp := doRequest(t, http.MethodGet, ts.URL+"/v1/databases/testdb/tugql?"+bad, nil)
 		mustStatus(t, resp, http.StatusBadRequest)
 		if got := resp.Header.Get("Cache-Control"); got != "no-store" {
-			t.Fatalf("invalid GET dtql Cache-Control = %q", got)
+			t.Fatalf("invalid GET tugql Cache-Control = %q", got)
 		}
 		drainClose(resp)
 	}
-	tooLong := doRequest(t, http.MethodGet, ts.URL+"/v1/databases/testdb/dtql?"+url.Values{"q": {strings.Repeat("a", 8192)}}.Encode(), nil)
+	tooLong := doRequest(t, http.MethodGet, ts.URL+"/v1/databases/testdb/tugql?"+url.Values{"q": {strings.Repeat("a", 8192)}}.Encode(), nil)
 	mustStatus(t, tooLong, http.StatusRequestURITooLong)
 	if got := tooLong.Header.Get("Cache-Control"); got != "no-store" {
-		t.Fatalf("overlong GET dtql Cache-Control = %q", got)
+		t.Fatalf("overlong GET tugql Cache-Control = %q", got)
 	}
 	drainClose(tooLong)
 }
@@ -799,11 +799,11 @@ func TestQuery(t *testing.T) {
 	})
 }
 
-// ── POST /v1/databases/{db}/dtql ────────────────────────────────────────────
+// ── POST /v1/databases/{db}/tugql ────────────────────────────────────────────
 
-func TestDTQL(t *testing.T) {
+func TestTugQL(t *testing.T) {
 	base := startTestServer(t, schemalessManifest)
-	dtqlURL := base + "/v1/databases/testdb/dtql"
+	tugqlURL := base + "/v1/databases/testdb/tugql"
 
 	// Insert a widget record first.
 	putResp := doRequest(t, http.MethodPut,
@@ -812,11 +812,11 @@ func TestDTQL(t *testing.T) {
 	mustStatus(t, putResp, http.StatusNoContent)
 	drainClose(putResp)
 
-	t.Run("ValidDTQL", func(t *testing.T) {
-		// Minimal DTQL YAML: just a from clause selecting all widgets.
-		// A decoded DTQL query carries selected data as well as record keys.
-		dtqlDoc := "from:\n  name: widgets\n"
-		req, err := http.NewRequest(http.MethodPost, dtqlURL, strings.NewReader(dtqlDoc))
+	t.Run("ValidTugQL", func(t *testing.T) {
+		// Minimal TugQL YAML: just a from clause selecting all widgets.
+		// A decoded TugQL query carries selected data as well as record keys.
+		tugqlDoc := "from:\n  name: widgets\n"
+		req, err := http.NewRequest(http.MethodPost, tugqlURL, strings.NewReader(tugqlDoc))
 		if err != nil {
 			t.Fatalf("http.NewRequest: %v", err)
 		}
@@ -833,7 +833,7 @@ func TestDTQL(t *testing.T) {
 			t.Fatalf("records field missing or not an array: %v", body)
 		}
 		if len(records) == 0 {
-			t.Error("DTQL: expected at least 1 result")
+			t.Error("TugQL: expected at least 1 result")
 		}
 		// Verify the inserted widget key appears in results.
 		found := false
@@ -848,7 +848,7 @@ func TestDTQL(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("DTQL: key widgets/w1 not found in results: %v", records)
+			t.Errorf("TugQL: key widgets/w1 not found in results: %v", records)
 		}
 	})
 
@@ -873,10 +873,10 @@ func TestDTQL(t *testing.T) {
 		}
 	})
 
-	t.Run("InvalidDTQL_Error", func(t *testing.T) {
-		// Send clearly invalid YAML that the DTQL parser must reject.
-		badDTQL := "garbage: ::invalid::\n"
-		req, err := http.NewRequest(http.MethodPost, dtqlURL, strings.NewReader(badDTQL))
+	t.Run("InvalidTugQL_Error", func(t *testing.T) {
+		// Send clearly invalid YAML that the TugQL parser must reject.
+		badTugQL := "garbage: ::invalid::\n"
+		req, err := http.NewRequest(http.MethodPost, tugqlURL, strings.NewReader(badTugQL))
 		if err != nil {
 			t.Fatalf("http.NewRequest: %v", err)
 		}
@@ -888,7 +888,7 @@ func TestDTQL(t *testing.T) {
 		if resp.StatusCode < 400 {
 			body, _ := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
-			t.Fatalf("expected 4xx for invalid DTQL, got %d; body: %s", resp.StatusCode, body)
+			t.Fatalf("expected 4xx for invalid TugQL, got %d; body: %s", resp.StatusCode, body)
 		}
 		var body map[string]any
 		decodeJSON(t, resp, &body)

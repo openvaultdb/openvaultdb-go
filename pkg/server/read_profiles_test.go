@@ -94,7 +94,7 @@ func TestImmutableProfileStableProjectedPagesAndNativeID(t *testing.T) {
 	var keys []string
 	for offset := 0; offset < 3; offset++ {
 		doc := fmt.Sprintf("from: {database: w1, schema: main, name: things}\ncolumns: [{field: id}, {field: name}]\nlimit: 1\noffset: %d\n", offset)
-		response := profileRequest(handler, "POST", "/v1/databases/w1/dtql", doc, nil)
+		response := profileRequest(handler, "POST", "/v1/databases/w1/tugql", doc, nil)
 		if response.Code != 200 {
 			t.Fatalf("page %d: %d %s", offset, response.Code, response.Body.String())
 		}
@@ -131,18 +131,18 @@ func TestImmutableProfileStableProjectedPagesAndNativeID(t *testing.T) {
 		t.Fatalf("key roundtrip: %d %s", keyed.Code, keyed.Body.String())
 	}
 	doc := "from: {name: things}\nwhere: {op: '==', left: {field: id}, right: {value: native-b}}\ncolumns: [{field: name}]\nlimit: 1\n"
-	response := profileRequest(handler, "GET", "/v1/databases/w1/dtql?q="+url.QueryEscape(doc), "", nil)
+	response := profileRequest(handler, "GET", "/v1/databases/w1/tugql?q="+url.QueryEscape(doc), "", nil)
 	if response.Code != 200 || !strings.Contains(response.Body.String(), "beta") {
 		t.Fatalf("predicate preserved: %d %s", response.Code, response.Body.String())
 	}
 	for _, header := range pagingHeaders {
-		resp := profileRequest(handler, "POST", "/v1/databases/w1/dtql", "from: {name: things}\n", map[string]string{header: "1"})
+		resp := profileRequest(handler, "POST", "/v1/databases/w1/tugql", "from: {name: things}\n", map[string]string{header: "1"})
 		if resp.Code != 422 || !strings.Contains(resp.Body.String(), "snapshot_unsupported") {
 			t.Fatalf("snapshot %s bypass: %d %s", header, resp.Code, resp.Body.String())
 		}
 	}
 	for _, field := range []string{"id", "__ovdb_record_id_1"} {
-		resp := profileRequest(handler, "POST", "/v1/databases/w1/dtql", "from: {name: things}\norderBy: [{field: "+field+"}]\n", nil)
+		resp := profileRequest(handler, "POST", "/v1/databases/w1/tugql", "from: {name: things}\norderBy: [{field: "+field+"}]\n", nil)
 		if resp.Code != 400 || !strings.Contains(resp.Body.String(), "ordering_unsupported") {
 			t.Fatalf("ordering: %d %s", resp.Code, resp.Body.String())
 		}
@@ -173,13 +173,13 @@ func TestImmutableProfileRelationalRefusalUsesAllResolvedSourcesBeforeExecution(
 		t.Fatal("legacy admission changed")
 	}
 	queries := []struct{ path, doc string }{
-		{"/v1/databases/w1/dtql", "from: {name: things, alias: t}\n"},
-		{"/v1/databases/w1/dtql", "from: {name: things}\nwhere: {exists: {query: {from: {name: things, alias: other}}}}\n"},
-		{"/v1/databases/w1/dtql", "from: {name: things}\ncolumns: [{aggregate: {function: count, args: [{star: true}]}, as: n}]\n"},
-		{"/v1/dtql", "from: {database: w1, name: things}\n"},
-		{"/v1/dtql", "from: {database: legacy, name: things}\nwhere: {exists: {query: {from: {database: w1, name: things}}}}\n"},
-		{"/v1/dtql", "from: {database: legacy, name: things, alias: l, joins: [{from: {database: w1, name: things, alias: w}, on: [{op: '==', left: {field: id, source: l}, right: {field: id, source: w}}]}]}\n"},
-		{"/v1/dtql", "from: {query: {as: d, from: {database: w1, name: things}}}\n"},
+		{"/v1/databases/w1/tugql", "from: {name: things, alias: t}\n"},
+		{"/v1/databases/w1/tugql", "from: {name: things}\nwhere: {exists: {query: {from: {name: things, alias: other}}}}\n"},
+		{"/v1/databases/w1/tugql", "from: {name: things}\ncolumns: [{aggregate: {function: count, args: [{star: true}]}, as: n}]\n"},
+		{"/v1/tugql", "from: {database: w1, name: things}\n"},
+		{"/v1/tugql", "from: {database: legacy, name: things}\nwhere: {exists: {query: {from: {database: w1, name: things}}}}\n"},
+		{"/v1/tugql", "from: {database: legacy, name: things, alias: l, joins: [{from: {database: w1, name: things, alias: w}, on: [{op: '==', left: {field: id, source: l}, right: {field: id, source: w}}]}]}\n"},
+		{"/v1/tugql", "from: {query: {as: d, from: {database: w1, name: things}}}\n"},
 	}
 	for _, q := range queries {
 		resp := profileRequest(srv.Handler(), "POST", q.path, q.doc, nil)
@@ -191,12 +191,12 @@ func TestImmutableProfileRelationalRefusalUsesAllResolvedSourcesBeforeExecution(
 		t.Fatalf("W1 executor called %d times", calls)
 	}
 	for _, name := range []string{"hidden", "HIDDEN", `"hidden"`} {
-		resp := profileRequest(srv.Handler(), "POST", "/v1/databases/w1/dtql", "from: {name: '"+name+"'}\n", nil)
+		resp := profileRequest(srv.Handler(), "POST", "/v1/databases/w1/tugql", "from: {name: '"+name+"'}\n", nil)
 		if resp.Code != 404 {
 			t.Fatalf("undeclared %s read: %d %s", name, resp.Code, resp.Body.String())
 		}
 	}
-	resp := profileRequest(srv.Handler(), "POST", "/v1/dtql", "from: {database: legacy, name: things}\n", nil)
+	resp := profileRequest(srv.Handler(), "POST", "/v1/tugql", "from: {database: legacy, name: things}\n", nil)
 	if resp.Code != 200 || calls != 1 {
 		t.Fatalf("legacy executor behavior: %d, calls %d", resp.Code, calls)
 	}
@@ -219,7 +219,7 @@ func TestImmutableProfileCandidatePublishedAndMixedLegacyDiscovery(t *testing.T)
 				if id == "w1" && !reflect.DeepEqual(metadata["collections"], []any{"things"}) {
 					t.Fatalf("undeclared collection metadata: %#v", metadata)
 				}
-				if caps["query"] != queryable || caps["dtql"] != queryable || caps["joins"] != joins || caps["aggregation"] != joins {
+				if caps["query"] != queryable || caps["tugql"] != queryable || caps["joins"] != joins || caps["aggregation"] != joins {
 					t.Fatalf("capabilities %s: %#v", id, caps)
 				}
 				_, endpoint := metadata["endpoints"]
@@ -247,7 +247,7 @@ func TestImmutableProfileCandidatePublishedAndMixedLegacyDiscovery(t *testing.T)
 					t.Fatalf("discovery: %#v", item)
 				}
 			}
-			smoke := profileRequest(handler, "POST", "/v1/databases/w1/dtql", "from: {name: things}\nlimit: 1\n", nil)
+			smoke := profileRequest(handler, "POST", "/v1/databases/w1/tugql", "from: {name: things}\nlimit: 1\n", nil)
 			if smoke.Code != 200 {
 				t.Fatalf("candidate smoke: %d %s", smoke.Code, smoke.Body.String())
 			}
@@ -273,7 +273,7 @@ func TestImmutableProfileInvalidConstructionFailsClosedAndCannotRemountLegacy(t 
 		}
 		srv := New("test", map[string]*core.Database{"w1": tc.db}, opts...)
 		t.Cleanup(srv.CloseSnapshots)
-		resp := profileRequest(srv.Handler(), "POST", "/v1/databases/w1/dtql", "from: {name: things}\n", nil)
+		resp := profileRequest(srv.Handler(), "POST", "/v1/databases/w1/tugql", "from: {name: things}\n", nil)
 		if resp.Code != 500 || !strings.Contains(resp.Body.String(), "configuration_error") {
 			t.Fatalf("invalid option not visible/fail closed: %d", resp.Code)
 		}
@@ -315,8 +315,8 @@ func TestImmutableProfileMountAliasesAndRemount(t *testing.T) {
 					path, body string
 					status     int
 				}{
-					{"/dtql", "from: {name: things}\n", map[bool]int{false: 422, true: 200}[allow]},
-					{"/dtql", "from: {name: things}\norderBy: [{field: id}]\n", map[bool]int{false: 422, true: 400}[allow]},
+					{"/tugql", "from: {name: things}\n", map[bool]int{false: 422, true: 200}[allow]},
+					{"/tugql", "from: {name: things}\norderBy: [{field: id}]\n", map[bool]int{false: 422, true: 400}[allow]},
 					{"/query", `{"collection":"things"}`, 422},
 				} {
 					got := profileRequest(handler, "POST", "/v1/databases/"+id+q.path, q.body, nil)
@@ -411,8 +411,8 @@ func TestImmutableProfilePublishedAliasEndpointIsUsable(t *testing.T) {
 	}
 	t.Cleanup(srv.CloseSnapshots)
 	meta := profileDocument(t, profileRequest(srv.Handler(), "GET", "/v1/databases/alias", "", nil))
-	endpoint := meta["endpoints"].(map[string]any)["dtql"].(string)
-	if !strings.HasSuffix(endpoint, "/v1/databases/alias/dtql") {
+	endpoint := meta["endpoints"].(map[string]any)["tugql"].(string)
+	if !strings.HasSuffix(endpoint, "/v1/databases/alias/tugql") {
 		t.Fatalf("alias endpoint: %s", endpoint)
 	}
 	response := profileRequest(srv.Handler(), "POST", endpoint, "from: {database: alias, name: things}\nlimit: 1\n", nil)
@@ -467,10 +467,10 @@ func testImmutableProfileSharedAliasLifetime(t *testing.T, published bool) {
 		status             int
 	}{
 		{"GET", "/v1/databases/second/records/things/b", "", 200},
-		{"POST", "/v1/databases/second/dtql", "from: {database: second, name: things}\nlimit: 1\n", 200},
-		{"POST", "/v1/databases/second/dtql", "from: {name: things}\norderBy: [{field: id}]\n", 400},
+		{"POST", "/v1/databases/second/tugql", "from: {database: second, name: things}\nlimit: 1\n", 200},
+		{"POST", "/v1/databases/second/tugql", "from: {name: things}\norderBy: [{field: id}]\n", 400},
 		{"POST", "/v1/databases/second/query", `{"collection":"things"}`, 422},
-		{"POST", "/v1/dtql", "from: {database: second, name: things}\n", 422},
+		{"POST", "/v1/tugql", "from: {database: second, name: things}\n", 422},
 	} {
 		resp := profileRequest(srv.Handler(), q.method, q.path, q.body, nil)
 		if resp.Code != q.status {

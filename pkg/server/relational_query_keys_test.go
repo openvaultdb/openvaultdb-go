@@ -48,7 +48,7 @@ func TestRelationalQueryKeysUseAdapterID(t *testing.T) {
 	defer service.CloseSnapshots()
 	host := httptest.NewServer(service.Handler())
 	defer host.Close()
-	endpoint := host.URL + "/v1/databases/relational/dtql"
+	endpoint := host.URL + "/v1/databases/relational/tugql"
 	doc := "from: {name: 'Order Details'}\n"
 	response, err := http.Get(endpoint + "?q=" + url.QueryEscape(doc))
 	if err != nil {
@@ -94,13 +94,13 @@ func TestRelationalQueryKeysUseAdapterID(t *testing.T) {
 		}
 	}
 	assertProjected(projectedResult)
-	projectedStatus, projectedPage := pagedDTQL(t, endpoint, projected, 1, "")
+	projectedStatus, projectedPage := pagedTugQL(t, endpoint, projected, 1, "")
 	if projectedStatus != http.StatusOK {
 		t.Fatalf("projected paged status: %d %#v", projectedStatus, projectedPage)
 	}
 	assertProjected(projectedPage)
 
-	status, page := pagedDTQL(t, endpoint, doc, 1, "")
+	status, page := pagedTugQL(t, endpoint, doc, 1, "")
 	if status != http.StatusOK {
 		t.Fatalf("paged status: %d %#v", status, page)
 	}

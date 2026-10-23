@@ -6,7 +6,7 @@ import (
 	"net/http"
 
 	"github.com/dal-go/dalgo/access"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
@@ -19,7 +19,7 @@ import (
 // the request alone until the last: any field name that is not plain
 // (core.ErrInvalidFieldName, see guardOperationFields), then whether the
 // protected session supports the operation (an error wrapping
-// errProtectedUnsupported: an execution class other than dtql, an action or a
+// errProtectedUnsupported: an execution class other than tugql, an action or a
 // change it cannot carry), and last a table that is a declared collection named
 // by its canonical name when the adapter builds SQL
 // (core.Database.GuardCanonicalCollection, an error wrapping core.ErrNotFound).

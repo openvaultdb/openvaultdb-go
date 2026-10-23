@@ -100,7 +100,7 @@ func TestDatabaseMetadataPublishesDeclaredExactDecimalSchema(t *testing.T) {
 	}
 
 	query := httptest.NewRecorder()
-	service.Handler().ServeHTTP(query, httptest.NewRequest(http.MethodPost, "/v1/databases/exact/dtql", strings.NewReader("from: {name: Amounts}\norderBy: [{field: id}]\n")))
+	service.Handler().ServeHTTP(query, httptest.NewRequest(http.MethodPost, "/v1/databases/exact/tugql", strings.NewReader("from: {name: Amounts}\norderBy: [{field: id}]\n")))
 	if query.Code != http.StatusOK {
 		t.Fatalf("POST decimal query: %d %s", query.Code, query.Body.String())
 	}
@@ -142,7 +142,7 @@ columns:
   - {aggregate: {function: avg, args: [{field: amount, source: a}]}, as: average}
   - {aggregate: {function: sum, args: [{binary: {op: '*', left: {field: amount, source: a}, right: {field: quantity, source: a}}}]}, as: extended_total}
 `
-	resp := relHTTPPost(t, host.URL, "/v1/databases/exact/dtql", "", query)
+	resp := relHTTPPost(t, host.URL, "/v1/databases/exact/tugql", "", query)
 	if resp.status != http.StatusOK {
 		t.Fatalf("exact aggregate query: status %d: %s", resp.status, resp.raw)
 	}
@@ -161,9 +161,9 @@ columns:
 		}
 	}
 	invalidConfig := strings.Replace(query, "minorUnitScale: 4", "minorUnitScale: 19", 1)
-	invalid := relHTTPPost(t, host.URL, "/v1/databases/exact/dtql", "", invalidConfig)
-	if invalid.status != http.StatusBadRequest || invalid.errorField("code") != "invalid_dtql" {
-		t.Fatalf("invalid Money config: status %d, want 400 invalid_dtql: %s", invalid.status, invalid.raw)
+	invalid := relHTTPPost(t, host.URL, "/v1/databases/exact/tugql", "", invalidConfig)
+	if invalid.status != http.StatusBadRequest || invalid.errorField("code") != "invalid_tugql" {
+		t.Fatalf("invalid Money config: status %d, want 400 invalid_tugql: %s", invalid.status, invalid.raw)
 	}
 }
 
@@ -185,7 +185,7 @@ money: {minorUnitScale: 4, divisionScale: 4, rounding: halfEven}
 columns: [{aggregate: {function: sum, args: [{field: amount, source: a}]}, as: total}]
 having: {op: '>', left: {aggregate: {function: sum, args: [{field: amount, source: a}] }}, right: {value: "2.5000"}}
 `
-	resp := relHTTPPost(t, host.URL, "/v1/databases/exact/dtql", "", query)
+	resp := relHTTPPost(t, host.URL, "/v1/databases/exact/tugql", "", query)
 	if resp.status != http.StatusOK {
 		t.Fatalf("exact comparison query: status %d: %s", resp.status, resp.raw)
 	}
@@ -194,9 +194,9 @@ having: {op: '>', left: {aggregate: {function: sum, args: [{field: amount, sourc
 		t.Fatalf("exact numeric WHERE/HAVING result = %#v, want one row total 10.0000", rows)
 	}
 	floatLiteral := strings.Replace(query, `right: {value: "2.5000"}`, `right: {value: 9007199254740992.5}`, 1)
-	refused := relHTTPPost(t, host.URL, "/v1/databases/exact/dtql", "", floatLiteral)
-	if refused.status != http.StatusBadRequest || refused.errorField("code") != "invalid_dtql" {
-		t.Fatalf("binary float in exact Money comparison: status %d, want 400 invalid_dtql: %s", refused.status, refused.raw)
+	refused := relHTTPPost(t, host.URL, "/v1/databases/exact/tugql", "", floatLiteral)
+	if refused.status != http.StatusBadRequest || refused.errorField("code") != "invalid_tugql" {
+		t.Fatalf("binary float in exact Money comparison: status %d, want 400 invalid_tugql: %s", refused.status, refused.raw)
 	}
 }
 
@@ -228,7 +228,7 @@ where: {op: '==', left: {field: label, source: t}, right: {value: included}}
 money: {minorUnitScale: 4, divisionScale: 4, rounding: halfEven}
 columns: [{aggregate: {function: sum, args: [{field: amount, source: a}]}, as: total}]
 `
-	resp := relHTTPPost(t, host.URL, "/v1/databases/exact/dtql", "", query)
+	resp := relHTTPPost(t, host.URL, "/v1/databases/exact/tugql", "", query)
 	if resp.status != http.StatusOK {
 		t.Fatalf("exact aggregate over an unqualified flat join: status %d: %s", resp.status, resp.raw)
 	}
@@ -240,9 +240,9 @@ columns: [{aggregate: {function: sum, args: [{field: amount, source: a}]}, as: t
 		"non-equality condition": strings.Replace(query, "op: '=='", "op: '>'", 1),
 		"nested-loop-first hint": strings.Replace(query, "type: inner", "type: inner\n      hints: {algorithms: [nestedLoop, hash]}", 1),
 	} {
-		refused := relHTTPPost(t, host.URL, "/v1/databases/exact/dtql", "", unsupported)
-		if refused.status != http.StatusBadRequest || refused.errorField("code") != "invalid_dtql" {
-			t.Errorf("%s Money join: status %d, want 400 invalid_dtql: %s", name, refused.status, refused.raw)
+		refused := relHTTPPost(t, host.URL, "/v1/databases/exact/tugql", "", unsupported)
+		if refused.status != http.StatusBadRequest || refused.errorField("code") != "invalid_tugql" {
+			t.Errorf("%s Money join: status %d, want 400 invalid_tugql: %s", name, refused.status, refused.raw)
 		}
 	}
 }
@@ -261,9 +261,9 @@ func TestExactDecimalMoneyArithmeticErrorsAreClientErrors(t *testing.T) {
 money: {minorUnitScale: 0, divisionScale: 2, rounding: halfEven}
 columns: [{aggregate: {function: sum, args: [{binary: {op: '/', left: {field: amount, source: a}, right: {value: 0}}}]}, as: total}]
 `
-		resp := relHTTPPost(t, host.URL, "/v1/databases/exact/dtql", "", query)
-		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" {
-			t.Fatalf("division by zero: status %d, want 400 invalid_dtql: %s", resp.status, resp.raw)
+		resp := relHTTPPost(t, host.URL, "/v1/databases/exact/tugql", "", query)
+		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" {
+			t.Fatalf("division by zero: status %d, want 400 invalid_tugql: %s", resp.status, resp.raw)
 		}
 	})
 	t.Run("precision overflow", func(t *testing.T) {
@@ -279,9 +279,9 @@ columns: [{aggregate: {function: sum, args: [{binary: {op: '/', left: {field: am
 money: {minorUnitScale: 0, divisionScale: 0, rounding: halfEven}
 columns: [{aggregate: {function: sum, args: [{binary: {op: '*', left: {field: amount, source: a}, right: {value: 10}}}]}, as: total}]
 `
-		resp := relHTTPPost(t, host.URL, "/v1/databases/exact/dtql", "", query)
-		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" {
-			t.Fatalf("precision overflow: status %d, want 400 invalid_dtql: %s", resp.status, resp.raw)
+		resp := relHTTPPost(t, host.URL, "/v1/databases/exact/tugql", "", query)
+		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" {
+			t.Fatalf("precision overflow: status %d, want 400 invalid_tugql: %s", resp.status, resp.raw)
 		}
 	})
 }
@@ -515,7 +515,7 @@ columns: [{field: name}]
 `
 
 	t.Run("SQLite evaluates the filter", func(t *testing.T) {
-		resp := relHTTPPost(t, host, "/v1/databases/sqlite/dtql", "", doc)
+		resp := relHTTPPost(t, host, "/v1/databases/sqlite/tugql", "", doc)
 		if resp.status != http.StatusOK {
 			t.Fatalf("status %d %s: %s", resp.status, resp.errorField("code"), resp.raw)
 		}
@@ -524,7 +524,7 @@ columns: [{field: name}]
 		}
 	})
 	t.Run("inGitDB refuses before returning rows", func(t *testing.T) {
-		resp := relHTTPPost(t, host, "/v1/databases/gitdb/dtql", "", doc)
+		resp := relHTTPPost(t, host, "/v1/databases/gitdb/tugql", "", doc)
 		if resp.status != http.StatusUnprocessableEntity || resp.errorField("code") != "query_unsupported" {
 			t.Fatalf("status %d %s: %s, want 422 query_unsupported", resp.status, resp.errorField("code"), resp.raw)
 		}
@@ -534,7 +534,7 @@ columns: [{field: name}]
 	})
 }
 
-func TestRelationalDTQLOverHTTPAcceptance(t *testing.T) {
+func TestRelationalTugQLOverHTTPAcceptance(t *testing.T) {
 	chinook, countries := relHTTPChinook(t, ""), relHTTPCountries(t, "")
 	service := server.New("test", map[string]*core.Database{"chinook": chinook, "countries": countries})
 	defer service.CloseSnapshots()
@@ -542,7 +542,7 @@ func TestRelationalDTQLOverHTTPAcceptance(t *testing.T) {
 	defer host.Close()
 
 	t.Run("a join on the per-database endpoint has ordered columns and the route", func(t *testing.T) {
-		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", relHTTPInvoiceJoin)
+		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/tugql", "", relHTTPInvoiceJoin)
 		if resp.status != http.StatusOK {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
@@ -562,7 +562,7 @@ func TestRelationalDTQLOverHTTPAcceptance(t *testing.T) {
 		}
 	})
 	t.Run("an aggregate over a join runs on the database route", func(t *testing.T) {
-		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", relHTTPRevenueByCountry)
+		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/tugql", "", relHTTPRevenueByCountry)
 		if resp.status != http.StatusOK {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
@@ -574,14 +574,14 @@ func TestRelationalDTQLOverHTTPAcceptance(t *testing.T) {
 			t.Fatalf("execution = %v", resp.execution(t))
 		}
 	})
-	t.Run("a second database is a 400 on the per-database endpoint and rows on /v1/dtql", func(t *testing.T) {
-		there := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", relHTTPCustomerRegions)
-		if there.status != http.StatusBadRequest || !strings.Contains(there.errorField("message"), "/v1/dtql") || !strings.Contains(there.errorField("message"), "countries") {
+	t.Run("a second database is a 400 on the per-database endpoint and rows on /v1/tugql", func(t *testing.T) {
+		there := relHTTPPost(t, host.URL, "/v1/databases/chinook/tugql", "", relHTTPCustomerRegions)
+		if there.status != http.StatusBadRequest || !strings.Contains(there.errorField("message"), "/v1/tugql") || !strings.Contains(there.errorField("message"), "countries") {
 			t.Fatalf("per-database endpoint: status %d: %s", there.status, there.raw)
 		}
-		here := relHTTPPost(t, host.URL, "/v1/dtql", "", relHTTPCustomerRegions)
+		here := relHTTPPost(t, host.URL, "/v1/tugql", "", relHTTPCustomerRegions)
 		if here.status != http.StatusOK {
-			t.Fatalf("/v1/dtql: status %d: %s", here.status, here.raw)
+			t.Fatalf("/v1/tugql: status %d: %s", here.status, here.raw)
 		}
 		rows := here.rows(t)
 		if len(rows) != 3 || rows[0]["customer"] != "Ada" || rows[0]["country"] != "United Kingdom" || rows[2]["region"] != "Americas" && rows[2]["customer"] != "Grace" {
@@ -600,36 +600,36 @@ func TestRelationalDTQLOverHTTPAcceptance(t *testing.T) {
 			t.Fatalf("first source = %v", first)
 		}
 	})
-	t.Run("the GET form of /v1/dtql", func(t *testing.T) {
-		resp := relHTTPDo(t, host.URL, http.MethodGet, "/v1/dtql?q="+url.QueryEscape(relHTTPCustomerRegions), "", "", nil)
+	t.Run("the GET form of /v1/tugql", func(t *testing.T) {
+		resp := relHTTPDo(t, host.URL, http.MethodGet, "/v1/tugql?q="+url.QueryEscape(relHTTPCustomerRegions), "", "", nil)
 		if resp.status != http.StatusOK || len(resp.rows(t)) != 3 {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
-		bad := relHTTPDo(t, host.URL, http.MethodGet, "/v1/dtql?x=1", "", "", nil)
+		bad := relHTTPDo(t, host.URL, http.MethodGet, "/v1/tugql?x=1", "", "", nil)
 		if bad.status != http.StatusBadRequest {
 			t.Fatalf("status %d: %s", bad.status, bad.raw)
 		}
-		long := relHTTPDo(t, host.URL, http.MethodGet, "/v1/dtql?q="+strings.Repeat("a", 9<<10), "", "", nil)
+		long := relHTTPDo(t, host.URL, http.MethodGet, "/v1/tugql?q="+strings.Repeat("a", 9<<10), "", "", nil)
 		if long.status != http.StatusRequestURITooLong {
 			t.Fatalf("status %d: %s", long.status, long.raw)
 		}
 	})
 	t.Run("parameters are bound", func(t *testing.T) {
 		body := `{"query": "from: {database: chinook, name: Customer, alias: c}\nwhere: {op: '==', left: {field: country, source: c}, right: {param: country}}\ncolumns: [{field: name, source: c}]\n", "parameters": {"country": "UK"}}`
-		resp := relHTTPDo(t, host.URL, http.MethodPost, "/v1/dtql", "", body, map[string]string{"Content-Type": "application/json"})
+		resp := relHTTPDo(t, host.URL, http.MethodPost, "/v1/tugql", "", body, map[string]string{"Content-Type": "application/json"})
 		if resp.status != http.StatusOK {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
 		if got := relHTTPNames(resp.rows(t), "name"); !reflect.DeepEqual(got, []any{"Ada"}) {
 			t.Fatalf("rows = %v", got)
 		}
-		unbound := relHTTPDo(t, host.URL, http.MethodPost, "/v1/dtql", "", `{"query": "from: {database: chinook, name: Customer}\nwhere: {op: '==', left: {field: id}, right: {param: x}}\n"}`, map[string]string{"Content-Type": "application/json"})
-		if unbound.status != http.StatusBadRequest || unbound.errorField("code") != "invalid_dtql" {
+		unbound := relHTTPDo(t, host.URL, http.MethodPost, "/v1/tugql", "", `{"query": "from: {database: chinook, name: Customer}\nwhere: {op: '==', left: {field: id}, right: {param: x}}\n"}`, map[string]string{"Content-Type": "application/json"})
+		if unbound.status != http.StatusBadRequest || unbound.errorField("code") != "invalid_tugql" {
 			t.Fatalf("status %d: %s", unbound.status, unbound.raw)
 		}
 	})
 	t.Run("a single-collection document returns exactly today's body", func(t *testing.T) {
-		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", "from: {name: Customer}\norderBy: [{field: id}]\n")
+		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/tugql", "", "from: {name: Customer}\norderBy: [{field: id}]\n")
 		if resp.status != http.StatusOK {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
@@ -645,7 +645,7 @@ func TestRelationalDTQLOverHTTPAcceptance(t *testing.T) {
 	})
 	t.Run("a one-source document that names its own database is read as one that names none", func(t *testing.T) {
 		const bare = "from: {name: Customer}\norderBy: [{field: id}]\ncolumns: [{field: name}]\n"
-		want := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", bare)
+		want := relHTTPPost(t, host.URL, "/v1/databases/chinook/tugql", "", bare)
 		if want.status != http.StatusOK || want.body["columns"] != nil || want.body["execution"] != nil {
 			t.Fatalf("status %d: %s", want.status, want.raw)
 		}
@@ -655,7 +655,7 @@ func TestRelationalDTQLOverHTTPAcceptance(t *testing.T) {
 			"the database last":    "from: {name: Customer, database: chinook}\norderBy: [{field: id}]\ncolumns: [{field: name}]\n",
 			"with the default one": "from: {database: chinook, schema: main, name: Customer}\norderBy: [{field: id}]\ncolumns: [{field: name}]\n",
 		} {
-			got := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", doc)
+			got := relHTTPPost(t, host.URL, "/v1/databases/chinook/tugql", "", doc)
 			if got.status != want.status || got.raw != want.raw {
 				t.Errorf("%s: status %d: %s\nwant the body of the document that names no database: %s", name, got.status, got.raw, want.raw)
 			}
@@ -665,8 +665,8 @@ func TestRelationalDTQLOverHTTPAcceptance(t *testing.T) {
 			t.Fatalf("records = %v, want keys", records)
 		}
 	})
-	t.Run("the same document on /v1/dtql is relational, without keys", func(t *testing.T) {
-		resp := relHTTPPost(t, host.URL, "/v1/dtql", "", "from: {database: chinook, name: Customer}\norderBy: [{field: id}]\ncolumns: [{field: name}]\n")
+	t.Run("the same document on /v1/tugql is relational, without keys", func(t *testing.T) {
+		resp := relHTTPPost(t, host.URL, "/v1/tugql", "", "from: {database: chinook, name: Customer}\norderBy: [{field: id}]\ncolumns: [{field: name}]\n")
 		if resp.status != http.StatusOK || resp.body["columns"] == nil || resp.body["execution"] == nil {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
@@ -684,9 +684,9 @@ func TestRelationalDTQLOverHTTPAcceptance(t *testing.T) {
 			"a null test":          "from: {database: chinook, name: Customer}\nwhere: {isNotNull: {field: country}}\ncolumns: [{field: id}]\n",
 			"the other's database": "from: {database: chinook, name: Customer}\nwhere: {exists: {query: {from: {database: countries, name: Country}}}}\ncolumns: [{field: id}]\n",
 		} {
-			resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", doc)
+			resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/tugql", "", doc)
 			if name == "the other's database" {
-				if resp.status != http.StatusBadRequest || !strings.Contains(resp.errorField("message"), "/v1/dtql") {
+				if resp.status != http.StatusBadRequest || !strings.Contains(resp.errorField("message"), "/v1/tugql") {
 					t.Errorf("%s: status %d: %s", name, resp.status, resp.raw)
 				}
 				continue
@@ -696,15 +696,15 @@ func TestRelationalDTQLOverHTTPAcceptance(t *testing.T) {
 			}
 		}
 	})
-	t.Run("a document whose only relational feature is a subquery is answered in memory, as on /v1/dtql", func(t *testing.T) {
+	t.Run("a document whose only relational feature is a subquery is answered in memory, as on /v1/tugql", func(t *testing.T) {
 		// One query has one answer: the root unaliased or aliased, the sources
 		// naming the database or not, on either endpoint.
 		want := []any{"i1", "i2", "i3", "i4", "i5"}
 		for name, call := range map[string]struct{ path, doc string }{
-			"unaliased root":          {"/v1/databases/chinook/dtql", "from: {name: Invoice}\nwhere: {exists: {query: {from: {name: Customer}}}}\norderBy: [{field: id}]\ncolumns: [{field: id}]\n"},
-			"aliased root":            {"/v1/databases/chinook/dtql", "from: {name: Invoice, alias: i}\nwhere: {exists: {query: {from: {name: Customer}}}}\norderBy: [{field: id}]\ncolumns: [{field: id}]\n"},
-			"sources naming the base": {"/v1/databases/chinook/dtql", "from: {database: chinook, name: Invoice}\nwhere: {exists: {query: {from: {database: chinook, name: Customer}}}}\norderBy: [{field: id}]\ncolumns: [{field: id}]\n"},
-			"/v1/dtql":                {"/v1/dtql", "from: {database: chinook, name: Invoice}\nwhere: {exists: {query: {from: {database: chinook, name: Customer}}}}\norderBy: [{field: id}]\ncolumns: [{field: id}]\n"},
+			"unaliased root":          {"/v1/databases/chinook/tugql", "from: {name: Invoice}\nwhere: {exists: {query: {from: {name: Customer}}}}\norderBy: [{field: id}]\ncolumns: [{field: id}]\n"},
+			"aliased root":            {"/v1/databases/chinook/tugql", "from: {name: Invoice, alias: i}\nwhere: {exists: {query: {from: {name: Customer}}}}\norderBy: [{field: id}]\ncolumns: [{field: id}]\n"},
+			"sources naming the base": {"/v1/databases/chinook/tugql", "from: {database: chinook, name: Invoice}\nwhere: {exists: {query: {from: {database: chinook, name: Customer}}}}\norderBy: [{field: id}]\ncolumns: [{field: id}]\n"},
+			"/v1/tugql":               {"/v1/tugql", "from: {database: chinook, name: Invoice}\nwhere: {exists: {query: {from: {database: chinook, name: Customer}}}}\norderBy: [{field: id}]\ncolumns: [{field: id}]\n"},
 		} {
 			resp := relHTTPPost(t, host.URL, call.path, "", call.doc)
 			if resp.status != http.StatusOK || resp.execution(t)["route"] != "in-memory" || !reflect.DeepEqual(relHTTPNames(resp.rows(t), "id"), want) {
@@ -714,9 +714,9 @@ func TestRelationalDTQLOverHTTPAcceptance(t *testing.T) {
 	})
 	t.Run("the paging headers are refused on a relational document", func(t *testing.T) {
 		for _, header := range []string{"OVDB-Page-Size", "OVDB-Page-Token", "OVDB-Page-Close"} {
-			for _, path := range []string{"/v1/databases/chinook/dtql", "/v1/dtql"} {
+			for _, path := range []string{"/v1/databases/chinook/tugql", "/v1/tugql"} {
 				doc := relHTTPInvoiceJoin
-				if path == "/v1/dtql" {
+				if path == "/v1/tugql" {
 					doc = relHTTPCustomerRegions
 				}
 				resp := relHTTPDo(t, host.URL, http.MethodPost, path, "", doc, map[string]string{header: "10"})
@@ -726,7 +726,7 @@ func TestRelationalDTQLOverHTTPAcceptance(t *testing.T) {
 			}
 		}
 	})
-	t.Run("/v1/dtql needs a database on every source", func(t *testing.T) {
+	t.Run("/v1/tugql needs a database on every source", func(t *testing.T) {
 		for name, doc := range map[string]string{
 			"no database":         "from: {name: Customer}\n",
 			"join without one":    strings.Replace(relHTTPCustomerRegions, "database: countries, ", "", 1),
@@ -739,23 +739,23 @@ func TestRelationalDTQLOverHTTPAcceptance(t *testing.T) {
 			"offset too large":    "from: {database: chinook, name: Customer}\noffset: 10001\n",
 			"a document of YAML":  "- not a document\n",
 		} {
-			resp := relHTTPPost(t, host.URL, "/v1/dtql", "", doc)
+			resp := relHTTPPost(t, host.URL, "/v1/tugql", "", doc)
 			if resp.status != http.StatusBadRequest {
 				t.Errorf("%s: status %d: %s", name, resp.status, resp.raw)
 			}
 		}
-		if resp := relHTTPPost(t, host.URL, "/v1/dtql", "", ""); resp.status != http.StatusBadRequest {
+		if resp := relHTTPPost(t, host.URL, "/v1/tugql", "", ""); resp.status != http.StatusBadRequest {
 			t.Errorf("empty body: status %d", resp.status)
 		}
 	})
 	t.Run("a well-formed database that is not mounted is a 404", func(t *testing.T) {
-		resp := relHTTPPost(t, host.URL, "/v1/dtql", "", "from: {database: nowhere, name: Customer}\n")
+		resp := relHTTPPost(t, host.URL, "/v1/tugql", "", "from: {database: nowhere, name: Customer}\n")
 		if resp.status != http.StatusNotFound || resp.errorField("code") != "not_found" {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
 	})
 	t.Run("a column the database does not know is a 400", func(t *testing.T) {
-		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", strings.Replace(relHTTPInvoiceJoin, "{field: total, source: i, as: total}", "{field: nosuchcolumn, source: i}", 1))
+		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/tugql", "", strings.Replace(relHTTPInvoiceJoin, "{field: total, source: i, as: total}", "{field: nosuchcolumn, source: i}", 1))
 		if resp.status != http.StatusBadRequest {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
@@ -772,7 +772,7 @@ func TestSingleCollectionDocumentAndTheDefaultSchemaOverHTTP(t *testing.T) {
 	host := httptest.NewServer(service.Handler())
 	defer host.Close()
 	post := func(doc string) relHTTPResponse {
-		return relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", doc)
+		return relHTTPPost(t, host.URL, "/v1/databases/chinook/tugql", "", doc)
 	}
 	plain := post("from: {name: Customer}\norderBy: [{field: id}]\n")
 	if plain.status != http.StatusOK {
@@ -802,20 +802,20 @@ func TestSingleCollectionDocumentAndTheDefaultSchemaOverHTTP(t *testing.T) {
 	} {
 		t.Run("refused, "+name, func(t *testing.T) {
 			resp := post(doc)
-			if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" {
-				t.Fatalf("status %d, want a 400 invalid_dtql: %s", resp.status, resp.raw)
+			if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" {
+				t.Fatalf("status %d, want a 400 invalid_tugql: %s", resp.status, resp.raw)
 			}
 		})
 	}
 	// The default schema of the other mounts is none: only SQLite has one.
-	if resp := relHTTPPost(t, host.URL, "/v1/dtql", "", "from: {database: chinook, schema: main, name: Customer}\n"); resp.status != http.StatusBadRequest {
-		t.Fatalf("/v1/dtql takes no schema: status %d: %s", resp.status, resp.raw)
+	if resp := relHTTPPost(t, host.URL, "/v1/tugql", "", "from: {database: chinook, schema: main, name: Customer}\n"); resp.status != http.StatusBadRequest {
+		t.Fatalf("/v1/tugql takes no schema: status %d: %s", resp.status, resp.raw)
 	}
 }
 
 // A grant names one database, or one database and one collection. The handler
 // checks every source of the document before anything is read.
-func TestRelationalDTQLGrantsOverHTTP(t *testing.T) {
+func TestRelationalTugQLGrantsOverHTTP(t *testing.T) {
 	dir := t.TempDir()
 	store, err := auth.OpenStore(filepath.Join(dir, "auth.json"))
 	if err != nil {
@@ -842,28 +842,28 @@ func TestRelationalDTQLGrantsOverHTTP(t *testing.T) {
 	defer host.Close()
 
 	t.Run("an owner token gets rows", func(t *testing.T) {
-		resp := relHTTPPost(t, host.URL, "/v1/dtql", ownerToken, relHTTPCustomerRegions)
+		resp := relHTTPPost(t, host.URL, "/v1/tugql", ownerToken, relHTTPCustomerRegions)
 		if resp.status != http.StatusOK || len(resp.rows(t)) != 3 {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
-		resp = relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", ownerToken, relHTTPInvoiceJoin)
+		resp = relHTTPPost(t, host.URL, "/v1/databases/chinook/tugql", ownerToken, relHTTPInvoiceJoin)
 		if resp.status != http.StatusOK || len(resp.rows(t)) != 5 {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
 	})
 	t.Run("a server-level grant reads both databases", func(t *testing.T) {
-		resp := relHTTPPost(t, host.URL, "/v1/dtql", "tok-server", relHTTPCustomerRegions)
+		resp := relHTTPPost(t, host.URL, "/v1/tugql", "tok-server", relHTTPCustomerRegions)
 		if resp.status != http.StatusOK {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
 	})
 	t.Run("no token is a 401", func(t *testing.T) {
-		if resp := relHTTPPost(t, host.URL, "/v1/dtql", "", relHTTPCustomerRegions); resp.status != http.StatusUnauthorized {
+		if resp := relHTTPPost(t, host.URL, "/v1/tugql", "", relHTTPCustomerRegions); resp.status != http.StatusUnauthorized {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
 	})
 	t.Run("a token for one database joining two gets a 403 that names the second", func(t *testing.T) {
-		resp := relHTTPPost(t, host.URL, "/v1/dtql", "tok-chinook", relHTTPCustomerRegions)
+		resp := relHTTPPost(t, host.URL, "/v1/tugql", "tok-chinook", relHTTPCustomerRegions)
 		if resp.status != http.StatusForbidden || resp.errorField("code") != "forbidden" || !strings.Contains(resp.errorField("message"), "countries") {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
@@ -871,39 +871,39 @@ func TestRelationalDTQLGrantsOverHTTP(t *testing.T) {
 			t.Fatalf("a refused request returned rows: %s", resp.raw)
 		}
 		// The same token reads its own database.
-		own := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "tok-chinook", relHTTPInvoiceJoin)
+		own := relHTTPPost(t, host.URL, "/v1/databases/chinook/tugql", "tok-chinook", relHTTPInvoiceJoin)
 		if own.status != http.StatusOK || len(own.rows(t)) != 5 {
 			t.Fatalf("own database: status %d: %s", own.status, own.raw)
 		}
 		// And the token of the second database names the first.
-		other := relHTTPPost(t, host.URL, "/v1/dtql", "tok-countries", relHTTPCustomerRegions)
+		other := relHTTPPost(t, host.URL, "/v1/tugql", "tok-countries", relHTTPCustomerRegions)
 		if other.status != http.StatusForbidden || !strings.Contains(other.errorField("message"), "chinook") {
 			t.Fatalf("status %d: %s", other.status, other.raw)
 		}
 	})
 	t.Run("a grant for another capability reads nothing", func(t *testing.T) {
-		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "tok-write-only", relHTTPInvoiceJoin)
+		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/tugql", "tok-write-only", relHTTPInvoiceJoin)
 		if resp.status != http.StatusForbidden {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
 	})
 	t.Run("a token scoped to one collection is refused a join that reads another", func(t *testing.T) {
-		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "tok-invoice-only", relHTTPInvoiceJoin)
+		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/tugql", "tok-invoice-only", relHTTPInvoiceJoin)
 		if resp.status != http.StatusForbidden || !strings.Contains(resp.errorField("message"), "Customer") {
 			t.Fatalf("join: status %d: %s", resp.status, resp.raw)
 		}
 		// A subquery reads the other collection of the same database.
-		sub := relHTTPPost(t, host.URL, "/v1/dtql", "tok-invoice-only", relHTTPInvoicesWithACustomer)
+		sub := relHTTPPost(t, host.URL, "/v1/tugql", "tok-invoice-only", relHTTPInvoicesWithACustomer)
 		if sub.status != http.StatusForbidden || !strings.Contains(sub.errorField("message"), "Customer") {
 			t.Fatalf("subquery: status %d: %s", sub.status, sub.raw)
 		}
 		// The same token reads the one collection it is granted.
-		own := relHTTPPost(t, host.URL, "/v1/dtql", "tok-invoice-only", "from: {database: chinook, name: Invoice}\norderBy: [{field: id}]\ncolumns: [{field: id}]\n")
+		own := relHTTPPost(t, host.URL, "/v1/tugql", "tok-invoice-only", "from: {database: chinook, name: Invoice}\norderBy: [{field: id}]\ncolumns: [{field: id}]\n")
 		if own.status != http.StatusOK || len(own.rows(t)) != 5 {
 			t.Fatalf("own collection: status %d: %s", own.status, own.raw)
 		}
 		// The owner's subquery document returns the invoices that have a customer.
-		owner := relHTTPPost(t, host.URL, "/v1/dtql", ownerToken, relHTTPInvoicesWithACustomer)
+		owner := relHTTPPost(t, host.URL, "/v1/tugql", ownerToken, relHTTPInvoicesWithACustomer)
 		if owner.status != http.StatusOK || len(owner.rows(t)) != 5 {
 			t.Fatalf("owner: status %d: %s", owner.status, owner.raw)
 		}
@@ -942,14 +942,14 @@ columns:
 			"an alias equal to the granted collection":           "from: {database: chinook, name: Customer, alias: Invoice}\ncolumns: [{field: id, source: Invoice}]\n",
 			"a derived source aliased as the granted collection": "from:\n  query:\n    as: Invoice\n    from: {database: chinook, name: Customer}\n    columns: [{field: id}]\n",
 		} {
-			resp := relHTTPPost(t, host.URL, "/v1/dtql", "tok-invoice-only", doc)
+			resp := relHTTPPost(t, host.URL, "/v1/tugql", "tok-invoice-only", doc)
 			if resp.status != http.StatusForbidden || resp.errorField("code") != "forbidden" || !strings.Contains(resp.errorField("message"), "Customer") {
 				t.Errorf("%s: status %d, want a 403 that names Customer: %s", name, resp.status, resp.raw)
 			}
 			if resp.body["records"] != nil || strings.Contains(resp.raw, "c1") {
 				t.Errorf("%s: a refused request returned rows: %s", name, resp.raw)
 			}
-			owner := relHTTPPost(t, host.URL, "/v1/dtql", ownerToken, doc)
+			owner := relHTTPPost(t, host.URL, "/v1/tugql", ownerToken, doc)
 			if owner.status != http.StatusOK || len(owner.rows(t)) == 0 {
 				t.Errorf("%s: the owner's status %d, want rows: %s", name, owner.status, owner.raw)
 			}
@@ -958,12 +958,12 @@ columns:
 }
 
 // With auth off every caller is an owner: the same document returns rows.
-func TestRelationalDTQLWithAuthOffReturnsRows(t *testing.T) {
+func TestRelationalTugQLWithAuthOffReturnsRows(t *testing.T) {
 	service := server.New("test", map[string]*core.Database{"chinook": relHTTPChinook(t, ""), "countries": relHTTPCountries(t, "")})
 	defer service.CloseSnapshots()
 	host := httptest.NewServer(service.Handler())
 	defer host.Close()
-	resp := relHTTPPost(t, host.URL, "/v1/dtql", "", relHTTPInvoicesWithACustomer)
+	resp := relHTTPPost(t, host.URL, "/v1/tugql", "", relHTTPInvoicesWithACustomer)
 	if resp.status != http.StatusOK || len(resp.rows(t)) != 5 || resp.execution(t)["route"] != "in-memory" {
 		t.Fatalf("status %d: %s", resp.status, resp.raw)
 	}
@@ -971,20 +971,20 @@ func TestRelationalDTQLWithAuthOffReturnsRows(t *testing.T) {
 
 // A request counts as in flight on every database it reads, so unmounting waits
 // for it.
-func TestRelationalDTQLLeasesEveryDatabaseItReads(t *testing.T) {
+func TestRelationalTugQLLeasesEveryDatabaseItReads(t *testing.T) {
 	chinook, countries := relHTTPChinook(t, ""), relHTTPCountries(t, "")
 	service := server.New("test", map[string]*core.Database{"chinook": chinook, "countries": countries})
 	defer service.CloseSnapshots()
 	host := httptest.NewServer(service.Handler())
 	defer host.Close()
-	if resp := relHTTPPost(t, host.URL, "/v1/dtql", "", relHTTPCustomerRegions); resp.status != http.StatusOK {
+	if resp := relHTTPPost(t, host.URL, "/v1/tugql", "", relHTTPCustomerRegions); resp.status != http.StatusOK {
 		t.Fatalf("status %d: %s", resp.status, resp.raw)
 	}
 	if err := service.Unmount("countries"); err != nil {
 		t.Fatalf("Unmount: %v", err)
 	}
 	// A database that left the server is a 404 for the next request.
-	if resp := relHTTPPost(t, host.URL, "/v1/dtql", "", relHTTPCustomerRegions); resp.status != http.StatusNotFound {
+	if resp := relHTTPPost(t, host.URL, "/v1/tugql", "", relHTTPCustomerRegions); resp.status != http.StatusNotFound {
 		t.Fatalf("status %d: %s", resp.status, resp.raw)
 	}
 	_ = chinook
@@ -992,7 +992,7 @@ func TestRelationalDTQLLeasesEveryDatabaseItReads(t *testing.T) {
 
 // Public caching: the headers of a GET on a read-only server with no auth and no
 // policy follow the smallest cache_ttl of the databases read.
-func TestRelationalDTQLCacheHeaders(t *testing.T) {
+func TestRelationalTugQLCacheHeaders(t *testing.T) {
 	chinook := relHTTPChinook(t, ", cache_ttl: 120s")
 	countries := relHTTPCountries(t, ", cache_ttl: 60s")
 	service := server.New("test", map[string]*core.Database{"chinook": chinook, "countries": countries}, server.WithReadOnly(true))
@@ -1002,23 +1002,23 @@ func TestRelationalDTQLCacheHeaders(t *testing.T) {
 	get := func(path, doc string) relHTTPResponse {
 		return relHTTPDo(t, host.URL, http.MethodGet, path+"?q="+url.QueryEscape(doc), "", "", nil)
 	}
-	resp := get("/v1/dtql", relHTTPCustomerRegions)
+	resp := get("/v1/tugql", relHTTPCustomerRegions)
 	if resp.status != http.StatusOK || resp.header.Get("Cache-Control") != "public, max-age=60, s-maxage=60" {
 		t.Fatalf("status %d, Cache-Control %q: %s", resp.status, resp.header.Get("Cache-Control"), resp.raw)
 	}
 	if !strings.Contains(resp.header.Get("Vary"), "OVDB-Page-Size") {
 		t.Fatalf("Vary = %q", resp.header.Get("Vary"))
 	}
-	resp = get("/v1/databases/chinook/dtql", relHTTPInvoiceJoin)
+	resp = get("/v1/databases/chinook/tugql", relHTTPInvoiceJoin)
 	if resp.status != http.StatusOK || resp.header.Get("Cache-Control") != "public, max-age=120, s-maxage=120" {
 		t.Fatalf("status %d, Cache-Control %q: %s", resp.status, resp.header.Get("Cache-Control"), resp.raw)
 	}
 	// A POST is never cached.
-	if post := relHTTPPost(t, host.URL, "/v1/dtql", "", relHTTPCustomerRegions); post.header.Get("Cache-Control") != "no-store" {
+	if post := relHTTPPost(t, host.URL, "/v1/tugql", "", relHTTPCustomerRegions); post.header.Get("Cache-Control") != "no-store" {
 		t.Fatalf("POST Cache-Control = %q", post.header.Get("Cache-Control"))
 	}
 	// An error is never cached either.
-	if bad := get("/v1/dtql", "from: {name: Customer}\n"); bad.status != http.StatusBadRequest || bad.header.Get("Cache-Control") != "no-store" {
+	if bad := get("/v1/tugql", "from: {name: Customer}\n"); bad.status != http.StatusBadRequest || bad.header.Get("Cache-Control") != "no-store" {
 		t.Fatalf("status %d, Cache-Control %q", bad.status, bad.header.Get("Cache-Control"))
 	}
 	// Without a cache_ttl on one of the databases nothing is cached.
@@ -1026,7 +1026,7 @@ func TestRelationalDTQLCacheHeaders(t *testing.T) {
 	defer plain.CloseSnapshots()
 	plainHost := httptest.NewServer(plain.Handler())
 	defer plainHost.Close()
-	if resp := relHTTPDo(t, plainHost.URL, http.MethodGet, "/v1/dtql?q="+url.QueryEscape(relHTTPCustomerRegions), "", "", nil); resp.status != http.StatusOK || resp.header.Get("Cache-Control") != "no-store" {
+	if resp := relHTTPDo(t, plainHost.URL, http.MethodGet, "/v1/tugql?q="+url.QueryEscape(relHTTPCustomerRegions), "", "", nil); resp.status != http.StatusOK || resp.header.Get("Cache-Control") != "no-store" {
 		t.Fatalf("status %d, Cache-Control %q", resp.status, resp.header.Get("Cache-Control"))
 	}
 	// A server with auth on caches nothing.
@@ -1034,14 +1034,14 @@ func TestRelationalDTQLCacheHeaders(t *testing.T) {
 	defer secured.CloseSnapshots()
 	securedHost := httptest.NewServer(secured.Handler())
 	defer securedHost.Close()
-	if resp := relHTTPDo(t, securedHost.URL, http.MethodGet, "/v1/dtql?q="+url.QueryEscape(relHTTPCustomerRegions), ownerToken, "", nil); resp.status != http.StatusOK || resp.header.Get("Cache-Control") != "no-store" {
+	if resp := relHTTPDo(t, securedHost.URL, http.MethodGet, "/v1/tugql?q="+url.QueryEscape(relHTTPCustomerRegions), ownerToken, "", nil); resp.status != http.StatusOK || resp.header.Get("Cache-Control") != "no-store" {
 		t.Fatalf("status %d, Cache-Control %q", resp.status, resp.header.Get("Cache-Control"))
 	}
 }
 
 // relHTTPPolicy is an access policy for the crm database that lets the reader
 // role read customers whose country is IE.
-const relHTTPPolicyFile = `apiVersion: dtql.org/access/v1
+const relHTTPPolicyFile = `apiVersion: tugql.org/access/v1
 kind: AccessPolicy
 metadata:
   name: readers
@@ -1112,7 +1112,7 @@ func relHTTPProtected(t *testing.T) *core.Database {
 // transaction, which is the one way a whole joined query could be handed to its
 // driver. A document of one plain collection is answered as it always was, through
 // the policy, with keys; a scan clause is refused by the classifier.
-func TestRelationalDTQLOnAPolicyProtectedMountIsRefusedBeforeItsDriver(t *testing.T) {
+func TestRelationalTugQLOnAPolicyProtectedMountIsRefusedBeforeItsDriver(t *testing.T) {
 	crm := relHTTPProtected(t)
 	service := server.New("test", map[string]*core.Database{"crm": crm},
 		server.WithPrincipalResolver(func(context.Context, *auth.Principal) (access.Principal, error) {
@@ -1133,8 +1133,8 @@ func TestRelationalDTQLOnAPolicyProtectedMountIsRefusedBeforeItsDriver(t *testin
 		subquery   = "from: {%[1]sname: orders}\nwhere: {exists: {query: {from: {%[1]sname: customers}}}}\n"
 	)
 	for _, endpoint := range []struct{ name, path, database string }{
-		{"per-database endpoint", "/v1/databases/crm/dtql", ""},
-		{"/v1/dtql", "/v1/dtql", "database: crm, "},
+		{"per-database endpoint", "/v1/databases/crm/tugql", ""},
+		{"/v1/tugql", "/v1/tugql", "database: crm, "},
 	} {
 		for shape, format := range map[string]string{"a join": join, "a grouped count": count, "a subquery": subquery, "money aggregate on a policy-governed field": moneySum, "money aggregate after a policy-governed filter": moneyWhere} {
 			t.Run(endpoint.name+", "+shape, func(t *testing.T) {
@@ -1150,7 +1150,7 @@ func TestRelationalDTQLOnAPolicyProtectedMountIsRefusedBeforeItsDriver(t *testin
 		t.Fatalf("ReadTx on a protected mount = %v (ran %v), want core.ErrProtectedReadTx and no run", err, ran)
 	}
 	t.Run("a document of one plain collection is read through the policy, with keys", func(t *testing.T) {
-		resp := relHTTPPost(t, host.URL, "/v1/databases/crm/dtql", ownerToken, "from: {name: customers}\norderBy: [{field: id}]\n")
+		resp := relHTTPPost(t, host.URL, "/v1/databases/crm/tugql", ownerToken, "from: {name: customers}\norderBy: [{field: id}]\n")
 		records, _ := resp.body["records"].([]any)
 		if resp.status != http.StatusOK || len(records) != 2 || resp.body["columns"] != nil {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
@@ -1160,8 +1160,8 @@ func TestRelationalDTQLOnAPolicyProtectedMountIsRefusedBeforeItsDriver(t *testin
 		}
 	})
 	t.Run("a scan clause is refused by the classifier", func(t *testing.T) {
-		resp := relHTTPPost(t, host.URL, "/v1/databases/crm/dtql", ownerToken, "from: {name: customers, scan: {limit: 1, orderBy: [{field: id}]}}\ncolumns: [{field: id}]\n")
-		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || !strings.Contains(resp.errorField("message"), "scan") {
+		resp := relHTTPPost(t, host.URL, "/v1/databases/crm/tugql", ownerToken, "from: {name: customers, scan: {limit: 1, orderBy: [{field: id}]}}\ncolumns: [{field: id}]\n")
+		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" || !strings.Contains(resp.errorField("message"), "scan") {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
 	})
@@ -1204,17 +1204,17 @@ func TestClassifierRefusalsOfADocumentTheSingleCollectionValidatorAcceptsAreClie
 			// The premise: the validator of the single-collection path accepts the
 			// document, so before the classifier it ran or failed closed at the
 			// adapter. These documents must now be refused as client errors.
-			if _, _, err := core.ParseDTQL([]byte(tc.doc)); err != nil {
-				t.Fatalf("ParseDTQL refuses the document, so it is not the case under test: %v", err)
+			if _, _, err := core.ParseTugQL([]byte(tc.doc)); err != nil {
+				t.Fatalf("ParseTugQL refuses the document, so it is not the case under test: %v", err)
 			}
 			doc := tc.doc
-			for _, path := range []string{"/v1/databases/chinook/dtql", "/v1/dtql"} {
-				if path == "/v1/dtql" {
+			for _, path := range []string{"/v1/databases/chinook/tugql", "/v1/tugql"} {
+				if path == "/v1/tugql" {
 					doc = strings.ReplaceAll(tc.doc, "from: {name: ", "from: {database: chinook, name: ")
 				}
 				resp := relHTTPPost(t, host.URL, path, "", doc)
-				if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || !strings.Contains(resp.errorField("message"), tc.reason) {
-					t.Fatalf("%s: status %d, want a 400 invalid_dtql naming %q: %s", path, resp.status, tc.reason, resp.raw)
+				if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" || !strings.Contains(resp.errorField("message"), tc.reason) {
+					t.Fatalf("%s: status %d, want a 400 invalid_tugql naming %q: %s", path, resp.status, tc.reason, resp.raw)
 				}
 			}
 		})
@@ -1233,7 +1233,7 @@ func indentRelHTTP(text string, spaces int) string {
 // What the executor reports reaches the caller with the status the handler maps
 // it to: DALgo's own shape errors on the in-memory route, a null test, the
 // strict field-name rule, a column the database does not know.
-func TestRelationalDTQLStatusesOverHTTP(t *testing.T) {
+func TestRelationalTugQLStatusesOverHTTP(t *testing.T) {
 	service := server.New("test", map[string]*core.Database{"chinook": relHTTPChinook(t, ""), "countries": relHTTPCountries(t, "")})
 	defer service.CloseSnapshots()
 	host := httptest.NewServer(service.Handler())
@@ -1241,17 +1241,17 @@ func TestRelationalDTQLStatusesOverHTTP(t *testing.T) {
 
 	t.Run("an alias DALgo does not know is a 400 on the in-memory route", func(t *testing.T) {
 		doc := strings.Replace(relHTTPCustomerRegions, "{field: name, source: k, as: country}", "{field: name, source: nowhere, as: country}", 1)
-		resp := relHTTPPost(t, host.URL, "/v1/dtql", "", doc)
-		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" {
+		resp := relHTTPPost(t, host.URL, "/v1/tugql", "", doc)
+		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
 	})
 	t.Run("a null test runs and returns the rows that match", func(t *testing.T) {
-		resp := relHTTPPost(t, host.URL, "/v1/dtql", "", "from: {database: chinook, name: Customer}\nwhere: {isNotNull: {field: country}}\norderBy: [{field: id}]\ncolumns: [{field: id}]\n")
+		resp := relHTTPPost(t, host.URL, "/v1/tugql", "", "from: {database: chinook, name: Customer}\nwhere: {isNotNull: {field: country}}\norderBy: [{field: id}]\ncolumns: [{field: id}]\n")
 		if resp.status != http.StatusOK || len(resp.rows(t)) != 3 {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
-		none := relHTTPPost(t, host.URL, "/v1/dtql", "", "from: {database: chinook, name: Customer}\nwhere: {isNull: {field: country}}\ncolumns: [{field: id}]\n")
+		none := relHTTPPost(t, host.URL, "/v1/tugql", "", "from: {database: chinook, name: Customer}\nwhere: {isNull: {field: country}}\ncolumns: [{field: id}]\n")
 		if none.status != http.StatusOK || len(none.rows(t)) != 0 {
 			t.Fatalf("status %d: %s", none.status, none.raw)
 		}
@@ -1260,14 +1260,14 @@ func TestRelationalDTQLStatusesOverHTTP(t *testing.T) {
 		// The walk of the executor holds the strict rule, whatever the engine: a
 		// column named with a space is a plain query on the single-collection path and
 		// a 400 on a relational document.
-		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", "from: {name: Customer, alias: c}\ncolumns: [{field: 'first name', source: c}]\n")
-		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || !strings.Contains(resp.errorField("message"), "field name") {
+		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/tugql", "", "from: {name: Customer, alias: c}\ncolumns: [{field: 'first name', source: c}]\n")
+		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" || !strings.Contains(resp.errorField("message"), "field name") {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
 	})
 	t.Run("a column the database does not know is a 400 that names it", func(t *testing.T) {
-		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", "from: {name: Customer, alias: c}\ncolumns: [{field: nosuchcolumn, source: c}]\n")
-		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || !strings.Contains(resp.errorField("message"), "nosuchcolumn") {
+		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/tugql", "", "from: {name: Customer, alias: c}\ncolumns: [{field: nosuchcolumn, source: c}]\n")
+		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" || !strings.Contains(resp.errorField("message"), "nosuchcolumn") {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
 	})
@@ -1275,7 +1275,7 @@ func TestRelationalDTQLStatusesOverHTTP(t *testing.T) {
 
 // A budget failure before the first row is an ordinary 422; after rows have
 // reached the client the response is aborted and cannot decode as success.
-func TestRelationalDTQLBudgetErrorsOverHTTP(t *testing.T) {
+func TestRelationalTugQLBudgetErrorsOverHTTP(t *testing.T) {
 	chinook, countries, big := relHTTPChinook(t, ""), relHTTPCountries(t, ""), relHTTPBig(t)
 	service := server.New("test", map[string]*core.Database{"chinook": chinook, "countries": countries, "big": big},
 		server.WithQueryLimits(server.QueryLimits{MaxSourceRows: 2}))
@@ -1300,14 +1300,14 @@ func TestRelationalDTQLBudgetErrorsOverHTTP(t *testing.T) {
 		}
 	}
 	// Three customers read from a source limited to two rows.
-	check(relHTTPDoPartial(t, host.URL, http.MethodPost, "/v1/dtql", "", relHTTPCustomerRegions, nil), "source_rows", 2, "in-memory")
+	check(relHTTPDoPartial(t, host.URL, http.MethodPost, "/v1/tugql", "", relHTTPCustomerRegions, nil), "source_rows", 2, "in-memory")
 	// A result of 1001 rows is refused whole, not cut to 1000.
-	check(relHTTPDoPartial(t, host.URL, http.MethodPost, "/v1/databases/big/dtql", "", "from: {name: N, alias: n}\norderBy: [{field: id, source: n}]\n", nil), "response_rows", 1000, "database")
+	check(relHTTPDoPartial(t, host.URL, http.MethodPost, "/v1/databases/big/tugql", "", "from: {name: N, alias: n}\norderBy: [{field: id, source: n}]\n", nil), "response_rows", 1000, "database")
 }
 
 // The request timeout is a 504 on both routes, and the server answers the next
 // request.
-func TestRelationalDTQLTimeoutIsA504OverHTTP(t *testing.T) {
+func TestRelationalTugQLTimeoutIsA504OverHTTP(t *testing.T) {
 	chinook, countries := relHTTPChinook(t, ""), relHTTPCountries(t, "")
 	service := server.New("test", map[string]*core.Database{"chinook": chinook, "countries": countries},
 		server.WithQueryLimits(server.QueryLimits{Timeout: 1})) // one nanosecond: over before the first read
@@ -1315,8 +1315,8 @@ func TestRelationalDTQLTimeoutIsA504OverHTTP(t *testing.T) {
 	host := httptest.NewServer(service.Handler())
 	defer host.Close()
 	for name, tc := range map[string]struct{ path, doc string }{
-		"database route":  {"/v1/databases/chinook/dtql", relHTTPInvoiceJoin},
-		"in-memory route": {"/v1/dtql", relHTTPCustomerRegions},
+		"database route":  {"/v1/databases/chinook/tugql", relHTTPInvoiceJoin},
+		"in-memory route": {"/v1/tugql", relHTTPCustomerRegions},
 	} {
 		t.Run(name, func(t *testing.T) {
 			resp := relHTTPPost(t, host.URL, tc.path, "", tc.doc)

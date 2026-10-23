@@ -40,7 +40,7 @@ func (q sampleQuery) String() string { return dal.QueryString(q) }
 // different key expressions; neither stored document id fields nor post-page
 // sorting substitute for canonical record identity.
 func (d *Database) SelectAccessSample(ctx context.Context, query dal.StructuredQuery, n int, requester access.Principal) ([]Record, []dal.OrderExpression, error) {
-	collection, err := validateDTQLFor(query, d.fieldRule())
+	collection, err := validateTugQLFor(query, d.fieldRule())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -83,7 +83,7 @@ func (d *Database) SelectAccessSample(ctx context.Context, query dal.StructuredQ
 	// be used refuses the sample whichever collection it names, with the refusal
 	// the secured database gives (access.PolicyProviderError), so the refusal does
 	// not tell a collection the database does not declare from one it does.
-	bounded := boundedDTQL{sampleQuery{StructuredQuery: query, count: n, order: order}}
+	bounded := boundedTugQL{sampleQuery{StructuredQuery: query, count: n, order: order}}
 	var policies []access.Policy
 	if d.HasAccessPolicies() {
 		if policies, err = d.samplePolicies(ctx, requester); err != nil {

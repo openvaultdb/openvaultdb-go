@@ -82,7 +82,7 @@ func pgITHardeningSchema(t *testing.T, admin *sql.DB) {
 	}
 }
 
-func pgITDTQL(t *testing.T, base, database string, document any, parameters map[string]any) relHTTPResponse {
+func pgITTugQL(t *testing.T, base, database string, document any, parameters map[string]any) relHTTPResponse {
 	t.Helper()
 	text, err := json.Marshal(document)
 	if err != nil {
@@ -96,7 +96,7 @@ func pgITDTQL(t *testing.T, base, database string, document any, parameters map[
 	if err != nil {
 		t.Fatal(err)
 	}
-	return relHTTPDo(t, base, http.MethodPost, "/v1/databases/"+database+"/dtql", "", string(raw), map[string]string{"Content-Type": "application/json"})
+	return relHTTPDo(t, base, http.MethodPost, "/v1/databases/"+database+"/tugql", "", string(raw), map[string]string{"Content-Type": "application/json"})
 }
 
 func TestPostgresIntegration_NativeLongNamesValuesAndReadOnlyTransactions(t *testing.T) {
@@ -131,7 +131,7 @@ func TestPostgresIntegration_NativeLongNamesValuesAndReadOnlyTransactions(t *tes
 	}
 	// NaN and the infinities are the strings PostgreSQL spells them with, and a
 	// filter with that string finds the row.
-	special := pgITDTQL(t, base, "hardening", map[string]any{"from": table, "orderBy": []any{map[string]any{"field": "id"}}, "columns": []any{map[string]any{"field": "id"}, map[string]any{"field": "f"}}}, nil)
+	special := pgITTugQL(t, base, "hardening", map[string]any{"from": table, "orderBy": []any{map[string]any{"field": "id"}}, "columns": []any{map[string]any{"field": "id"}, map[string]any{"field": "f"}}}, nil)
 	if special.status != http.StatusOK {
 		t.Fatalf("read special floats: %d %s", special.status, special.raw)
 	}
@@ -142,15 +142,15 @@ func TestPostgresIntegration_NativeLongNamesValuesAndReadOnlyTransactions(t *tes
 	if want := []any{"NaN", "Infinity", "-Infinity", 1.5}; !jsonEqual(floats, want) {
 		t.Fatalf("special floats = %v, want %v", floats, want)
 	}
-	nan := pgITDTQL(t, base, "hardening", map[string]any{"from": table, "where": map[string]any{"op": "==", "left": map[string]any{"field": "f"}, "right": map[string]any{"value": "NaN"}}}, nil)
+	nan := pgITTugQL(t, base, "hardening", map[string]any{"from": table, "where": map[string]any{"op": "==", "left": map[string]any{"field": "f"}, "right": map[string]any{"value": "NaN"}}}, nil)
 	if rows := nan.rows(t); nan.status != http.StatusOK || len(rows) != 1 {
 		t.Fatalf("filter f == NaN: %d %s", nan.status, nan.raw)
 	}
 
 	// An exact integer above 2^53 matches, inline and as a parameter.
 	for name, response := range map[string]relHTTPResponse{
-		"inline":    pgITDTQL(t, base, "hardening", map[string]any{"from": table, "where": byID(json.Number("9007199254740993"))}, nil),
-		"parameter": pgITDTQL(t, base, "hardening", map[string]any{"from": table, "where": map[string]any{"op": "==", "left": map[string]any{"field": "id"}, "right": map[string]any{"param": "id"}}}, map[string]any{"id": json.Number("9007199254740993")}),
+		"inline":    pgITTugQL(t, base, "hardening", map[string]any{"from": table, "where": byID(json.Number("9007199254740993"))}, nil),
+		"parameter": pgITTugQL(t, base, "hardening", map[string]any{"from": table, "where": map[string]any{"op": "==", "left": map[string]any{"field": "id"}, "right": map[string]any{"param": "id"}}}, map[string]any{"id": json.Number("9007199254740993")}),
 	} {
 		rows := response.rows(t)
 		if response.status != http.StatusOK || len(rows) != 1 || rows[0]["note"] != "big id" {
@@ -170,19 +170,19 @@ func TestPostgresIntegration_NativeLongNamesValuesAndReadOnlyTransactions(t *tes
 		"bytea base64":        map[string]any{"op": "==", "left": map[string]any{"field": "b"}, "right": map[string]any{"value": "AP8Q"}},
 		"bytea other operand": map[string]any{"op": "==", "left": map[string]any{"value": "AP8Q"}, "right": map[string]any{"field": "b"}},
 	} {
-		response := pgITDTQL(t, base, "hardening", map[string]any{"from": table, "where": where}, nil)
+		response := pgITTugQL(t, base, "hardening", map[string]any{"from": table, "where": where}, nil)
 		if response.status != http.StatusBadRequest {
 			t.Errorf("%s: %d %s, want 400", name, response.status, response.raw)
 		}
 	}
 
 	// An offset without an order is answered, with a warning in the footer.
-	unordered := pgITDTQL(t, base, "hardening", map[string]any{"from": table, "limit": 2, "offset": 1}, nil)
+	unordered := pgITTugQL(t, base, "hardening", map[string]any{"from": table, "limit": 2, "offset": 1}, nil)
 	warnings, _ := unordered.body["warnings"].([]any)
 	if unordered.status != http.StatusOK || len(warnings) != 1 || !strings.Contains(warnings[0].(string), "orderBy") {
 		t.Fatalf("offset without orderBy: %d %s, want rows and one warning", unordered.status, unordered.raw)
 	}
-	ordered := pgITDTQL(t, base, "hardening", map[string]any{"from": table, "limit": 2, "offset": 1, "orderBy": []any{map[string]any{"field": "id"}}}, nil)
+	ordered := pgITTugQL(t, base, "hardening", map[string]any{"from": table, "limit": 2, "offset": 1, "orderBy": []any{map[string]any{"field": "id"}}}, nil)
 	if _, warned := ordered.body["warnings"]; ordered.status != http.StatusOK || warned {
 		t.Fatalf("ordered offset: %d %s, want rows and no warning", ordered.status, ordered.raw)
 	}
@@ -193,7 +193,7 @@ func TestPostgresIntegration_NativeLongNamesValuesAndReadOnlyTransactions(t *tes
 	flip := map[string]string{"schema": pgITLongSchema, "name": "flip session default"}
 	sawFlippedSession := false
 	for range 20 {
-		if response := pgITDTQL(t, base, "hardening", map[string]any{"from": flip}, nil); response.status != http.StatusOK {
+		if response := pgITTugQL(t, base, "hardening", map[string]any{"from": flip}, nil); response.status != http.StatusOK {
 			t.Fatalf("flip: %d %s", response.status, response.raw)
 		}
 		// The null test sends the document down the in-memory route, the one that
@@ -202,7 +202,7 @@ func TestPostgresIntegration_NativeLongNamesValuesAndReadOnlyTransactions(t *tes
 			{"from": settings},
 			{"from": settings, "where": map[string]any{"isNotNull": map[string]any{"field": "statement timeout"}}},
 		} {
-			response := pgITDTQL(t, base, "hardening", document, nil)
+			response := pgITTugQL(t, base, "hardening", document, nil)
 			rows := response.rows(t)
 			if response.status != http.StatusOK || len(rows) != 1 {
 				t.Fatalf("settings: %d %s", response.status, response.raw)
@@ -255,7 +255,7 @@ func TestPostgresIntegration_NativeStatementTimeoutEndsASlowRead(t *testing.T) {
 	}
 	base, _ := pgITServeLogged(t, map[string]*core.Database{"slow": native})
 	started := time.Now()
-	response := pgITDTQL(t, base, "slow", map[string]any{"from": map[string]string{"schema": pgITLongSchema, "name": "slow view"}}, nil)
+	response := pgITTugQL(t, base, "slow", map[string]any{"from": map[string]string{"schema": pgITLongSchema, "name": "slow view"}}, nil)
 	if response.status == http.StatusOK || time.Since(started) > 2*time.Second {
 		t.Fatalf("slow view: %d %s after %v, want a refusal well before the 3s sleep ends", response.status, response.raw, time.Since(started))
 	}
@@ -388,7 +388,7 @@ func TestPostgresIntegration_NativeIntegerComparisonsByOperator(t *testing.T) {
 				right = map[string]any{"values": values}
 			}
 			where := map[string]any{"op": tc.op, "left": map[string]any{"field": column}, "right": right}
-			response := pgITDTQL(t, base, "operators", map[string]any{"from": from, "where": where}, nil)
+			response := pgITTugQL(t, base, "operators", map[string]any{"from": from, "where": where}, nil)
 			label := fmt.Sprintf("%s %s %v", column, tc.op, tc.value)
 			switch {
 			case tc.rows == refused && response.status != http.StatusBadRequest:

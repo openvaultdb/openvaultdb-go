@@ -154,7 +154,7 @@ func TestRecordKeyDottedIDsAccepted(t *testing.T) {
 	}
 }
 
-func TestBatchQueryDTQLKeyValidation(t *testing.T) {
+func TestBatchQueryTugQLKeyValidation(t *testing.T) {
 	ts, dir := startKeyValidationServer(t)
 	before := snapshotFiles(t, dir)
 	for _, tc := range []struct{ name, path, body string }{
@@ -167,9 +167,9 @@ func TestBatchQueryDTQLKeyValidation(t *testing.T) {
 		{"query empty collection", "/v1/databases/dev/query", `{"collection":""}`},
 		{"query traversal parent", "/v1/databases/dev/query", `{"collection":"items","parent":"lists/%2E%2E%2F%2E%2E"}`},
 		{"query odd parent", "/v1/databases/dev/query", `{"collection":"items","parent":"lists"}`},
-		{"dtql dotdot collection", "/v1/databases/dev/dtql", "from:\n  name: ..\n"},
-		{"dtql traversal collection", "/v1/databases/dev/dtql", "from:\n  name: ../../secrets\n"},
-		{"dtql control collection", "/v1/databases/dev/dtql", "from:\n  name: \"a\\u0001b\"\n"},
+		{"tugql dotdot collection", "/v1/databases/dev/tugql", "from:\n  name: ..\n"},
+		{"tugql traversal collection", "/v1/databases/dev/tugql", "from:\n  name: ../../secrets\n"},
+		{"tugql control collection", "/v1/databases/dev/tugql", "from:\n  name: \"a\\u0001b\"\n"},
 	} {
 		status, body := request(t, ts, http.MethodPost, tc.path, ownerToken, tc.body)
 		if status != http.StatusBadRequest || errorCode(t, body) != "invalid_key" {

@@ -15,7 +15,7 @@ import (
 	"testing"
 
 	"github.com/dal-go/dalgo/access"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
@@ -237,7 +237,7 @@ func TestTableTheProtectedSessionRefusesIsAnsweredAsAnUndeclaredOne(t *testing.T
 						name, method, content string
 						at                    func(table string) (path, body string)
 					}{
-						{"PATCH", "PATCH", "application/vnd.dtql.operation+json", refusedPatch},
+						{"PATCH", "PATCH", "application/vnd.tugql.operation+json", refusedPatch},
 						{"evidence", "POST", "application/json", refusedEvidence},
 					} {
 						routeHeaders := map[string]string{"Content-Type": route.content}
@@ -337,7 +337,7 @@ func TestProtectedRouteThatFailsForAnotherReasonIsUnavailable(t *testing.T) {
 	for _, route := range []struct{ name, method, path, body, content string }{
 		{"inspection", "POST", refusedEvaluate, refusedInspect(refusedGet("customers")), "application/json"},
 		{"inspection of a table the session refuses", "POST", refusedEvaluate, refusedInspect(refusedGet("with_default")), "application/json"},
-		{"PATCH", "PATCH", patchPath, patchBody, "application/vnd.dtql.operation+json"},
+		{"PATCH", "PATCH", patchPath, patchBody, "application/vnd.tugql.operation+json"},
 		{"evidence", "POST", evidencePath, evidenceBody, "application/json"},
 		{"evidence of a table the session refuses", "POST", evidencePath, refusedEvidenceBody, "application/json"},
 	} {
@@ -413,14 +413,14 @@ func TestTableTheProtectedSessionRefusesIsLoggedOncePerRequest(t *testing.T) {
 		{"inspection", "POST", refusedEvaluate, refusedInspect(refusedGet("with_default")), "application/json", []string{"with_default"}},
 		{"inspection of the same table twice", "POST", refusedEvaluate, refusedInspect(refusedGet("with_default"), refusedUpdate("with_default")), "application/json", []string{"with_default"}},
 		{"inspection of two tables", "POST", refusedEvaluate, refusedInspect(refusedGet("with_trigger"), refusedGet("customers"), refusedGet("with_default")), "application/json", []string{"with_default", "with_trigger"}},
-		{"PATCH", "PATCH", patchPath, patchBody, "application/vnd.dtql.operation+json", []string{"with_default"}},
+		{"PATCH", "PATCH", patchPath, patchBody, "application/vnd.tugql.operation+json", []string{"with_default"}},
 		{"evidence", "POST", evidencePath, evidenceBody, "application/json", []string{"with_default"}},
 		{"evidence of an undeclared table", "POST", evidencePath, ghostEvidenceBody, "application/json", nil},
 		{"evidence of a table the session prepares", "POST", evidencePath, preparedEvidenceBody, "application/json", nil},
 		{"evidence of a table the policy hides", "POST", evidencePath, hiddenEvidenceBody, "application/json", nil},
 		{"inspection of a table the session prepares", "POST", refusedEvaluate, refusedInspect(refusedGet("customers"), refusedGet("orders")), "application/json", nil},
 		{"inspection of an undeclared table", "POST", refusedEvaluate, refusedInspect(refusedGet("ghost")), "application/json", nil},
-		{"PATCH of an undeclared table", "PATCH", ghostPatchPath, ghostPatchBody, "application/vnd.dtql.operation+json", nil},
+		{"PATCH of an undeclared table", "PATCH", ghostPatchPath, ghostPatchBody, "application/vnd.tugql.operation+json", nil},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			logs.records(t)

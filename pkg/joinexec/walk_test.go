@@ -12,7 +12,7 @@ import (
 	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 )
 
-// Shapes no DTQL document can produce. The walk must refuse them rather than
+// Shapes no TugQL document can produce. The walk must refuse them rather than
 // pass them through: it is the check that every source a document reads is one
 // that was authorised.
 type exUnknownExpression struct{}

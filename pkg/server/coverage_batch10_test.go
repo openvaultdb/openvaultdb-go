@@ -13,7 +13,7 @@ import (
 	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/dalgo/dbschema"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 	"github.com/dal-go/record"
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
@@ -78,7 +78,7 @@ func TestServerDrainAndAccessCoverageBatch10(t *testing.T) {
 	defer srvAcc.CloseSnapshots()
 
 	reqAcc := httptest.NewRequest(http.MethodPost, "/v1/databases/acc_b10/access:plan", strings.NewReader(`{
-		"apiVersion": "dtql.org/authorization/v1",
+		"apiVersion": "tugql.org/authorization/v1",
 		"mode": "plan",
 		"operations": [{"id": "op1", "action": "query", "resource": {"databaseId": "acc_b10", "path": "/users", "table": "users"}}]
 	}`))
@@ -168,7 +168,7 @@ func TestAccessInspectAndEvidenceCoverageBatch10(t *testing.T) {
 	}
 	recEv := httptest.NewRecorder()
 	evBody := `{
-		"apiVersion": "dtql.org/authorization/v1",
+		"apiVersion": "tugql.org/authorization/v1",
 		"resource": {"databaseId": "insp_b10", "path": "/users/1", "table": "users", "rowId": "1"},
 		"requiredFields": [["name"]]
 	}`
@@ -219,7 +219,7 @@ func TestAccessSampleCoverageBatch10(t *testing.T) {
 	goodOp := api.Operation{
 		ID:             "op1",
 		Action:         "get",
-		ExecutionClass: az.ExecutionDTQL,
+		ExecutionClass: executionTugQL,
 		Resource:       az.Resource{DatabaseID: "sample_b10", Table: "users", Path: "/users"},
 	}
 	emptyDB, _ := core.Open(m, dummyEmptySampleDB{}, []schema.Mode{schema.ModeStrict}, "", mockAllowPolicy{})
@@ -227,7 +227,7 @@ func TestAccessSampleCoverageBatch10(t *testing.T) {
 	defer srvEmpty.CloseSnapshots()
 	goodSample := api.Request{
 		Operations: []api.Operation{goodOp},
-		Sample:     &api.Sample{Limit: 10, Query: api.Query{Format: "dtql-yaml", Text: "from:\n  name: users\n"}},
+		Sample:     &api.Sample{Limit: 10, Query: api.Query{Format: "tugql-yaml", Text: "from:\n  name: users\n"}},
 	}
 	rec97 := httptest.NewRecorder()
 	srvEmpty.sampleAccess(rec97, req30, emptyDB, goodSample, emptyDB.PolicyLayers(context.Background()), access.Principal{})
@@ -243,12 +243,12 @@ func TestAccessSampleCoverageBatch10(t *testing.T) {
 	templateS1 := api.Operation{
 		ID:             "s1",
 		Action:         "get",
-		ExecutionClass: az.ExecutionDTQL,
+		ExecutionClass: executionTugQL,
 		Resource:       az.Resource{DatabaseID: "sample_b10", Table: "users", Path: "/users"},
 	}
 	sampleS1 := api.Request{
 		Operations: []api.Operation{templateS1},
-		Sample:     &api.Sample{Limit: 10, Query: api.Query{Format: "dtql-yaml", Text: "from:\n  name: users\n"}},
+		Sample:     &api.Sample{Limit: 10, Query: api.Query{Format: "tugql-yaml", Text: "from:\n  name: users\n"}},
 	}
 	oneRowDB, _ := core.Open(m, dummyOneRowSampleDB{}, []schema.Mode{schema.ModeStrict}, "", mockAllowPolicy{})
 	srvOne := New("test", map[string]*core.Database{"sample_b10": oneRowDB})
@@ -278,7 +278,7 @@ func TestAccessSampleCoverageBatch10(t *testing.T) {
 	}
 	sampleBadAction := api.Request{
 		Operations: []api.Operation{badActionOp},
-		Sample:     &api.Sample{Limit: 10, Query: api.Query{Format: "dtql-yaml", Text: "from:\n  name: users\n"}},
+		Sample:     &api.Sample{Limit: 10, Query: api.Query{Format: "tugql-yaml", Text: "from:\n  name: users\n"}},
 	}
 	srvOne.sampleAccess(rec121, req30, oneRowDB, sampleBadAction, oneRowDB.PolicyLayers(context.Background()), access.Principal{})
 	if rec121.Code != http.StatusUnprocessableEntity || !strings.Contains(rec121.Body.String(), "sample operation unsupported") {
@@ -427,7 +427,7 @@ func (mockSuccessInspectionSession) ReadVisibilityFor(context.Context, access.Pr
 	return map[string]bool{"s1": true, "s2": true, "op1": true}, nil
 }
 
-func TestDTQLAndRelationalCoverageBatch10(t *testing.T) {
+func TestTugQLAndRelationalCoverageBatch10(t *testing.T) {
 	// Not parallel: modifies finishProviderCapture, finishRelationalStream
 	oldFinishProv := finishProviderCapture
 	oldFinishRel := finishRelationalStream
@@ -437,7 +437,7 @@ func TestDTQLAndRelationalCoverageBatch10(t *testing.T) {
 	}()
 
 	m := &manifest.Manifest{
-		Database: manifest.Database{ID: "dtql_b10", SchemaMode: schema.ModeStrict},
+		Database: manifest.Database{ID: "tugql_b10", SchemaMode: schema.ModeStrict},
 		Storage:  manifest.Storage{Engine: "sqlite", Path: ":memory:"},
 		Schemas:  &schema.Schemas{Collections: map[string]schema.Collection{"users": {Fields: map[string]schema.Field{"name": {Type: schema.TypeString}}}}},
 	}
@@ -445,27 +445,27 @@ func TestDTQLAndRelationalCoverageBatch10(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := New("test", map[string]*core.Database{"dtql_b10": db})
+	srv := New("test", map[string]*core.Database{"tugql_b10": db})
 	defer srv.CloseSnapshots()
 
-	// 1. dtql.go: line 156: stream.errorCompletion with Cache-Control no-store
+	// 1. tugql.go: line 156: stream.errorCompletion with Cache-Control no-store
 	// and lines 168-170: providerErr != nil without stream.started
 	finishProviderCapture = func(*providerCapture, []string) (*providerreads.Envelope, error) {
 		return nil, errors.New("provider capture failure")
 	}
 	rec168 := httptest.NewRecorder()
-	req168 := httptest.NewRequest(http.MethodPost, "/v1/databases/dtql_b10/dtql", strings.NewReader("from:\n  name: users\n"))
-	req168.SetPathValue("db", "dtql_b10")
-	srv.handleDTQL(rec168, req168)
+	req168 := httptest.NewRequest(http.MethodPost, "/v1/databases/tugql_b10/tugql", strings.NewReader("from:\n  name: users\n"))
+	req168.SetPathValue("db", "tugql_b10")
+	srv.handleTugQL(rec168, req168)
 	if rec168.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("expected 422 on provider error without stream, got %d", rec168.Code)
 	}
 	finishProviderCapture = oldFinishProv
 
-	// 2. dtql_relational.go: lines 294-296: finishRelationalStream error with stream.started == true
+	// 2. tugql_relational.go: lines 294-296: finishRelationalStream error with stream.started == true
 	oldCapture := serverCaptureRights
 	defer func() { serverCaptureRights = oldCapture }()
-	srcID := (license.Identity{ServerID: "stable-srv", DatabaseID: "dtql_b10", Recordset: "users"}).SourceID()
+	srcID := (license.Identity{ServerID: "stable-srv", DatabaseID: "tugql_b10", Recordset: "users"}).SourceID()
 	serverCaptureRights = func(_ *Server, _ map[string]*core.Database, _ []relationalTarget) (rightsCapture, error) {
 		return rightsCapture{
 			rights:  []license.SourceRight{{SourceID: srcID}},
@@ -475,7 +475,7 @@ func TestDTQLAndRelationalCoverageBatch10(t *testing.T) {
 	finishRelationalStream = func(stream *jsonRowStream, footer map[string]any) error {
 		return errors.New("finish relational stream failure")
 	}
-	srvRel := New("test", map[string]*core.Database{"dtql_b10": db})
+	srvRel := New("test", map[string]*core.Database{"tugql_b10": db})
 	defer srvRel.CloseSnapshots()
 	srvRel.rightsServerID = "stable-srv"
 	srvRel.joinStreamExecute = func(_ context.Context, _ dal.StructuredQuery, _ joinexec.Profile, _ string, _ joinexec.Registry, _ joinexec.Authorize, _ joinexec.Limits, emit func(record.Record) error, _ ...joinexec.Option) (joinexec.StreamResult, error) {
@@ -483,29 +483,29 @@ func TestDTQLAndRelationalCoverageBatch10(t *testing.T) {
 		return joinexec.StreamResult{
 			Columns: []string{"id"},
 			Execution: joinexec.Execution{
-				Sources: []joinexec.ExecutionSource{{Database: "dtql_b10", Collection: "users"}},
+				Sources: []joinexec.ExecutionSource{{Database: "tugql_b10", Collection: "users"}},
 			},
 		}, nil
 	}
 	rec294 := httptest.NewRecorder()
 	relDoc := "from:\n  name: users\njoin:\n  - with: users\n    on:\n      users.id: users.id\n"
-	req294 := httptest.NewRequest(http.MethodPost, "/v1/databases/dtql_b10/dtql", strings.NewReader(relDoc))
-	req294.SetPathValue("db", "dtql_b10")
+	req294 := httptest.NewRequest(http.MethodPost, "/v1/databases/tugql_b10/tugql", strings.NewReader(relDoc))
+	req294.SetPathValue("db", "tugql_b10")
 	req294.Header.Set("Accept", queryErrorStreamMediaType)
-	srvRel.serveRelationalDTQL(rec294, req294, db, dal.From(dal.NewRootCollectionRef("users", "")).NewQuery().SelectColumns(), core.Profile{Kind: core.ProfileRelational, Sources: []core.ProfileSource{{Collection: "users"}}})
+	srvRel.serveRelationalTugQL(rec294, req294, db, dal.From(dal.NewRootCollectionRef("users", "")).NewQuery().SelectColumns(), core.Profile{Kind: core.ProfileRelational, Sources: []core.ProfileSource{{Collection: "users"}}})
 
-	// 3. dtql_pages.go: line 193: core.QueryCollections error
+	// 3. tugql_pages.go: line 193: core.QueryCollections error
 	rec193 := httptest.NewRecorder()
-	req193 := httptest.NewRequest(http.MethodPost, "/v1/databases/dtql_b10/dtql?paged=true", strings.NewReader("from:\n  collection: 12345\n"))
-	req193.SetPathValue("db", "dtql_b10")
-	srv.handleDTQL(rec193, req193)
+	req193 := httptest.NewRequest(http.MethodPost, "/v1/databases/tugql_b10/tugql?paged=true", strings.NewReader("from:\n  collection: 12345\n"))
+	req193.SetPathValue("db", "tugql_b10")
+	srv.handleTugQL(rec193, req193)
 
-	// 4. dtql_pages.go: line 241: snapshot timer callback
+	// 4. tugql_pages.go: line 241: snapshot timer callback
 	snap := &querySnapshot{id: "timer_snap", db: db}
 	srv.snapshots = map[string]*querySnapshot{"timer_snap": snap}
 	srv.expireSnapshot(snap)
 
-	// 5. dtql_pages.go: lines 291 & 294: spoolDTQL write errors
+	// 5. tugql_pages.go: lines 291 & 294: spoolTugQL write errors
 	badWriter := &errWriter{errAfter: 0}
 	wBuf := bufio.NewWriter(badWriter)
 	_ = wBuf.WriteByte('a')
@@ -600,15 +600,15 @@ func TestPostgresWireAndProviderReadsCoverageBatch10(t *testing.T) {
 		t.Fatal("expected false for invalid wire group")
 	}
 
-	// line 291: validProviderDTQL where q.From().Base() is not CollectionRef
+	// line 291: validProviderTugQL where q.From().Base() is not CollectionRef
 	qBadBase := dal.From(nil).NewQuery().Limit(10).SelectColumns()
-	if validProviderDTQL(dbPG, qBadBase, core.Profile{}, ECBPublicFreeRequestProfile) {
+	if validProviderTugQL(dbPG, qBadBase, core.Profile{}, ECBPublicFreeRequestProfile) {
 		t.Fatal("expected false for non-CollectionRef base")
 	}
 
-	// line 300: column with alias in validProviderDTQL
+	// line 300: column with alias in validProviderTugQL
 	qColAlias := dal.From(cRefVal).NewQuery().Limit(10).SelectColumns(dal.Column{Expression: dal.Field("name"), Alias: "alias"})
-	if validProviderDTQL(dbPG, qColAlias, core.Profile{}, ECBPublicFreeRequestProfile) {
+	if validProviderTugQL(dbPG, qColAlias, core.Profile{}, ECBPublicFreeRequestProfile) {
 		t.Fatal("expected false for column with alias")
 	}
 

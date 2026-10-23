@@ -60,7 +60,7 @@ func TestExactIntegerValuesRewritesOnlyUnsafeIntegerValues(t *testing.T) {
 	}
 }
 
-func TestDTQLParametersKeepExactIntegers(t *testing.T) {
+func TestTugQLParametersKeepExactIntegers(t *testing.T) {
 	for raw, want := range map[string]any{
 		`9007199254740993`:       int64(9007199254740993),
 		`42`:                     int64(42),
@@ -69,7 +69,7 @@ func TestDTQLParametersKeepExactIntegers(t *testing.T) {
 		`"text"`:                 "text",
 		`[1, 2.5]`:               []any{int64(1), 2.5},
 	} {
-		got, err := decodeDTQLParameter(json.RawMessage(raw))
+		got, err := decodeTugQLParameter(json.RawMessage(raw))
 		if err != nil {
 			t.Fatalf("%s: %v", raw, err)
 		}
@@ -80,16 +80,16 @@ func TestDTQLParametersKeepExactIntegers(t *testing.T) {
 		}
 	}
 	for _, raw := range []string{`1e400`, `[1, 1e400]`, `{`} {
-		if _, err := decodeDTQLParameter(json.RawMessage(raw)); err == nil {
+		if _, err := decodeTugQLParameter(json.RawMessage(raw)); err == nil {
 			t.Errorf("%s: no error", raw)
 		}
 	}
 	const query = "from: {name: Album}\nwhere: {op: '==', left: {field: id}, right: {param: id}}\n"
-	doc, err := bindDTQLParameters([]byte(`{"query":` + quoteJSON(query) + `,"parameters":{"id":9007199254740993}}`))
+	doc, err := bindTugQLParameters([]byte(`{"query":` + quoteJSON(query) + `,"parameters":{"id":9007199254740993}}`))
 	if err != nil || !strings.Contains(string(doc), "9007199254740993") {
 		t.Fatalf("bound document = %s, %v; want the exact integer", doc, err)
 	}
-	if _, err := bindDTQLParameters([]byte(`{"query":` + quoteJSON(query) + `,"parameters":{"id":1e400}}`)); err == nil {
+	if _, err := bindTugQLParameters([]byte(`{"query":` + quoteJSON(query) + `,"parameters":{"id":1e400}}`)); err == nil {
 		t.Fatal("a number out of range was bound")
 	}
 }
@@ -111,7 +111,7 @@ func TestNativePostgresAnswerWarnsOfAnUnorderedOffsetAndSpellsNaN(t *testing.T) 
 		"from: {schema: 'sales data', name: 'Order Details'}\nlimit: 2\noffset: 1\norderBy: [{field: 'Order ID'}]\n": false,
 		"from: {schema: 'sales data', name: 'Order Details'}\nlimit: 2\n":                                            false,
 	} {
-		response := relFakeDo(t, host, http.MethodPost, "/v1/databases/samples/dtql", "", document, nil)
+		response := relFakeDo(t, host, http.MethodPost, "/v1/databases/samples/tugql", "", document, nil)
 		if response.status != http.StatusOK || !strings.Contains(response.raw, `"ratio":"NaN"`) {
 			t.Fatalf("%q: %d %s", document, response.status, response.raw)
 		}
@@ -120,7 +120,7 @@ func TestNativePostgresAnswerWarnsOfAnUnorderedOffsetAndSpellsNaN(t *testing.T) 
 		}
 	}
 	// An unsafe integer literal reaches the executor as the same digits in a string.
-	response := relFakeDo(t, host, http.MethodPost, "/v1/databases/samples/dtql", "", "from: {schema: 'sales data', name: 'Order Details'}\nwhere: {op: '==', left: {field: 'Order ID'}, right: {value: 9007199254740993}}\n", nil)
+	response := relFakeDo(t, host, http.MethodPost, "/v1/databases/samples/tugql", "", "from: {schema: 'sales data', name: 'Order Details'}\nwhere: {op: '==', left: {field: 'Order ID'}, right: {value: 9007199254740993}}\n", nil)
 	if response.status != http.StatusOK {
 		t.Fatalf("exact integer: %d %s", response.status, response.raw)
 	}

@@ -23,7 +23,7 @@ var ErrQueryNotRunnable = errors.New("the storage engine cannot run this query")
 // refused because a value or a name of it does not fit the table: a value that is no
 // value of the type of its field (a word compared with an integer), a number compared
 // with text, a name the table does not have. It is the caller's mistake, mapped to HTTP
-// 400 invalid_dtql with a fixed message and not logged. The error is built here: it
+// 400 invalid_tugql with a fixed message and not logged. The error is built here: it
 // holds no text of the server's, which can repeat the value.
 var ErrQueryDoesNotFit = errors.New("a value or a name of the query does not fit the field it is used with")
 

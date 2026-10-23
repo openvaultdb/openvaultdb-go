@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/dal-go/dalgo/access"
-	"github.com/dal-go/dalgo/dtql"
+	"github.com/dal-go/dalgo/tugql"
 	"github.com/dal-go/record"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
@@ -35,7 +35,7 @@ func relIntLayeredPolicy(database, name, field, value string) string {
 	if database == "ingitdb" {
 		fields += ", $id"
 	}
-	return fmt.Sprintf(`apiVersion: dtql.org/access/v1
+	return fmt.Sprintf(`apiVersion: tugql.org/access/v1
 kind: AccessPolicy
 metadata: {name: %s}
 target: {database: %s}
@@ -181,7 +181,7 @@ var relIntCallers = []struct{ name, token string }{{"the owner", ownerToken}, {"
 // Every document of DALgo's join and subquery fixtures that the classifier accepts is a
 // 422 authorization_unsupported on the mounts of examples/layered-acl, with one body
 // for each mount whatever the document names: alone, joined to a public mount (the
-// protected source first and second), on the per-database endpoint and on /v1/dtql,
+// protected source first and second), on the per-database endpoint and on /v1/tugql,
 // for the owner and for two principals. A document the classifier refuses is the 400
 // it is on any mount. No answer holds a row.
 func TestEveryRelationalShapeOfTheFixturesIsRefusedOnALayeredACLMount(t *testing.T) {
@@ -189,17 +189,17 @@ func TestEveryRelationalShapeOfTheFixturesIsRefusedOnALayeredACLMount(t *testing
 	dalgo := relIntDalgoDir(t)
 	var cases []relIntCase
 	for _, corpus := range []string{"joins", "subqueries"} {
-		cases = append(cases, relIntLoadCases(t, corpus, filepath.Join(dalgo, "dtql", "testdata", corpus))...)
+		cases = append(cases, relIntLoadCases(t, corpus, filepath.Join(dalgo, "tugql", "testdata", corpus))...)
 	}
 	baseline := map[string]string{}
 	accepted, refused := 0, 0
 	for _, c := range cases {
 		// The classifier's verdict on the document, which names its database the way
-		// /v1/dtql needs.
+		// /v1/tugql needs.
 		named := relIntRewrite(t, c.doc, "sqlite")
-		query, err := dtql.Deserialize(named)
+		query, err := tugql.Deserialize(named)
 		if err == nil {
-			_, err = core.ClassifyDTQL(query)
+			_, err = core.ClassifyTugQL(query)
 		}
 		sources := relIntCountSources(t, c.doc)
 		for _, protected := range []string{"sqlite", "ingitdb"} {
@@ -208,15 +208,15 @@ func TestEveryRelationalShapeOfTheFixturesIsRefusedOnALayeredACLMount(t *testing
 				doc        []byte
 			}
 			shapes := []shape{
-				{"per-database endpoint", "/v1/databases/" + protected + "/dtql", relIntRewrite(t, c.doc, "")},
-				{"alone on /v1/dtql", "/v1/dtql", relIntRewrite(t, c.doc, protected)},
+				{"per-database endpoint", "/v1/databases/" + protected + "/tugql", relIntRewrite(t, c.doc, "")},
+				{"alone on /v1/tugql", "/v1/tugql", relIntRewrite(t, c.doc, protected)},
 			}
 			if sources > 1 {
 				shapes = append(shapes,
-					shape{"joined to a public mount, protected first", "/v1/dtql", relIntRewriteWith(t, c.doc, func(i int) string {
+					shape{"joined to a public mount, protected first", "/v1/tugql", relIntRewriteWith(t, c.doc, func(i int) string {
 						return map[bool]string{true: protected, false: "directory"}[i == 0]
 					})},
-					shape{"joined to a public mount, protected second", "/v1/dtql", relIntRewriteWith(t, c.doc, func(i int) string {
+					shape{"joined to a public mount, protected second", "/v1/tugql", relIntRewriteWith(t, c.doc, func(i int) string {
 						return map[bool]string{true: "directory", false: protected}[i == 0]
 					})})
 			}
@@ -226,8 +226,8 @@ func TestEveryRelationalShapeOfTheFixturesIsRefusedOnALayeredACLMount(t *testing
 						resp := relHTTPDo(t, base, http.MethodPost, s.path, caller.token, string(s.doc), nil)
 						if err != nil {
 							refused++
-							if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" {
-								t.Fatalf("a document the classifier refuses (%v) is a 400 invalid_dtql: status %d: %s", err, resp.status, resp.raw)
+							if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" {
+								t.Fatalf("a document the classifier refuses (%v) is a 400 invalid_tugql: status %d: %s", err, resp.status, resp.raw)
 							}
 							return
 						}
@@ -302,7 +302,7 @@ func TestASingleCollectionReadOfALayeredACLMountReturnsOnlyThePermittedRows(t *t
 		{"ingitdb", "the owner", ownerToken, http.StatusForbidden, nil},
 	} {
 		t.Run(tc.database+", "+tc.caller, func(t *testing.T) {
-			resp := relHTTPPost(t, base, "/v1/databases/"+tc.database+"/dtql", tc.token, doc)
+			resp := relHTTPPost(t, base, "/v1/databases/"+tc.database+"/tugql", tc.token, doc)
 			if resp.status != tc.status {
 				t.Fatalf("status %d, want %d: %s", resp.status, tc.status, resp.raw)
 			}
@@ -328,7 +328,7 @@ func TestASingleCollectionReadOfALayeredACLMountReturnsOnlyThePermittedRows(t *t
 		})
 	}
 	t.Run("a field the policy does not list is refused", func(t *testing.T) {
-		resp := relHTTPPost(t, base, "/v1/databases/sqlite/dtql", relIntAlice, "from: {name: customers}\ncolumns: [{field: secret}]\n")
+		resp := relHTTPPost(t, base, "/v1/databases/sqlite/tugql", relIntAlice, "from: {name: customers}\ncolumns: [{field: secret}]\n")
 		if resp.status != http.StatusForbidden || resp.body["records"] != nil || strings.Contains(resp.raw, "hidden") {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
@@ -360,14 +360,14 @@ func TestRelationalShapesOverALayeredACLMountAreRefusedWithOneAnswer(t *testing.
 		{"a subquery", "from: {database: %[1]s, name: customers, alias: c}\nwhere: {exists: {query: {from: {database: %[1]s, name: customers, alias: d}}}}\ncolumns: [{field: id, source: c}]\n", true},
 	}
 	for _, protected := range []string{"sqlite", "ingitdb"} {
-		reference := relHTTPPost(t, base, "/v1/dtql", ownerToken, fmt.Sprintf("from: {database: %s, name: ghost}\n", protected))
+		reference := relHTTPPost(t, base, "/v1/tugql", ownerToken, fmt.Sprintf("from: {database: %s, name: ghost}\n", protected))
 		if reference.status != http.StatusUnprocessableEntity || reference.errorField("code") != "authorization_unsupported" {
 			t.Fatalf("%s: the reference answer is a 422 authorization_unsupported, got %d: %s", protected, reference.status, reference.raw)
 		}
 		for _, shape := range shapes {
-			endpoints := []string{"/v1/dtql"}
+			endpoints := []string{"/v1/tugql"}
 			if shape.perDB {
-				endpoints = append(endpoints, "/v1/databases/"+protected+"/dtql")
+				endpoints = append(endpoints, "/v1/databases/"+protected+"/tugql")
 			}
 			for _, endpoint := range endpoints {
 				for _, caller := range relIntCallers {

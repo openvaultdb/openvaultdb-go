@@ -36,11 +36,11 @@ schemas:
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc, err := access.ParseDTQLPolicy([]byte(aclPolicy("upper", "country", "IE")))
+	doc, err := access.ParseTugQLPolicy([]byte(aclPolicy("upper", "country", "IE")))
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := store.Activate(ctx, "", []access.DTQLDocument{doc})
+	first, err := store.Activate(ctx, "", []access.TugQLDocument{doc})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,14 +61,14 @@ schemas:
 	defer ts.Close()
 	check := func(ts *httptest.Server, want int) {
 		t.Helper()
-		status, body := request(t, ts, http.MethodPost, "/v1/databases/crm/dtql", ownerToken, "from: {name: customers}\ncolumns: [{field: name}]\n")
+		status, body := request(t, ts, http.MethodPost, "/v1/databases/crm/tugql", ownerToken, "from: {name: customers}\ncolumns: [{field: name}]\n")
 		if status != want {
 			t.Fatalf("wanted %d got %d: %s", want, status, body)
 		}
 	}
 	check(ts, 200)
 	doc.Execution = &access.ExecutionGate{Allow: []access.ExecutionEntry{}}
-	second, err := db.PublishPolicies(ctx, first.Revision, []access.DTQLDocument{doc})
+	second, err := db.PublishPolicies(ctx, first.Revision, []access.TugQLDocument{doc})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ schemas:
 	defer ts2.Close()
 	check(ts2, 403)
 	doc.Execution = nil
-	if _, err := store.Activate(ctx, second.Revision, []access.DTQLDocument{doc}); err != nil {
+	if _, err := store.Activate(ctx, second.Revision, []access.TugQLDocument{doc}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ReloadPolicies(ctx); err != nil {

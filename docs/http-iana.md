@@ -26,7 +26,7 @@ constructs this fixed mount. The OVDB HTTP server refuses to start with an IANA
 mount unless an independently reviewed `iana-native-operator/1` provider-read
 profile supplies the exact source/resource binding, publisher-definition evidence,
 rights notices, and IANA registry terms declaration. That profile permits
-single-collection native JSON queries or DTQL with an explicit limit of 1..50.
+single-collection native JSON queries or TugQL with an explicit limit of 1..50.
 It refuses point reads, writes, paging, aliases, joins, ordering, offsets,
 unknown fields and inferred numeric status codes before source I/O.
 

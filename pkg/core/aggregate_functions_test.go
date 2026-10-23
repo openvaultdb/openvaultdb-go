@@ -25,7 +25,7 @@ var aggregateFunctionPositions = map[string]string{
 // aggregateFunctionBuilt are the positions DALgo's deserializer does not let a
 // document reach with an aggregate call (it checks the name only where it
 // aggregates, and takes no aggregate in a grouping, an ordering or a join condition), built with the
-// query builder, which is how any other caller of ClassifyDTQL reaches them.
+// query builder, which is how any other caller of ClassifyTugQL reaches them.
 func aggregateFunctionBuilt(function string) map[string]dal.StructuredQuery {
 	call := func() dal.Expression { return dal.NewAggregate(function, false, dal.NewFieldRef("a", "x")) }
 	base := func() dal.IQueryBuilder { return dal.From(dal.NewRootCollectionRef("a", "a")).NewQuery() }
@@ -38,12 +38,12 @@ func aggregateFunctionBuilt(function string) map[string]dal.StructuredQuery {
 	}
 }
 
-func TestClassifyDTQLRefusesFirstAndLastInEveryPosition(t *testing.T) {
+func TestClassifyTugQLRefusesFirstAndLastInEveryPosition(t *testing.T) {
 	check := func(t *testing.T, function string, query dal.StructuredQuery) {
 		t.Helper()
-		profile, err := ClassifyDTQL(query)
-		if !errors.Is(err, ErrInvalidDTQL) {
-			t.Fatalf("err = %v, want ErrInvalidDTQL (profile %+v)", err, profile)
+		profile, err := ClassifyTugQL(query)
+		if !errors.Is(err, ErrInvalidTugQL) {
+			t.Fatalf("err = %v, want ErrInvalidTugQL (profile %+v)", err, profile)
 		}
 		if profile.Kind != "" || len(profile.Sources) != 0 {
 			t.Fatalf("a refused query returned a profile: %+v", profile)
@@ -69,11 +69,11 @@ func TestClassifyDTQLRefusesFirstAndLastInEveryPosition(t *testing.T) {
 
 // A name that is not an aggregate function at all is refused with the same rule
 // and a message that does not repeat it: the text is the caller's.
-func TestClassifyDTQLRefusesAnUnknownAggregateWithoutEchoingIt(t *testing.T) {
+func TestClassifyTugQLRefusesAnUnknownAggregateWithoutEchoingIt(t *testing.T) {
 	for _, function := range []string{"stddev", "median", "x; DROP TABLE a --"} {
 		doc := strings.ReplaceAll(aggregateFunctionPositions["where"], "FN", "'"+function+"'")
-		_, err := ClassifyDTQL(mustDeserialize(t, doc))
-		if !errors.Is(err, ErrInvalidDTQL) || !strings.Contains(err.Error(), "relational profile: aggregate-function at ") {
+		_, err := ClassifyTugQL(mustDeserialize(t, doc))
+		if !errors.Is(err, ErrInvalidTugQL) || !strings.Contains(err.Error(), "relational profile: aggregate-function at ") {
 			t.Fatalf("%q: err = %v", function, err)
 		}
 		if strings.Contains(err.Error(), function) || !strings.HasSuffix(err.Error(), "an aggregate function must be one of count, sum, avg, min, max") {
@@ -83,10 +83,10 @@ func TestClassifyDTQLRefusesAnUnknownAggregateWithoutEchoingIt(t *testing.T) {
 }
 
 // The five names are classified in any letter case.
-func TestClassifyDTQLAcceptsTheFiveAggregateFunctionsInAnyCase(t *testing.T) {
+func TestClassifyTugQLAcceptsTheFiveAggregateFunctionsInAnyCase(t *testing.T) {
 	for _, function := range []string{"count", "sum", "avg", "min", "max", "COUNT", "Sum", "aVg", "MIN", "Max"} {
 		doc := strings.ReplaceAll(aggregateFunctionPositions["a column"], "FN", function)
-		if profile, err := ClassifyDTQL(mustDeserialize(t, doc)); err != nil || profile.Kind != ProfileRelational {
+		if profile, err := ClassifyTugQL(mustDeserialize(t, doc)); err != nil || profile.Kind != ProfileRelational {
 			t.Fatalf("%s: profile %+v, err %v", function, profile, err)
 		}
 	}
@@ -116,13 +116,13 @@ func TestAggregateFunctionsIsTheFiveOfTheProfile(t *testing.T) {
 	}
 }
 
-// TestDeserializeDTQLRefusesAnUnknownAggregateWithoutRepeatingTheName: DALgo's
+// TestDeserializeTugQLRefusesAnUnknownAggregateWithoutRepeatingTheName: DALgo's
 // deserializer quotes the caller's text when it refuses an aggregate function it does
-// not know. The error DeserializeDTQL (and ParseDTQL, which uses it) returns wraps
-// ErrInvalidDTQL, lists the functions of the profile and holds no text of the
+// not know. The error DeserializeTugQL (and ParseTugQL, which uses it) returns wraps
+// ErrInvalidTugQL, lists the functions of the profile and holds no text of the
 // caller's, wherever the aggregate stands and whatever the quoting of the name; any
 // other refusal keeps DALgo's message.
-func TestDeserializeDTQLRefusesAnUnknownAggregateWithoutRepeatingTheName(t *testing.T) {
+func TestDeserializeTugQLRefusesAnUnknownAggregateWithoutRepeatingTheName(t *testing.T) {
 	const marker = "zzmarkerfn"
 	documents := map[string]string{
 		"a column": "from: {name: orders, alias: o}\ncolumns: [{aggregate: {function: NAME, args: [{field: total, source: o}]}, as: n}]\n",
@@ -133,12 +133,12 @@ func TestDeserializeDTQLRefusesAnUnknownAggregateWithoutRepeatingTheName(t *test
 		for _, name := range []string{marker, `"quoted \" name; --"`, "'" + marker + "'"} {
 			doc := strings.ReplaceAll(document, "NAME", name)
 			for label, parse := range map[string]func() error{
-				"DeserializeDTQL": func() error { _, err := DeserializeDTQL([]byte(doc)); return err },
-				"ParseDTQL":       func() error { _, _, err := ParseDTQL([]byte(doc)); return err },
+				"DeserializeTugQL": func() error { _, err := DeserializeTugQL([]byte(doc)); return err },
+				"ParseTugQL":       func() error { _, _, err := ParseTugQL([]byte(doc)); return err },
 			} {
 				err := parse()
-				if !errors.Is(err, ErrInvalidDTQL) {
-					t.Errorf("%s %s %s: %v, want an error that wraps ErrInvalidDTQL", position, name, label, err)
+				if !errors.Is(err, ErrInvalidTugQL) {
+					t.Errorf("%s %s %s: %v, want an error that wraps ErrInvalidTugQL", position, name, label, err)
 					continue
 				}
 				text := err.Error()
@@ -154,10 +154,10 @@ func TestDeserializeDTQLRefusesAnUnknownAggregateWithoutRepeatingTheName(t *test
 		}
 	}
 	// Another refusal is DALgo's own, and a document that parses has no error.
-	if _, err := DeserializeDTQL([]byte("from: {name: orders}\ncolumns: [{aggregate: {function: sum, args: [{field: a}, {field: b}]}}]\n")); !errors.Is(err, ErrInvalidDTQL) || strings.Contains(err.Error(), "must be one of") {
+	if _, err := DeserializeTugQL([]byte("from: {name: orders}\ncolumns: [{aggregate: {function: sum, args: [{field: a}, {field: b}]}}]\n")); !errors.Is(err, ErrInvalidTugQL) || strings.Contains(err.Error(), "must be one of") {
 		t.Errorf("another refusal: %v", err)
 	}
-	if query, err := DeserializeDTQL([]byte("from: {name: orders}\n")); err != nil || query == nil {
+	if query, err := DeserializeTugQL([]byte("from: {name: orders}\n")); err != nil || query == nil {
 		t.Errorf("a plain document: %v", err)
 	}
 }

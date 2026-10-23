@@ -1191,7 +1191,7 @@ func TestMountOptionsAndFileCoverage(t *testing.T) {
 
 	// 12. InGitDB local with ACL policies (len(policies) > 0)
 	policyFile := filepath.Join(dir, "test_policy.yaml")
-	policyContent := `apiVersion: dtql.org/access/v1
+	policyContent := `apiVersion: tugql.org/access/v1
 kind: AccessPolicy
 metadata: {name: customers}
 target: {database: igacl}
@@ -1221,11 +1221,11 @@ scopes:
 	if openErr != nil {
 		t.Fatal(openErr)
 	}
-	psDoc, parseErr := access.ParseDTQLPolicy([]byte(strings.ReplaceAll(policyContent, "igacl", "psdb")))
+	psDoc, parseErr := access.ParseTugQLPolicy([]byte(strings.ReplaceAll(policyContent, "igacl", "psdb")))
 	if parseErr != nil {
 		t.Fatal(parseErr)
 	}
-	if _, err := st.Activate(context.Background(), "", []access.DTQLDocument{psDoc}); err != nil {
+	if _, err := st.Activate(context.Background(), "", []access.TugQLDocument{psDoc}); err != nil {
 		t.Fatal(err)
 	}
 	pValidPS := filepath.Join(dir, "valid_ps.yaml")

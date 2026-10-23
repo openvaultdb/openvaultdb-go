@@ -18,7 +18,7 @@ import (
 // or more would address the table or the column named by its first 63. On a PostgreSQL
 // mount every route refuses such a name, a collection, a field or a key path, with the
 // refusal of its kind (400 invalid_key for a collection, bad_request for a field of a
-// write and invalid_dtql for a field of a query), before the driver is reached. A name
+// write and invalid_tugql for a field of a query), before the driver is reached. A name
 // of exactly 63 bytes is accepted, and no other engine is held to the limit.
 
 // namedDB is a driver that counts every call that reaches it and fails each with
@@ -98,13 +98,13 @@ type nameRoute struct {
 func nameRoutes(db *Database, collection, field string) map[string]nameRoute {
 	ctx := context.Background()
 	key := record.NewKeyWithID(collection, "r1")
-	dtql := func(doc string) func() error {
+	tugql := func(doc string) func() error {
 		return func() error {
-			query, _, err := ParseDTQL([]byte(doc))
+			query, _, err := ParseTugQL([]byte(doc))
 			if err != nil {
 				return err
 			}
-			_, err = db.ExecuteDTQLQuery(ctx, query)
+			_, err = db.ExecuteTugQLQuery(ctx, query)
 			return err
 		}
 	}
@@ -112,7 +112,7 @@ func nameRoutes(db *Database, collection, field string) map[string]nameRoute {
 		return func() error { _, err := db.Apply(ctx, []Op{op}, ""); return err }
 	}
 	write := nameRoute{collectionErr: ErrInvalidKey, fieldErr: ErrInvalidFieldName}
-	query := nameRoute{collectionErr: ErrInvalidKey, fieldErr: ErrInvalidDTQL}
+	query := nameRoute{collectionErr: ErrInvalidKey, fieldErr: ErrInvalidTugQL}
 	with := func(r nameRoute, run func() error) nameRoute { r.run = run; return r }
 	return map[string]nameRoute{
 		"get":                    {run: func() error { _, err := db.Get(ctx, key); return err }, collectionErr: ErrInvalidKey},
@@ -131,11 +131,11 @@ func nameRoutes(db *Database, collection, field string) map[string]nameRoute {
 			_, err := db.Execute(ctx, Query{Collection: collection, OrderBy: []OrderBy{{Field: field}}})
 			return err
 		}),
-		"DTQL, collection": {run: dtql("from: {name: " + collection + "}\n"), collectionErr: ErrInvalidKey},
-		"DTQL, where":      with(query, dtql("from: {name: "+collection+"}\nwhere: {op: '==', left: {field: "+field+"}, right: {value: x}}\n")),
-		"DTQL, a column":   with(query, dtql("from: {name: "+collection+"}\ncolumns: [{field: "+field+"}]\n")),
+		"TugQL, collection": {run: tugql("from: {name: " + collection + "}\n"), collectionErr: ErrInvalidKey},
+		"TugQL, where":      with(query, tugql("from: {name: "+collection+"}\nwhere: {op: '==', left: {field: "+field+"}, right: {value: x}}\n")),
+		"TugQL, a column":   with(query, tugql("from: {name: "+collection+"}\ncolumns: [{field: "+field+"}]\n")),
 		"executor, where": with(query, func() error {
-			parsed, err := DeserializeDTQL([]byte("from: {name: " + collection + ", alias: c}\nwhere: {op: '==', left: {field: " + field + ", source: c}, right: {value: x}}\n"))
+			parsed, err := DeserializeTugQL([]byte("from: {name: " + collection + ", alias: c}\nwhere: {op: '==', left: {field: " + field + ", source: c}, right: {value: x}}\n"))
 			if err != nil {
 				return err
 			}
@@ -143,7 +143,7 @@ func nameRoutes(db *Database, collection, field string) map[string]nameRoute {
 			return err
 		}),
 		"executor, a transaction": {run: func() error {
-			parsed, _, err := ParseDTQL([]byte("from: {name: " + collection + "}\n"))
+			parsed, _, err := ParseTugQL([]byte("from: {name: " + collection + "}\n"))
 			if err != nil {
 				return err
 			}
@@ -252,14 +252,14 @@ func TestCheckReadRefusesWhatTheGuardedExecutorRefusesAndReachesNoDriver(t *test
 	long := pgName(maxServerNameBytes + 1)
 	db, fake := openNamed(t, "postgres", "orders", "total")
 	document := func(field string) dal.Query {
-		parsed, err := DeserializeDTQL([]byte("from: {name: customers, alias: c}\nwhere: {op: '==', left: {field: " + field + ", source: c}, right: {value: x}}\n"))
+		parsed, err := DeserializeTugQL([]byte("from: {name: customers, alias: c}\nwhere: {op: '==', left: {field: " + field + ", source: c}, right: {value: x}}\n"))
 		if err != nil {
 			t.Fatal(err)
 		}
 		return parsed
 	}
-	if err := db.CheckRead(document(long)); !errors.Is(err, ErrInvalidDTQL) || !strings.Contains(err.Error(), "63 bytes") || strings.Contains(err.Error(), long) {
-		t.Errorf("a field of 64 bytes: %v, want ErrInvalidDTQL that gives the limit and not the name", err)
+	if err := db.CheckRead(document(long)); !errors.Is(err, ErrInvalidTugQL) || !strings.Contains(err.Error(), "63 bytes") || strings.Contains(err.Error(), long) {
+		t.Errorf("a field of 64 bytes: %v, want ErrInvalidTugQL that gives the limit and not the name", err)
 	}
 	if err := db.CheckRead(document("name")); err != nil {
 		t.Errorf("a declared field: %v, want it accepted", err)

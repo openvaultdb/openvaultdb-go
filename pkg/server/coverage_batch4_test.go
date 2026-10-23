@@ -14,7 +14,7 @@ import (
 
 	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/dalgo/dal"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 	"github.com/dal-go/record"
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
@@ -158,42 +158,42 @@ func TestPostgresWireCoverage(t *testing.T) {
 	}
 }
 
-// --- 2. dtql.go dtqlFromURL and bindDTQLParameters ---
+// --- 2. tugql.go tugqlFromURL and bindTugQLParameters ---
 
-func TestDTQLURLAndParameters(t *testing.T) {
+func TestTugQLURLAndParameters(t *testing.T) {
 	t.Parallel()
 
-	// 1. dtqlFromURL: URL too long
-	uLong, _ := url.Parse("/dtql?" + strings.Repeat("q=1&", 3000))
-	if _, err := dtqlFromURL(uLong); !errors.Is(err, errDTQLURLTooLong) {
-		t.Fatalf("expected errDTQLURLTooLong, got %v", err)
+	// 1. tugqlFromURL: URL too long
+	uLong, _ := url.Parse("/tugql?" + strings.Repeat("q=1&", 3000))
+	if _, err := tugqlFromURL(uLong); !errors.Is(err, errTugQLURLTooLong) {
+		t.Fatalf("expected errTugQLURLTooLong, got %v", err)
 	}
 
-	// 2. dtqlFromURL: unsupported param
-	uBadParam, _ := url.Parse("/dtql?unknown=1")
-	if _, err := dtqlFromURL(uBadParam); err == nil || !strings.Contains(err.Error(), "unsupported DTQL URL parameter") {
+	// 2. tugqlFromURL: unsupported param
+	uBadParam, _ := url.Parse("/tugql?unknown=1")
+	if _, err := tugqlFromURL(uBadParam); err == nil || !strings.Contains(err.Error(), "unsupported TugQL URL parameter") {
 		t.Fatalf("expected unsupported parameter error, got %v", err)
 	}
 
-	// 3. dtqlFromURL: empty q
-	uEmptyQ, _ := url.Parse("/dtql?q=")
-	if _, err := dtqlFromURL(uEmptyQ); err == nil || !strings.Contains(err.Error(), "exactly one nonempty q parameter") {
+	// 3. tugqlFromURL: empty q
+	uEmptyQ, _ := url.Parse("/tugql?q=")
+	if _, err := tugqlFromURL(uEmptyQ); err == nil || !strings.Contains(err.Error(), "exactly one nonempty q parameter") {
 		t.Fatalf("expected nonempty q error, got %v", err)
 	}
 
-	// 4. dtqlFromURL: invalid parameters
-	uBadParams, _ := url.Parse("/dtql?q=from+orders&parameters=invalid-json")
-	if _, err := dtqlFromURL(uBadParams); err == nil || !strings.Contains(err.Error(), "parameters must be a JSON object") {
+	// 4. tugqlFromURL: invalid parameters
+	uBadParams, _ := url.Parse("/tugql?q=from+orders&parameters=invalid-json")
+	if _, err := tugqlFromURL(uBadParams); err == nil || !strings.Contains(err.Error(), "parameters must be a JSON object") {
 		t.Fatalf("expected parameters must be JSON object error, got %v", err)
 	}
 
-	// 5. bindDTQLParameters branches
+	// 5. bindTugQLParameters branches
 	// Empty query
-	if _, err := bindDTQLParameters([]byte(`{"query": " "}`)); err == nil || !strings.Contains(err.Error(), "query must contain DTQL YAML") {
+	if _, err := bindTugQLParameters([]byte(`{"query": " "}`)); err == nil || !strings.Contains(err.Error(), "query must contain TugQL YAML") {
 		t.Fatalf("expected empty query error, got %v", err)
 	}
 	// Extra JSON object
-	if _, err := bindDTQLParameters([]byte(`{"query":"from orders"}{"extra":1}`)); err == nil || !strings.Contains(err.Error(), "must contain one object") {
+	if _, err := bindTugQLParameters([]byte(`{"query":"from orders"}{"extra":1}`)); err == nil || !strings.Contains(err.Error(), "must contain one object") {
 		t.Fatalf("expected one object error, got %v", err)
 	}
 	// Too many parameters (> 64)
@@ -202,41 +202,41 @@ func TestDTQLURLAndParameters(t *testing.T) {
 		manyParams[fmt.Sprintf("p%d", i)] = json.RawMessage(`1`)
 	}
 	bodyMany, _ := json.Marshal(map[string]any{"query": "from orders", "parameters": manyParams})
-	if _, err := bindDTQLParameters(bodyMany); err == nil || !strings.Contains(err.Error(), "too many DTQL parameters") {
+	if _, err := bindTugQLParameters(bodyMany); err == nil || !strings.Contains(err.Error(), "too many TugQL parameters") {
 		t.Fatalf("expected too many parameters error, got %v", err)
 	}
 	// Invalid YAML
-	if _, err := bindDTQLParameters([]byte(`{"query":"\t\t[invalid: yaml:"}`)); err == nil || !strings.Contains(err.Error(), "invalid DTQL YAML") {
-		t.Fatalf("expected invalid DTQL YAML error, got %v", err)
+	if _, err := bindTugQLParameters([]byte(`{"query":"\t\t[invalid: yaml:"}`)); err == nil || !strings.Contains(err.Error(), "invalid TugQL YAML") {
+		t.Fatalf("expected invalid TugQL YAML error, got %v", err)
 	}
 	// Parameter not bound
-	if _, err := bindDTQLParameters([]byte(`{"query":"where: {param: missing}"}`)); err == nil || !strings.Contains(err.Error(), "is not bound") {
+	if _, err := bindTugQLParameters([]byte(`{"query":"where: {param: missing}"}`)); err == nil || !strings.Contains(err.Error(), "is not bound") {
 		t.Fatalf("expected not bound error, got %v", err)
 	}
 	// Parameter null
-	if _, err := bindDTQLParameters([]byte(`{"query":"where: {param: p1}", "parameters":{"p1": null}}`)); err == nil || !strings.Contains(err.Error(), "cannot be null") {
+	if _, err := bindTugQLParameters([]byte(`{"query":"where: {param: p1}", "parameters":{"p1": null}}`)); err == nil || !strings.Contains(err.Error(), "cannot be null") {
 		t.Fatalf("expected cannot be null error, got %v", err)
 	}
 	// Parameter not scalar/array (e.g. object)
-	if _, err := bindDTQLParameters([]byte(`{"query":"where: {param: p1}", "parameters":{"p1": {"nested": 1}}}`)); err == nil || !strings.Contains(err.Error(), "must be a scalar or array") {
+	if _, err := bindTugQLParameters([]byte(`{"query":"where: {param: p1}", "parameters":{"p1": {"nested": 1}}}`)); err == nil || !strings.Contains(err.Error(), "must be a scalar or array") {
 		t.Fatalf("expected scalar or array error, got %v", err)
 	}
 	// Parameter array with null element
-	if _, err := bindDTQLParameters([]byte(`{"query":"where: {param: p1}", "parameters":{"p1": [null]}}`)); err == nil || !strings.Contains(err.Error(), "must contain only non-null scalars") {
+	if _, err := bindTugQLParameters([]byte(`{"query":"where: {param: p1}", "parameters":{"p1": [null]}}`)); err == nil || !strings.Contains(err.Error(), "must contain only non-null scalars") {
 		t.Fatalf("expected non-null scalars error, got %v", err)
 	}
 	// Unused parameter
-	if _, err := bindDTQLParameters([]byte(`{"query":"from: {name: orders}", "parameters":{"unused": "val"}}`)); err == nil || !strings.Contains(err.Error(), "is not used") {
+	if _, err := bindTugQLParameters([]byte(`{"query":"from: {name: orders}", "parameters":{"unused": "val"}}`)); err == nil || !strings.Contains(err.Error(), "is not used") {
 		t.Fatalf("expected unused parameter error, got %v", err)
 	}
 	// Valid bound parameter
 	validBody := []byte(`{"query":"where: {param: p1}", "parameters":{"p1": "val1"}}`)
-	if bound, err := bindDTQLParameters(validBody); err != nil || !strings.Contains(string(bound), "value: val1") {
+	if bound, err := bindTugQLParameters(validBody); err != nil || !strings.Contains(string(bound), "value: val1") {
 		t.Fatalf("expected successful bind, got %v (%s)", err, string(bound))
 	}
 }
 
-// --- 3. dtql_pages.go snapshot tests ---
+// --- 3. tugql_pages.go snapshot tests ---
 
 // Not parallel: mutates readSnapshotRand
 func TestSnapshotIdentityRandError(t *testing.T) {
@@ -250,7 +250,7 @@ func TestSnapshotIdentityRandError(t *testing.T) {
 	}
 }
 
-func TestDTQLPagesBranches(t *testing.T) {
+func TestTugQLPagesBranches(t *testing.T) {
 	t.Parallel()
 
 	srv := New("test", nil)
@@ -436,24 +436,24 @@ func TestAccessAndInspectBranches(t *testing.T) {
 	}
 
 	// 5. protectedOperation: various actions
-	opInsert := api.Operation{ID: "op1", ExecutionClass: az.ExecutionDTQL, Action: "insert", Resource: az.Resource{Table: "orders", RowID: "1"}, Mutation: &api.Mutation{Data: map[string]any{"x": 1}}}
+	opInsert := api.Operation{ID: "op1", ExecutionClass: executionTugQL, Action: "insert", Resource: az.Resource{Table: "orders", RowID: "1"}, Mutation: &api.Mutation{Data: map[string]any{"x": 1}}}
 	if _, err := protectedOperation(opInsert); err != nil {
 		t.Fatalf("expected insert success, got %v", err)
 	}
 
-	opSet := api.Operation{ID: "op1", ExecutionClass: az.ExecutionDTQL, Action: "set", Resource: az.Resource{Table: "orders", RowID: "1"}, Mutation: &api.Mutation{Data: map[string]any{"x": 1}}}
+	opSet := api.Operation{ID: "op1", ExecutionClass: executionTugQL, Action: "set", Resource: az.Resource{Table: "orders", RowID: "1"}, Mutation: &api.Mutation{Data: map[string]any{"x": 1}}}
 	if _, err := protectedOperation(opSet); err != nil {
 		t.Fatalf("expected set success, got %v", err)
 	}
 
-	opDelete := api.Operation{ID: "op1", ExecutionClass: az.ExecutionDTQL, Action: "delete", Resource: az.Resource{Table: "orders", RowID: "1"}, Mutation: &api.Mutation{IfDataRevision: "rev1"}}
+	opDelete := api.Operation{ID: "op1", ExecutionClass: executionTugQL, Action: "delete", Resource: az.Resource{Table: "orders", RowID: "1"}, Mutation: &api.Mutation{IfDataRevision: "rev1"}}
 	if _, err := protectedOperation(opDelete); err != nil {
 		t.Fatalf("expected delete success, got %v", err)
 	}
 
 	opUpdateBadVal := api.Operation{
 		ID:             "op1",
-		ExecutionClass: az.ExecutionDTQL,
+		ExecutionClass: executionTugQL,
 		Action:         "update",
 		Resource:       az.Resource{Table: "orders", RowID: "1"},
 		Mutation:       &api.Mutation{Changes: []api.Change{{Path: []string{"name"}, Value: []byte("invalid-json")}}},
@@ -462,7 +462,7 @@ func TestAccessAndInspectBranches(t *testing.T) {
 		t.Fatal("expected error on invalid update change value")
 	}
 
-	opUnknown := api.Operation{ID: "op1", ExecutionClass: az.ExecutionDTQL, Action: "unknown", Resource: az.Resource{Table: "orders", RowID: "1"}}
+	opUnknown := api.Operation{ID: "op1", ExecutionClass: executionTugQL, Action: "unknown", Resource: az.Resource{Table: "orders", RowID: "1"}}
 	if _, err := protectedOperation(opUnknown); !errors.Is(err, errProtectedUnsupported) {
 		t.Fatalf("expected errProtectedUnsupported, got %v", err)
 	}
@@ -487,7 +487,7 @@ func TestAccessAndInspectBranches(t *testing.T) {
 	// 7. writeQueryAuthorizationError
 	recAuthErr := httptest.NewRecorder()
 	reqAuthErr := httptest.NewRequest(http.MethodGet, "/v1/databases/db1/query", nil)
-	opRead := api.Operation{ID: "op1", Action: "query", Resource: az.Resource{DatabaseID: "db1", Path: "/orders", Table: "orders"}, ExecutionClass: az.ExecutionDTQL}
+	opRead := api.Operation{ID: "op1", Action: "query", Resource: az.Resource{DatabaseID: "db1", Path: "/orders", Table: "orders"}, ExecutionClass: executionTugQL}
 	srvDB.writeQueryAuthorizationError(recAuthErr, reqAuthErr, db, opRead, &access.PolicyProviderError{Err: errors.New("provider down")})
 	if recAuthErr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503 for PolicyProviderError, got %d", recAuthErr.Code)

@@ -75,11 +75,11 @@ func TestProtectedDatabaseStillReadsARootCollection(t *testing.T) {
 	for _, engine := range []string{"sqlite", "ingitdb"} {
 		db, calls := protSrcOpen(t, engine, "customers")
 		query := srcGuardInner("customers")
-		if _, err := db.ExecuteDTQLQuery(ctx, query); !errors.Is(err, errJoinSrcReader) {
-			t.Errorf("%s ExecuteDTQLQuery: %v", engine, err)
+		if _, err := db.ExecuteTugQLQuery(ctx, query); !errors.Is(err, errJoinSrcReader) {
+			t.Errorf("%s ExecuteTugQLQuery: %v", engine, err)
 		}
-		if err := db.StreamDTQLSnapshot(ctx, query, func(Record) error { return nil }); !errors.Is(err, errJoinSrcReader) {
-			t.Errorf("%s StreamDTQLSnapshot: %v", engine, err)
+		if err := db.StreamTugQLSnapshot(ctx, query, func(Record) error { return nil }); !errors.Is(err, errJoinSrcReader) {
+			t.Errorf("%s StreamTugQLSnapshot: %v", engine, err)
 		}
 		if calls.readers != 2 {
 			t.Errorf("%s: driver reads = %d, want 2", engine, calls.readers)

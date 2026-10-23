@@ -64,9 +64,9 @@ func TestSQLiteConfiguredRecordKeysPreserveNativeValuesAndProjection(t *testing.
 		t.Fatalf("GetMulti: %v", err)
 	}
 	for _, doc := range []string{"from: {name: things}\n", "from: {name: things}\ncolumns: [{field: id}]\n"} {
-		out, err := db.ExecuteDTQL(ctx, []byte(doc))
+		out, err := db.ExecuteTugQL(ctx, []byte(doc))
 		if err != nil || len(out) != 2 || out[0].Key.ID != "a/b:quote.$#[]" {
-			t.Fatalf("DTQL: %#v %v", out, err)
+			t.Fatalf("TugQL: %#v %v", out, err)
 		}
 		if strings.Contains(doc, "columns") {
 			if _, leaked := out[0].Data["key"]; leaked {
@@ -79,11 +79,11 @@ func TestSQLiteConfiguredRecordKeysPreserveNativeValuesAndProjection(t *testing.
 		t.Fatalf("structured key-only: %#v %v", out, err)
 	}
 	var streamed []core.Record
-	parsed, _, err := core.ParseDTQL([]byte("from: {name: things}\ncolumns: [{field: id}]\n"))
+	parsed, _, err := core.ParseTugQL([]byte("from: {name: things}\ncolumns: [{field: id}]\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.StreamDTQLSnapshot(ctx, parsed, func(rec core.Record) error { streamed = append(streamed, rec); return nil }); err != nil || len(streamed) != 2 || streamed[0].Key.ID != "a/b:quote.$#[]" {
+	if err := db.StreamTugQLSnapshot(ctx, parsed, func(rec core.Record) error { streamed = append(streamed, rec); return nil }); err != nil || len(streamed) != 2 || streamed[0].Key.ID != "a/b:quote.$#[]" {
 		t.Fatalf("snapshot: %#v %v", streamed, err)
 	}
 	db.Manifest.Storage.SQLite.RecordKeys["things"] = "id"
@@ -301,12 +301,12 @@ func TestSQLiteW1ActualStatementAndIterationCancellationRecover(t *testing.T) {
 		t.Fatalf("actual statement cancellation: %v", err)
 	}
 	ctx2, cancel2 := context.WithCancel(context.Background())
-	parsed, _, err := core.ParseDTQL([]byte("from: {name: things}\n"))
+	parsed, _, err := core.ParseTugQL([]byte("from: {name: things}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	emitted := 0
-	err = db.StreamDTQLSnapshot(ctx2, parsed, func(core.Record) error { emitted++; cancel2(); return nil })
+	err = db.StreamTugQLSnapshot(ctx2, parsed, func(core.Record) error { emitted++; cancel2(); return nil })
 	if !errors.Is(err, context.Canceled) || emitted != 1 {
 		t.Fatalf("iteration cancellation: %v after %d records", err, emitted)
 	}

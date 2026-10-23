@@ -105,18 +105,18 @@ func TestSourceRightsDiscoveryReadsAndFrozenPages(t *testing.T) {
 			t.Fatal(response.Code, doc)
 		}
 	}
-	for _, call := range []struct{ method, path, body string }{{"GET", "/v1/databases/rights/read?key=items/i1", ""}, {"GET", "/v1/databases/rights/records/items/i1", ""}, {"POST", "/v1/databases/rights/query", `{"collection":"items"}`}, {"POST", "/v1/databases/rights/dtql", "from: {name: items}\n"}, {"POST", "/v1/databases/rights/dtql", "from: {name: items}\nwhere: {op: '==', left: {field: id}, right: {value: absent}}\n"}} {
+	for _, call := range []struct{ method, path, body string }{{"GET", "/v1/databases/rights/read?key=items/i1", ""}, {"GET", "/v1/databases/rights/records/items/i1", ""}, {"POST", "/v1/databases/rights/query", `{"collection":"items"}`}, {"POST", "/v1/databases/rights/tugql", "from: {name: items}\n"}, {"POST", "/v1/databases/rights/tugql", "from: {name: items}\nwhere: {op: '==', left: {field: id}, right: {value: absent}}\n"}} {
 		response, doc := rightsDocument(t, handler, call.method, call.path, call.body, nil)
 		got := rightsEntries(t, doc)
 		if response.Code != 200 || len(got) != 1 || got[0].DeclarationScope != license.RecordsetScope || !reflect.DeepEqual(doc["usedSourceIds"], []any{"ovdb:stable-server/rights/items"}) {
 			t.Fatal(response.Code, doc)
 		}
 	}
-	response, first := rightsDocument(t, handler, "POST", "/v1/databases/rights/dtql", "from: {name: items}\n", map[string]string{"OVDB-Page-Size": "1"})
+	response, first := rightsDocument(t, handler, "POST", "/v1/databases/rights/tugql", "from: {name: items}\n", map[string]string{"OVDB-Page-Size": "1"})
 	if response.Code != 200 {
 		t.Fatal(response.Code, first)
 	}
-	response, second := rightsDocument(t, handler, "POST", "/v1/databases/rights/dtql", "from: {name: items}\n", map[string]string{"OVDB-Page-Size": "1", "OVDB-Page-Token": first["nextPageToken"].(string)})
+	response, second := rightsDocument(t, handler, "POST", "/v1/databases/rights/tugql", "from: {name: items}\n", map[string]string{"OVDB-Page-Size": "1", "OVDB-Page-Token": first["nextPageToken"].(string)})
 	if response.Code != 200 || !reflect.DeepEqual(first["sourceRights"], second["sourceRights"]) || !reflect.DeepEqual(first["usedSourceIds"], second["usedSourceIds"]) {
 		t.Fatal(response.Code, first, second)
 	}
@@ -136,7 +136,7 @@ func TestSourceRightsRelationalPlannedAndUsedInventories(t *testing.T) {
 		"from: {database: a, name: items}\nwhere: {exists: {query: {from: {database: b, name: items}}}}\ncolumns: [{field: id}]\n",
 	}
 	for _, doc := range docs {
-		response, result := rightsDocument(t, service.Handler(), "POST", "/v1/dtql", doc, nil)
+		response, result := rightsDocument(t, service.Handler(), "POST", "/v1/tugql", doc, nil)
 		if response.Code != 200 {
 			t.Fatal(response.Code, result)
 		}
@@ -154,7 +154,7 @@ func TestSourceRightsRelationalPlannedAndUsedInventories(t *testing.T) {
 	// A source inside an EXISTS expression is planned, but is never read when
 	// its root scan is empty. Its terms remain in the complete inventory.
 	doc := "from: {database: a, name: notes}\nwhere: {exists: {query: {from: {database: b, name: items}}}}\ncolumns: [{field: id}]\n"
-	response, result := rightsDocument(t, service.Handler(), "POST", "/v1/dtql", doc, nil)
+	response, result := rightsDocument(t, service.Handler(), "POST", "/v1/tugql", doc, nil)
 	if response.Code != 200 || len(rightsEntries(t, result)) != 2 || !reflect.DeepEqual(result["usedSourceIds"], []any{"ovdb:stable-server/a/notes"}) {
 		t.Fatal(response.Code, result)
 	}
@@ -174,7 +174,7 @@ func TestSourceRightsSafeHumanTermsAndLegacyFallback(t *testing.T) {
 	}
 	legacy := server.New("test", map[string]*core.Database{"human": db})
 	t.Cleanup(legacy.CloseSnapshots)
-	response, doc := rightsDocument(t, legacy.Handler(), "POST", "/v1/databases/human/dtql", "from: {name: items}\n", nil)
+	response, doc := rightsDocument(t, legacy.Handler(), "POST", "/v1/databases/human/tugql", "from: {name: items}\n", nil)
 	if response.Code != 200 || doc["sourceRights"] != nil || doc["usedSourceIds"] != nil {
 		t.Fatal(response.Code, doc)
 	}
@@ -188,7 +188,7 @@ func TestSourceRightsDoNotAuthorizeOrDiscloseDeniedReads(t *testing.T) {
 	db := rightsMount(t, "denied", ", license: {text: Confidential source terms}", "")
 	service := server.New("test", map[string]*core.Database{"denied": db}, server.WithSourceRights("stable-server", nil), server.WithAuth(&auth.Config{OwnerToken: "owner-token"}))
 	t.Cleanup(service.CloseSnapshots)
-	for _, call := range []struct{ method, path, body string }{{"GET", "/v1/databases/denied", ""}, {"GET", "/v1/databases/denied/records/items/i1", ""}, {"POST", "/v1/databases/denied/dtql", "from: {name: items}\n"}, {"POST", "/v1/dtql", "from: {database: denied, name: items}\n"}} {
+	for _, call := range []struct{ method, path, body string }{{"GET", "/v1/databases/denied", ""}, {"GET", "/v1/databases/denied/records/items/i1", ""}, {"POST", "/v1/databases/denied/tugql", "from: {name: items}\n"}, {"POST", "/v1/tugql", "from: {database: denied, name: items}\n"}} {
 		response, doc := rightsDocument(t, service.Handler(), call.method, call.path, call.body, nil)
 		if response.Code < 400 || doc["sourceRights"] != nil || strings.Contains(response.Body.String(), "Confidential source terms") {
 			t.Fatal(response.Code, doc)
@@ -203,7 +203,7 @@ func TestSourceRightsEvidenceBudgetRejectsBeforeDataOutput(t *testing.T) {
 	service := server.New("test", map[string]*core.Database{"large": db}, server.WithSourceRights("stable-server", nil))
 	t.Cleanup(service.CloseSnapshots)
 	for _, headers := range []map[string]string{nil, {"OVDB-Page-Size": "1"}} {
-		response, result := rightsDocument(t, service.Handler(), "POST", "/v1/databases/large/dtql", "from: {name: items}\n", headers)
+		response, result := rightsDocument(t, service.Handler(), "POST", "/v1/databases/large/tugql", "from: {name: items}\n", headers)
 		if response.Code != 422 || result["records"] != nil || result["sourceRights"] != nil {
 			t.Fatal(response.Code, result)
 		}
@@ -219,7 +219,7 @@ func TestSourceRightsMixedDeclaredAndUndeclaredInputs(t *testing.T) {
 	service := server.New("test", map[string]*core.Database{"a": a, "b": b}, server.WithSourceRights("stable-server", nil))
 	t.Cleanup(service.CloseSnapshots)
 	doc := "from: {database: a, name: items, alias: a, joins: [{from: {database: b, name: items, alias: b}, on: [{left: {field: id, source: a}, op: '==', right: {field: id, source: b}}]}]}\ncolumns: [{field: id, source: a}]\n"
-	response, result := rightsDocument(t, service.Handler(), "POST", "/v1/dtql", doc, nil)
+	response, result := rightsDocument(t, service.Handler(), "POST", "/v1/tugql", doc, nil)
 	rights := rightsEntries(t, result)
 	if response.Code != 200 || len(rights) != 1 || rights[0].Source.DatabaseID != "a" || !reflect.DeepEqual(result["usedSourceIds"], []any{"ovdb:stable-server/a/items", "ovdb:stable-server/b/items"}) {
 		t.Fatal(response.Code, result)
@@ -230,7 +230,7 @@ func TestSourceRightsSnapshotMetadataConsumesBudget(t *testing.T) {
 	db := rightsMount(t, "small", ", license: {text: Bounded source terms}", "")
 	service := server.New("test", map[string]*core.Database{"small": db}, server.WithSourceRights("stable-server", nil), server.WithSnapshotLimits(server.SnapshotLimits{Slots: 1, Bytes: 100, Rows: 10}))
 	t.Cleanup(service.CloseSnapshots)
-	response, result := rightsDocument(t, service.Handler(), "POST", "/v1/databases/small/dtql", "from: {name: items}\n", map[string]string{"OVDB-Page-Size": "1"})
+	response, result := rightsDocument(t, service.Handler(), "POST", "/v1/databases/small/tugql", "from: {name: items}\n", map[string]string{"OVDB-Page-Size": "1"})
 	if response.Code != 422 || result["records"] != nil || result["snapshotToken"] != nil {
 		t.Fatal(response.Code, result)
 	}
@@ -255,7 +255,7 @@ acl: {enabled: true, policies: [policy.yaml]}
 	t.Cleanup(func() { _ = db.Close() })
 	service := server.New("test", map[string]*core.Database{"crm": db}, server.WithSourceRights("stable-server", nil))
 	t.Cleanup(service.CloseSnapshots)
-	for _, call := range []struct{ method, path, body string }{{"GET", "/v1/databases/crm/records/customers/secret", ""}, {"POST", "/v1/databases/crm/dtql", "from: {name: customers}\n"}, {"GET", "/v1/databases/crm", ""}} {
+	for _, call := range []struct{ method, path, body string }{{"GET", "/v1/databases/crm/records/customers/secret", ""}, {"POST", "/v1/databases/crm/tugql", "from: {name: customers}\n"}, {"GET", "/v1/databases/crm", ""}} {
 		response, result := rightsDocument(t, service.Handler(), call.method, call.path, call.body, nil)
 		if response.Code < 400 || result["sourceRights"] != nil || strings.Contains(response.Body.String(), "source_rights_invalid") {
 			t.Fatal(response.Code, result)

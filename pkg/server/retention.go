@@ -65,8 +65,8 @@ func continuationName(name string) bool {
 	return false
 }
 
-func continuationDocument(data []byte, dtql bool) (bool, error) {
-	if dtql {
+func continuationDocument(data []byte, tugql bool) (bool, error) {
+	if tugql {
 		decoder := yaml.NewDecoder(bytes.NewReader(data))
 		var document yaml.Node
 		if err := decoder.Decode(&document); err != nil {
@@ -110,7 +110,7 @@ func continuationYAML(document *yaml.Node) bool {
 		if continuationName(document.Content[i].Value) {
 			return true
 		}
-		// The JSON DTQL envelope carries its YAML document in query. Do not
+		// The JSON TugQL envelope carries its YAML document in query. Do not
 		// traverse parameter values or arbitrary user data as protocol fields.
 		if document.Content[i].Value == "query" && document.Content[i+1].Kind == yaml.ScalarNode {
 			var nested yaml.Node
@@ -186,7 +186,7 @@ func (s *Server) guardRetentionRead(w http.ResponseWriter, r *http.Request, db *
 		name, err := url.QueryUnescape(name)
 		forbidden = forbidden || (err == nil && continuationName(name))
 	}
-	dtql := strings.HasSuffix(r.URL.Path, "/dtql")
+	tugql := strings.HasSuffix(r.URL.Path, "/tugql")
 	for name, values := range values {
 		forbidden = forbidden || continuationName(name)
 		if name == "q" {
@@ -195,7 +195,7 @@ func (s *Server) guardRetentionRead(w http.ResponseWriter, r *http.Request, db *
 					writeError(w, http.StatusBadRequest, "bad_request", "query parameter exceeds the bounded read limit")
 					return false
 				}
-				found, err := continuationDocument([]byte(value), dtql)
+				found, err := continuationDocument([]byte(value), tugql)
 				forbidden = forbidden || found
 				if queryErr == nil {
 					queryErr = err
@@ -203,14 +203,14 @@ func (s *Server) guardRetentionRead(w http.ResponseWriter, r *http.Request, db *
 			}
 		}
 	}
-	if !forbidden && r.Method == http.MethodPost && (strings.HasSuffix(r.URL.Path, "/query") || strings.HasSuffix(r.URL.Path, "/dtql")) && r.Body != nil {
+	if !forbidden && r.Method == http.MethodPost && (strings.HasSuffix(r.URL.Path, "/query") || strings.HasSuffix(r.URL.Path, "/tugql")) && r.Body != nil {
 		data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes))
 		if err != nil {
 			writeError(w, 400, "bad_request", "query request exceeds the bounded read limit")
 			return false
 		}
 		r.Body = io.NopCloser(bytes.NewReader(data))
-		found, err := continuationDocument(data, dtql)
+		found, err := continuationDocument(data, tugql)
 		forbidden = forbidden || found
 		if queryErr == nil {
 			queryErr = err

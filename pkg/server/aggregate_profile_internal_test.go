@@ -21,10 +21,10 @@ func aggregateProfileShapes(function string) map[string]struct{ path, body strin
 		return "from:\n  " + database + "name: orders\n  alias: o\n  joins:\n    - type: left\n      from: {" + other + "name: customers, alias: c}\n      on:\n        - {left: {field: customer_id, source: o}, op: '==', right: {field: id, source: c}}\ncolumns: [" + aggregate + "]\n"
 	}
 	return map[string]struct{ path, body string }{
-		"one source":                  {"/v1/databases/alpha/dtql", "from: {name: orders, alias: o}\ncolumns: [" + aggregate + "]\n"},
-		"a join":                      {"/v1/databases/alpha/dtql", join("", "")},
-		"a join on /v1/dtql":          {"/v1/dtql", join("database: alpha\n  ", "database: alpha, ")},
-		"a join across two databases": {"/v1/dtql", "from:\n  database: alpha\n  name: orders\n  alias: o\n  joins:\n    - type: left\n      from: {database: beta, name: customers, alias: c}\n      on:\n        - {left: {field: customer_id, source: o}, op: '==', right: {field: id, source: c}}\ncolumns: [" + aggregate + "]\n"},
+		"one source":                  {"/v1/databases/alpha/tugql", "from: {name: orders, alias: o}\ncolumns: [" + aggregate + "]\n"},
+		"a join":                      {"/v1/databases/alpha/tugql", join("", "")},
+		"a join on /v1/tugql":         {"/v1/tugql", join("database: alpha\n  ", "database: alpha, ")},
+		"a join across two databases": {"/v1/tugql", "from:\n  database: alpha\n  name: orders\n  alias: o\n  joins:\n    - type: left\n      from: {database: beta, name: customers, alias: c}\n      on:\n        - {left: {field: customer_id, source: o}, op: '==', right: {field: id, source: c}}\ncolumns: [" + aggregate + "]\n"},
 	}
 }
 
@@ -38,8 +38,8 @@ func TestFirstAndLastAreRefusedByTheClassifierBeforeAnythingIsRead(t *testing.T)
 				_, host := relFakeServer(t, fake, relFakeDefaultMounts())
 				resp := relFakeDo(t, host, http.MethodPost, shape.path, "", shape.body, nil)
 				want := fmt.Sprintf("%s is not in the relational profile", strings.ToLower(function))
-				if resp.status != http.StatusBadRequest || resp.code() != "invalid_dtql" || !strings.Contains(resp.errorDetail()["message"].(string), want) {
-					t.Fatalf("status %d, want 400 invalid_dtql naming %q: %s", resp.status, want, resp.raw)
+				if resp.status != http.StatusBadRequest || resp.code() != "invalid_tugql" || !strings.Contains(resp.errorDetail()["message"].(string), want) {
+					t.Fatalf("status %d, want 400 invalid_tugql naming %q: %s", resp.status, want, resp.raw)
 				}
 				if fake.count() != 0 {
 					t.Fatalf("the executor was called %d times for a refused document", fake.count())

@@ -18,7 +18,7 @@ import (
 // PostgreSQL keeps 63 bytes of a name and silently cuts the rest, so a name of 64 bytes
 // or more would address the table or the column named by its first 63. A PostgreSQL
 // mount refuses such a collection, field or key path on every route with the 400 of its
-// kind (invalid_key for a collection, bad_request for a field of a write, invalid_dtql
+// kind (invalid_key for a collection, bad_request for a field of a write, invalid_tugql
 // for a field of a query) before any statement is sent. The driver here counts the calls
 // that reach it, so no server is involved.
 
@@ -69,13 +69,13 @@ func TestAPostgresNameOver63BytesIsA400BeforeAnyStatementOnEveryRoute(t *testing
 		{"batch, a collection", http.MethodPost, "/v1/databases/pg/batch", `{"ops":[{"op":"delete","key":"` + long + `/c1"}]}`, http.StatusBadRequest, "invalid_key"},
 		{"batch, a field", http.MethodPost, "/v1/databases/pg/batch", `{"ops":[{"op":"set","key":"customers/c1","data":{"` + long + `":"x"}}]}`, http.StatusBadRequest, "bad_request"},
 		{"wire query, a collection", http.MethodPost, "/v1/databases/pg/query", `{"collection":"` + long + `"}`, http.StatusBadRequest, "invalid_key"},
-		{"wire query, a field", http.MethodPost, "/v1/databases/pg/query", `{"collection":"customers","where":[{"field":"` + long + `","op":"==","value":"x"}]}`, http.StatusBadRequest, "invalid_dtql"},
-		{"wire query, an order", http.MethodPost, "/v1/databases/pg/query", `{"collection":"customers","orderBy":[{"field":"` + long + `"}]}`, http.StatusBadRequest, "invalid_dtql"},
-		{"DTQL of the database, a collection", http.MethodPost, "/v1/databases/pg/dtql", "from: {name: " + long + "}\n", http.StatusBadRequest, "invalid_key"},
-		{"DTQL of the database, a field", http.MethodPost, "/v1/databases/pg/dtql", "from: {name: customers}\nwhere: {op: '==', left: {field: " + long + "}, right: {value: x}}\n", http.StatusBadRequest, "invalid_dtql"},
-		{"relational document, a collection", http.MethodPost, "/v1/dtql", "from: {database: pg, name: " + long + "}\n", http.StatusBadRequest, "invalid_key"},
-		{"relational document, a field", http.MethodPost, "/v1/dtql", "from: {database: pg, name: customers, alias: c}\nwhere: {op: '==', left: {field: " + long + ", source: c}, right: {value: x}}\n", http.StatusBadRequest, "invalid_dtql"},
-		{"relational document, joined", http.MethodPost, "/v1/dtql", previewPGSameDatabaseJoin + "orderBy: [{field: " + long + ", source: c}]\n", http.StatusBadRequest, "invalid_dtql"},
+		{"wire query, a field", http.MethodPost, "/v1/databases/pg/query", `{"collection":"customers","where":[{"field":"` + long + `","op":"==","value":"x"}]}`, http.StatusBadRequest, "invalid_tugql"},
+		{"wire query, an order", http.MethodPost, "/v1/databases/pg/query", `{"collection":"customers","orderBy":[{"field":"` + long + `"}]}`, http.StatusBadRequest, "invalid_tugql"},
+		{"TugQL of the database, a collection", http.MethodPost, "/v1/databases/pg/tugql", "from: {name: " + long + "}\n", http.StatusBadRequest, "invalid_key"},
+		{"TugQL of the database, a field", http.MethodPost, "/v1/databases/pg/tugql", "from: {name: customers}\nwhere: {op: '==', left: {field: " + long + "}, right: {value: x}}\n", http.StatusBadRequest, "invalid_tugql"},
+		{"relational document, a collection", http.MethodPost, "/v1/tugql", "from: {database: pg, name: " + long + "}\n", http.StatusBadRequest, "invalid_key"},
+		{"relational document, a field", http.MethodPost, "/v1/tugql", "from: {database: pg, name: customers, alias: c}\nwhere: {op: '==', left: {field: " + long + ", source: c}, right: {value: x}}\n", http.StatusBadRequest, "invalid_tugql"},
+		{"relational document, joined", http.MethodPost, "/v1/tugql", previewPGSameDatabaseJoin + "orderBy: [{field: " + long + ", source: c}]\n", http.StatusBadRequest, "invalid_tugql"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			driver := &namesDriver{previewPGDriver: &previewPGDriver{}}
@@ -174,7 +174,7 @@ func (d *listedDriver) ExecuteQueryToRecordsetReader(ctx context.Context, query 
 // that no statement is sent for it. A document the server evaluates itself (a join across
 // databases, a document with a subquery) hands each mount a plain scan of its collection, so
 // the length is not looked at there: the document reads the field list of each source from
-// the catalog, and the name, which no list holds, is an unknown field (400 invalid_dtql) or,
+// the catalog, and the name, which no list holds, is an unknown field (400 invalid_tugql) or,
 // inside a scalar subquery of one source, which DALgo checks no field of, a null. In no case
 // is the name written into a query handed to the driver. The documentation says this and
 // no more.
@@ -195,8 +195,8 @@ func TestAPostgresFieldNameOver63BytesInADocumentTheServerEvaluatesItselfIsNever
 		t.Run(c.name, func(t *testing.T) {
 			driver := &listedDriver{previewPGDriver: &previewPGDriver{}}
 			host, logs := previewPGServerWith(t, driver)
-			resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", c.body, nil)
-			if resp.status != c.status || (c.status == http.StatusBadRequest && resp.code() != "invalid_dtql") {
+			resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", c.body, nil)
+			if resp.status != c.status || (c.status == http.StatusBadRequest && resp.code() != "invalid_tugql") {
 				t.Fatalf("status %d: %s", resp.status, resp.raw)
 			}
 			if driver.fieldLists.Load() == 0 {
@@ -220,7 +220,7 @@ func TestAPostgresFieldNameOver63BytesInADocumentTheServerEvaluatesItselfIsNever
 	t.Run("the control, a field the list holds", func(t *testing.T) {
 		driver := &listedDriver{previewPGDriver: &previewPGDriver{}}
 		host, _ := previewPGServerWith(t, driver)
-		resp := relFakeDo(t, host, http.MethodPost, "/v1/databases/pg/dtql", "",
+		resp := relFakeDo(t, host, http.MethodPost, "/v1/databases/pg/tugql", "",
 			"from: {name: orders}\nwhere: {op: '==', left: {field: customer_id}, right: {value: x}}\norderBy: [{field: customer_id}]\n", nil)
 		driver.mu.Lock()
 		defer driver.mu.Unlock()

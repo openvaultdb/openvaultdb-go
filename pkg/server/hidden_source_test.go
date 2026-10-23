@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"github.com/dal-go/dalgo/access"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 	"github.com/dal-go/record"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
@@ -175,7 +175,7 @@ func TestUndeclaredSourceIsAnsweredAsADeniedOneOnAMountWithPolicies(t *testing.T
 		data, _ := json.Marshal(out)
 		return string(data)
 	}
-	dtql := func(from string) string { return "from: {name: " + from + "}\n" }
+	tugql := func(from string) string { return "from: {name: " + from + "}\n" }
 	filtered := func(from string) string {
 		return "from: {name: " + from + "}\nwhere: {op: '==', left: {field: id}, right: {value: nobody}}\norderBy: [{field: id}]\nlimit: 5\n"
 	}
@@ -198,7 +198,7 @@ func TestUndeclaredSourceIsAnsweredAsADeniedOneOnAMountWithPolicies(t *testing.T
 	sample := func(q string) string {
 		op := writeGuardProtectedOp("update", "/customers", writeGuardProtectedSet("name"))
 		data, _ := json.Marshal(api.Request{APIVersion: az.APIVersion, Mode: az.ModeSample, DiagnosticLevel: "ordinary", Operations: []api.Operation{op},
-			Sample: &api.Sample{Limit: 1, Query: api.Query{Format: "dtql-yaml", Text: q}}})
+			Sample: &api.Sample{Limit: 1, Query: api.Query{Format: "tugql-yaml", Text: q}}})
 		return string(data)
 	}
 	type route struct {
@@ -232,8 +232,8 @@ func TestUndeclaredSourceIsAnsweredAsADeniedOneOnAMountWithPolicies(t *testing.T
 		{name: "scalar subquery", hidden: scalar("ghost"), denied: scalar("orders"), refused: true},
 		{name: "subquery, order on the root", hidden: ordered(nested("customers", "ghost")), denied: ordered(nested("customers", "orders")), refused: true},
 	}
-	dtqlCases := append([]hiddenSourceCase{
-		{name: "root", hidden: dtql("ghost"), denied: dtql("orders"), hiddenRoot: "ghost", deniedRoot: "orders"},
+	tugqlCases := append([]hiddenSourceCase{
+		{name: "root", hidden: tugql("ghost"), denied: tugql("orders"), hiddenRoot: "ghost", deniedRoot: "orders"},
 		{name: "root with a filter and an order", hidden: filtered("ghost"), denied: filtered("orders"), hiddenRoot: "ghost", deniedRoot: "orders"},
 		{name: "subquery of the root itself", hidden: nested("ghost", "ghost"), denied: nested("orders", "orders"), hiddenRoot: "ghost", deniedRoot: "orders", refused: true},
 		{name: "subquery of a denied root", hidden: nested("orders", "ghost"), denied: nested("orders", "orders"), refused: true},
@@ -243,9 +243,9 @@ func TestUndeclaredSourceIsAnsweredAsADeniedOneOnAMountWithPolicies(t *testing.T
 	for _, r := range []route{
 		{name: "/query GET", method: "GET", path: inURL("/query"), body: noBody, cases: wireCases},
 		{name: "/query POST", method: "POST", path: atPath("/query"), body: asBody, cases: wireCases},
-		{name: "/dtql GET", method: "GET", path: inURL("/dtql"), body: noBody, cases: dtqlCases},
-		{name: "/dtql POST", method: "POST", path: atPath("/dtql"), body: asBody, cases: dtqlCases},
-		{name: "/dtql snapshot page", method: "POST", path: atPath("/dtql"), body: asBody, headers: map[string]string{"OVDB-Page-Size": "10"}, cases: dtqlCases},
+		{name: "/tugql GET", method: "GET", path: inURL("/tugql"), body: noBody, cases: tugqlCases},
+		{name: "/tugql POST", method: "POST", path: atPath("/tugql"), body: asBody, cases: tugqlCases},
+		{name: "/tugql snapshot page", method: "POST", path: atPath("/tugql"), body: asBody, headers: map[string]string{"OVDB-Page-Size": "10"}, cases: tugqlCases},
 		{name: "access sample", method: "POST", path: atPath("/access/evaluate"), body: sample, cases: sampleCases},
 	} {
 		for _, caller := range []struct{ name, token string }{{"owner", ownerToken}, {"granted token", hiddenSourceGrantedToken}} {
@@ -284,7 +284,7 @@ func TestUndeclaredSourceIsAnsweredAsADeniedOneOnAMountWithPolicies(t *testing.T
 
 // TestSubqueryOnAMountWithPoliciesIsRefusedAsUnsupported: a mount with access
 // policies reads one plain collection per query. A document with a subquery is
-// 422 authorization_unsupported on /dtql and on the access sample, with the
+// 422 authorization_unsupported on /tugql and on the access sample, with the
 // message that names no collection, and a document of one readable collection
 // is read as before.
 func TestSubqueryOnAMountWithPoliciesIsRefusedAsUnsupported(t *testing.T) {
@@ -293,9 +293,9 @@ func TestSubqueryOnAMountWithPoliciesIsRefusedAsUnsupported(t *testing.T) {
 	doc := "from: {name: customers}\nwhere: {exists: {query: {from: {name: customers, alias: c2}}}}\n"
 	op := writeGuardProtectedOp("update", "/customers", writeGuardProtectedSet("name"))
 	sample, _ := json.Marshal(api.Request{APIVersion: az.APIVersion, Mode: az.ModeSample, DiagnosticLevel: "ordinary", Operations: []api.Operation{op},
-		Sample: &api.Sample{Limit: 1, Query: api.Query{Format: "dtql-yaml", Text: doc}}})
+		Sample: &api.Sample{Limit: 1, Query: api.Query{Format: "tugql-yaml", Text: doc}}})
 	for name, call := range map[string]struct{ path, body string }{
-		"dtql":   {db + "/dtql", doc},
+		"tugql":  {db + "/tugql", doc},
 		"sample": {db + "/access/evaluate", string(sample)},
 	} {
 		answer := hiddenSourceAsk(t, ts, ownerToken, "POST", call.path, call.body, nil)
@@ -303,7 +303,7 @@ func TestSubqueryOnAMountWithPoliciesIsRefusedAsUnsupported(t *testing.T) {
 			t.Errorf("%s: %d %s", name, answer.status, answer.body)
 		}
 	}
-	plain := hiddenSourceAsk(t, ts, ownerToken, "POST", db+"/dtql", "from: {name: customers}\n", nil)
+	plain := hiddenSourceAsk(t, ts, ownerToken, "POST", db+"/tugql", "from: {name: customers}\n", nil)
 	if plain.status != http.StatusOK || !strings.Contains(plain.body, "Ada") {
 		t.Errorf("a document of one collection: %d %s", plain.status, plain.body)
 	}

@@ -39,11 +39,11 @@ func previewPGEntry(t *testing.T, id string, doc map[string]any) (capabilities m
 }
 
 // TestDiscoveryFollowsThePreviewSwitchOfAPostgresMount: the server never advertises
-// what it refuses. A PostgreSQL mount is advertised as queryable (query and dtql)
+// what it refuses. A PostgreSQL mount is advertised as queryable (query and tugql)
 // only when it read the switch on, as joining and aggregating only when, besides,
 // the operator's list of join engines holds postgres, and the list of join engines
 // of the query block holds postgres exactly then. Without the switch the
-// advertisement is the one it was: no query, no dtql, no joins, and no postgres in
+// advertisement is the one it was: no query, no tugql, no joins, and no postgres in
 // the list whatever the operator's list says.
 func TestDiscoveryFollowsThePreviewSwitchOfAPostgresMount(t *testing.T) {
 	for _, c := range []struct {
@@ -66,8 +66,8 @@ func TestDiscoveryFollowsThePreviewSwitchOfAPostgresMount(t *testing.T) {
 			_, host := relFakeServer(t, &relFakeExecutor{}, previewPGMounts(), WithQueryLimits(QueryLimits{JoinEngines: c.engines}))
 			doc := discoveryGet(t, host, "/.well-known/openvaultdb")
 			capabilities, joinEngines := previewPGEntry(t, "pg", doc)
-			if capabilities["query"] != c.queryable || capabilities["dtql"] != c.queryable {
-				t.Errorf("query %v, dtql %v, want %v", capabilities["query"], capabilities["dtql"], c.queryable)
+			if capabilities["query"] != c.queryable || capabilities["tugql"] != c.queryable {
+				t.Errorf("query %v, tugql %v, want %v", capabilities["query"], capabilities["tugql"], c.queryable)
 			}
 			if capabilities["joins"] != c.joins || capabilities["aggregation"] != c.joins {
 				t.Errorf("joins %v, aggregation %v, want %v", capabilities["joins"], capabilities["aggregation"], c.joins)
@@ -134,7 +134,7 @@ func TestTheDatabaseRouteIsOfferedToPostgresOnlyWhenAMountIsCleared(t *testing.T
 			t.Fatalf("nativeEngines = %v", got)
 		}
 		// Each mount answers by what it read.
-		resp := relFakeDo(t, host, http.MethodPost, "/v1/databases/off/dtql", "", "from: {name: orders}\n", nil)
+		resp := relFakeDo(t, host, http.MethodPost, "/v1/databases/off/tugql", "", "from: {name: orders}\n", nil)
 		if resp.status != http.StatusNotImplemented || resp.code() != "query_unsupported" {
 			t.Fatalf("the mount that read the switch off: status %d: %s", resp.status, resp.raw)
 		}

@@ -101,17 +101,17 @@ const base = "/v1/databases/guarded"
 // queryEndpoints is every HTTP route that builds a structured query.
 func queryEndpoints() []guardCall {
 	wire := `{"collection":"customers"}`
-	dtql := "from: {name: customers}\n"
+	tugql := "from: {name: customers}\n"
 	return []guardCall{
 		{name: "query GET", method: "GET", path: base + "/query?q=" + url.QueryEscape(wire)},
 		{name: "query POST", method: "POST", path: base + "/query", body: wire},
 		{name: "query keysOnly", method: "POST", path: base + "/query", body: `{"collection":"customers","keysOnly":true}`},
-		{name: "dtql GET", method: "GET", path: base + "/dtql?q=" + url.QueryEscape(dtql)},
-		{name: "dtql POST", method: "POST", path: base + "/dtql", body: dtql},
-		{name: "dtql POST JSON parameters", method: "POST", path: base + "/dtql",
+		{name: "tugql GET", method: "GET", path: base + "/tugql?q=" + url.QueryEscape(tugql)},
+		{name: "tugql POST", method: "POST", path: base + "/tugql", body: tugql},
+		{name: "tugql POST JSON parameters", method: "POST", path: base + "/tugql",
 			body:    `{"query":"from: {name: customers}\nwhere: {op: '==', left: {field: name}, right: {param: n}}\n","parameters":{"n":"x"}}`,
 			headers: map[string]string{"Content-Type": "application/json"}},
-		{name: "dtql snapshot page", method: "POST", path: base + "/dtql", body: dtql,
+		{name: "tugql snapshot page", method: "POST", path: base + "/tugql", body: tugql,
 			headers: map[string]string{"OVDB-Page-Size": "10"}},
 	}
 }
@@ -151,25 +151,25 @@ func TestKeyReadsStillWorkOnPostgresAndMySQL(t *testing.T) {
 }
 
 // TestQueriesOfAnUndeclaredCollectionAreNotFoundOnSQLEngines: on an engine that
-// builds SQL, /query and /dtql read declared collections only, as /records
+// builds SQL, /query and /tugql read declared collections only, as /records
 // does. The answer is the 404 not_found of an undeclared key read, on every
 // route, for the root collection and for one a subquery names, and no adapter
 // call is made; ingitdb and firestore keep their own rule and reach the adapter.
 func TestQueriesOfAnUndeclaredCollectionAreNotFoundOnSQLEngines(t *testing.T) {
 	wire := `{"collection":"ghost"}`
-	dtql := "from: {name: ghost}\n"
+	tugql := "from: {name: ghost}\n"
 	subquery := "from: {name: customers}\nwhere: {exists: {query: {from: {name: ghost}}}}\n"
 	calls := []guardCall{
 		{name: "query GET", method: "GET", path: base + "/query?q=" + url.QueryEscape(wire)},
 		{name: "query POST", method: "POST", path: base + "/query", body: wire},
 		{name: "query keysOnly", method: "POST", path: base + "/query", body: `{"collection":"ghost","keysOnly":true}`},
 		{name: "query with a parent", method: "POST", path: base + "/query", body: `{"collection":"customers","parent":"customers/c1"}`},
-		{name: "dtql GET", method: "GET", path: base + "/dtql?q=" + url.QueryEscape(dtql)},
-		{name: "dtql POST", method: "POST", path: base + "/dtql", body: dtql},
-		{name: "dtql snapshot page", method: "POST", path: base + "/dtql", body: dtql, headers: map[string]string{"OVDB-Page-Size": "10"}},
-		{name: "dtql subquery GET", method: "GET", path: base + "/dtql?q=" + url.QueryEscape(subquery)},
-		{name: "dtql subquery POST", method: "POST", path: base + "/dtql", body: subquery},
-		{name: "dtql subquery snapshot page", method: "POST", path: base + "/dtql", body: subquery, headers: map[string]string{"OVDB-Page-Size": "10"}},
+		{name: "tugql GET", method: "GET", path: base + "/tugql?q=" + url.QueryEscape(tugql)},
+		{name: "tugql POST", method: "POST", path: base + "/tugql", body: tugql},
+		{name: "tugql snapshot page", method: "POST", path: base + "/tugql", body: tugql, headers: map[string]string{"OVDB-Page-Size": "10"}},
+		{name: "tugql subquery GET", method: "GET", path: base + "/tugql?q=" + url.QueryEscape(subquery)},
+		{name: "tugql subquery POST", method: "POST", path: base + "/tugql", body: subquery},
+		{name: "tugql subquery snapshot page", method: "POST", path: base + "/tugql", body: subquery, headers: map[string]string{"OVDB-Page-Size": "10"}},
 	}
 	for _, engine := range []string{"sqlite", "postgres", "mysql"} {
 		t.Run(engine, func(t *testing.T) {
@@ -226,11 +226,11 @@ func TestSchemaDatabaseAndScanRefusedOnRootSourceOnEveryEngine(t *testing.T) {
 				"{name: customers, schema: s}",
 				"{name: customers, database: d}",
 			} {
-				status, body := send(t, ts, guardCall{method: "POST", path: base + "/dtql", body: "from: " + from + "\n"})
+				status, body := send(t, ts, guardCall{method: "POST", path: base + "/tugql", body: "from: " + from + "\n"})
 				detail, _ := body["error"].(map[string]any)
 				// The code is asserted too: a 400 for any other reason would
 				// also pass a status check alone.
-				if status != http.StatusBadRequest || detail["code"] != "invalid_dtql" {
+				if status != http.StatusBadRequest || detail["code"] != "invalid_tugql" {
 					t.Errorf("%s: status %d body %v", from, status, body)
 				}
 			}
@@ -265,16 +265,16 @@ func TestUnsafeFieldNamesRefusedOnEveryEngine(t *testing.T) {
 					{name: "query where", method: "POST", path: base + "/query", body: string(wireWhere)},
 					{name: "query orderBy", method: "POST", path: base + "/query", body: string(wireOrder)},
 					{name: "query GET where", method: "GET", path: base + "/query?q=" + url.QueryEscape(string(wireWhere))},
-					{name: "dtql where", method: "POST", path: base + "/dtql", body: "from: {name: customers}\nwhere: {op: '==', left: {field: " + string(yamlName) + "}, right: {value: 1}}\n"},
-					{name: "dtql orderBy", method: "POST", path: base + "/dtql", body: "from: {name: customers}\norderBy: [{field: " + string(yamlName) + "}]\n"},
-					{name: "dtql column", method: "GET", path: base + "/dtql?q=" + url.QueryEscape("from: {name: customers}\ncolumns: [{field: "+string(yamlName)+"}]\n")},
-					{name: "dtql from scan orderBy", method: "POST", path: base + "/dtql", body: "from: {name: customers, scan: {limit: 1, orderBy: [{field: " + string(yamlName) + "}]}}\n"},
-					{name: "dtql GET from scan orderBy", method: "GET", path: base + "/dtql?q=" + url.QueryEscape("from: {name: customers, scan: {limit: 1, orderBy: [{field: "+string(yamlName)+"}]}}\n")},
-					{name: "dtql JSON from scan orderBy", method: "POST", path: base + "/dtql",
+					{name: "tugql where", method: "POST", path: base + "/tugql", body: "from: {name: customers}\nwhere: {op: '==', left: {field: " + string(yamlName) + "}, right: {value: 1}}\n"},
+					{name: "tugql orderBy", method: "POST", path: base + "/tugql", body: "from: {name: customers}\norderBy: [{field: " + string(yamlName) + "}]\n"},
+					{name: "tugql column", method: "GET", path: base + "/tugql?q=" + url.QueryEscape("from: {name: customers}\ncolumns: [{field: "+string(yamlName)+"}]\n")},
+					{name: "tugql from scan orderBy", method: "POST", path: base + "/tugql", body: "from: {name: customers, scan: {limit: 1, orderBy: [{field: " + string(yamlName) + "}]}}\n"},
+					{name: "tugql GET from scan orderBy", method: "GET", path: base + "/tugql?q=" + url.QueryEscape("from: {name: customers, scan: {limit: 1, orderBy: [{field: "+string(yamlName)+"}]}}\n")},
+					{name: "tugql JSON from scan orderBy", method: "POST", path: base + "/tugql",
 						body:    `{"query":` + string(mustJSON(t, "from: {name: customers, scan: {limit: 1, orderBy: [{field: "+string(yamlName)+"}]}}\n")) + `}`,
 						headers: map[string]string{"Content-Type": "application/json"}},
-					{name: "dtql snapshot from scan orderBy", method: "POST", path: base + "/dtql", body: "from: {name: customers, scan: {limit: 1, orderBy: [{field: " + string(yamlName) + "}]}}\n", headers: map[string]string{"OVDB-Page-Size": "5"}},
-					{name: "dtql snapshot", method: "POST", path: base + "/dtql", body: "from: {name: customers}\norderBy: [{field: " + string(yamlName) + "}]\n", headers: map[string]string{"OVDB-Page-Size": "5"}},
+					{name: "tugql snapshot from scan orderBy", method: "POST", path: base + "/tugql", body: "from: {name: customers, scan: {limit: 1, orderBy: [{field: " + string(yamlName) + "}]}}\n", headers: map[string]string{"OVDB-Page-Size": "5"}},
+					{name: "tugql snapshot", method: "POST", path: base + "/tugql", body: "from: {name: customers}\norderBy: [{field: " + string(yamlName) + "}]\n", headers: map[string]string{"OVDB-Page-Size": "5"}},
 				}
 				for _, call := range calls {
 					status, body := send(t, ts, call)
@@ -292,7 +292,7 @@ func TestUnsafeFieldNamesRefusedOnEveryEngine(t *testing.T) {
 
 // TestEnginesThatQuoteTakeANameTheStrictRuleRefuses: on sqlite and ingitdb a
 // name with a space or punctuation is not a 400: it reaches the adapter, from
-// the wire query, from DTQL and from a snapshot page. (The fake adapter fails
+// the wire query, from TugQL and from a snapshot page. (The fake adapter fails
 // every read, so the answer is not 200; the point is that it was reached.)
 func TestEnginesThatQuoteTakeANameTheStrictRuleRefuses(t *testing.T) {
 	for _, engine := range []string{"sqlite", "ingitdb"} {
@@ -303,8 +303,8 @@ func TestEnginesThatQuoteTakeANameTheStrictRuleRefuses(t *testing.T) {
 				yamlName, _ := json.Marshal(name)
 				for _, call := range []guardCall{
 					{name: "query where", method: "POST", path: base + "/query", body: string(wireWhere)},
-					{name: "dtql where", method: "POST", path: base + "/dtql", body: "from: {name: customers}\nwhere: {op: '==', left: {field: " + string(yamlName) + "}, right: {value: 1}}\n"},
-					{name: "dtql snapshot", method: "POST", path: base + "/dtql", body: "from: {name: customers}\norderBy: [{field: " + string(yamlName) + "}]\n", headers: map[string]string{"OVDB-Page-Size": "5"}},
+					{name: "tugql where", method: "POST", path: base + "/tugql", body: "from: {name: customers}\nwhere: {op: '==', left: {field: " + string(yamlName) + "}, right: {value: 1}}\n"},
+					{name: "tugql snapshot", method: "POST", path: base + "/tugql", body: "from: {name: customers}\norderBy: [{field: " + string(yamlName) + "}]\n", headers: map[string]string{"OVDB-Page-Size": "5"}},
 				} {
 					before := fake.queries
 					status, body := send(t, ts, call)
@@ -327,13 +327,13 @@ func TestUnsafeArithmeticOperatorRefusedOnEveryEngine(t *testing.T) {
 		t.Run(engine, func(t *testing.T) {
 			ts, fake := guardServer(t, engine)
 			for _, call := range []guardCall{
-				{name: "dtql POST", method: "POST", path: base + "/dtql", body: doc},
-				{name: "dtql GET", method: "GET", path: base + "/dtql?q=" + url.QueryEscape(doc)},
-				{name: "dtql snapshot page", method: "POST", path: base + "/dtql", body: doc, headers: map[string]string{"OVDB-Page-Size": "5"}},
+				{name: "tugql POST", method: "POST", path: base + "/tugql", body: doc},
+				{name: "tugql GET", method: "GET", path: base + "/tugql?q=" + url.QueryEscape(doc)},
+				{name: "tugql snapshot page", method: "POST", path: base + "/tugql", body: doc, headers: map[string]string{"OVDB-Page-Size": "5"}},
 			} {
 				status, body := send(t, ts, call)
 				detail, _ := body["error"].(map[string]any)
-				if status != http.StatusBadRequest || detail["code"] != "invalid_dtql" {
+				if status != http.StatusBadRequest || detail["code"] != "invalid_tugql" {
 					t.Errorf("%s: status %d body %v", call.name, status, body)
 				}
 			}
@@ -352,8 +352,8 @@ func TestAdvertisedQueryCapabilityMatchesGuard(t *testing.T) {
 			ts, _ := guardServer(t, engine)
 			status, body := send(t, ts, guardCall{method: "GET", path: base})
 			caps, _ := body["capabilities"].(map[string]any)
-			if status != http.StatusOK || caps["query"] != want || caps["dtql"] != want || caps["read"] != true {
-				t.Errorf("database metadata: status %d capabilities %v, want query/dtql %v", status, caps, want)
+			if status != http.StatusOK || caps["query"] != want || caps["tugql"] != want || caps["read"] != true {
+				t.Errorf("database metadata: status %d capabilities %v, want query/tugql %v", status, caps, want)
 			}
 			_, hasEndpoints := body["endpoints"]
 			_, hasFormat := body["queryFormat"]
@@ -367,8 +367,8 @@ func TestAdvertisedQueryCapabilityMatchesGuard(t *testing.T) {
 			}
 			entry, _ := dbs[0].(map[string]any)
 			caps, _ = entry["capabilities"].(map[string]any)
-			if caps["query"] != want || caps["dtql"] != want || caps["read"] != true {
-				t.Errorf("well-known capabilities %v, want query/dtql %v", caps, want)
+			if caps["query"] != want || caps["tugql"] != want || caps["read"] != true {
+				t.Errorf("well-known capabilities %v, want query/tugql %v", caps, want)
 			}
 		})
 	}

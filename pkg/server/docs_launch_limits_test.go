@@ -65,8 +65,8 @@ func docLimitServer(t *testing.T) *httptest.Server {
 // in a relational row: the relational answer is not coerced to the schema.
 func TestDocumentedBooleanOfARelationalRowIsNotCoerced(t *testing.T) {
 	host := docLimitServer(t)
-	single := relHTTPPost(t, host.URL, "/v1/databases/flags/dtql", "", "from: {name: Flag}\ncolumns: [{field: active}]\n")
-	relational := relHTTPPost(t, host.URL, "/v1/databases/flags/dtql", "", "from: {name: Flag, alias: f}\ncolumns: [{field: active, source: f}]\n")
+	single := relHTTPPost(t, host.URL, "/v1/databases/flags/tugql", "", "from: {name: Flag}\ncolumns: [{field: active}]\n")
+	relational := relHTTPPost(t, host.URL, "/v1/databases/flags/tugql", "", "from: {name: Flag, alias: f}\ncolumns: [{field: active, source: f}]\n")
 	if single.status != http.StatusOK || relational.status != http.StatusOK {
 		t.Fatalf("single %d: %s; relational %d: %s", single.status, single.raw, relational.status, relational.raw)
 	}
@@ -89,11 +89,11 @@ func TestDocumentedOwnDatabaseRulingHoldsForAPlainKey(t *testing.T) {
 	host := docLimitServer(t)
 	const columns = "columns: [{field: id}]\n"
 	const where = "where: {op: '<', left: {field: name}, right: {value: %s}}\n"
-	plain := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", "from: {database: chinook, name: Customer}\n"+columns)
+	plain := relHTTPPost(t, host.URL, "/v1/databases/chinook/tugql", "", "from: {database: chinook, name: Customer}\n"+columns)
 	if plain.status != http.StatusOK || plain.body["columns"] != nil || !strings.Contains(plain.raw, `"key"`) {
 		t.Fatalf("a plainly written own database is answered as a single collection, with keys: %d %s", plain.status, plain.raw)
 	}
-	control := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", fmt.Sprintf(where, "chinook")+"from: {database: chinook, name: Customer}\n"+columns)
+	control := relHTTPPost(t, host.URL, "/v1/databases/chinook/tugql", "", fmt.Sprintf(where, "chinook")+"from: {database: chinook, name: Customer}\n"+columns)
 	if control.status != http.StatusOK || control.body["columns"] != nil || !strings.Contains(control.raw, `"key"`) {
 		t.Fatalf("the control document with a plain key is answered as a single collection: %d %s", control.status, control.raw)
 	}
@@ -101,7 +101,7 @@ func TestDocumentedOwnDatabaseRulingHoldsForAPlainKey(t *testing.T) {
 		"an alias": fmt.Sprintf(where, "&d chinook") + "from: {database: *d, name: Customer}\n" + columns,
 		"a merge":  "from: {<<: {database: chinook}, name: Customer}\n" + columns,
 	} {
-		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", doc)
+		resp := relHTTPPost(t, host.URL, "/v1/databases/chinook/tugql", "", doc)
 		if resp.status != http.StatusOK || resp.body["columns"] == nil || strings.Contains(resp.raw, `"key"`) {
 			t.Errorf("%s: a database written this way is answered as a relational document: %d %s", name, resp.status, resp.raw)
 		}
@@ -122,7 +122,7 @@ func TestDocumentedFirstAndLastAreRefusedOnEveryRoute(t *testing.T) {
 		for name, document := range docAggregateShapes(function) {
 			t.Run(function+" "+name, func(t *testing.T) {
 				resp := relHTTPDo(t, host.URL, http.MethodPost, document.path, "", document.body, nil)
-				if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" {
+				if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" {
 					t.Fatalf("status %d: %s", resp.status, resp.raw)
 				}
 				if !strings.Contains(resp.errorField("message"), strings.ToLower(function)+" is not in the relational profile") {

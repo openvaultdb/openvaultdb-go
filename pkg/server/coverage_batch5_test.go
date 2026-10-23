@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"github.com/dal-go/dalgo/access"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
@@ -100,7 +100,7 @@ func TestAccessEvaluateCoverage(t *testing.T) {
 
 	// 4. Subject without CapAccessExplain -> 403
 	{
-		reqJSON := `{"apiVersion":"dtql.org/authorization/v1","mode":"plan","diagnosticLevel":"ordinary","subject":{"kind":"user","id":"u1","realm":"default"},"operations":[{"id":"op1","action":"get","resource":{"databaseId":"accdb","path":"/users","table":"users"},"executionClass":"dtql"}]}`
+		reqJSON := `{"apiVersion":"tugql.org/authorization/v1","mode":"plan","diagnosticLevel":"ordinary","subject":{"kind":"user","id":"u1","realm":"default"},"operations":[{"id":"op1","action":"get","resource":{"databaseId":"accdb","path":"/users","table":"users"},"executionClass":"tugql"}]}`
 		req := httptest.NewRequest(http.MethodPost, "/v1/databases/accdb/access/evaluate", strings.NewReader(reqJSON))
 		req.Header.Set("Authorization", "Bearer token-no-explain")
 		rec := httptest.NewRecorder()
@@ -112,7 +112,7 @@ func TestAccessEvaluateCoverage(t *testing.T) {
 
 	// 5. Simulation without CapAccessSimulate -> 403
 	{
-		reqJSON := `{"apiVersion":"dtql.org/authorization/v1","mode":"plan","diagnosticLevel":"ordinary","simulation":{"roles":["admin"],"groups":[],"attributes":{}},"operations":[{"id":"op1","action":"get","resource":{"databaseId":"accdb","path":"/users","table":"users"},"executionClass":"dtql"}]}`
+		reqJSON := `{"apiVersion":"tugql.org/authorization/v1","mode":"plan","diagnosticLevel":"ordinary","simulation":{"roles":["admin"],"groups":[],"attributes":{}},"operations":[{"id":"op1","action":"get","resource":{"databaseId":"accdb","path":"/users","table":"users"},"executionClass":"tugql"}]}`
 		req := httptest.NewRequest(http.MethodPost, "/v1/databases/accdb/access/evaluate", strings.NewReader(reqJSON))
 		req.Header.Set("Authorization", "Bearer token-no-explain")
 		rec := httptest.NewRecorder()
@@ -124,7 +124,7 @@ func TestAccessEvaluateCoverage(t *testing.T) {
 
 	// 6. Subject with explain capability, but srv.explainResolver == nil -> 503
 	{
-		reqJSON := `{"apiVersion":"dtql.org/authorization/v1","mode":"plan","diagnosticLevel":"ordinary","subject":{"kind":"user","id":"u1","realm":"default"},"operations":[{"id":"op1","action":"get","resource":{"databaseId":"accdb","path":"/users","table":"users"},"executionClass":"dtql"}]}`
+		reqJSON := `{"apiVersion":"tugql.org/authorization/v1","mode":"plan","diagnosticLevel":"ordinary","subject":{"kind":"user","id":"u1","realm":"default"},"operations":[{"id":"op1","action":"get","resource":{"databaseId":"accdb","path":"/users","table":"users"},"executionClass":"tugql"}]}`
 		req := httptest.NewRequest(http.MethodPost, "/v1/databases/accdb/access/evaluate", strings.NewReader(reqJSON))
 		req.Header.Set("Authorization", "Bearer token-all")
 		rec := httptest.NewRecorder()
@@ -144,7 +144,7 @@ func TestAccessEvaluateCoverage(t *testing.T) {
 			return Membership{}, errors.New("resolver error")
 		}
 
-		reqJSON := `{"apiVersion":"dtql.org/authorization/v1","mode":"plan","diagnosticLevel":"ordinary","subject":{"kind":"user","id":"u1","realm":"default"},"operations":[{"id":"op1","action":"get","resource":{"databaseId":"accdb","path":"/users","table":"users"},"executionClass":"dtql"}]}`
+		reqJSON := `{"apiVersion":"tugql.org/authorization/v1","mode":"plan","diagnosticLevel":"ordinary","subject":{"kind":"user","id":"u1","realm":"default"},"operations":[{"id":"op1","action":"get","resource":{"databaseId":"accdb","path":"/users","table":"users"},"executionClass":"tugql"}]}`
 		req := httptest.NewRequest(http.MethodPost, "/v1/databases/accdb/access/evaluate", strings.NewReader(reqJSON))
 		req.Header.Set("Authorization", "Bearer token-all")
 		rec := httptest.NewRecorder()
@@ -156,7 +156,7 @@ func TestAccessEvaluateCoverage(t *testing.T) {
 
 	// 8. Simulation with Attributes > 0 -> 422
 	{
-		reqJSON := `{"apiVersion":"dtql.org/authorization/v1","mode":"plan","diagnosticLevel":"ordinary","simulation":{"roles":["admin"],"groups":[],"attributes":{"dept":"eng"}},"operations":[{"id":"op1","action":"get","resource":{"databaseId":"accdb","path":"/users","table":"users"},"executionClass":"dtql"}]}`
+		reqJSON := `{"apiVersion":"tugql.org/authorization/v1","mode":"plan","diagnosticLevel":"ordinary","simulation":{"roles":["admin"],"groups":[],"attributes":{"dept":"eng"}},"operations":[{"id":"op1","action":"get","resource":{"databaseId":"accdb","path":"/users","table":"users"},"executionClass":"tugql"}]}`
 		req := httptest.NewRequest(http.MethodPost, "/v1/databases/accdb/access/evaluate", strings.NewReader(reqJSON))
 		req.Header.Set("Authorization", "Bearer token-all")
 		rec := httptest.NewRecorder()
@@ -176,7 +176,7 @@ func TestAccessEvaluateCoverage(t *testing.T) {
 			return Membership{Roles: []string{"viewer"}, Groups: []string{"staff"}, Revision: "r1"}, nil
 		}
 
-		reqJSON := `{"apiVersion":"dtql.org/authorization/v1","mode":"plan","diagnosticLevel":"ordinary","subject":{"kind":"user","id":"u1","realm":"default"},"simulation":{"roles":["admin"],"groups":["eng"],"attributes":{}},"operations":[{"id":"op1","action":"get","resource":{"databaseId":"accdb","path":"/users","table":"users"},"executionClass":"dtql"}]}`
+		reqJSON := `{"apiVersion":"tugql.org/authorization/v1","mode":"plan","diagnosticLevel":"ordinary","subject":{"kind":"user","id":"u1","realm":"default"},"simulation":{"roles":["admin"],"groups":["eng"],"attributes":{}},"operations":[{"id":"op1","action":"get","resource":{"databaseId":"accdb","path":"/users","table":"users"},"executionClass":"tugql"}]}`
 		req := httptest.NewRequest(http.MethodPost, "/v1/databases/accdb/access/evaluate", strings.NewReader(reqJSON))
 		req.Header.Set("Authorization", "Bearer token-all")
 		rec := httptest.NewRecorder()
@@ -206,7 +206,7 @@ func TestAccessEvaluateCoverage(t *testing.T) {
 
 	// 11. Mode == az.ModeSample: test refusal / error path
 	{
-		reqJSON := `{"apiVersion":"dtql.org/authorization/v1","mode":"sample","diagnosticLevel":"ordinary","sample":{"limit":10,"query":{"format":"dtql-yaml","text":"invalid: [yaml"}},"operations":[{"id":"op1","action":"get","resource":{"databaseId":"accdb","path":"/users","table":"users"},"executionClass":"dtql"}]}`
+		reqJSON := `{"apiVersion":"tugql.org/authorization/v1","mode":"sample","diagnosticLevel":"ordinary","sample":{"limit":10,"query":{"format":"tugql-yaml","text":"invalid: [yaml"}},"operations":[{"id":"op1","action":"get","resource":{"databaseId":"accdb","path":"/users","table":"users"},"executionClass":"tugql"}]}`
 		req := httptest.NewRequest(http.MethodPost, "/v1/databases/accdb/access/evaluate", strings.NewReader(reqJSON))
 		req.Header.Set("Authorization", "Bearer token-all")
 		rec := httptest.NewRecorder()
@@ -218,7 +218,7 @@ func TestAccessEvaluateCoverage(t *testing.T) {
 
 	// 12. Mode == az.ModeInspect: test through handleAccessEvaluate
 	{
-		reqJSON := `{"apiVersion":"dtql.org/authorization/v1","mode":"inspect","diagnosticLevel":"ordinary","operations":[{"id":"op1","action":"get","resource":{"databaseId":"accdb","path":"/users/1","table":"users","rowId":"1"},"executionClass":"dtql"}]}`
+		reqJSON := `{"apiVersion":"tugql.org/authorization/v1","mode":"inspect","diagnosticLevel":"ordinary","operations":[{"id":"op1","action":"get","resource":{"databaseId":"accdb","path":"/users/1","table":"users","rowId":"1"},"executionClass":"tugql"}]}`
 		req := httptest.NewRequest(http.MethodPost, "/v1/databases/accdb/access/evaluate", strings.NewReader(reqJSON))
 		req.Header.Set("Authorization", "Bearer token-all")
 		rec := httptest.NewRecorder()
@@ -275,7 +275,7 @@ func TestInternalRequestAndCapabilityForAction(t *testing.T) {
 			Table: "users",
 		},
 		Query: &api.Query{
-			Format: "dtql-yaml",
+			Format: "tugql-yaml",
 			Text:   ": invalid yaml",
 		},
 	}
@@ -354,7 +354,7 @@ func TestBoundAuthorizationAndSeams(t *testing.T) {
 	}
 	srv := New("test", map[string]*core.Database{"db1": db})
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	op := api.Operation{ID: "op1", Action: "query", Resource: az.Resource{DatabaseID: "db1", Path: "/users", Table: "users"}, ExecutionClass: az.ExecutionDTQL}
+	op := api.Operation{ID: "op1", Action: "query", Resource: az.Resource{DatabaseID: "db1", Path: "/users", Table: "users"}, ExecutionClass: executionTugQL}
 
 	recQueryErr := httptest.NewRecorder()
 	srv.writeQueryAuthorizationError(recQueryErr, req, db, op, access.ErrAccessDenied)
@@ -527,7 +527,7 @@ func TestAssessPlanBranches(t *testing.T) {
 	}
 	srv := New("test", map[string]*core.Database{"accdb": db})
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	op := api.Operation{ID: "op1", Action: "get", Resource: az.Resource{DatabaseID: "accdb", Path: "/users", Table: "users"}, ExecutionClass: "dtql"}
+	op := api.Operation{ID: "op1", Action: "get", Resource: az.Resource{DatabaseID: "accdb", Path: "/users", Table: "users"}, ExecutionClass: "tugql"}
 	authReq := api.Request{
 		APIVersion: az.APIVersion,
 		Mode:       az.ModePlan,

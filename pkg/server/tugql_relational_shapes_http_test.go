@@ -29,7 +29,7 @@ import (
 
 // relShapeDocument joins Invoice (alias i) to Customer (alias c) in the database
 // chinook and selects columns (a YAML list), then tail (more top-level keys). A
-// document for /v1/dtql names the database of every source (qualified); one for
+// document for /v1/tugql names the database of every source (qualified); one for
 // the per-database endpoint names none.
 func relShapeDocument(qualified bool, columns, tail string) string {
 	root, joined := "  name: Invoice\n", "{name: Customer, alias: c}"
@@ -42,15 +42,15 @@ func relShapeDocument(qualified bool, columns, tail string) string {
 }
 
 // relShapeEndpoints are the two routes a document of the join reaches: the
-// per-database endpoint, with sources that name no database, and /v1/dtql, with
+// per-database endpoint, with sources that name no database, and /v1/tugql, with
 // sources that name it.
 var relShapeEndpoints = []struct {
 	name      string
 	path      string
 	qualified bool
 }{
-	{"per-database endpoint", "/v1/databases/chinook/dtql", false},
-	{"/v1/dtql", "/v1/dtql", true},
+	{"per-database endpoint", "/v1/databases/chinook/tugql", false},
+	{"/v1/tugql", "/v1/tugql", true},
 }
 
 // A join that selects no unaliased column named like the registered key of its
@@ -137,7 +137,7 @@ func TestTwoColumnsWithOneOutputNameAreRefusedOverHTTP(t *testing.T) {
 		} {
 			t.Run(endpoint.name+", "+name, func(t *testing.T) {
 				resp := relHTTPPost(t, host.URL, endpoint.path, "", relShapeDocument(endpoint.qualified, columns, ""))
-				if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || !strings.Contains(resp.errorField("message"), "duplicate output name") {
+				if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" || !strings.Contains(resp.errorField("message"), "duplicate output name") {
 					t.Fatalf("status %d: %s", resp.status, resp.raw)
 				}
 				if resp.body["records"] != nil || resp.body["columns"] != nil {
@@ -149,14 +149,14 @@ func TestTwoColumnsWithOneOutputNameAreRefusedOverHTTP(t *testing.T) {
 	t.Run("a join across two databases", func(t *testing.T) {
 		doc := strings.Replace(relHTTPCustomerRegions, "{field: name, source: k, as: country}", "{field: name, source: k}", 1)
 		doc = strings.Replace(doc, "{field: name, source: c, as: customer}", "{field: name, source: c}", 1)
-		resp := relHTTPPost(t, host.URL, "/v1/dtql", "", doc)
+		resp := relHTTPPost(t, host.URL, "/v1/tugql", "", doc)
 		if resp.status != http.StatusBadRequest || !strings.Contains(resp.errorField("message"), "duplicate output name") {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
 	})
 	t.Run("a derived source", func(t *testing.T) {
 		doc := "from:\n  query:\n    as: d\n    from: {database: chinook, name: Customer}\n    columns: [{field: id}, {field: name, as: id}]\ncolumns: [{field: id, source: d}]\n"
-		resp := relHTTPPost(t, host.URL, "/v1/dtql", "", doc)
+		resp := relHTTPPost(t, host.URL, "/v1/tugql", "", doc)
 		if resp.status != http.StatusBadRequest || !strings.Contains(resp.errorField("message"), "duplicate output name") {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
@@ -170,7 +170,7 @@ func TestColumnsWhoseOutputNamesDifferAreAnsweredOverHTTP(t *testing.T) {
 	defer service.CloseSnapshots()
 	host := httptest.NewServer(service.Handler())
 	defer host.Close()
-	resp := relHTTPPost(t, host.URL, "/v1/dtql", "", "from:\n  query:\n    as: d\n    from: {database: chinook, name: Customer}\n    columns: [{field: id}, {field: name}]\norderBy: [{field: id, source: d}]\ncolumns: [{field: id, source: d}, {field: name, source: d, as: first}, {field: name, source: d, as: second}]\n")
+	resp := relHTTPPost(t, host.URL, "/v1/tugql", "", "from:\n  query:\n    as: d\n    from: {database: chinook, name: Customer}\n    columns: [{field: id}, {field: name}]\norderBy: [{field: id, source: d}]\ncolumns: [{field: id, source: d}, {field: name, source: d, as: first}, {field: name, source: d, as: second}]\n")
 	if resp.status != http.StatusOK {
 		t.Fatalf("status %d: %s", resp.status, resp.raw)
 	}
@@ -219,8 +219,8 @@ func TestARelationalDocumentOnAProtectedDatabaseIsRefusedWhateverItNames(t *test
 	for _, role := range []string{"reader", "nobody"} {
 		host := relShapeProtectedServer(t, role, server.WithQueryLimits(server.QueryLimits{MaxSourceRows: 1}))
 		for _, endpoint := range []struct{ name, path, database string }{
-			{"per-database endpoint", "/v1/databases/crm/dtql", ""},
-			{"/v1/dtql", "/v1/dtql", "database: crm, "},
+			{"per-database endpoint", "/v1/databases/crm/tugql", ""},
+			{"/v1/tugql", "/v1/tugql", "database: crm, "},
 		} {
 			for shape, format := range map[string]string{"a streamed join": join, "a subquery": subquery, "one source": root} {
 				t.Run(role+", "+endpoint.name+", "+shape, func(t *testing.T) {
@@ -250,8 +250,8 @@ func TestARelationalDocumentReadsACollectionUnderItsCanonicalNameOnly(t *testing
 	f := startSQLNamesWithQuotedTable(t)
 	const publicName, quotedName = "Order Details", `"Order Details"`
 	for _, endpoint := range []struct{ name, path string }{
-		{"per-database endpoint", "/v1/databases/dev/dtql"},
-		{"/v1/dtql", "/v1/dtql"},
+		{"per-database endpoint", "/v1/databases/dev/tugql"},
+		{"/v1/tugql", "/v1/tugql"},
 	} {
 		post := func(doc string) relHTTPResponse {
 			return relHTTPPost(t, f.ts.URL, endpoint.path, "", doc)
@@ -294,7 +294,7 @@ func TestRefusalsOfADocumentRepeatNoMoreThanABoundedTextOverHTTP(t *testing.T) {
 	defer host.Close()
 	long := strings.Repeat("n", 6000)
 	jsonHeader := map[string]string{"Content-Type": "application/json"}
-	for _, endpoint := range []string{"/v1/databases/chinook/dtql", "/v1/dtql"} {
+	for _, endpoint := range []string{"/v1/databases/chinook/tugql", "/v1/tugql"} {
 		for _, tc := range []struct {
 			name    string
 			body    string
@@ -302,13 +302,13 @@ func TestRefusalsOfADocumentRepeatNoMoreThanABoundedTextOverHTTP(t *testing.T) {
 			status  int
 			code    string
 		}{
-			{"a database id that is not valid", "from: {database: '" + long + " x', name: Customer}\n", nil, http.StatusBadRequest, "invalid_dtql"},
+			{"a database id that is not valid", "from: {database: '" + long + " x', name: Customer}\n", nil, http.StatusBadRequest, "invalid_tugql"},
 			{"a collection name with a control character", "from: {database: chinook, name: \"" + long + "\\u0001\"}\n", nil, http.StatusBadRequest, ""},
-			{"a join type that is not known", "from: {database: chinook, name: Customer, alias: c, joins: [{type: " + long + ", from: {database: chinook, name: Invoice, alias: i}, on: [{left: {field: id, source: c}, op: '==', right: {field: customer_id, source: i}}]}]}\n", nil, http.StatusBadRequest, "invalid_dtql"},
+			{"a join type that is not known", "from: {database: chinook, name: Customer, alias: c, joins: [{type: " + long + ", from: {database: chinook, name: Invoice, alias: i}, on: [{left: {field: id, source: c}, op: '==', right: {field: customer_id, source: i}}]}]}\n", nil, http.StatusBadRequest, "invalid_tugql"},
 			{
 				"a parameter that is not bound",
 				`{"query": "from: {database: chinook, name: Customer}\nwhere: {op: '==', left: {field: id}, right: {param: ` + long + `}}\n"}`,
-				jsonHeader, http.StatusBadRequest, "invalid_dtql",
+				jsonHeader, http.StatusBadRequest, "invalid_tugql",
 			},
 		} {
 			t.Run(endpoint+", "+tc.name, func(t *testing.T) {
@@ -323,7 +323,7 @@ func TestRefusalsOfADocumentRepeatNoMoreThanABoundedTextOverHTTP(t *testing.T) {
 		}
 	}
 	t.Run("the GET form, with a parameter of a name that is not supported", func(t *testing.T) {
-		resp := relHTTPDo(t, host.URL, http.MethodGet, "/v1/dtql?"+strings.Repeat("p", 6000)+"=1", "", "", nil)
+		resp := relHTTPDo(t, host.URL, http.MethodGet, "/v1/tugql?"+strings.Repeat("p", 6000)+"=1", "", "", nil)
 		if resp.status != http.StatusBadRequest || len(resp.raw) > 2048 {
 			t.Fatalf("status %d, %d bytes", resp.status, len(resp.raw))
 		}
@@ -343,15 +343,15 @@ func TestAnUnknownColumnAndACorrelatedSubqueryOverHTTP(t *testing.T) {
 		defer service.CloseSnapshots()
 		host := httptest.NewServer(service.Handler())
 		defer host.Close()
-		database := relHTTPPost(t, host.URL, "/v1/databases/chinook/dtql", "", relShapeDocument(false, "  - {field: id, source: i}\n  - {field: nosuch, source: c}\n", ""))
+		database := relHTTPPost(t, host.URL, "/v1/databases/chinook/tugql", "", relShapeDocument(false, "  - {field: id, source: i}\n  - {field: nosuch, source: c}\n", ""))
 		if database.status != http.StatusBadRequest || !strings.Contains(database.errorField("message"), "nosuch") {
 			t.Fatalf("database route: status %d: %s", database.status, database.raw)
 		}
 		doc := strings.Replace(relHTTPCustomerRegions, "{field: region, source: k}", "{field: nosuch, source: k}", 1)
-		memory := relHTTPPost(t, host.URL, "/v1/dtql", "", doc)
-		if memory.status != http.StatusBadRequest || memory.errorField("code") != "invalid_dtql" || !strings.Contains(memory.errorField("message"), "nosuch") ||
+		memory := relHTTPPost(t, host.URL, "/v1/tugql", "", doc)
+		if memory.status != http.StatusBadRequest || memory.errorField("code") != "invalid_tugql" || !strings.Contains(memory.errorField("message"), "nosuch") ||
 			memory.body["records"] != nil || memory.body["execution"] != nil {
-			t.Fatalf("in-memory route: status %d, want a 400 invalid_dtql that names the column: %s", memory.status, memory.raw)
+			t.Fatalf("in-memory route: status %d, want a 400 invalid_tugql that names the column: %s", memory.status, memory.raw)
 		}
 	})
 	t.Run("a correlated subquery", func(t *testing.T) {
@@ -362,7 +362,7 @@ func TestAnUnknownColumnAndACorrelatedSubqueryOverHTTP(t *testing.T) {
 		defer open.CloseSnapshots()
 		openHost := httptest.NewServer(open.Handler())
 		defer openHost.Close()
-		resp := relHTTPPost(t, openHost.URL, "/v1/dtql", "", doc)
+		resp := relHTTPPost(t, openHost.URL, "/v1/tugql", "", doc)
 		if resp.status != http.StatusOK || len(resp.rows(t)) != 5 {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
@@ -381,7 +381,7 @@ func TestAnUnknownColumnAndACorrelatedSubqueryOverHTTP(t *testing.T) {
 		defer small.CloseSnapshots()
 		smallHost := httptest.NewServer(small.Handler())
 		defer smallHost.Close()
-		refused := relHTTPPost(t, smallHost.URL, "/v1/dtql", "", doc)
+		refused := relHTTPPost(t, smallHost.URL, "/v1/tugql", "", doc)
 		if refused.status != http.StatusUnprocessableEntity || refused.errorField("code") != "query_budget_exceeded" {
 			t.Fatalf("status %d: %s", refused.status, refused.raw)
 		}
@@ -441,9 +441,9 @@ columns:
 		{"a subquery", subquery},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			resp := relHTTPPost(t, host.URL, "/v1/dtql", "", tc.doc)
-			if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || !strings.Contains(resp.errorField("message"), `"n"`) {
-				t.Fatalf("status %d, want a 400 invalid_dtql that names the parameter: %s", resp.status, resp.raw)
+			resp := relHTTPPost(t, host.URL, "/v1/tugql", "", tc.doc)
+			if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" || !strings.Contains(resp.errorField("message"), `"n"`) {
+				t.Fatalf("status %d, want a 400 invalid_tugql that names the parameter: %s", resp.status, resp.raw)
 			}
 			if logs.Len() != 0 {
 				t.Fatalf("a mistake of the caller was logged: %s", logs.String())
@@ -455,7 +455,7 @@ columns:
 		if err != nil {
 			t.Fatal(err)
 		}
-		resp := relHTTPDo(t, host.URL, http.MethodPost, "/v1/dtql", "", string(body), map[string]string{"Content-Type": "application/json"})
+		resp := relHTTPDo(t, host.URL, http.MethodPost, "/v1/tugql", "", string(body), map[string]string{"Content-Type": "application/json"})
 		if resp.status != http.StatusOK {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}

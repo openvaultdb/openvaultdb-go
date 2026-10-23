@@ -27,9 +27,9 @@ reads, writes, updates and queries through to the driver natively:
 - updates: wire ops → `[]update.Update` (nested field paths, delete-field,
   increment, server timestamps) executed by the driver;
 - queries: wire JSON → `dal.StructuredQuery` builder → the driver's own query
-  evaluator; **DTQL** documents (dalgo's native lossless YAML serialization of
-  `dal.StructuredQuery`) are read by `POST /v1/databases/{db}/dtql` and
-  `POST /v1/dtql`: the server parses, classifies and validates the document,
+  evaluator; **TugQL** documents (dalgo's native lossless YAML serialization of
+  `dal.StructuredQuery`) are read by `POST /v1/databases/{db}/tugql` and
+  `POST /v1/tugql`: the server parses, classifies and validates the document,
   runs a single-collection one through the mount, and runs a relational one
   (joins, grouping, aggregates, subqueries, several mounted databases) through
   DALgo, in the database where one database can run it and in memory
@@ -52,7 +52,7 @@ github.com/openvaultdb/openvaultdb-go
   pkg/manifest      — database manifest (id, schema mode, engine config, schemas, push policy)
   pkg/schema        — schema modes + record validation
   pkg/inferred      — inferred schema catalogue (observed fields)
-  pkg/core          — Database: dal.DB + mode enforcement + batch pre-flight + queries + DTQL
+  pkg/core          — Database: dal.DB + mode enforcement + batch pre-flight + queries + TugQL
   pkg/mount         — manifest → DALgo driver construction + git-push hooks
   pkg/server        — HTTP API handlers
   conformance/      — official dalgo end2end suite over the full stack
@@ -71,7 +71,7 @@ github.com/dal-go/dalgo2openvaultdb   — DALgo driver speaking the HTTP API
 | postgres  | github.com/dal-go/dalgo2postgres   | strict (MVP; JSONB doc-column mode → all three, roadmap) |
 | mysql     | github.com/dal-go/dalgo2mysql      | strict (MVP; JSON doc-column mode → all three, roadmap) |
 
-Structured queries (`/query`, `/dtql`) are available on `sqlite`, `ingitdb` and
+Structured queries (`/query`, `/tugql`) are available on `sqlite`, `ingitdb` and
 `firestore`, and on `postgres` while the preview switch
 (`OVDB_PREVIEW_POSTGRES_QUERIES=1`, read when the mount opens) is on. `mysql`
 mounts, and `postgres` mounts without the switch, answer them with `501
@@ -137,9 +137,9 @@ When supplied, `record_keys` must cover exactly the declared canonical collectio
 
 Embedded servers may supply `WithDatabaseReadProfiles(map[string]ReadProfile)` with `Kind: server.BoundedImmutable` (`bounded-immutable/1`). Use `server.NewChecked` to report invalid configuration before HTTP publication. The existing `server.New` signature remains available; invalid explicit profiles serve `configuration_error` and execute no query. Profiles require a read-only server and complete physically verified SQLite serving keys with zero lock wait. Profiles bind to the verified mounted instance, so all server aliases share the same execution, metadata and cache policy. Conflicting alias profiles fail construction; remounts retain the configured policy by manifest identity and invalid remounts are refused. For profiled instances shared by mount aliases, removing an alias retains the instance and its shared request leases until the last alias is removed. Final removal drains leases and closes once; cancellation preserves background draining, and the retiring/closed instance cannot be remounted. A fresh verified instance may replace it with the same policy. Keyed GET/HEAD success and error responses use `no-store`.
 
-`AllowOrdinaryQuery` enables guarded ordinary DTQL. `PublishedQuery` independently controls advertised ordinary query/dtql capabilities and endpoint/format metadata; it cannot publish a disabled query. Candidate smoke reads may enable the former while keeping the latter false. Relational execution and joins/aggregation discovery share the same refusal predicate. Legacy databases and the global query feature block retain their existing behavior.
+`AllowOrdinaryQuery` enables guarded ordinary TugQL. `PublishedQuery` independently controls advertised ordinary query/tugql capabilities and endpoint/format metadata; it cannot publish a disabled query. Candidate smoke reads may enable the former while keeping the latter false. Relational execution and joins/aggregation discovery share the same refusal predicate. Legacy databases and the global query feature block retain their existing behavior.
 
-The ordinary per-database DTQL route supplies unique ascending serving-key order while preserving predicates, projection, limit and offset. Caller ordering returns `400 ordering_unsupported`. Snapshot headers, the legacy JSON query route, query-source aliases/joins/aggregation/subqueries/derived and cross-database execution involving a profiled database are refused before execution. Responses use `no-store`. Both candidate and published profiles omit the human collection query link; metadata/schema links remain available.
+The ordinary per-database TugQL route supplies unique ascending serving-key order while preserving predicates, projection, limit and offset. Caller ordering returns `400 ordering_unsupported`. Snapshot headers, the legacy JSON query route, query-source aliases/joins/aggregation/subqueries/derived and cross-database execution involving a profiled database are refused before execution. Responses use `no-store`. Both candidate and published profiles omit the human collection query link; metadata/schema links remain available.
 
 `ParseCORSOrigins(...).WithHeaders(allowed, exposed)` returns an independent configuration with additive request and exposed response header names. Origins retain exact matching and legacy default headers remain unchanged. The embedding runtime supplies its immutable pin header names, verifies pinned inputs and enforces request deadlines; the library profile does not implement that middleware.
 
@@ -207,7 +207,7 @@ in one file, `pkg/core/unreachable.go`, and every other fact about a driver is
 still read through an interface.)
 
 
-- **Queries.** `/query` and `/dtql` are refused on `mysql` with `501
+- **Queries.** `/query` and `/tugql` are refused on `mysql` with `501
   query_unsupported` before any query reaches the driver, and on `postgres`
   unless the preview switch was on when the mount opened (one function of
   `pkg/core` decides, and the guard, the discovery document and the engines
@@ -216,9 +216,9 @@ still read through an interface.)
   none of its text: `dal.ErrNotSupported` and an unknown dialect are `422
   query_unsupported` with a fixed message; a value or a name the server refuses
   by a SQLSTATE read by type, a field or a qualifier the tables do not hold and
-  an over-long source alias are `400 invalid_dtql`; what DALgo refuses above the
+  an over-long source alias are `400 invalid_tugql`; what DALgo refuses above the
   adapter keeps its type (a bound of its own join is `422
-  query_budget_exceeded`, a document it cannot run `400 invalid_dtql`); a
+  query_budget_exceeded`, a document it cannot run `400 invalid_tugql`); a
   connection that cannot be made or that failed is `503 database_unavailable` on
   every route (one fixed message; the log line names the mount by its ID and holds
   the adapter's fixed sentence); a collection, or a field of a write or of a query
@@ -252,7 +252,7 @@ still read through an interface.)
   table under the canonical name. On the key routes a capability scoped to either
   spelling covers a key written with either (`core.Database.CollectionSpellings`,
   used by the server's key-route check). The routes that give the adapter, or the
-  coordinator that reads it by key, the collection as written (`/query`, `/dtql`,
+  coordinator that reads it by key, the collection as written (`/query`, `/tugql`,
   the protected `PATCH` and the authorization endpoints) take the canonical name
   only (`core.Database.GuardCanonicalCollection`): the quoted spelling names the
   table whose name carries the quote characters, so on those routes it is a
@@ -267,7 +267,7 @@ still read through an interface.)
   from the live manifest afterwards.
 - **Field names**, on every engine. The top-level keys of a write body, an
   update's `fieldName` and the first segment of its `fieldPath` pass
-  `core.ValidateFieldName` (the rule `/query` and `/dtql` use) or the request
+  `core.ValidateFieldName` (the rule `/query` and `/tugql` use) or the request
   is `400 bad_request` before the adapter is called. The later segments of a
   `fieldPath` are map keys: the same rule on the SQL engines, and on `inGitDB`
   and Firestore only a non-blank segment without control characters
@@ -326,7 +326,7 @@ conflicts. Persisted as JSON next to the data
 (`<dir>/.ovdb/inferred-schema.json` for inGitDB), served read-only at
 `GET /v1/databases/{db}/inferred-schema`, and used to derive auto-created
 collection definitions in schemaless mode. Deliberately minimal — enough to
-prove the concept for DataTug/DTQL/GraphQL/admin-UI/AI-agent futures without
+prove the concept for DataTug/TugQL/GraphQL/admin-UI/AI-agent futures without
 building GraphSpec/ModelSpec now.
 
 ## Database manifest
@@ -363,7 +363,7 @@ or access rights. Existing manifests without tags remain valid.
 See docs/api.md. Summary: records CRUD at
 `/v1/databases/{db}/records/{key...}` (key = `dal.Key.String()` path),
 `/batch` (ordered ops, one dal transaction), `/query` (JSON structured
-query), `/dtql` (DTQL YAML documents), `/inferred-schema`, `/status`,
+query), `/tugql` (TugQL YAML documents), `/inferred-schema`, `/status`,
 `/databases`.
 
 ## Runtime database provisioning (--data-dir)
@@ -408,7 +408,7 @@ docs/api.md).
 
 In: `ovdb` CLI + `serve`, minimal HTTP API, SQLite strict engine, inGitDB
 strict/partial/schemaless engine, manifest (incl. push policy), inferred
-schema catalogue, single-collection DTQL (the relational profile came later; see docs/api.md), dalgo2openvaultdb, Sneat CLI validation.
+schema catalogue, single-collection TugQL (the relational profile came later; see docs/api.md), dalgo2openvaultdb, Sneat CLI validation.
 
 Out (see docs/roadmap.md): hosted service, billing,
 auth, GraphSpec/ModelSpec, GraphQL, admin UI, replication/sync, migrations,

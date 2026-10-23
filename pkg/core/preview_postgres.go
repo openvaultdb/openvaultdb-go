@@ -12,7 +12,7 @@ import "os"
 // field of Database and its two lines in open, and the one test file of the
 // switch; the server's engineCleared, which asks CanQuery of the mounted
 // databases only to learn that the preview is on; and Server.nativeEngines (in
-// pkg/server/dtql_relational.go), which names PostgreSQL among the engines that run
+// pkg/server/tugql_relational.go), which names PostgreSQL among the engines that run
 // a whole relational document in the database only while the preview is on, and
 // which then names it always, or goes with the default of pkg/joinexec being
 // changed to include it. PostgreSQL then joins queryEngines, after the security

@@ -11,9 +11,9 @@ import (
 	"github.com/openvaultdb/openvaultdb-go/pkg/server"
 )
 
-// The body of POST /v1/databases/{id}/query is bounded like the bodies of the DTQL
+// The body of POST /v1/databases/{id}/query is bounded like the bodies of the TugQL
 // endpoints: at 1 MiB. A body of exactly that size is read, and one byte more is the
-// answer the DTQL endpoints give for a body over their cap: 400 bad_request, with the
+// answer the TugQL endpoints give for a body over their cap: 400 bad_request, with the
 // same sentence.
 
 const queryBodyBound = 1 << 20
@@ -44,14 +44,14 @@ func TestThePostBodyOfAQueryIsBoundedAtOneMiB(t *testing.T) {
 		t.Fatalf("a body one byte over 1 MiB: status %d: %.200s", over.status, over.raw)
 	}
 	if message := over.errorField("message"); !strings.HasPrefix(message, "failed to read body: ") {
-		t.Errorf("message = %q, want the sentence the DTQL endpoints give", message)
+		t.Errorf("message = %q, want the sentence the TugQL endpoints give", message)
 	}
-	// The bound is the one of the DTQL endpoints: the same status, the same code and the
+	// The bound is the one of the TugQL endpoints: the same status, the same code and the
 	// same message for a body one byte over.
-	dtql := relHTTPDo(t, host.URL, http.MethodPost, "/v1/databases/chinook/dtql", "", strings.Repeat("x", queryBodyBound+1), nil)
-	if dtql.status != over.status || dtql.errorField("code") != over.errorField("code") || dtql.errorField("message") != over.errorField("message") {
-		t.Errorf("DTQL answers %d %s %q for a body over its cap, /query answers %d %s %q",
-			dtql.status, dtql.errorField("code"), dtql.errorField("message"), over.status, over.errorField("code"), over.errorField("message"))
+	tugql := relHTTPDo(t, host.URL, http.MethodPost, "/v1/databases/chinook/tugql", "", strings.Repeat("x", queryBodyBound+1), nil)
+	if tugql.status != over.status || tugql.errorField("code") != over.errorField("code") || tugql.errorField("message") != over.errorField("message") {
+		t.Errorf("TugQL answers %d %s %q for a body over its cap, /query answers %d %s %q",
+			tugql.status, tugql.errorField("code"), tugql.errorField("message"), over.status, over.errorField("code"), over.errorField("message"))
 	}
 	// A body far over the bound is refused the same way, and a small body is read as before.
 	if far := relHTTPDo(t, host.URL, http.MethodPost, "/v1/databases/chinook/query", "", queryBodyOfSize(8<<20), nil); far.status != http.StatusBadRequest {

@@ -30,7 +30,7 @@ func aclWriteFile(t *testing.T, path, value string) {
 }
 
 func aclPolicy(name, field, value string) string {
-	return fmt.Sprintf(`apiVersion: dtql.org/access/v1
+	return fmt.Sprintf(`apiVersion: tugql.org/access/v1
 kind: AccessPolicy
 metadata:
   name: %s
@@ -59,7 +59,7 @@ bindings:
 
 // A real HTTP server, token store, file-backed engines, and owner policy files.
 // The first two rows distinguish upper/lower restrictions and pagination order.
-func TestLayeredACL_DTQL(t *testing.T) {
+func TestLayeredACL_TugQL(t *testing.T) {
 	for _, profile := range []struct {
 		engine string
 		masks  bool
@@ -101,7 +101,7 @@ schemas:
 			upper := aclPolicy("upper-private", "country", "IE")
 			if profile.masks {
 				upper = strings.Replace(upper, "fields: [id, name]", "fieldMask: {stages: [{include: ['*']}, {exclude: [tenant, country, secret]}]}", 1)
-				upper += "collectionMask: {stages: [{include: ['*']}, {exclude: ['sys_*']}]}\nexecution: {allow: [{class: dtql}]}\n"
+				upper += "collectionMask: {stages: [{include: ['*']}, {exclude: ['sys_*']}]}\nexecution: {allow: [{class: tugql}]}\n"
 			}
 			aclWriteFile(t, filepath.Join(dir, "upper.yaml"), upper)
 			manifestText += "acl:\n  enabled: true\n  policies: [upper.yaml]\n"
@@ -131,7 +131,7 @@ schemas:
 					return access.Principal{}, nil
 				})).Handler())
 				query := "from: {name: customers}\norderBy: [{field: name}]\nlimit: 1\n"
-				status, body := request(t, ts, http.MethodPost, "/v1/databases/crm/dtql", token, query)
+				status, body := request(t, ts, http.MethodPost, "/v1/databases/crm/tugql", token, query)
 				if status != http.StatusOK {
 					ts.Close()
 					t.Fatalf("reload %d: status %d: %s", reload, status, body)
@@ -152,7 +152,7 @@ schemas:
 				if len(result.Records) != 1 || !strings.HasSuffix(result.Records[0].Key, "/"+want) || result.Records[0].Data["name"] != "Customer "+want {
 					t.Fatalf("wrong filtered/paged data: %s", body)
 				}
-				pageStatus, pageBody := request(t, ts, http.MethodPost, "/v1/databases/crm/dtql", token, query+"offset: 1\n")
+				pageStatus, pageBody := request(t, ts, http.MethodPost, "/v1/databases/crm/tugql", token, query+"offset: 1\n")
 				var page struct {
 					Records []struct {
 						Key string `json:"key"`
@@ -169,7 +169,7 @@ schemas:
 					t.Fatalf("offset must return second authorized row: %s", pageBody)
 				}
 
-				projectedStatus, projectedBody := request(t, ts, http.MethodPost, "/v1/databases/crm/dtql", token, query+"columns: [{field: name}]\n")
+				projectedStatus, projectedBody := request(t, ts, http.MethodPost, "/v1/databases/crm/tugql", token, query+"columns: [{field: name}]\n")
 				if projectedStatus != http.StatusOK {
 					t.Fatalf("explicit projection: %d %s", projectedStatus, projectedBody)
 				}
@@ -195,7 +195,7 @@ schemas:
 					"orderBy: [{field: secret}]\n",
 					"columns: [{field: secret}]\n",
 				} {
-					status, body = request(t, ts, http.MethodPost, "/v1/databases/crm/dtql", token, "from: {name: customers}\n"+suffix)
+					status, body = request(t, ts, http.MethodPost, "/v1/databases/crm/tugql", token, "from: {name: customers}\n"+suffix)
 					if status != http.StatusForbidden || !strings.Contains(body, "ACCESS_DENIED") {
 						t.Fatalf("hidden field probe: %d %s", status, body)
 					}
@@ -205,11 +205,11 @@ schemas:
 						}
 					}
 				}
-				status, body = request(t, ts, http.MethodPost, "/v1/databases/crm/dtql", ownerToken, query)
+				status, body = request(t, ts, http.MethodPost, "/v1/databases/crm/tugql", ownerToken, query)
 				if status != http.StatusForbidden {
 					t.Fatalf("owner bypassed policies: %d %s", status, body)
 				}
-				status, body = request(t, ts, http.MethodPost, "/v1/databases/crm/dtql", token, "from: {name: other}\n")
+				status, body = request(t, ts, http.MethodPost, "/v1/databases/crm/tugql", token, "from: {name: other}\n")
 				if status != http.StatusForbidden {
 					t.Fatalf("token collection scope bypass: %d %s", status, body)
 				}
@@ -260,7 +260,7 @@ acl:
 		}),
 	).Handler())
 	defer ts.Close()
-	status, body := request(t, ts, http.MethodPost, "/v1/databases/crm/dtql", ownerToken, "from: {name: customers}\ncolumns: [{field: name}]\n")
+	status, body := request(t, ts, http.MethodPost, "/v1/databases/crm/tugql", ownerToken, "from: {name: customers}\ncolumns: [{field: name}]\n")
 	if status != http.StatusOK {
 		t.Fatalf("%d: %s", status, body)
 	}
@@ -285,7 +285,7 @@ acl:
 		}),
 	).Handler())
 	defer deniedServer.Close()
-	status, body = request(t, deniedServer, http.MethodPost, "/v1/databases/crm/dtql", ownerToken, "from: {name: customers}\n")
+	status, body = request(t, deniedServer, http.MethodPost, "/v1/databases/crm/tugql", ownerToken, "from: {name: customers}\n")
 	if status != http.StatusForbidden {
 		t.Fatalf("execution gate: %d %s", status, body)
 	}

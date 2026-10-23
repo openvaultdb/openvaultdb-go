@@ -876,7 +876,7 @@ func (d *Database) ReloadPolicies(ctx context.Context) (policystore.Snapshot, er
 	}
 	return d.policyController.Reload(ctx)
 }
-func (d *Database) PublishPolicies(ctx context.Context, expected string, documents []access.DTQLDocument) (policystore.Snapshot, error) {
+func (d *Database) PublishPolicies(ctx context.Context, expected string, documents []access.TugQLDocument) (policystore.Snapshot, error) {
 	if d.policyController == nil {
 		return policystore.Snapshot{}, fmt.Errorf("mount has no generation policy store")
 	}
