@@ -894,8 +894,7 @@ Tags do not grant access or select a storage engine.
     "Invoice"
   ],
   "endpoints": {
-    "tugql": "http://localhost:8080/v1/databases/chinook/tugql",
-    "dtql": "http://localhost:8080/v1/databases/chinook/dtql"
+    "tugql": "http://localhost:8080/v1/databases/chinook/tugql"
   },
   "engine": "sqlite",
   "id": "chinook",
