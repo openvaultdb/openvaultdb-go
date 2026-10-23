@@ -52,7 +52,7 @@ var relIntJourneyCriteria = map[int][]string{
 // proved by the step.
 var relIntJourneyElsewhere = map[int]map[string]string{
 	1: {
-		"discovery-advertises-query": "the discovery change of the feature, which is not part of this server yet: its document has no joins or aggregation flag, and this step asserts the flags it has (dtql, query)",
+		"discovery-advertises-query": "the discovery change of the feature, which is not part of this server yet: its document has no joins or aggregation flag, and this step asserts the flags it has (tugql, query)",
 		"capabilities-per-database":  "the discovery change of the feature, as above",
 	},
 	2: {
@@ -60,7 +60,7 @@ var relIntJourneyElsewhere = map[int]map[string]string{
 		"single-source-with-database-unchanged": "not as worded: a one-source document that names another database is a 400 here, as it was before the feature, where the criterion words an answer with the database ignored; a root that names the database of the endpoint is read as one that names none, and that is proved here",
 	},
 	3: {
-		"cross-database-endpoint-single-source": "not as worded: the schema, scan, cursor and money of a one-source document are a 400 invalid_dtql here, where the criterion words a 422; the paging headers are a 422, as worded",
+		"cross-database-endpoint-single-source": "not as worded: the schema, scan, cursor and money of a one-source document are a 400 invalid_tugql here, where the criterion words a 422; the paging headers are a 422, as worded",
 		"mount-lease-drains-on-unmount":         "TestUnmountingAMountWhileAQueryReadsItWaitsForTheQuery in pkg/server",
 		"consistency-documented":                "a sentence of docs/api.md, which no test reads",
 	},
@@ -75,7 +75,7 @@ var relIntJourneyElsewhere = map[int]map[string]string{
 		"no-row-count-for-protected-source": "as policy-applied-per-leaf",
 		"nested-join-authorised":            "as policy-applied-per-leaf",
 		"hidden-field-not-reachable":        "as policy-applied-per-leaf",
-		"profile-refusals":                  "not as worded: each refusal is a 400 invalid_dtql here, where the criterion words a 422, and a join tree five levels deep is answered; the refusal of a parent source and of a collection-group source is not a row of step 6, because no DTQL document can name either (a source has a database, a schema, a name and an alias, and no parent record or group), so no request carries one: the classifier's refusal of both is held by TestClassifyDTQLRefusesShapesDTQLCannotProduce in pkg/core",
+		"profile-refusals":                  "not as worded: each refusal is a 400 invalid_tugql here, where the criterion words a 422, and a join tree five levels deep is answered; the refusal of a parent source and of a collection-group source is not a row of step 6, because no TugQL document can name either (a source has a database, a schema, a name and an alias, and no parent record or group), so no request carries one: the classifier's refusal of both is held by TestClassifyTugQLRefusesShapesTugQLCannotProduce in pkg/core",
 		"budget-errors-report-limit-only":   "step 5 of this test",
 	},
 }
@@ -255,7 +255,7 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 			listed[database["id"].(string)], _ = database["capabilities"].(map[string]any)
 		}
 		for _, id := range []string{"chinook", "countries"} {
-			if listed[id] == nil || listed[id]["dtql"] != true || listed[id]["query"] != true {
+			if listed[id] == nil || listed[id]["tugql"] != true || listed[id]["query"] != true {
 				t.Fatalf("the capabilities of %s = %v", id, listed[id])
 			}
 		}
@@ -271,13 +271,13 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 		// with its tables in two mounts runs in memory, where DALgo's join holds 10,000
 		// rows, and is refused; the document in one mount reads 20,000 invoices and is
 		// answered by the database, with the right sums.
-		control := relHTTPDoPartial(t, main, http.MethodPost, "/v1/dtql", ownerToken, relIntRevenue("chinook", "people", true), nil)
+		control := relHTTPDoPartial(t, main, http.MethodPost, "/v1/tugql", ownerToken, relIntRevenue("chinook", "people", true), nil)
 		detail, _ := control.body["error"].(map[string]any)
 		budget, _ := detail["budget"].(map[string]any)
 		if control.status != http.StatusUnprocessableEntity || detail["code"] != "query_budget_exceeded" || budget["name"] != "join_fetched_rows" || budget["limit"] != float64(10000) || budget["route"] != "in-memory" || control.body["records"] != nil {
 			t.Fatalf("the in-memory join guard refuses before row emission: status %d, read error %v: %s", control.status, control.readErr, control.raw)
 		}
-		pushed := owner("/v1/databases/chinook/dtql", relIntRevenue("", "", true))
+		pushed := owner("/v1/databases/chinook/tugql", relIntRevenue("", "", true))
 		relIntRowsAre(t, pushed, relIntExpectedRevenue())
 		if pushed.execution(t)["route"] != "database" {
 			t.Fatalf("execution = %v", pushed.execution(t))
@@ -299,7 +299,7 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 				[]string{"country", "revenue", "invoices"}, []map[string]any{
 					{"country": "UK", "revenue": float64(24001), "invoices": float64(6000)}, {"country": "US", "revenue": float64(23994), "invoices": float64(6000)}}},
 		} {
-			resp := owner("/v1/databases/chinook/dtql", tc.doc)
+			resp := owner("/v1/databases/chinook/tugql", tc.doc)
 			relIntRowsAre(t, resp, tc.rows)
 			if !reflect.DeepEqual(resp.columns(), tc.columns) {
 				t.Fatalf("%s: columns = %v, want %v", tc.name, resp.columns(), tc.columns)
@@ -315,35 +315,35 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 				}
 			}
 		}
-		counts := owner("/v1/databases/chinook/dtql", relIntInvoiceCount)
+		counts := owner("/v1/databases/chinook/tugql", relIntInvoiceCount)
 		if counts.status != http.StatusOK || len(counts.rows(t)) != 10 || counts.rows(t)[0]["invoices"] != float64(2000) {
 			t.Fatalf("a left join with a grouping: status %d: %s", counts.status, counts.raw)
 		}
 		// The single-collection request is what it always returned: records with keys,
 		// and the additive completion member.
-		plain := owner("/v1/databases/chinook/dtql", "from: {name: Customer}\norderBy: [{field: id}]\n")
+		plain := owner("/v1/databases/chinook/tugql", "from: {name: Customer}\norderBy: [{field: id}]\n")
 		first, _ := plain.body["records"].([]any)[0].(map[string]any)
 		if plain.status != http.StatusOK || len(plain.body) != 2 || plain.body["complete"] != true || first["key"] != "Customer/c0" {
 			t.Fatalf("single-collection request: status %d: %s", plain.status, plain.raw)
 		}
 		bare := "from: {name: Customer}\norderBy: [{field: id}]\ncolumns: [{field: name}]\n"
 		own := "from: {database: chinook, name: Customer}\norderBy: [{field: id}]\ncolumns: [{field: name}]\n"
-		if a, b := owner("/v1/databases/chinook/dtql", bare), owner("/v1/databases/chinook/dtql", own); a.status != http.StatusOK || a.raw != b.raw {
+		if a, b := owner("/v1/databases/chinook/tugql", bare), owner("/v1/databases/chinook/tugql", own); a.status != http.StatusOK || a.raw != b.raw {
 			t.Fatalf("a root that names the database of the endpoint is read as one that names none: %s\n%s", a.raw, b.raw)
 		}
-		if other := owner("/v1/databases/chinook/dtql", strings.Replace(own, "chinook", "people", 1)); other.status != http.StatusBadRequest {
+		if other := owner("/v1/databases/chinook/tugql", strings.Replace(own, "chinook", "people", 1)); other.status != http.StatusBadRequest {
 			t.Fatalf("a root that names another database: status %d: %s", other.status, other.raw)
 		}
 
 		// result-row-cap: a join of 20,000 rows posts without a limit, reaches the
 		// streaming cap, and cannot be mistaken for a complete answer.
-		capped := relHTTPDoPartial(t, main, http.MethodPost, "/v1/databases/chinook/dtql", ownerToken, relIntAllInvoices, nil)
+		capped := relHTTPDoPartial(t, main, http.MethodPost, "/v1/databases/chinook/tugql", ownerToken, relIntAllInvoices, nil)
 		if capped.status != http.StatusOK || capped.readErr == nil || capped.body["complete"] == true {
 			t.Fatalf("result-row-cap must abort an incomplete stream: status %d, read error %v: %s", capped.status, capped.readErr, capped.raw)
 		}
 		// result-byte-limit: 950 rows of 10 KB are fewer than the row cap and more than
 		// the byte cap; the stream ends without a valid completion footer.
-		heavy := relHTTPDoPartial(t, main, http.MethodPost, "/v1/databases/wide/dtql", ownerToken, relIntWideRows, nil)
+		heavy := relHTTPDoPartial(t, main, http.MethodPost, "/v1/databases/wide/tugql", ownerToken, relIntWideRows, nil)
 		if heavy.status != http.StatusOK || heavy.readErr == nil || heavy.body["complete"] == true {
 			t.Fatalf("result-byte-limit must abort an incomplete stream: status %d, read error %v: %.300s", heavy.status, heavy.readErr, heavy.raw)
 		}
@@ -351,11 +351,11 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 
 		// parameters-and-names-cannot-change-query: a parameter value that holds SQL is
 		// data (no row has that name); an alias or a field name that holds a quote is a
-		// 400 invalid_dtql with no text of a database in it, on an unprotected mount and
+		// 400 invalid_tugql with no text of a database in it, on an unprotected mount and
 		// on a policy-protected one.
 		query := "from: {name: Customer, alias: c}\nwhere: {op: '==', left: {field: name, source: c}, right: {param: n}}\ncolumns: [{field: id, source: c}]\n"
 		body := fmt.Sprintf(`{"query": %q, "parameters": {"n": "x' OR '1'='1"}}`, query)
-		bound := relHTTPDo(t, main, http.MethodPost, "/v1/databases/chinook/dtql", ownerToken, body, map[string]string{"Content-Type": "application/json"})
+		bound := relHTTPDo(t, main, http.MethodPost, "/v1/databases/chinook/tugql", ownerToken, body, map[string]string{"Content-Type": "application/json"})
 		if bound.status != http.StatusOK || len(bound.rows(t)) != 0 {
 			t.Fatalf("a parameter that holds SQL: status %d: %s", bound.status, bound.raw)
 		}
@@ -366,23 +366,23 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 				"a field name with a quote":  "columns: [{field: \"id'--\", source: c}]\n",
 				"a source alias with a dash": "columns: [{field: id, source: \"c-c\"}]\n",
 			} {
-				resp := owner("/v1/databases/"+database+"/dtql", "from: {name: "+collection+", alias: c}\n"+columns)
+				resp := owner("/v1/databases/"+database+"/tugql", "from: {name: "+collection+", alias: c}\n"+columns)
 				text := strings.ToLower(resp.raw)
-				if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || strings.Contains(text, "sqlite") || strings.Contains(text, "syntax") {
+				if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" || strings.Contains(text, "sqlite") || strings.Contains(text, "syntax") {
 					t.Fatalf("%s on %s: status %d: %s", name, database, resp.status, resp.raw)
 				}
 			}
 		}
 	})
 
-	// Step 3: a document across two databases on /v1/dtql. The schema, scan, cursor and
-	// money of a single-source document are refused with a 400 invalid_dtql here, not
+	// Step 3: a document across two databases on /v1/tugql. The schema, scan, cursor and
+	// money of a single-source document are refused with a 400 invalid_tugql here, not
 	// the 422 that cross-database-endpoint-single-source words; the paging headers are a
 	// 422. mount-lease-drains-on-unmount is proved by
 	// TestUnmountingAMountWhileAQueryReadsItWaitsForTheQuery; consistency-documented is
 	// read from docs/api.md.
 	step(3, "a join across two databases", func(t *testing.T) {
-		resp := owner("/v1/dtql", relIntCustomerCountry)
+		resp := owner("/v1/tugql", relIntCustomerCountry)
 		relIntRowsAre(t, resp, relIntCustomerCountryRows())
 		if got := resp.columns(); !reflect.DeepEqual(got, []string{"id", "country"}) {
 			t.Fatalf("columns = %v", got)
@@ -407,14 +407,14 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 			"an id that is not valid":        {strings.Replace(relIntCustomerCountry, "database: countries", "database: 'a b'", 1), http.StatusBadRequest},
 			"a database that is not mounted": {strings.Replace(relIntCustomerCountry, "database: countries", "database: nowhere", 1), http.StatusNotFound},
 		} {
-			if refused := owner("/v1/dtql", tc.doc); refused.status != tc.status || refused.body["records"] != nil {
+			if refused := owner("/v1/tugql", tc.doc); refused.status != tc.status || refused.body["records"] != nil {
 				t.Fatalf("%s: status %d: %s", name, refused.status, refused.raw)
 			}
 		}
-		// A document of one source on /v1/dtql has columns and execution and no key.
-		single := owner("/v1/dtql", "from: {database: chinook, name: Customer}\norderBy: [{field: id}]\ncolumns: [{field: id}]\n")
+		// A document of one source on /v1/tugql has columns and execution and no key.
+		single := owner("/v1/tugql", "from: {database: chinook, name: Customer}\norderBy: [{field: id}]\ncolumns: [{field: id}]\n")
 		if single.status != http.StatusOK || single.columns() == nil || single.execution(t)["route"] != "database" || len(single.rows(t)) != 10 {
-			t.Fatalf("a single source on /v1/dtql: status %d: %s", single.status, single.raw)
+			t.Fatalf("a single source on /v1/tugql: status %d: %s", single.status, single.raw)
 		}
 		for name, doc := range map[string]string{
 			"a schema": "from: {database: chinook, schema: main, name: Customer}\n",
@@ -422,11 +422,11 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 			"a cursor": "from: {database: chinook, name: Customer}\nstartFrom: x\n",
 			"money":    "from: {database: chinook, name: Customer}\nmoney: {minorUnitScale: 2, divisionScale: 2, rounding: halfEven}\n",
 		} {
-			if refused := owner("/v1/dtql", doc); refused.status != http.StatusBadRequest || refused.errorField("code") != "invalid_dtql" {
+			if refused := owner("/v1/tugql", doc); refused.status != http.StatusBadRequest || refused.errorField("code") != "invalid_tugql" {
 				t.Fatalf("%s: status %d: %s", name, refused.status, refused.raw)
 			}
 		}
-		paged := relHTTPDo(t, main, http.MethodPost, "/v1/dtql", ownerToken, "from: {database: chinook, name: Customer}\n", map[string]string{"OVDB-Page-Size": "5"})
+		paged := relHTTPDo(t, main, http.MethodPost, "/v1/tugql", ownerToken, "from: {database: chinook, name: Customer}\n", map[string]string{"OVDB-Page-Size": "5"})
 		if paged.status != http.StatusUnprocessableEntity || paged.errorField("code") != "snapshot_unsupported" {
 			t.Fatalf("a single source with a paging header: status %d: %s", paged.status, paged.raw)
 		}
@@ -446,21 +446,21 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 			label, _ := resp.execution(t)["route"].(string)
 			return label
 		}
-		if got := route(owner("/v1/databases/chinook/dtql", relIntRevenue("", "", true))); got != "database" {
+		if got := route(owner("/v1/databases/chinook/tugql", relIntRevenue("", "", true))); got != "database" {
 			t.Fatalf("one unprotected SQLite mount: %s", got)
 		}
-		if got := route(owner("/v1/dtql", relIntCustomerCountry)); got != "in-memory" {
+		if got := route(owner("/v1/tugql", relIntCustomerCountry)); got != "in-memory" {
 			t.Fatalf("two mounts: %s", got)
 		}
-		if got := route(owner("/v1/databases/chinook/dtql", relIntSubquery)); got != "in-memory" {
+		if got := route(owner("/v1/databases/chinook/tugql", relIntSubquery)); got != "in-memory" {
 			t.Fatalf("a subquery: %s", got)
 		}
 		const gitJoin = "from: {database: countries, name: Country, alias: a, joins: [{type: inner, from: {database: countries, name: Country, alias: b}, " +
 			"on: [{left: {field: region, source: a}, op: '==', right: {field: region, source: b}}]}]}\ncolumns: [{field: code, source: a, as: first}, {field: code, source: b, as: second}]\n"
-		if got := route(owner("/v1/dtql", gitJoin)); got != "in-memory" {
+		if got := route(owner("/v1/tugql", gitJoin)); got != "in-memory" {
 			t.Fatalf("one local inGitDB mount: %s", got)
 		}
-		protected := owner("/v1/dtql", "from: {database: sqlite, name: customers, alias: c}\ncolumns: [{field: id, source: c}]\n")
+		protected := owner("/v1/tugql", "from: {database: sqlite, name: customers, alias: c}\ncolumns: [{field: id, source: c}]\n")
 		if protected.status != http.StatusUnprocessableEntity || protected.errorField("code") != "authorization_unsupported" {
 			t.Fatalf("a policy-protected mount: status %d: %s", protected.status, protected.raw)
 		}
@@ -471,7 +471,7 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 	step(5, "too big or too slow", func(t *testing.T) {
 		const invoicesAcross = "from: {database: chinook, name: Invoice, alias: i, joins: [{type: inner, from: {database: people, name: Customer, alias: c}, " + relIntOnCustomer + "}]}\n" +
 			"columns: [{field: id, source: i}, {field: name, source: c}]\n"
-		refused := relHTTPDoPartial(t, small, http.MethodPost, "/v1/dtql", "", invoicesAcross, nil)
+		refused := relHTTPDoPartial(t, small, http.MethodPost, "/v1/tugql", "", invoicesAcross, nil)
 		if refused.status == http.StatusOK {
 			if refused.readErr == nil || refused.body["complete"] == true {
 				t.Fatalf("late source budget failure must abort an incomplete stream: read error %v: %s", refused.readErr, refused.raw)
@@ -491,7 +491,7 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 			}
 		}
 		// The time limit is a 504 on both routes, and the server answers the next request.
-		for path, doc := range map[string]string{"/v1/databases/chinook/dtql": relIntRevenue("", "", true), "/v1/dtql": relIntCustomerCountry} {
+		for path, doc := range map[string]string{"/v1/databases/chinook/tugql": relIntRevenue("", "", true), "/v1/tugql": relIntCustomerCountry} {
 			if slowed := relHTTPPost(t, late, path, "", doc); slowed.status != http.StatusGatewayTimeout || slowed.errorField("code") != "query_timeout" {
 				t.Fatalf("%s: status %d: %s", path, slowed.status, slowed.raw)
 			}
@@ -500,9 +500,9 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 			t.Fatalf("the server does not answer after a timeout: status %d: %s", next.status, next.raw)
 		}
 		// The paging headers are refused on a relational document and on a single source
-		// of /v1/dtql, and no snapshot is taken.
+		// of /v1/tugql, and no snapshot is taken.
 		for _, header := range []string{"OVDB-Page-Size", "OVDB-Page-Token", "OVDB-Page-Close"} {
-			for path, doc := range map[string]string{"/v1/databases/chinook/dtql": relIntInvoiceOne, "/v1/dtql": relIntCustomerCountry} {
+			for path, doc := range map[string]string{"/v1/databases/chinook/tugql": relIntInvoiceOne, "/v1/tugql": relIntCustomerCountry} {
 				resp := relHTTPDo(t, main, http.MethodPost, path, ownerToken, doc, map[string]string{header: "10"})
 				if resp.status != http.StatusUnprocessableEntity || resp.errorField("code") != "snapshot_unsupported" {
 					t.Fatalf("%s on %s: status %d: %s", header, path, resp.status, resp.raw)
@@ -512,7 +512,7 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 	})
 
 	// Step 6: a scoped token, and a policy-protected database. The refusals of
-	// profile-refusals are 400 invalid_dtql answers that give the classifier's reason,
+	// profile-refusals are 400 invalid_tugql answers that give the classifier's reason,
 	// where the criterion words a 422. policy-applied-per-leaf, count-equals-readable-
 	// rows, no-row-count-for-protected-source, nested-join-authorised and
 	// hidden-field-not-reachable are, on this server, one answer: a relational document
@@ -528,20 +528,20 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 		}
 		// grant-checked-for-every-source: a token for one database is refused the join of
 		// two, naming the other, before the second is looked up (403 before 404).
-		forbidden(post("/v1/dtql", "token-for-chinook", relIntCustomerCountry), "countries")
-		forbidden(post("/v1/dtql", "token-for-chinook", strings.Replace(relIntCustomerCountry, "database: countries", "database: nowhere", 1)), "nowhere")
+		forbidden(post("/v1/tugql", "token-for-chinook", relIntCustomerCountry), "countries")
+		forbidden(post("/v1/tugql", "token-for-chinook", strings.Replace(relIntCustomerCountry, "database: countries", "database: nowhere", 1)), "nowhere")
 		// per-database-endpoint-refuses-foreign-source.
-		if foreign := owner("/v1/databases/chinook/dtql", relIntCustomerCountry); foreign.status != http.StatusBadRequest || !strings.Contains(foreign.errorField("message"), "countries") {
+		if foreign := owner("/v1/databases/chinook/tugql", relIntCustomerCountry); foreign.status != http.StatusBadRequest || !strings.Contains(foreign.errorField("message"), "countries") {
 			t.Fatalf("a foreign source on the per-database endpoint: status %d: %s", foreign.status, foreign.raw)
 		}
 		// subquery-source-authorised: a subquery that reads another database is refused
 		// like a join, one that reads the token's own database is answered.
-		forbidden(post("/v1/dtql", "token-for-chinook", relIntSubqueryOnCountries), "countries")
-		relIntRowsAre(t, post("/v1/dtql", "token-for-chinook", relIntQualify(relIntSubquery)), []map[string]any{{"id": "c1"}, {"id": "c5"}, {"id": "c9"}})
+		forbidden(post("/v1/tugql", "token-for-chinook", relIntSubqueryOnCountries), "countries")
+		relIntRowsAre(t, post("/v1/tugql", "token-for-chinook", relIntQualify(relIntSubquery)), []map[string]any{{"id": "c1"}, {"id": "c5"}, {"id": "c9"}})
 		// collection-scoped-grant-checked: a token for the collection Invoice is refused
 		// a join that reads Customer, and an EXISTS subquery that reads it.
-		forbidden(post("/v1/databases/chinook/dtql", "token-for-invoice", relIntInvoiceOne), "Customer")
-		forbidden(post("/v1/databases/chinook/dtql", "token-for-invoice",
+		forbidden(post("/v1/databases/chinook/tugql", "token-for-invoice", relIntInvoiceOne), "Customer")
+		forbidden(post("/v1/databases/chinook/tugql", "token-for-invoice",
 			"from: {name: Invoice, alias: i}\nwhere: {exists: {query: {from: {name: Customer, alias: c}, where: {op: '==', left: {field: id, source: c}, right: {field: customer_id, source: i}}}}}\ncolumns: [{field: id, source: i}]\n"), "Customer")
 
 		// A principal who reads every database and is a member of the role the policy of
@@ -558,7 +558,7 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 		)
 		var want string
 		for name, doc := range map[string]string{"a join to a public mount": joined, "the same join, reversed": reversed, "a count": count, "a nested join": nested, "an aggregate over a hidden field": hidden} {
-			resp := post("/v1/dtql", relIntAlice, doc)
+			resp := post("/v1/tugql", relIntAlice, doc)
 			if resp.status != http.StatusUnprocessableEntity || resp.errorField("code") != "authorization_unsupported" || resp.body["records"] != nil || resp.body["execution"] != nil {
 				t.Fatalf("%s: status %d, want a 422 authorization_unsupported with no rows and no execution: %s", name, resp.status, resp.raw)
 			}
@@ -568,7 +568,7 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 				t.Fatalf("%s: %s\nwant the answer every shape gets: %s", name, resp.raw, want)
 			}
 		}
-		read := post("/v1/databases/sqlite/dtql", relIntAlice, "from: {name: customers}\norderBy: [{field: name}]\n")
+		read := post("/v1/databases/sqlite/tugql", relIntAlice, "from: {name: customers}\norderBy: [{field: name}]\n")
 		var keys []string
 		for _, record := range read.body["records"].([]any) {
 			keys = append(keys, record.(map[string]any)["key"].(string))
@@ -578,13 +578,13 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 		}
 
 		// profile-refusals, on the per-database endpoint: each refused document is a 400
-		// invalid_dtql that names its reason and reads nothing; the documents the profile
-		// accepts are answered. A DTQL document has no key for a cursor, so the refusal of
+		// invalid_tugql that names its reason and reads nothing; the documents the profile
+		// accepts are answered. A TugQL document has no key for a cursor, so the refusal of
 		// a cursor is the parser's, which names the key it does not know. The criterion
 		// also lists a parent source and a collection-group source, which are not rows
-		// here: a DTQL source has a database, a schema, a name and an alias and no parent
+		// here: a TugQL source has a database, a schema, a name and an alias and no parent
 		// record or group, so no request can carry either, and the classifier's refusal of
-		// both is held by TestClassifyDTQLRefusesShapesDTQLCannotProduce in pkg/core.
+		// both is held by TestClassifyTugQLRefusesShapesTugQLCannotProduce in pkg/core.
 		nest := func(levels int) string {
 			doc := "from: {name: Customer}\n"
 			for i := 0; i < levels; i++ {
@@ -616,16 +616,16 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 			"a right join":                 {strings.Replace(join("", ""), "type: inner", "type: right", 1), "right"},
 		} {
 			database := map[bool]string{true: "sqlite", false: "chinook"}[name == "a scan on a protected one"]
-			resp := owner("/v1/databases/"+database+"/dtql", tc.doc)
-			if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || !strings.Contains(resp.errorField("message"), tc.reason) || resp.body["records"] != nil {
-				t.Fatalf("%s: status %d, want a 400 invalid_dtql naming %q: %s", name, resp.status, tc.reason, resp.raw)
+			resp := owner("/v1/databases/"+database+"/tugql", tc.doc)
+			if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" || !strings.Contains(resp.errorField("message"), tc.reason) || resp.body["records"] != nil {
+				t.Fatalf("%s: status %d, want a 400 invalid_tugql naming %q: %s", name, resp.status, tc.reason, resp.raw)
 			}
 		}
 		for name, doc := range map[string]string{
 			"a cursor on a single collection":   "from: {name: Customer}\nstartFrom: x\n",
 			"limit 1001 on a single collection": "from: {name: Customer}\nlimit: 1001\n",
 		} {
-			if resp := owner("/v1/databases/chinook/dtql", doc); resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" {
+			if resp := owner("/v1/databases/chinook/tugql", doc); resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" {
 				t.Fatalf("%s: status %d: %s", name, resp.status, resp.raw)
 			}
 		}
@@ -642,7 +642,7 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 			"offset 10000":                 {join("", "orderBy: [{field: id, source: a}]\nlimit: 5\noffset: 10000\ncolumns: [{field: id, source: a}]\n"), 0},
 			"limit 1000":                   {join("", "orderBy: [{field: id, source: a}]\nlimit: 1000\ncolumns: [{field: id, source: a}]\n"), 10},
 		} {
-			if resp := owner("/v1/databases/chinook/dtql", tc.doc); resp.status != http.StatusOK || len(resp.rows(t)) != tc.rows {
+			if resp := owner("/v1/databases/chinook/tugql", tc.doc); resp.status != http.StatusOK || len(resp.rows(t)) != tc.rows {
 				t.Fatalf("%s: status %d: %s", name, resp.status, resp.raw)
 			}
 		}
@@ -655,7 +655,7 @@ func TestTheJourneyOfAJoinOverHTTP(t *testing.T) {
 	// full is a 503 with a Retry-After on both routes, and the instance goes on.
 	step(7, "the same question many times", func(t *testing.T) {
 		get := func(base string, token string) relHTTPResponse {
-			return relHTTPDo(t, base, http.MethodGet, "/v1/dtql?q="+url.QueryEscape(relIntCustomerCountry), token, "", nil)
+			return relHTTPDo(t, base, http.MethodGet, "/v1/tugql?q="+url.QueryEscape(relIntCustomerCountry), token, "", nil)
 		}
 		first, second := get(open, ""), get(open, "")
 		const public = "public, max-age=60, s-maxage=60"

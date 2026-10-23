@@ -26,15 +26,15 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Integration tests of the relational DTQL path: real mounts (SQLite files and
+// Integration tests of the relational TugQL path: real mounts (SQLite files and
 // local inGitDB directories), the real handler and the real executor, reached over
 // HTTP. They add no sleep and start no process of their own: every server is an
 // httptest server and every mount lives in a temporary directory. The helpers of
-// the files that start with dtql_relational_integration all start with relInt so
+// the files that start with tugql_relational_integration all start with relInt so
 // they cannot clash with the helpers of the other test files of the package.
 
 // relIntSet is the schema and the rows of one dataset, in the shape of the
-// schema.json and dataset.json files of DALgo's DTQL fixtures: the ordered columns of
+// schema.json and dataset.json files of DALgo's TugQL fixtures: the ordered columns of
 // every table, and its rows.
 type relIntSet struct {
 	tables map[string][]string
@@ -220,7 +220,7 @@ var (
 )
 
 // relIntDalgoDir is the directory of the DALgo module in the module cache, where
-// the DTQL fixtures the tests run live. It asks the go command, so it finds the
+// the TugQL fixtures the tests run live. It asks the go command, so it finds the
 // version this module is built with.
 func relIntDalgoDir(t *testing.T) string {
 	t.Helper()
@@ -357,15 +357,15 @@ type relIntDiagnostic struct {
 }
 
 // relIntExpectationElsewhere names the expectation of a document that has no
-// companion file of its own. The fixtures of DALgo run chinook-hinted.dtql.yaml
+// companion file of its own. The fixtures of DALgo run chinook-hinted.tugql.yaml
 // against the rows of chinook-nested.rows.json, the same query with hints added; the
 // rows of the wildcard document are derived by hand from the dataset in testdata.
 var relIntExpectationElsewhere = map[string]string{
-	"joins/chinook-hinted":   "dalgo:dtql/testdata/joins/chinook-nested.rows.json",
+	"joins/chinook-hinted":   "dalgo:tugql/testdata/joins/chinook-nested.rows.json",
 	"joins/chinook-wildcard": "local:testdata/joins-chinook/chinook-wildcard.rows.json",
 }
 
-// relIntParserWording is the message this server gives to a refusal that DALgo's DTQL
+// relIntParserWording is the message this server gives to a refusal that DALgo's TugQL
 // parser words differently from the fixture that asks for it. The fixtures of the DALgo
 // module in go.mod say "forward source alias ci is unavailable" and "unknown source alias
 // missing", and the parser of the same module says what is below, for the same documents
@@ -388,9 +388,9 @@ func relIntLoadCases(t *testing.T, corpus, dir string) []relIntCase {
 	}
 	var cases []relIntCase
 	for _, entry := range entries {
-		name, ok := strings.CutSuffix(entry.Name(), ".dtql.yaml")
+		name, ok := strings.CutSuffix(entry.Name(), ".tugql.yaml")
 		if !ok {
-			if name, ok = strings.CutSuffix(entry.Name(), ".dtql.json"); !ok {
+			if name, ok = strings.CutSuffix(entry.Name(), ".tugql.json"); !ok {
 				continue
 			}
 		}
@@ -486,7 +486,7 @@ var relIntEngines = []struct {
 func relIntMatches(t *testing.T, c relIntCase, resp relHTTPResponse) bool {
 	t.Helper()
 	if c.err != nil {
-		return resp.status == http.StatusBadRequest && resp.errorField("code") == "invalid_dtql" &&
+		return resp.status == http.StatusBadRequest && resp.errorField("code") == "invalid_tugql" &&
 			strings.Contains(resp.errorField("message"), c.err.Category+" at "+c.err.Path+": "+c.err.Message)
 	}
 	return resp.status == http.StatusOK && reflect.DeepEqual(resp.rows(t), c.rows)
@@ -526,7 +526,7 @@ func relIntEntryMismatch(t *testing.T, entry relIntDivergence, resp relHTTPRespo
 
 // Every document of DALgo's join and subquery fixtures, posted over HTTP to a SQLite
 // mount and to a local inGitDB mount that hold the fixture's dataset, on the
-// per-database endpoint and on /v1/dtql. Each answer is the one the fixture asks for,
+// per-database endpoint and on /v1/tugql. Each answer is the one the fixture asks for,
 // or it is listed in testdata/joins-divergences.json with the status it gets; a case
 // that is neither fails, and so does an entry that has become green.
 func TestRelationalFixtureCorpusOverHTTP(t *testing.T) {
@@ -578,8 +578,8 @@ func TestRelationalFixtureCorpusOverHTTP(t *testing.T) {
 	corpora := []struct {
 		name, dir, schema, dataset string
 	}{
-		{"joins", filepath.Join(dalgo, "dtql", "testdata", "joins"), filepath.Join("testdata", "joins-chinook", "schema.json"), filepath.Join("testdata", "joins-chinook", "dataset.json")},
-		{"subqueries", filepath.Join(dalgo, "dtql", "testdata", "subqueries"), filepath.Join(dalgo, "dtql", "testdata", "subqueries", "schema.json"), filepath.Join(dalgo, "dtql", "testdata", "subqueries", "dataset.json")},
+		{"joins", filepath.Join(dalgo, "tugql", "testdata", "joins"), filepath.Join("testdata", "joins-chinook", "schema.json"), filepath.Join("testdata", "joins-chinook", "dataset.json")},
+		{"subqueries", filepath.Join(dalgo, "tugql", "testdata", "subqueries"), filepath.Join(dalgo, "tugql", "testdata", "subqueries", "schema.json"), filepath.Join(dalgo, "tugql", "testdata", "subqueries", "dataset.json")},
 	}
 	seen := map[string]bool{}
 	for _, corpus := range corpora {
@@ -601,8 +601,8 @@ func TestRelationalFixtureCorpusOverHTTP(t *testing.T) {
 				// entry of the others as one for an engine the fixtures do not run on.
 				entry := entryFor(c.id, engine.name)
 				for _, endpoint := range []struct{ name, path, database string }{
-					{"per-database endpoint", "/v1/databases/" + engine.id + "/dtql", ""},
-					{"/v1/dtql", "/v1/dtql", engine.id},
+					{"per-database endpoint", "/v1/databases/" + engine.id + "/tugql", ""},
+					{"/v1/tugql", "/v1/tugql", engine.id},
 				} {
 					t.Run(c.id+" on "+engine.name+", "+endpoint.name, func(t *testing.T) {
 						doc := relIntRewrite(t, c.doc, endpoint.database)
@@ -727,7 +727,7 @@ func TestAJoinOverTwentyThousandRowsIsPushedDownAndTheSplitQueryIsRefused(t *tes
 	base := relIntServe(t, map[string]*core.Database{"shop": shop, "sales": sales, "people": people})
 
 	t.Run("the negative control: the split query is refused", func(t *testing.T) {
-		resp := relHTTPPost(t, base, "/v1/dtql", "", relIntRevenue("sales", "people", true))
+		resp := relHTTPPost(t, base, "/v1/tugql", "", relIntRevenue("sales", "people", true))
 		detail, _ := resp.body["error"].(map[string]any)
 		budget, _ := detail["budget"].(map[string]any)
 		name, _ := budget["name"].(string)
@@ -743,7 +743,7 @@ func TestAJoinOverTwentyThousandRowsIsPushedDownAndTheSplitQueryIsRefused(t *tes
 		// The refusal above comes from the ORDER BY, which keeps DALgo's streaming
 		// aggregate plan from serving the document, and not from the split or from the
 		// data: the document without it is answered in memory from the 20,000 invoices.
-		resp := relHTTPPost(t, base, "/v1/dtql", "", relIntRevenue("sales", "people", false))
+		resp := relHTTPPost(t, base, "/v1/tugql", "", relIntRevenue("sales", "people", false))
 		if resp.status != http.StatusOK || resp.execution(t)["route"] != "in-memory" {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
@@ -754,7 +754,7 @@ func TestAJoinOverTwentyThousandRowsIsPushedDownAndTheSplitQueryIsRefused(t *tes
 		}
 	})
 	t.Run("the same document inside one mount is answered by the database", func(t *testing.T) {
-		resp := relHTTPPost(t, base, "/v1/databases/shop/dtql", "", relIntRevenue("", "", true))
+		resp := relHTTPPost(t, base, "/v1/databases/shop/tugql", "", relIntRevenue("", "", true))
 		if resp.status != http.StatusOK {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
@@ -769,8 +769,8 @@ func TestAJoinOverTwentyThousandRowsIsPushedDownAndTheSplitQueryIsRefused(t *tes
 			t.Fatalf("execution = %v", execution)
 		}
 	})
-	t.Run("the same document, qualified, on /v1/dtql", func(t *testing.T) {
-		resp := relHTTPPost(t, base, "/v1/dtql", "", relIntRevenue("shop", "shop", true))
+	t.Run("the same document, qualified, on /v1/tugql", func(t *testing.T) {
+		resp := relHTTPPost(t, base, "/v1/tugql", "", relIntRevenue("shop", "shop", true))
 		if resp.status != http.StatusOK || resp.execution(t)["route"] != "database" || !reflect.DeepEqual(resp.rows(t), relIntExpectedRevenue()) {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
@@ -792,7 +792,7 @@ func relIntRegions() relIntSet {
 }
 
 // A SQLite mount and a local inGitDB mount on one server, joined by one document
-// over /v1/dtql: the rows come from both engines, in either order of the sources, and
+// over /v1/tugql: the rows come from both engines, in either order of the sources, and
 // an aggregate over a join of the two engines and a third source is computed above
 // both reads.
 func TestASQLiteMountIsJoinedToAnInGitDBMountOverHTTP(t *testing.T) {
@@ -815,7 +815,7 @@ func TestASQLiteMountIsJoinedToAnInGitDBMountOverHTTP(t *testing.T) {
 	}
 
 	t.Run("a SQLite customer joined to its inGitDB country", func(t *testing.T) {
-		resp := relHTTPPost(t, base, "/v1/dtql", "", relHTTPCustomerRegions)
+		resp := relHTTPPost(t, base, "/v1/tugql", "", relHTTPCustomerRegions)
 		if resp.status != http.StatusOK {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
@@ -853,7 +853,7 @@ columns:
   - {field: code, source: k}
   - {field: name, source: c, as: customer}
 `
-		resp := relHTTPPost(t, base, "/v1/dtql", "", doc)
+		resp := relHTTPPost(t, base, "/v1/tugql", "", doc)
 		if resp.status != http.StatusOK {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
@@ -890,7 +890,7 @@ columns:
   - {aggregate: {function: sum, args: [{field: total, source: i}]}, as: revenue}
   - {aggregate: {function: count, args: [{star: true}]}, as: invoices}
 `
-		resp := relHTTPPost(t, base, "/v1/dtql", "", doc)
+		resp := relHTTPPost(t, base, "/v1/tugql", "", doc)
 		if resp.status != http.StatusOK {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
@@ -923,7 +923,7 @@ orderBy:
   - {field: code, source: b}
 limit: 3
 `
-		resp := relHTTPPost(t, base, "/v1/dtql", "", doc)
+		resp := relHTTPPost(t, base, "/v1/tugql", "", doc)
 		if resp.status != http.StatusOK || resp.execution(t)["route"] != "in-memory" {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}

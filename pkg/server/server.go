@@ -81,7 +81,7 @@ type Option func(*Server)
 
 // PrincipalResolver maps an authenticated actor to current internal identity
 // and memberships. Implementations are trusted server configuration; callers
-// cannot supply roles, groups, or policy variables in a DTQL request.
+// cannot supply roles, groups, or policy variables in a TugQL request.
 type PrincipalResolver func(context.Context, *auth.Principal) (access.Principal, error)
 
 func WithPrincipalResolver(resolve PrincipalResolver) Option {
@@ -390,14 +390,11 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /v1/databases/{db}/batch", s.handleBatch)
 	mux.HandleFunc("POST /v1/databases/{db}/query", s.handleQuery)
 	mux.HandleFunc("GET /v1/databases/{db}/query", s.handleQuery)
-	mux.HandleFunc("POST /v1/databases/{db}/dtql", s.handleDTQL)
-	mux.HandleFunc("GET /v1/databases/{db}/dtql", s.handleDTQL)
-	mux.HandleFunc("POST /v1/dtql", s.handleCrossDatabaseDTQL)
-	mux.HandleFunc("GET /v1/dtql", s.handleCrossDatabaseDTQL)
-	mux.HandleFunc("POST /v1/databases/{db}/tugql", s.handleDTQL)
-	mux.HandleFunc("GET /v1/databases/{db}/tugql", s.handleDTQL)
-	mux.HandleFunc("POST /v1/tugql", s.handleCrossDatabaseDTQL)
-	mux.HandleFunc("GET /v1/tugql", s.handleCrossDatabaseDTQL)
+	mux.HandleFunc("POST /v1/databases/{db}/tugql", s.handleTugQL)
+	mux.HandleFunc("GET /v1/databases/{db}/tugql", s.handleTugQL)
+	mux.HandleFunc("POST /v1/tugql", s.handleCrossDatabaseTugQL)
+	mux.HandleFunc("GET /v1/tugql", s.handleCrossDatabaseTugQL)
+	s.registerLegacyDTQLRoutes(mux)
 	mux.HandleFunc("POST /v1/databases/{db}/access/evaluate", s.handleAccessEvaluate)
 	mux.HandleFunc("POST /v1/databases/{db}/access/evidence", s.handleAccessEvidence)
 	mux.HandleFunc("GET /v1/databases/{db}/access/layers", s.handleAccessLayers)
@@ -482,11 +479,11 @@ func isReadCacheEndpoint(r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
 	}
-	if r.URL.Path == crossDatabaseDTQLPath || r.URL.Path == crossDatabaseTugQLPath {
+	if r.URL.Path == crossDatabaseTugQLPath || r.URL.Path == legacyDTQLCrossDatabasePath {
 		return true
 	}
 	return strings.HasPrefix(r.URL.Path, "/v1/databases/") &&
-		(strings.HasSuffix(r.URL.Path, "/read") || strings.HasSuffix(r.URL.Path, "/query") || strings.HasSuffix(r.URL.Path, "/dtql") || strings.HasSuffix(r.URL.Path, "/tugql"))
+		(strings.HasSuffix(r.URL.Path, "/read") || strings.HasSuffix(r.URL.Path, "/query") || isTugQLEndpointPath(r.URL.Path))
 }
 
 // isMutation identifies every mounted route that persists data or changes
@@ -546,7 +543,7 @@ func (s *Server) enforce(w http.ResponseWriter, r *http.Request, databaseID, act
 	return false
 }
 
-// authorizeQueryReads enforces the read capability for every collection a DTQL
+// authorizeQueryReads enforces the read capability for every collection a TugQL
 // query reads. The capability a route checks for the collection it names covers
 // that collection only, and a document of one collection can read others in a
 // subquery. Always true for the owner token and when auth is disabled. Writes
@@ -680,7 +677,7 @@ func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	canDTQL := s.advertisesOrdinaryQuery(db)
+	canTugQL := s.advertisesOrdinaryQuery(db)
 	metadata := map[string]any{
 		"id":           db.ID(),
 		"serverId":     s.rightsServerID,
@@ -704,15 +701,16 @@ func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
 		// guessing types from sample rows.
 		metadata["schemas"] = db.Manifest.Schemas
 	}
-	if canDTQL {
+	if canTugQL {
 		// A mount the guard refuses structured queries on advertises no query
 		// endpoint or format either.
 		endpointID := db.ID()
 		if s.boundedImmutable(db) {
 			endpointID = r.PathValue("db")
 		}
-		metadata["endpoints"] = map[string]string{"dtql": s.humanOrigin(r) + "/v1/databases/" + url.PathEscape(endpointID) + "/dtql"}
-		metadata["queryFormat"] = "dtql-yaml+json"
+		endpointBase := s.humanOrigin(r) + "/v1/databases/" + url.PathEscape(endpointID)
+		metadata["endpoints"] = map[string]string{"tugql": endpointBase + "/tugql", legacyDTQLEndpointKey: endpointBase + legacyDTQLDatabaseSuffix}
+		metadata["queryFormat"] = "tugql-yaml+json"
 	}
 	rights, err := s.databaseRights(db, append([]string{""}, collections...)...)
 	if err != nil {

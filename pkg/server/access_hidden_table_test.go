@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	"github.com/dal-go/dalgo/access"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
@@ -122,7 +122,7 @@ func TestUndeclaredTableIsAnsweredAsAHiddenOne(t *testing.T) {
 		doc := "from: {name: '" + table + "'}\n" + order
 		op := writeGuardProtectedOp("update", "/"+table, writeGuardProtectedSet("name"))
 		return asJSON(api.Request{APIVersion: az.APIVersion, Mode: az.ModeSample, DiagnosticLevel: "ordinary", Operations: []api.Operation{op},
-			Sample: &api.Sample{Limit: 1, Query: api.Query{Format: "dtql-yaml", Text: doc}}})
+			Sample: &api.Sample{Limit: 1, Query: api.Query{Format: "tugql-yaml", Text: doc}}})
 	}
 	inspectOps := func(ops ...api.Operation) string {
 		for i := range ops {
@@ -248,7 +248,7 @@ func TestHiddenRecordIsAnsweredAlikeOnTheProtectedPatchAndEvidence(t *testing.T)
 					name, method, content string
 					at                    func(table string) (path, body string)
 				}{
-					{"PATCH", "PATCH", "application/vnd.dtql.operation+json", patch},
+					{"PATCH", "PATCH", "application/vnd.tugql.operation+json", patch},
 					{"evidence with the table and the row", "POST", "application/json", evidence(true)},
 					{"evidence with the path only", "POST", "application/json", evidence(false)},
 				} {
@@ -284,7 +284,7 @@ func TestSampleIsAnsweredAlikeWhenThePolicyCannotDecide(t *testing.T) {
 	sample := func(table string) string {
 		op := writeGuardProtectedOp("update", "/"+table, writeGuardProtectedSet("name"))
 		data, _ := json.Marshal(api.Request{APIVersion: az.APIVersion, Mode: az.ModeSample, DiagnosticLevel: "ordinary", Operations: []api.Operation{op},
-			Sample: &api.Sample{Limit: 1, Query: api.Query{Format: "dtql-yaml", Text: "from: {name: '" + table + "'}\n"}}})
+			Sample: &api.Sample{Limit: 1, Query: api.Query{Format: "tugql-yaml", Text: "from: {name: '" + table + "'}\n"}}})
 		return string(data)
 	}
 	for _, caller := range []struct{ name, token string }{{"owner", ownerToken}, {"granted token", hiddenTableGrantedToken}} {
@@ -310,7 +310,7 @@ func TestSampleIsAnsweredAlikeWhenThePolicyCannotDecide(t *testing.T) {
 
 // TestUnsupportedOperationIsRefusedAlikeForEveryTable: an operation of the
 // authorization API that the protected session does not support (an execution
-// class other than dtql) is refused before the table is looked at, so the
+// class other than tugql) is refused before the table is looked at, so the
 // protected PATCH of /records and the inspection of /access/evaluate give the
 // same status and the same whole body for a table the database does not declare,
 // the quoted spelling of a declared key, a declared table the policy hides and a
@@ -333,7 +333,7 @@ func TestUnsupportedOperationIsRefusedAlikeForEveryTable(t *testing.T) {
 		name, method, content string
 		at                    func(table string, apply func(*api.Operation)) (path, body string)
 	}{
-		{"PATCH", "PATCH", "application/vnd.dtql.operation+json", func(table string, apply func(*api.Operation)) (string, string) {
+		{"PATCH", "PATCH", "application/vnd.tugql.operation+json", func(table string, apply func(*api.Operation)) (string, string) {
 			op := writeGuardProtectedOp("update", "/"+table+"/01", writeGuardProtectedSet("total"))
 			apply(&op)
 			data, _ := json.Marshal(op)

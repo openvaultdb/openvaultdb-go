@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/dal-go/dalgo/access"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 	"github.com/dal-go/record"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
@@ -65,7 +65,7 @@ func writeGuardProtectedServer(t *testing.T) *httptest.Server {
 // writeGuardProtectedOp is an authorization-API operation on the resource at
 // path, with the given action and mutation.
 func writeGuardProtectedOp(action, path string, mutation *api.Mutation) api.Operation {
-	return api.Operation{ID: "op1", Action: action, Resource: az.Resource{DatabaseID: "crm", Path: path}, ExecutionClass: az.ExecutionDTQL, Mutation: mutation}
+	return api.Operation{ID: "op1", Action: action, Resource: az.Resource{DatabaseID: "crm", Path: path}, ExecutionClass: az.ExecutionClass("tugql"), Mutation: mutation}
 }
 
 func writeGuardProtectedSet(path ...string) *api.Mutation {
@@ -95,12 +95,12 @@ func TestProtectedPathsRefuseUndeclaredTablesAndHostileNamesBeforeTheAdapter(t *
 	sample := func(table string) any {
 		op := writeGuardProtectedOp("update", "/"+table, writeGuardProtectedSet("name"))
 		return api.Request{APIVersion: az.APIVersion, Mode: az.ModeSample, DiagnosticLevel: "ordinary", Operations: []api.Operation{op},
-			Sample: &api.Sample{Limit: 1, Query: api.Query{Format: "dtql-yaml", Text: "from: {name: " + table + "}\n"}}}
+			Sample: &api.Sample{Limit: 1, Query: api.Query{Format: "tugql-yaml", Text: "from: {name: " + table + "}\n"}}}
 	}
 	evidence := func(path string, field ...string) any {
 		return map[string]any{"apiVersion": az.APIVersion, "resource": az.Resource{DatabaseID: "crm", Path: path}, "requiredFields": [][]string{field}}
 	}
-	const vnd = "application/vnd.dtql.operation+json"
+	const vnd = "application/vnd.tugql.operation+json"
 	const evaluate = "/v1/databases/crm/access/evaluate"
 	const evidencePath = "/v1/databases/crm/access/evidence"
 	hostileTable := `cus"tomers; --`

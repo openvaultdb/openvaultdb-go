@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/dal-go/dalgo/dal"
-	"github.com/dal-go/dalgo/dtql"
+	"github.com/dal-go/dalgo/tugql"
 	"github.com/dal-go/record"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/manifest"
@@ -78,7 +78,7 @@ func TestNativePostgresGuardAllowsOnlyCatalogMappedQualifiedReads(t *testing.T) 
 	db, _, id := nativePostgresCoreFixture(t)
 	parse := func(t *testing.T, text string) dal.StructuredQuery {
 		t.Helper()
-		query, err := dtql.Deserialize([]byte(text))
+		query, err := tugql.Deserialize([]byte(text))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -97,7 +97,7 @@ func TestNativePostgresGuardAllowsOnlyCatalogMappedQualifiedReads(t *testing.T) 
 		"invented key column": "from: {schema: 'sales data', name: 'Order Details'}\ncolumns: [{field: id}]\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if err := db.guardSources(parse(t, doc)); !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrInvalidDTQL) {
+			if err := db.guardSources(parse(t, doc)); !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrInvalidTugQL) {
 				t.Fatalf("guard error = %v, want an explicit source/field refusal", err)
 			}
 		})
@@ -119,7 +119,7 @@ func TestNativePostgresExcludedRelationCannotBeGuessedOrQueried(t *testing.T) {
 	if _, ok := db.ResolveNativePostgresCollection("sales data", "_import_manifest"); ok {
 		t.Fatal("qualified excluded source resolved to a collection ID")
 	}
-	query, err := dtql.Deserialize([]byte("from: {schema: 'sales data', name: _import_manifest}\nlimit: 5\n"))
+	query, err := tugql.Deserialize([]byte("from: {schema: 'sales data', name: _import_manifest}\nlimit: 5\n"))
 	if err != nil {
 		t.Fatal(err)
 	}

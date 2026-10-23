@@ -268,9 +268,9 @@ func (f *budgetDB) ExecuteQueryToRecordsReader(ctx context.Context, _ dal.Query)
 // makeTheBudgetsEnd gives the time budgets of the single-collection reads no time.
 func makeTheBudgetsEnd(t *testing.T) {
 	t.Helper()
-	dtql, snapshot := dtqlBudget, snapshotBudget
-	dtqlBudget, snapshotBudget = time.Nanosecond, time.Nanosecond
-	t.Cleanup(func() { dtqlBudget, snapshotBudget = dtql, snapshot })
+	tugql, snapshot := tugqlBudget, snapshotBudget
+	tugqlBudget, snapshotBudget = time.Nanosecond, time.Nanosecond
+	t.Cleanup(func() { tugqlBudget, snapshotBudget = tugql, snapshot })
 }
 
 // A connection that fails because the time budget of the read ended, while the request is
@@ -281,17 +281,17 @@ func makeTheBudgetsEnd(t *testing.T) {
 func TestAConnectionThatFailsUnderTheBudgetOfTheServerIsUnreachable(t *testing.T) {
 	setPreview(t, true, "1")
 	makeTheBudgetsEnd(t)
-	parsed, _, err := ParseDTQL([]byte(guardDTQL))
+	parsed, _, err := ParseTugQL([]byte(guardTugQL))
 	if err != nil {
 		t.Fatal(err)
 	}
 	routes := map[string]func(ctx context.Context, db *Database) error{
-		"ExecuteDTQLQuery": func(ctx context.Context, db *Database) error {
-			_, err := db.ExecuteDTQLQuery(ctx, parsed)
+		"ExecuteTugQLQuery": func(ctx context.Context, db *Database) error {
+			_, err := db.ExecuteTugQLQuery(ctx, parsed)
 			return err
 		},
-		"StreamDTQLSnapshot": func(ctx context.Context, db *Database) error {
-			return db.StreamDTQLSnapshot(ctx, parsed, func(Record) error { return nil })
+		"StreamTugQLSnapshot": func(ctx context.Context, db *Database) error {
+			return db.StreamTugQLSnapshot(ctx, parsed, func(Record) error { return nil })
 		},
 	}
 	for route, run := range routes {

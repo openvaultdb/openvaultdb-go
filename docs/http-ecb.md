@@ -33,7 +33,7 @@ historical compound-key promise. The OVDB record API exposes no stable canonical
 composite key in this preparatory mount; publisher semantic grain
 `[time, currency]` therefore needs independent contract review before activation.
 
-Single-collection structured queries and DTQL support plain field projections,
+Single-collection structured queries and TugQL support plain field projections,
 supported residual predicates and limits. Keyed Get/Exists, writes, ordering,
 offsets, cursors and aggregations are unsupported. Typed HTTP refusals use
 `501 operation_unsupported`. Relational HTTP execution stays outside the
@@ -60,7 +60,7 @@ upstream URL, content type, Last-Modified, ETag, SHA-256 and byte count. It stor
 no body. Fetch time and HTTP update metadata are separate from source date.
 The opt-in [providerReads producer](provider-reads.md) emits the closed
 `ovdb-provider-read/1` envelope beside sourceRights/usedSourceIds on ordinary
-structured queries and DTQL. Its per-execution collector freezes trusted
+structured queries and TugQL. Its per-execution collector freezes trusted
 provider/resource/definition/decoder/rights bindings before reading and produces
 canonical request/rights/observation digests from the transient observer. Strict
 clients supply their independently admitted fresh execution ID through the

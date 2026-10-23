@@ -6,7 +6,7 @@ import (
 	"net/http"
 
 	"github.com/dal-go/dalgo/access"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 	"github.com/openvaultdb/openvaultdb-go/pkg/joinexec"
 
@@ -15,7 +15,7 @@ import (
 
 // resultBufferHint is the hint of a read of one collection whose result is larger than the
 // buffer of the server (core.ErrResultTooLarge).
-const resultBufferHint = "The result is larger than one response holds (8 MiB). Narrow the read with a filter or a smaller limit. A DTQL read can also select fewer columns and, on a mount without access policies, read the result in pages: send the OVDB-Page-Size header to the DTQL endpoint."
+const resultBufferHint = "The result is larger than one response holds (8 MiB). Narrow the read with a filter or a smaller limit. A TugQL read can also select fewer columns and, on a mount without access policies, read the result in pages: send the OVDB-Page-Size header to the TugQL endpoint."
 
 // codeDatabaseUnavailable and messageDatabaseUnavailable are the error code and the
 // message of a request that a mount's database server could not answer because it
@@ -87,9 +87,9 @@ func writeMappedError(w http.ResponseWriter, err error) (internal bool) {
 		// The database server refused a value or a name of the query: the caller's
 		// mistake, answered with a fixed message (the error is built in core and holds
 		// nothing of the server's) and, like every refusal here, not logged.
-		writeError(w, http.StatusBadRequest, "invalid_dtql", core.ErrQueryDoesNotFit.Error())
-	case errors.Is(err, core.ErrInvalidDTQL):
-		writeError(w, http.StatusBadRequest, "invalid_dtql", err.Error())
+		writeError(w, http.StatusBadRequest, "invalid_tugql", core.ErrQueryDoesNotFit.Error())
+	case errors.Is(err, core.ErrInvalidTugQL):
+		writeError(w, http.StatusBadRequest, "invalid_tugql", err.Error())
 	case errors.Is(err, core.ErrQueryNotRunnable):
 		// The adapter cannot run this query. The message is fixed: the error is built
 		// in core and holds no text of the adapter's, and none is added here.

@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"github.com/dal-go/dalgo/access"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 	"github.com/dal-go/record"
 
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
@@ -75,7 +75,7 @@ func protectedReads(t *testing.T, ids ...string) (api.Request, []access.Protecte
 	request := api.Request{APIVersion: az.APIVersion, Mode: az.ModeInspect, DiagnosticLevel: "references"}
 	var ops []access.ProtectedOperation
 	for _, id := range ids {
-		request.Operations = append(request.Operations, api.Operation{ID: id, Action: "get", ExecutionClass: az.ExecutionDTQL, Resource: az.Resource{DatabaseID: "crm", Table: "t", RowID: id}})
+		request.Operations = append(request.Operations, api.Operation{ID: id, Action: "get", ExecutionClass: executionTugQL, Resource: az.Resource{DatabaseID: "crm", Table: "t", RowID: id}})
 		op, err := access.NewProtectedRead(id, access.Get, record.NewKeyWithID("t", id))
 		if err != nil {
 			t.Fatal(err)

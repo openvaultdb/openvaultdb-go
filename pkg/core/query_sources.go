@@ -43,7 +43,7 @@ func clipKey(key *record.Key) string {
 }
 
 // errSourcesTooDeep refuses a query nested deeper than the query guard allows.
-var errSourcesTooDeep = fmt.Errorf("%w: query nesting is too deep", ErrInvalidDTQL)
+var errSourcesTooDeep = fmt.Errorf("%w: query nesting is too deep", ErrInvalidTugQL)
 
 // guardSources refuses, before any adapter call, a structured query that reads
 // a collection this database does not declare when its adapter builds SQL
@@ -56,7 +56,7 @@ var errSourcesTooDeep = fmt.Errorf("%w: query nesting is too deep", ErrInvalidDT
 // where a key may carry any of its spellings. A source qualified by a
 // parent record or a schema, or naming another database, is not a collection
 // of this one and is refused too, because the adapter ignores or rewrites such
-// a qualifier. A shape the walk does not know is refused with ErrInvalidDTQL
+// a qualifier. A shape the walk does not know is refused with ErrInvalidTugQL
 // (fail closed). The refusal of an undeclared source wraps ErrNotFound and says
 // what the refusal of an undeclared key says.
 //
@@ -89,8 +89,8 @@ func (d *Database) guardSources(query dal.StructuredQuery) error {
 // database serves one plain collection per query. The decision depends on the
 // shape of the query alone, so the answer is the same whichever collections the
 // query names, declared or not. It is the first source check of the entry points
-// that take one query of the single-collection profile (ExecuteDTQLQuery,
-// StreamDTQLSnapshot and SelectAccessSample) and of the join source's executor
+// that take one query of the single-collection profile (ExecuteTugQLQuery,
+// StreamTugQLSnapshot and SelectAccessSample) and of the join source's executor
 // (guardStructured, after the names are checked).
 func (d *Database) guardProtectedSources(query dal.StructuredQuery) error {
 	if d.HasAccessPolicies() && !singleSourceRead(query) {
@@ -115,14 +115,14 @@ func (d *Database) guardSource(source dal.RecordsetSource) error {
 // collection uses it to authorise every read a query makes, not only the one
 // the route names. A source that a parent record, a schema or another database
 // qualifies is not named by one root collection of this database, and a shape
-// the walk does not know cannot be read: both are refused with ErrInvalidDTQL
+// the walk does not know cannot be read: both are refused with ErrInvalidTugQL
 // and nothing is listed. The cost is linear in the size of the query.
 func QueryCollections(query dal.StructuredQuery) ([]string, error) {
 	var names []string
 	listed := map[string]struct{}{}
 	walk := sourceGuard{visit: func(ref dal.CollectionRef) error {
 		if ref.Parent() != nil || ref.Schema() != "" || ref.Database() != "" {
-			return fmt.Errorf("%w: only plain root collections are supported as sources", ErrInvalidDTQL)
+			return fmt.Errorf("%w: only plain root collections are supported as sources", ErrInvalidTugQL)
 		}
 		if _, seen := listed[ref.Name()]; !seen {
 			listed[ref.Name()] = struct{}{}
@@ -148,7 +148,7 @@ type sourceGuard struct {
 
 func (g sourceGuard) query(query dal.StructuredQuery, depth int) error {
 	if query == nil {
-		return fmt.Errorf("%w: a query is required", ErrInvalidDTQL)
+		return fmt.Errorf("%w: a query is required", ErrInvalidTugQL)
 	}
 	if err := g.from(query.From(), depth); err != nil {
 		return err
@@ -185,7 +185,7 @@ func (g sourceGuard) from(from dal.FromSource, depth int) error {
 		return errSourcesTooDeep
 	}
 	if from == nil || from.Base() == nil {
-		return fmt.Errorf("%w: a source is required", ErrInvalidDTQL)
+		return fmt.Errorf("%w: a source is required", ErrInvalidTugQL)
 	}
 	if err := g.source(from.Base(), depth); err != nil {
 		return err
@@ -194,7 +194,7 @@ func (g sourceGuard) from(from dal.FromSource, depth int) error {
 		child := join.From()
 		if child == nil {
 			if join.RecordsetSource == nil {
-				return fmt.Errorf("%w: a source is required", ErrInvalidDTQL)
+				return fmt.Errorf("%w: a source is required", ErrInvalidTugQL)
 			}
 			child = dal.From(join.RecordsetSource)
 		}
@@ -220,7 +220,7 @@ func (g sourceGuard) source(source dal.RecordsetSource, depth int) error {
 	case dal.QuerySource:
 		return g.query(value.Query(), depth+1)
 	default:
-		return fmt.Errorf("%w: unsupported source %T", ErrInvalidDTQL, source)
+		return fmt.Errorf("%w: unsupported source %T", ErrInvalidTugQL, source)
 	}
 }
 
@@ -281,7 +281,7 @@ func errUndeclared(name string) error {
 
 func (g sourceGuard) order(order dal.OrderExpression, depth int) error {
 	if order == nil {
-		return fmt.Errorf("%w: an ordering expression is required", ErrInvalidDTQL)
+		return fmt.Errorf("%w: an ordering expression is required", ErrInvalidTugQL)
 	}
 	return g.expression(order.Expression(), depth)
 }
@@ -310,7 +310,7 @@ func (g sourceGuard) condition(condition dal.Condition, depth int) error {
 	case dal.ExistsCondition:
 		return g.query(value.Query(), depth+1)
 	default:
-		return fmt.Errorf("%w: unsupported condition %T", ErrInvalidDTQL, condition)
+		return fmt.Errorf("%w: unsupported condition %T", ErrInvalidTugQL, condition)
 	}
 }
 
@@ -338,6 +338,6 @@ func (g sourceGuard) expression(expression dal.Expression, depth int) error {
 	case dal.QueryExpression:
 		return g.query(value.Query(), depth+1)
 	default:
-		return fmt.Errorf("%w: unsupported expression %T", ErrInvalidDTQL, expression)
+		return fmt.Errorf("%w: unsupported expression %T", ErrInvalidTugQL, expression)
 	}
 }

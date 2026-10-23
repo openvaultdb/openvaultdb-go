@@ -28,7 +28,7 @@ API envelopes, source targeting, settings ownership and URL conventions.
 The old replays were aborted; task 24 now reconciles the source with the current
 catalog resolver, fixed secureread session and existing query error envelope.
 [DataTug CLI #237](https://github.com/datatug/datatug-cli/pull/237) proves real
-remote DTQL reads against SQLite and InGitDB with policies, preserves structured
+remote TugQL reads against SQLite and InGitDB with policies, preserves structured
 owner denials and retains the bounded SDK. The app companion displays blocker
 codes in the existing query page. Original heads are preserved at each repo's
 `recovery/acl-task21-original`. Browser write/Explain convergence with the lead's
@@ -63,7 +63,7 @@ an unpublished cross-repository link.
    `ingitdb-go/ingitdb v0.6.0`; verify the final selected versions explicitly.
 5. Run normal unlinked builds and the real browser→daemon→OVDB→SQLite/InGitDB
    acceptance before final consumer landing. Land DataTug apps with its matching
-   daemon contract, and land the approved DTQL specification packet.
+   daemon contract, and land the approved TugQL specification packet.
 6. Observe exact post-target CI/release receipts, synchronize each clean canonical
    checkout through WB, then perform audited cleanup. Mark SpecScore task24
    complete only after these receipts exist.
@@ -89,9 +89,9 @@ exact-head validation. A green old source commit alone is not a merge receipt.
 
 | Repository | Result | Exact evidence |
 | --- | --- | --- |
-| datatug/dtql | Landed and cleaned; canonical main synchronized | `c2d048784ef982a0533b1cdfb912f13182ba6b53`; WB receipt `merge-datatug-dtql-main-af26ed96bb47-f7a9cf2ed0f7`; authoritative unprotected direct route, no applicable checks confirmed by stable reread |
+| datatug/tugql | Landed and cleaned; canonical main synchronized | `c2d048784ef982a0533b1cdfb912f13182ba6b53`; WB receipt `merge-datatug-tugql-main-af26ed96bb47-f7a9cf2ed0f7`; authoritative unprotected direct route, no applicable checks confirmed by stable reread |
 
-No Go provider release is claimed by the DTQL documentation landing.
+No Go provider release is claimed by the TugQL documentation landing.
 
 The independent HTTP adapter fix landed at
 `cacd422564fc27844b989e1c80eb96320ce4af4b` through WB receipt

@@ -8,7 +8,7 @@ Policy viewer/editor is excluded by approved scope.
 
 | Acceptance | Executable evidence | Observed |
 | --- | --- | --- |
-| Real DTQL queries through OVDB to both engines | `pkg/server/layered_acl_test.go`, `pkg/server/access_write_test.go` | Pass on SQLite and InGitDB |
+| Real TugQL queries through OVDB to both engines | `pkg/server/layered_acl_test.go`, `pkg/server/access_write_test.go` | Pass on SQLite and InGitDB |
 | Owner restrictions compose before paging; hidden filter/order/projection rejected | Layered HTTP tests; SQL structured predicate conformance | Pass |
 | Direct InGitDB access retains non-removable owner policies | InGitDB protected profile tests | Pass |
 | Plan/inspect never writes; specific row and bounded top-N diagnostics | Protected HTTP tests; DALgo coordinator tests | Pass |

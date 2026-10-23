@@ -21,7 +21,7 @@ import (
 
 // The examples of docs/api.md are run. An example is a comment line
 //
-//	<!-- doc-example method=POST path=/v1/dtql status=200 -->
+//	<!-- doc-example method=POST path=/v1/tugql status=200 -->
 //
 // followed by a fenced block with the request body (a POST only) and a fenced json
 // block with the response. The test posts the request to a server with real SQLite
@@ -277,9 +277,9 @@ func docAggregateShapes(function string) map[string]struct{ path, body string } 
 		return "from:\n  " + database + "name: Invoice\n  alias: i\n  joins:\n    - type: left\n      from: {" + other + "name: Customer, alias: c}\n      on:\n        - {left: {field: customer_id, source: i}, op: '==', right: {field: id, source: c}}\ncolumns: [" + aggregate + "]\n"
 	}
 	return map[string]struct{ path, body string }{
-		"one source":       {"/v1/databases/chinook/dtql", "from: {name: Invoice, alias: i}\ncolumns: [" + aggregate + "]\n"},
-		"a join":           {"/v1/databases/chinook/dtql", join("", "")},
-		"a join over HTTP": {"/v1/dtql", join("database: chinook\n  ", "database: chinook, ")},
-		"in memory":        {"/v1/dtql", "from:\n  database: chinook\n  name: Invoice\n  alias: i\n  joins:\n    - type: left\n      from: {database: countries, name: Country, alias: k}\n      on:\n        - {left: {field: customer_id, source: i}, op: '==', right: {field: code, source: k}}\ncolumns: [" + aggregate + "]\n"},
+		"one source":       {"/v1/databases/chinook/tugql", "from: {name: Invoice, alias: i}\ncolumns: [" + aggregate + "]\n"},
+		"a join":           {"/v1/databases/chinook/tugql", join("", "")},
+		"a join over HTTP": {"/v1/tugql", join("database: chinook\n  ", "database: chinook, ")},
+		"in memory":        {"/v1/tugql", "from:\n  database: chinook\n  name: Invoice\n  alias: i\n  joins:\n    - type: left\n      from: {database: countries, name: Country, alias: k}\n      on:\n        - {left: {field: customer_id, source: i}, op: '==', right: {field: code, source: k}}\ncolumns: [" + aggregate + "]\n"},
 	}
 }

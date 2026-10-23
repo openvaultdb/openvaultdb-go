@@ -186,107 +186,107 @@ func (d *Database) StreamQuery(ctx context.Context, q Query, emit func(Record) e
 	return nil
 }
 
-// ErrInvalidDTQL identifies invalid or unsupported DTQL query shapes.
-var ErrInvalidDTQL = errors.New("invalid or unsupported DTQL query")
+// ErrInvalidTugQL identifies invalid or unsupported TugQL query shapes.
+var ErrInvalidTugQL = errors.New("invalid or unsupported TugQL query")
 
-// ParseDTQL validates the server's bounded single-collection query profile.
+// ParseTugQL validates the server's bounded single-collection query profile.
 // The returned collection is suitable for checking the token's capabilities.
 // It knows no engine, so it checks field names with the widest rule (the one of
 // quotedNameEngines); the Database that runs the query checks them again with
 // the rule of its own engine, before any adapter is reached.
-func ParseDTQL(doc []byte) (dal.StructuredQuery, string, error) {
-	query, err := DeserializeDTQL(doc)
+func ParseTugQL(doc []byte) (dal.StructuredQuery, string, error) {
+	query, err := DeserializeTugQL(doc)
 	if err != nil {
 		return nil, "", err
 	}
-	collection, err := validateDTQL(query)
+	collection, err := validateTugQL(query)
 	return query, collection, err
 }
 
-func validateDTQL(query dal.StructuredQuery) (string, error) {
-	return validateDTQLFor(query, quotedNames)
+func validateTugQL(query dal.StructuredQuery) (string, error) {
+	return validateTugQLFor(query, quotedNames)
 }
 
-// validateDTQLFor is validateDTQL with the field-name rule of an engine.
-func validateDTQLFor(query dal.StructuredQuery, names fieldRule) (string, error) {
+// validateTugQLFor is validateTugQL with the field-name rule of an engine.
+func validateTugQLFor(query dal.StructuredQuery, names fieldRule) (string, error) {
 	if query == nil || query.From() == nil || len(query.From().Joins()) != 0 {
-		return "", fmt.Errorf("%w: one root collection is required", ErrInvalidDTQL)
+		return "", fmt.Errorf("%w: one root collection is required", ErrInvalidTugQL)
 	}
 	source, ok := query.From().Base().(dal.CollectionRef)
 	if !ok || source.Parent() != nil || source.Alias() != "" || source.Name() == "" {
-		return "", fmt.Errorf("%w: one unaliased root collection is required", ErrInvalidDTQL)
+		return "", fmt.Errorf("%w: one unaliased root collection is required", ErrInvalidTugQL)
 	}
 	if source.Schema() != "" || source.Database() != "" || source.ScanLimit() != 0 || len(source.ScanOrders()) != 0 {
-		return "", fmt.Errorf("%w: schema, database and scan are not supported on the root collection", ErrInvalidDTQL)
+		return "", fmt.Errorf("%w: schema, database and scan are not supported on the root collection", ErrInvalidTugQL)
 	}
 	if len(query.GroupBy()) != 0 || query.Having() != nil || query.StartFrom() != "" || query.StartAfter() != "" {
-		return "", fmt.Errorf("%w: aggregation and cursors are not supported", ErrInvalidDTQL)
+		return "", fmt.Errorf("%w: aggregation and cursors are not supported", ErrInvalidTugQL)
 	}
 	if query.Limit() < 0 || query.Limit() > 1000 || query.Offset() < 0 || query.Offset() > 10000 {
-		return "", fmt.Errorf("%w: limit must be 0..1000 and offset 0..10000", ErrInvalidDTQL)
+		return "", fmt.Errorf("%w: limit must be 0..1000 and offset 0..10000", ErrInvalidTugQL)
 	}
 	for _, column := range query.Columns() {
 		field, ok := column.Expression.(dal.FieldRef)
 		if !ok || column.Alias != "" || field.Source() != "" {
-			return "", fmt.Errorf("%w: only unaliased field columns are supported", ErrInvalidDTQL)
+			return "", fmt.Errorf("%w: only unaliased field columns are supported", ErrInvalidTugQL)
 		}
 	}
 	if err := ValidateCollectionName(source.Name()); err != nil {
 		return "", err
 	}
-	if err := validateDTQLFieldsWith(query, 0, names); err != nil {
+	if err := validateTugQLFieldsWith(query, 0, names); err != nil {
 		return "", err
 	}
 	return source.Name(), nil
 }
 
-// ExecuteDTQL runs DTQL through the same secured DALgo handle as record reads.
-func (d *Database) ExecuteDTQL(ctx context.Context, doc []byte) ([]Record, error) {
-	query, _, err := ParseDTQL(doc)
+// ExecuteTugQL runs TugQL through the same secured DALgo handle as record reads.
+func (d *Database) ExecuteTugQL(ctx context.Context, doc []byte) ([]Record, error) {
+	query, _, err := ParseTugQL(doc)
 	if err != nil {
 		return nil, err
 	}
-	return d.ExecuteDTQLQuery(ctx, query)
+	return d.ExecuteTugQLQuery(ctx, query)
 }
 
-type boundedDTQL struct{ dal.StructuredQuery }
+type boundedTugQL struct{ dal.StructuredQuery }
 
-// DTQL describes projection, not a Go record factory. A nil factory from the
+// TugQL describes projection, not a Go record factory. A nil factory from the
 // decoder is not a keys-only request; install the factory needed by drivers.
-func (q boundedDTQL) IntoRecord() record.Record {
+func (q boundedTugQL) IntoRecord() record.Record {
 	return record.NewRecordWithIncompleteKey(q.From().Base().Name(), reflect.String, map[string]any{})
 }
 
-func (q boundedDTQL) IDKind() reflect.Kind { return reflect.String }
+func (q boundedTugQL) IDKind() reflect.Kind { return reflect.String }
 
-func (q boundedDTQL) String() string { return dal.QueryString(q) }
+func (q boundedTugQL) String() string { return dal.QueryString(q) }
 
-func (q boundedDTQL) Limit() int {
+func (q boundedTugQL) Limit() int {
 	if q.StructuredQuery.Limit() == 0 {
 		return 1000
 	}
 	return q.StructuredQuery.Limit()
 }
 
-// The time budgets of a structured read of one collection through ExecuteDTQLQuery and of
-// the complete capture of StreamDTQLSnapshot. They are variables only so that a test can
+// The time budgets of a structured read of one collection through ExecuteTugQLQuery and of
+// the complete capture of StreamTugQLSnapshot. They are variables only so that a test can
 // make a budget end at once; nothing else changes them.
 var (
-	dtqlBudget     = 10 * time.Second
+	tugqlBudget    = 10 * time.Second
 	snapshotBudget = 60 * time.Second
 )
 
-// snapshotDTQL removes the ordinary 1000-row default for a disk-backed
+// snapshotTugQL removes the ordinary 1000-row default for a disk-backed
 // result capture. Its caller enforces a byte and row bound while streaming.
-type snapshotDTQL struct{ boundedDTQL }
+type snapshotTugQL struct{ boundedTugQL }
 
-func (q snapshotDTQL) Limit() int { return 0 }
+func (q snapshotTugQL) Limit() int { return 0 }
 
-// StreamDTQLSnapshot executes one complete query through one DALgo reader.
+// StreamTugQLSnapshot executes one complete query through one DALgo reader.
 // Local OVDB writes cannot interleave with the capture. The caller must bound
 // the emitted result and persist it before exposing any page token.
-func (d *Database) StreamDTQLSnapshot(ctx context.Context, query dal.StructuredQuery, emit func(Record) error) error {
-	collection, err := validateDTQLFor(query, d.fieldRule())
+func (d *Database) StreamTugQLSnapshot(ctx context.Context, query dal.StructuredQuery, emit func(Record) error) error {
+	collection, err := validateTugQLFor(query, d.fieldRule())
 	if err != nil {
 		return err
 	}
@@ -294,7 +294,7 @@ func (d *Database) StreamDTQLSnapshot(ctx context.Context, query dal.StructuredQ
 		return err
 	}
 	if query.Limit() != 0 || query.Offset() != 0 {
-		return fmt.Errorf("%w: snapshot query requires limit and offset to be zero", ErrInvalidDTQL)
+		return fmt.Errorf("%w: snapshot query requires limit and offset to be zero", ErrInvalidTugQL)
 	}
 	if err := d.guardProtectedSources(query); err != nil {
 		return err
@@ -313,7 +313,7 @@ func (d *Database) StreamDTQLSnapshot(ctx context.Context, query dal.StructuredQ
 	defer cancel()
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	reader, err := d.db.ExecuteQueryToRecordsReader(ctx, snapshotDTQL{boundedDTQL{query}})
+	reader, err := d.db.ExecuteQueryToRecordsReader(ctx, snapshotTugQL{boundedTugQL{query}})
 	if err != nil {
 		return d.queryError(request, fmt.Sprintf("failed to query collection %q", clipName(collection)), err)
 	}
@@ -346,10 +346,10 @@ func (d *Database) StreamDTQLSnapshot(ctx context.Context, query dal.StructuredQ
 	}
 }
 
-// ExecuteDTQLQuery executes an already parsed query after validating its shape.
-func (d *Database) ExecuteDTQLQuery(ctx context.Context, query dal.StructuredQuery) ([]Record, error) {
+// ExecuteTugQLQuery executes an already parsed query after validating its shape.
+func (d *Database) ExecuteTugQLQuery(ctx context.Context, query dal.StructuredQuery) ([]Record, error) {
 	var records []Record
-	err := d.StreamDTQLQuery(ctx, query, func(rec Record) error {
+	err := d.StreamTugQLQuery(ctx, query, func(rec Record) error {
 		records = append(records, rec)
 		return nil
 	})
@@ -375,15 +375,15 @@ func (d *Database) executeDalQueryOn(ctx, request context.Context, db dal.DB, qu
 	return records, nil
 }
 
-// StreamDTQLQuery executes an ordinary single-collection DTQL query and emits
+// StreamTugQLQuery executes an ordinary single-collection TugQL query and emits
 // rows as DALgo reads them. It preserves the ordinary limit, offset, timeout,
 // field coercion, and result byte bound; callers must treat callback or close
 // errors as a failed result.
-func (d *Database) StreamDTQLQuery(ctx context.Context, query dal.StructuredQuery, emit func(Record) error) error {
+func (d *Database) StreamTugQLQuery(ctx context.Context, query dal.StructuredQuery, emit func(Record) error) error {
 	if emit == nil {
-		return fmt.Errorf("%w: a stream callback is required", ErrInvalidDTQL)
+		return fmt.Errorf("%w: a stream callback is required", ErrInvalidTugQL)
 	}
-	collection, err := validateDTQLFor(query, d.fieldRule())
+	collection, err := validateTugQLFor(query, d.fieldRule())
 	if err != nil {
 		return err
 	}
@@ -394,9 +394,9 @@ func (d *Database) StreamDTQLQuery(ctx context.Context, query dal.StructuredQuer
 		return err
 	}
 	request := ctx
-	ctx, cancel := context.WithTimeout(ctx, dtqlBudget)
+	ctx, cancel := context.WithTimeout(ctx, tugqlBudget)
 	defer cancel()
-	return d.executeDalQueryStreamOn(ctx, request, d.db, boundedDTQL{query}, collection, false, emit)
+	return d.executeDalQueryStreamOn(ctx, request, d.db, boundedTugQL{query}, collection, false, emit)
 }
 
 func (d *Database) executeDalQueryStreamOn(ctx, request context.Context, db dal.DB, query dal.StructuredQuery, collection string, keysOnly bool, emit func(Record) error) (retErr error) {

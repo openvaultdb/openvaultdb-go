@@ -54,7 +54,7 @@ func discoveryDatabase(t *testing.T, doc map[string]any, id string) map[string]a
 }
 
 // discoveryFlags reads the joins and aggregation flags of a database entry, which
-// sit in its capabilities map beside read, query, dtql and write, and fails when
+// sit in its capabilities map beside read, query, tugql and write, and fails when
 // either is also written at the top level of the entry.
 func discoveryFlags(t *testing.T, entry map[string]any) (joins, aggregation any) {
 	t.Helper()
@@ -64,7 +64,7 @@ func discoveryFlags(t *testing.T, entry map[string]any) (joins, aggregation any)
 		}
 	}
 	capabilities := discoveryObject(t, entry, "capabilities")
-	for _, name := range []string{"read", "query", "dtql", "write", "joins", "aggregation"} {
+	for _, name := range []string{"read", "query", "tugql", "write", "joins", "aggregation"} {
 		if _, ok := capabilities[name].(bool); !ok {
 			t.Errorf("capabilities.%s is not a boolean: %v", name, capabilities)
 		}
@@ -73,11 +73,11 @@ func discoveryFlags(t *testing.T, entry map[string]any) (joins, aggregation any)
 }
 
 // discoveryAccepted sends a relational document that reads one collection of the
-// database to /v1/dtql and reports whether the handler took it past every check of
+// database to /v1/tugql and reports whether the handler took it past every check of
 // the database (the executor runs).
 func discoveryAccepted(t *testing.T, host *httptest.Server, id string) bool {
 	t.Helper()
-	resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", "from: {database: "+id+", name: orders}\n", nil)
+	resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", "from: {database: "+id+", name: orders}\n", nil)
 	switch resp.status {
 	case http.StatusOK:
 		return true
@@ -100,7 +100,7 @@ func TestWellKnownQueryBlockStatesTheProfileAsData(t *testing.T) {
 	}
 	_, host := relFakeServer(t, &relFakeExecutor{}, relFakeDefaultMounts(), WithQueryLimits(limits))
 	query := discoveryObject(t, discoveryGet(t, host, "/.well-known/openvaultdb"), "query")
-	if query["endpoint"] != "/v1/dtql" || query["format"] != "dtql-yaml+json" {
+	if query["endpoint"] != "/v1/tugql" || query["format"] != "tugql-yaml+json" {
 		t.Fatalf("endpoint %v, format %v", query["endpoint"], query["format"])
 	}
 	features := discoveryObject(t, query, "features")
@@ -172,7 +172,7 @@ func TestWellKnownQueryBlockIsPresentWithAuthOn(t *testing.T) {
 		t.Fatalf("an authenticated server lists databases: %v", doc["databases"])
 	}
 	query := discoveryObject(t, doc, "query")
-	if query["endpoint"] != "/v1/dtql" || !reflect.DeepEqual(query["joinEngines"], []any{"sqlite", "ingitdb"}) {
+	if query["endpoint"] != "/v1/tugql" || !reflect.DeepEqual(query["joinEngines"], []any{"sqlite", "ingitdb"}) {
 		t.Fatalf("query = %v", query)
 	}
 	if features := discoveryObject(t, query, "features"); features["crossDatabase"] != true || features["protectedDatabases"] != false {
@@ -312,19 +312,19 @@ func TestAdvertisedAggregatesAreTheOnesTheClassifierTakes(t *testing.T) {
 	_, host := relFakeServer(t, &relFakeExecutor{}, relFakeDefaultMounts())
 	for _, function := range query.Features.Aggregates {
 		for _, spelling := range []string{function, strings.ToUpper(function)} {
-			if _, _, err := classifyDTQLDocument([]byte(doc(spelling))); err != nil {
+			if _, _, err := classifyTugQLDocument([]byte(doc(spelling))); err != nil {
 				t.Errorf("the classifier refuses the advertised %s: %v", spelling, err)
 			}
-			if resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", doc(spelling), nil); resp.status != http.StatusOK {
+			if resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", doc(spelling), nil); resp.status != http.StatusOK {
 				t.Errorf("%s: status %d: %s", spelling, resp.status, resp.raw)
 			}
 		}
 	}
 	for _, function := range []string{"first", "last", "FIRST", "Last", "stddev"} {
-		if _, _, err := classifyDTQLDocument([]byte(doc(function))); !errors.Is(err, core.ErrInvalidDTQL) {
+		if _, _, err := classifyTugQLDocument([]byte(doc(function))); !errors.Is(err, core.ErrInvalidTugQL) {
 			t.Errorf("the classifier takes %s, which is not advertised: %v", function, err)
 		}
-		if resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", doc(function), nil); resp.status != http.StatusBadRequest || resp.code() != "invalid_dtql" {
+		if resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", doc(function), nil); resp.status != http.StatusBadRequest || resp.code() != "invalid_tugql" {
 			t.Errorf("%s: status %d: %s", function, resp.status, resp.raw)
 		}
 	}
@@ -414,10 +414,10 @@ func TestAdvertisedBoundsAreTheOnesTheClassifierEnforces(t *testing.T) {
 		{"offset", fmt.Sprintf("%soffset: %d\n", one, bound("maxOffset")), fmt.Sprintf("%soffset: %d\n", one, bound("maxOffset")+1)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", tc.atBound, nil); resp.status != http.StatusOK {
+			if resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", tc.atBound, nil); resp.status != http.StatusOK {
 				t.Errorf("at the bound: status %d: %s", resp.status, resp.raw)
 			}
-			if resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", tc.over, nil); resp.status != http.StatusBadRequest || resp.code() != "invalid_dtql" {
+			if resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", tc.over, nil); resp.status != http.StatusBadRequest || resp.code() != "invalid_tugql" {
 				t.Errorf("over the bound: status %d: %s", resp.status, resp.raw)
 			}
 		})
@@ -447,11 +447,11 @@ func TestAdvertisedJoinTypesAreTheOnesTheClassifierTakes(t *testing.T) {
 		return fmt.Sprintf("from:\n  database: alpha\n  name: orders\n  alias: o\n  joins:\n    - type: %v\n      from: {database: alpha, name: customers, alias: c}\n      on:\n        - {left: {field: customer_id, source: o}, op: '==', right: {field: id, source: c}}\n", joinType)
 	}
 	for _, joinType := range advertised {
-		if resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", doc(joinType), nil); resp.status != http.StatusOK {
+		if resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", doc(joinType), nil); resp.status != http.StatusOK {
 			t.Errorf("the advertised %v join: status %d: %s", joinType, resp.status, resp.raw)
 		}
 	}
-	if resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", doc("right"), nil); resp.status != http.StatusBadRequest || resp.code() != "invalid_dtql" {
+	if resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", doc("right"), nil); resp.status != http.StatusBadRequest || resp.code() != "invalid_tugql" {
 		t.Errorf("a right join: status %d: %s", resp.status, resp.raw)
 	}
 	if slices.Contains(advertised, any("right")) {

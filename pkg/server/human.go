@@ -211,7 +211,7 @@ func (s *Server) humanDatabases(r *http.Request, includeProviderReferences bool,
 				if db.CanQuery() && !s.boundedImmutable(db) {
 					endpoint := "/query"
 					if db.NativePostgresReadOnly() {
-						endpoint = "/dtql"
+						endpoint = "/tugql"
 					}
 					queryURL = origin + "/v1/databases/" + url.PathEscape(id) + endpoint + "?" + query.Encode()
 				}

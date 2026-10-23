@@ -81,10 +81,10 @@ func TestProviderRequestPositiveControls(t *testing.T) {
 		{"json-limit-one", "/query", `{"collection":"daily","limit":1}`, 1, false},
 		{"json-limit-fifty", "/query", `{"collection":"daily","limit":50}`, 50, false},
 		{"json-native-in", "/query", `{"collection":"daily","limit":50,"where":[{"field":"currency","op":"in","value":["AAA","AAB"]}]}`, 2, false},
-		{"dtql-native", "/dtql", "from: {name: daily}\nlimit: 50\n", 50, false},
-		{"projection", "/dtql", "from: {name: daily}\ncolumns: [{field: rate}]\nlimit: 1\n", 1, true},
-		{"filter-group", "/dtql", "from: {name: daily}\nwhere: {or: [{op: '==', left: {field: currency}, right: {value: AAA}}, {op: '==', left: {field: currency}, right: {value: AAB}}]}\nlimit: 50\n", 2, false},
-		{"empty", "/dtql", "from: {name: daily}\nwhere: {op: '==', left: {field: currency}, right: {value: ZZZ}}\nlimit: 50\n", 0, false},
+		{"tugql-native", "/tugql", "from: {name: daily}\nlimit: 50\n", 50, false},
+		{"projection", "/tugql", "from: {name: daily}\ncolumns: [{field: rate}]\nlimit: 1\n", 1, true},
+		{"filter-group", "/tugql", "from: {name: daily}\nwhere: {or: [{op: '==', left: {field: currency}, right: {value: AAA}}, {op: '==', left: {field: currency}, right: {value: AAB}}]}\nlimit: 50\n", 2, false},
+		{"empty", "/tugql", "from: {name: daily}\nwhere: {op: '==', left: {field: currency}, right: {value: ZZZ}}\nlimit: 50\n", 0, false},
 	} {
 		for _, mount := range []string{"ecb", "alias"} {
 			for _, account := range []bool{false, true} {
@@ -135,14 +135,14 @@ func TestProviderRequestPositiveControls(t *testing.T) {
 			}
 		}
 	}
-	// Existing GET and JSON-parameter DTQL envelopes share the same route guard.
+	// Existing GET and JSON-parameter TugQL envelopes share the same route guard.
 	for _, tc := range []struct {
 		method, route, body string
 		headers             http.Header
 	}{
 		{"GET", "/query?q=" + url.QueryEscape(`{"collection":"daily","limit":1}`), "", nil},
-		{"GET", "/dtql?q=" + url.QueryEscape("from: {name: daily}\nlimit: 1\n"), "", nil},
-		{"POST", "/dtql", `{"query":"from: {name: daily}\nwhere: {op: '==', left: {field: currency}, right: {param: code}}\nlimit: 1\n","parameters":{"code":"AAA"}}`, http.Header{"Content-Type": {"application/json"}}},
+		{"GET", "/tugql?q=" + url.QueryEscape("from: {name: daily}\nlimit: 1\n"), "", nil},
+		{"POST", "/tugql", `{"query":"from: {name: daily}\nwhere: {op: '==', left: {field: currency}, right: {param: code}}\nlimit: 1\n","parameters":{"code":"AAA"}}`, http.Header{"Content-Type": {"application/json"}}},
 	} {
 		before := *calls
 		w := retentionRequest(s.Handler(), tc.method, "/v1/databases/ecb"+tc.route, tc.body, tc.headers)
@@ -155,7 +155,7 @@ func TestProviderRequestPositiveControls(t *testing.T) {
 func TestProviderRequestRefusesBeforeUpstream(t *testing.T) {
 	s, _, calls, _ := providerRequestFixture(t, true)
 	jsonBase := `{"collection":"daily","limit":1}`
-	dtqlBase := "from: {name: daily}\nlimit: 1\n"
+	tugqlBase := "from: {name: daily}\nlimit: 1\n"
 	for _, tc := range []struct {
 		name, method, route, body string
 		headers                   http.Header
@@ -185,30 +185,30 @@ func TestProviderRequestRefusesBeforeUpstream(t *testing.T) {
 		{"paging-duplicate", "POST", "/query", jsonBase, http.Header{"OVDB-Page-Size": {"1", "1"}}},
 		{"coalesced-nonce", "POST", "/query", jsonBase, http.Header{ProviderExecutionIDHeader: {strings.Repeat("a", 32) + "," + strings.Repeat("b", 32)}}},
 		{"invalid-nonce", "POST", "/query", jsonBase, http.Header{ProviderExecutionIDHeader: {strings.Repeat("A", 32)}}},
-		{"duplicate-nonce", "POST", "/dtql", dtqlBase, http.Header{ProviderExecutionIDHeader: {strings.Repeat("a", 32), strings.Repeat("b", 32)}}},
+		{"duplicate-nonce", "POST", "/tugql", tugqlBase, http.Header{ProviderExecutionIDHeader: {strings.Repeat("a", 32), strings.Repeat("b", 32)}}},
 		{"case-duplicate-nonce", "POST", "/query", jsonBase, http.Header{ProviderExecutionIDHeader: {strings.Repeat("a", 32)}, "ovdb-execution-id": {strings.Repeat("b", 32)}}},
 		{"point-read", "GET", "/read?key=daily/AAA", "", nil},
 		{"record-read", "GET", "/records/daily/AAA", "", nil},
 		{"record-write", "PUT", "/records/daily/AAA", `{}`, nil},
 		{"batch", "POST", "/batch", `{"ops":[]}`, nil},
-		{"dtql-missing-limit", "POST", "/dtql", "from: {name: daily}\n", nil},
-		{"dtql-negative-limit", "POST", "/dtql", "from: {name: daily}\nlimit: -1\n", nil},
-		{"dtql-zero-limit", "POST", "/dtql", "from: {name: daily}\nlimit: 0\n", nil},
-		{"dtql-excess-limit", "POST", "/dtql", "from: {name: daily}\nlimit: 51\n", nil},
-		{"dtql-order-empty", "POST", "/dtql", dtqlBase + "orderBy: []\n", nil},
-		{"dtql-offset-zero", "POST", "/dtql", dtqlBase + "offset: 0\n", nil},
-		{"dtql-alias", "POST", "/dtql", "from: {name: daily, alias: x}\nlimit: 1\n", nil},
-		{"dtql-own-database", "POST", "/dtql", "from: {name: daily, database: ecb}\nlimit: 1\n", nil},
-		{"dtql-scan", "POST", "/dtql", "from: {name: daily, scanLimit: 1}\nlimit: 1\n", nil},
-		{"dtql-projection-alias", "POST", "/dtql", dtqlBase + "columns: [{field: rate, as: ''}]\n", nil},
-		{"dtql-computed", "POST", "/dtql", dtqlBase + "columns: [{value: '1'}]\n", nil},
-		{"dtql-qualified-field", "POST", "/dtql", dtqlBase + "columns: [{field: rate, source: ''}]\n", nil},
-		{"dtql-join", "POST", "/dtql", dtqlBase + "joins: [{from: {name: daily, alias: x}, on: {op: '==', left: {field: currency}, right: {field: currency, source: x}}}]\n", nil},
-		{"dtql-subquery", "POST", "/dtql", dtqlBase + "where: {exists: {query: {from: {name: daily}}}}\n", nil},
-		{"dtql-duplicate", "POST", "/dtql", dtqlBase + "limit: 50\n", nil},
-		{"dtql-yaml-alias", "POST", "/dtql", "from: &f {name: daily}\nlimit: 1\n", nil},
-		{"dtql-envelope-duplicate", "POST", "/dtql", `{"query":"from: {name: history}\nlimit: 1\n","query":"from: {name: daily}\nlimit: 1\n"}`, http.Header{"Content-Type": {"application/json"}}},
-		{"dtql-parameter-duplicate", "POST", "/dtql", `{"query":"from: {name: daily}\nwhere: {op: '==', left: {field: currency}, right: {param: code}}\nlimit: 1\n","parameters":{"code":"ZZZ","code":"AAA"}}`, http.Header{"Content-Type": {"application/json"}}},
+		{"tugql-missing-limit", "POST", "/tugql", "from: {name: daily}\n", nil},
+		{"tugql-negative-limit", "POST", "/tugql", "from: {name: daily}\nlimit: -1\n", nil},
+		{"tugql-zero-limit", "POST", "/tugql", "from: {name: daily}\nlimit: 0\n", nil},
+		{"tugql-excess-limit", "POST", "/tugql", "from: {name: daily}\nlimit: 51\n", nil},
+		{"tugql-order-empty", "POST", "/tugql", tugqlBase + "orderBy: []\n", nil},
+		{"tugql-offset-zero", "POST", "/tugql", tugqlBase + "offset: 0\n", nil},
+		{"tugql-alias", "POST", "/tugql", "from: {name: daily, alias: x}\nlimit: 1\n", nil},
+		{"tugql-own-database", "POST", "/tugql", "from: {name: daily, database: ecb}\nlimit: 1\n", nil},
+		{"tugql-scan", "POST", "/tugql", "from: {name: daily, scanLimit: 1}\nlimit: 1\n", nil},
+		{"tugql-projection-alias", "POST", "/tugql", tugqlBase + "columns: [{field: rate, as: ''}]\n", nil},
+		{"tugql-computed", "POST", "/tugql", tugqlBase + "columns: [{value: '1'}]\n", nil},
+		{"tugql-qualified-field", "POST", "/tugql", tugqlBase + "columns: [{field: rate, source: ''}]\n", nil},
+		{"tugql-join", "POST", "/tugql", tugqlBase + "joins: [{from: {name: daily, alias: x}, on: {op: '==', left: {field: currency}, right: {field: currency, source: x}}}]\n", nil},
+		{"tugql-subquery", "POST", "/tugql", tugqlBase + "where: {exists: {query: {from: {name: daily}}}}\n", nil},
+		{"tugql-duplicate", "POST", "/tugql", tugqlBase + "limit: 50\n", nil},
+		{"tugql-yaml-alias", "POST", "/tugql", "from: &f {name: daily}\nlimit: 1\n", nil},
+		{"tugql-envelope-duplicate", "POST", "/tugql", `{"query":"from: {name: history}\nlimit: 1\n","query":"from: {name: daily}\nlimit: 1\n"}`, http.Header{"Content-Type": {"application/json"}}},
+		{"tugql-parameter-duplicate", "POST", "/tugql", `{"query":"from: {name: daily}\nwhere: {op: '==', left: {field: currency}, right: {param: code}}\nlimit: 1\n","parameters":{"code":"ZZZ","code":"AAA"}}`, http.Header{"Content-Type": {"application/json"}}},
 	} {
 		for _, mount := range []string{"ecb", "alias"} {
 			t.Run(tc.name+"/"+mount, func(t *testing.T) {
@@ -238,7 +238,7 @@ func TestProviderRequestRefusesBeforeUpstream(t *testing.T) {
 	}
 	for _, mount := range []string{"ecb", "alias"} {
 		before := *calls
-		w := retentionRequest(s.Handler(), "POST", "/v1/dtql", "from: {database: "+mount+", name: daily}\nlimit: 1\n", nil)
+		w := retentionRequest(s.Handler(), "POST", "/v1/tugql", "from: {database: "+mount+", name: daily}\nlimit: 1\n", nil)
 		if w.Code != 422 || *calls != before {
 			t.Fatalf("global: %d %s", w.Code, w.Body)
 		}

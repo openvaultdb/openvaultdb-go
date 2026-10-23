@@ -19,13 +19,13 @@ import (
 // all start with relIntQualifiers so they cannot clash with the others of the package.
 
 // relIntQualifiersGit posts doc to the inGitDB mount on both endpoints: the per-database
-// endpoint reads it as it is (DALgo evaluates it), and /v1/dtql gets the database written
+// endpoint reads it as it is (DALgo evaluates it), and /v1/tugql gets the database written
 // into the one source, so the mount is handed a plain document whole.
 func relIntQualifiersGit(t *testing.T, base, doc string, check func(t *testing.T, resp relHTTPResponse)) {
 	t.Helper()
 	for _, endpoint := range []struct{ name, path, database string }{
-		{"per-database endpoint", "/v1/databases/gitdb/dtql", ""},
-		{"/v1/dtql, which hands the mount the document whole", "/v1/dtql", "gitdb"},
+		{"per-database endpoint", "/v1/databases/gitdb/tugql", ""},
+		{"/v1/tugql, which hands the mount the document whole", "/v1/tugql", "gitdb"},
 	} {
 		t.Run(endpoint.name, func(t *testing.T) {
 			check(t, relHTTPPost(t, base, endpoint.path, "", string(relIntRewrite(t, []byte(doc), endpoint.database))))
@@ -85,7 +85,7 @@ func TestAQualifierThatNamesNoSourceOfTheQueryIsRefusedOnBothEndpoints(t *testin
 	t.Run("a long qualifier is repeated clipped, as every refusal of DALgo is", func(t *testing.T) {
 		// The classifier refuses a qualifier of more than 256 bytes; this is the longest it lets by.
 		long := strings.Repeat("q", 256)
-		resp := relHTTPPost(t, base, "/v1/dtql", "", "from: {database: gitdb, name: Customer, alias: c}\norderBy: [{field: FirstName, source: "+long+"}]\n"+columns)
+		resp := relHTTPPost(t, base, "/v1/tugql", "", "from: {database: gitdb, name: Customer, alias: c}\norderBy: [{field: FirstName, source: "+long+"}]\n"+columns)
 		relIntRefusalsRefused(t, resp, "query_scope at orderBy[0].source: ", "unknown alias")
 		if strings.Contains(resp.raw, long) || len(resp.errorField("message")) > 300 {
 			t.Fatalf("the refusal repeats the qualifier: %s", resp.raw)
@@ -123,8 +123,8 @@ func TestAMissingValueIsPlacedByTheMountsOwnComparatorWhenTheDocumentIsHandedWho
 			[]map[string]any{row(11, nil), row(12, float64(200)), row(10, float64(100)), row(13, float64(50))}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			relIntRowsAre(t, relHTTPPost(t, base, "/v1/databases/gitdb/dtql", "", tc.doc), tc.database)
-			relIntRowsAre(t, relHTTPPost(t, base, "/v1/dtql", "", string(relIntRewrite(t, []byte(tc.doc), "gitdb"))), tc.handed)
+			relIntRowsAre(t, relHTTPPost(t, base, "/v1/databases/gitdb/tugql", "", tc.doc), tc.database)
+			relIntRowsAre(t, relHTTPPost(t, base, "/v1/tugql", "", string(relIntRewrite(t, []byte(tc.doc), "gitdb"))), tc.handed)
 		})
 	}
 
@@ -162,11 +162,11 @@ func TestAMissingValueIsPlacedByTheMountsOwnComparatorWhenTheDocumentIsHandedWho
 		"a text, descending": {byDay(", desc: true"), ids(4, 1, 3, 2), ids(4, 2, 1, 3)},
 	} {
 		t.Run(name, func(t *testing.T) {
-			relIntRowsAre(t, relHTTPPost(t, eventsBase, "/v1/databases/gitdb/dtql", "", tc.doc), tc.database)
-			relIntRowsAre(t, relHTTPPost(t, eventsBase, "/v1/dtql", "", string(relIntRewrite(t, []byte(tc.doc), "gitdb"))), tc.handed)
+			relIntRowsAre(t, relHTTPPost(t, eventsBase, "/v1/databases/gitdb/tugql", "", tc.doc), tc.database)
+			relIntRowsAre(t, relHTTPPost(t, eventsBase, "/v1/tugql", "", string(relIntRewrite(t, []byte(tc.doc), "gitdb"))), tc.handed)
 			// SQLite, whichever way the document is read, puts the missing value first ascending.
-			relIntRowsAre(t, relHTTPPost(t, eventsBase, "/v1/databases/litedb/dtql", "", tc.doc), tc.database)
-			relIntRowsAre(t, relHTTPPost(t, eventsBase, "/v1/dtql", "", string(relIntRewrite(t, []byte(tc.doc), "litedb"))), tc.database)
+			relIntRowsAre(t, relHTTPPost(t, eventsBase, "/v1/databases/litedb/tugql", "", tc.doc), tc.database)
+			relIntRowsAre(t, relHTTPPost(t, eventsBase, "/v1/tugql", "", string(relIntRewrite(t, []byte(tc.doc), "litedb"))), tc.database)
 		})
 	}
 }
@@ -179,19 +179,19 @@ func TestAMissingValueIsPlacedByTheMountsOwnComparatorWhenTheDocumentIsHandedWho
 func TestAnAliasInsideOrderByArithmeticOverASourceWithNoFieldListIsRefusedOverHTTP(t *testing.T) {
 	base := relIntScopeServer(t)
 	const from = "from: {database: notes, name: Note, alias: n}\n"
-	resp := relHTTPPost(t, base, "/v1/dtql", "", from+"orderBy: [{binary: {op: '+', left: {field: T}, right: {value: 0}}}]\n"+
+	resp := relHTTPPost(t, base, "/v1/tugql", "", from+"orderBy: [{binary: {op: '+', left: {field: T}, right: {value: 0}}}]\n"+
 		"columns: [{field: mood, source: n, as: T}]\n")
 	relIntRefusalsRefused(t, resp, "scope at orderBy[0].left: ", "T", "inside arithmetic", "no field list", "qualify the field with its source")
 
 	t.Run("a name no column carries is left to the mount, as the documentation says", func(t *testing.T) {
-		resp := relHTTPPost(t, base, "/v1/dtql", "", from+"orderBy: [{binary: {op: '+', left: {field: mood}, right: {value: 0}}}]\n"+
+		resp := relHTTPPost(t, base, "/v1/tugql", "", from+"orderBy: [{binary: {op: '+', left: {field: mood}, right: {value: 0}}}]\n"+
 			"columns: [{field: mood, source: n, as: T}]\n")
 		if resp.status != http.StatusOK {
 			t.Fatalf("status %d, want 200: %s", resp.status, resp.raw)
 		}
 	})
 	t.Run("the qualified field is answered", func(t *testing.T) {
-		resp := relHTTPPost(t, base, "/v1/dtql", "", from+"orderBy: [{binary: {op: '+', left: {field: mood, source: n}, right: {value: 0}}}]\n"+
+		resp := relHTTPPost(t, base, "/v1/tugql", "", from+"orderBy: [{binary: {op: '+', left: {field: mood, source: n}, right: {value: 0}}}]\n"+
 			"columns: [{field: mood, source: n, as: T}]\n")
 		if resp.status != http.StatusOK {
 			t.Fatalf("status %d, want 200: %s", resp.status, resp.raw)
@@ -216,7 +216,7 @@ func TestTheKeyIsOrderedByOnlyWhereAMountIsHandedTheDocumentWholeAndRefusedElsew
 	)
 	base := relIntFieldsServer(t)
 	t.Run("a strict mount that is handed a plain document whole sorts by the key", func(t *testing.T) {
-		resp := relHTTPPost(t, base, "/v1/dtql", "", "from: {database: gitdb, name: Customer, alias: c}\norderBy: [{field: $id, desc: true}]\ncolumns: [{field: FirstName, source: c}]\n")
+		resp := relHTTPPost(t, base, "/v1/tugql", "", "from: {database: gitdb, name: Customer, alias: c}\norderBy: [{field: $id, desc: true}]\ncolumns: [{field: FirstName, source: c}]\n")
 		relIntRowsAre(t, resp, []map[string]any{{"FirstName": "Cy"}, {"FirstName": "Bea"}, {"FirstName": "Ada"}})
 	})
 	t.Run("the key and arithmetic, over a source with a field list, on both endpoints", func(t *testing.T) {
@@ -225,7 +225,7 @@ func TestTheKeyIsOrderedByOnlyWhereAMountIsHandedTheDocumentWholeAndRefusedElsew
 		})
 	})
 	t.Run("the key on the per-database endpoint, which DALgo evaluates", func(t *testing.T) {
-		resp := relHTTPPost(t, base, "/v1/databases/gitdb/dtql", "", invoices+"orderBy: [{field: $id}]\n"+invoiceId)
+		resp := relHTTPPost(t, base, "/v1/databases/gitdb/tugql", "", invoices+"orderBy: [{field: $id}]\n"+invoiceId)
 		relIntRefusalsRefused(t, resp, "scope at orderBy[0]: ", "$id", says)
 	})
 	t.Run("in memory, on both engines and both endpoints", func(t *testing.T) {
@@ -238,15 +238,15 @@ func TestTheKeyIsOrderedByOnlyWhereAMountIsHandedTheDocumentWholeAndRefusedElsew
 		notes := relIntScopeServer(t)
 		const from = "from: {database: notes, name: Note, alias: n}\n"
 		// Handed whole, the mount sorts by the key, as it did.
-		relIntRowsAre(t, relHTTPPost(t, notes, "/v1/dtql", "", from+"orderBy: [{field: $id, desc: true}]\ncolumns: [{field: mood, source: n}]\n"),
+		relIntRowsAre(t, relHTTPPost(t, notes, "/v1/tugql", "", from+"orderBy: [{field: $id, desc: true}]\ncolumns: [{field: mood, source: n}]\n"),
 			[]map[string]any{{"mood": "busy"}, {"mood": "calm"}})
 		// Beside arithmetic it is evaluated by DALgo, which would read the key as a null and answer
 		// in the order the records were read: it is refused instead.
-		resp := relHTTPPost(t, notes, "/v1/dtql", "", from+"orderBy: [{field: $id, desc: true}, {binary: {op: '+', left: {field: mood, source: n}, right: {value: 0}}}]\n"+
+		resp := relHTTPPost(t, notes, "/v1/tugql", "", from+"orderBy: [{field: $id, desc: true}, {binary: {op: '+', left: {field: mood, source: n}, right: {value: 0}}}]\n"+
 			"columns: [{field: mood, source: n}]\n")
 		relIntRefusalsRefused(t, resp, "scope at orderBy[0]: ", "$id", says)
 		// So it is on the per-database endpoint, where DALgo evaluates the plain document too.
-		resp = relHTTPPost(t, notes, "/v1/databases/notes/dtql", "", "from: {name: Note, alias: n}\norderBy: [{field: $id}]\ncolumns: [{field: mood, source: n}]\n")
+		resp = relHTTPPost(t, notes, "/v1/databases/notes/tugql", "", "from: {name: Note, alias: n}\norderBy: [{field: $id}]\ncolumns: [{field: mood, source: n}]\n")
 		relIntRefusalsRefused(t, resp, "scope at orderBy[0]: ", "$id", says)
 	})
 }
@@ -262,8 +262,8 @@ func TestAnOrderingExpressionOverADatabaseWithAccessPoliciesIsRefusedBeforeItIsR
 		"orderBy: [{binary: {op: '*', left: {field: id, source: c}, right: {value: -1}}}]\ncolumns: [{field: name, source: c}]\n"
 	for _, protected := range []string{"sqlite", "ingitdb"} {
 		for _, endpoint := range []struct{ name, path, database string }{
-			{"per-database endpoint", "/v1/databases/" + protected + "/dtql", ""},
-			{"/v1/dtql", "/v1/dtql", protected},
+			{"per-database endpoint", "/v1/databases/" + protected + "/tugql", ""},
+			{"/v1/tugql", "/v1/tugql", protected},
 		} {
 			for _, caller := range relIntCallers {
 				t.Run(protected+", "+endpoint.name+", "+caller.name, func(t *testing.T) {
@@ -314,12 +314,12 @@ func TestAColumnNamedAsTheFieldItSelectsIsNotAnAliasAnOrderByExpressionCouldMean
 		"descending": {"{binary: {op: '*', left: {field: rank}, right: {value: -1}}}", []map[string]any{{"rank": float64(3)}, {"rank": float64(2)}, {"rank": float64(1)}}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			resp := relHTTPPost(t, base, "/v1/dtql", "", from+"orderBy: ["+tc.order+"]\ncolumns: [{field: rank, source: n, as: rank}]\n")
+			resp := relHTTPPost(t, base, "/v1/tugql", "", from+"orderBy: ["+tc.order+"]\ncolumns: [{field: rank, source: n, as: rank}]\n")
 			relIntRowsAre(t, resp, tc.want)
 		})
 	}
 	t.Run("a column that selects another field under the name is still refused", func(t *testing.T) {
-		resp := relHTTPPost(t, base, "/v1/dtql", "", from+"orderBy: [{binary: {op: '+', left: {field: rank}, right: {value: 0}}}]\ncolumns: [{field: person_id, source: n, as: rank}]\n")
+		resp := relHTTPPost(t, base, "/v1/tugql", "", from+"orderBy: [{binary: {op: '+', left: {field: rank}, right: {value: 0}}}]\ncolumns: [{field: person_id, source: n, as: rank}]\n")
 		relIntRefusalsRefused(t, resp, "scope at orderBy[0].left: ", "rank", "inside arithmetic", "no field list", "qualify the field with its source")
 	})
 }
@@ -327,23 +327,23 @@ func TestAColumnNamedAsTheFieldItSelectsIsNotAnAliasAnOrderByExpressionCouldMean
 // An alias that stands for the key $id is replaced by the key before DALgo sees the document,
 // and DALgo reads the key as a null, so the ordering did nothing, with a status 200. Where the
 // document is not handed whole to a mount it is refused, as the key itself is: on the
-// per-database endpoint, which DALgo evaluates, and beside arithmetic on /v1/dtql. Handed whole,
+// per-database endpoint, which DALgo evaluates, and beside arithmetic on /v1/tugql. Handed whole,
 // the mount sorts by the key as it did.
 func TestAnAliasOfTheKeyIsRefusedWhereDALgoEvaluatesTheDocument(t *testing.T) {
 	base := relIntScopeServer(t)
 	const says = "order by a field"
 	t.Run("the per-database endpoint", func(t *testing.T) {
-		resp := relHTTPPost(t, base, "/v1/databases/notes/dtql", "", "from: {name: Note, alias: n}\norderBy: [{field: k}]\ncolumns: [{field: $id, source: n, as: k}, {field: mood, source: n}]\n")
+		resp := relHTTPPost(t, base, "/v1/databases/notes/tugql", "", "from: {name: Note, alias: n}\norderBy: [{field: k}]\ncolumns: [{field: $id, source: n, as: k}, {field: mood, source: n}]\n")
 		relIntRefusalsRefused(t, resp, "scope at orderBy[0]: ", "$id", says)
 	})
-	t.Run("beside arithmetic on /v1/dtql", func(t *testing.T) {
-		resp := relHTTPPost(t, base, "/v1/dtql", "", "from: {database: notes, name: Note, alias: n}\n"+
+	t.Run("beside arithmetic on /v1/tugql", func(t *testing.T) {
+		resp := relHTTPPost(t, base, "/v1/tugql", "", "from: {database: notes, name: Note, alias: n}\n"+
 			"orderBy: [{field: k, desc: true}, {binary: {op: '+', left: {field: mood, source: n}, right: {value: 0}}}]\n"+
 			"columns: [{field: $id, source: n, as: k}, {field: mood, source: n}]\n")
 		relIntRefusalsRefused(t, resp, "scope at orderBy[0]: ", "$id", says)
 	})
 	t.Run("handed whole to the mount, which sorts by the key", func(t *testing.T) {
-		resp := relHTTPPost(t, base, "/v1/dtql", "", "from: {database: notes, name: Note, alias: n}\norderBy: [{field: k, desc: true}]\n"+
+		resp := relHTTPPost(t, base, "/v1/tugql", "", "from: {database: notes, name: Note, alias: n}\norderBy: [{field: k, desc: true}]\n"+
 			"columns: [{field: $id, source: n, as: k}, {field: mood, source: n}]\n")
 		if resp.status != http.StatusOK {
 			t.Fatalf("status %d, want 200: %s", resp.status, resp.raw)
@@ -366,8 +366,8 @@ func TestAQualifierNoSourceHasInADocumentASQLiteDatabaseRunsWholeIsRefusedByItsA
 	} {
 		doc := "from: {name: Customer, alias: c}\n" + clause + "columns: [{field: FirstName, source: c}]\n"
 		for _, endpoint := range []struct{ name, path, database string }{
-			{"per-database endpoint", "/v1/databases/litedb/dtql", ""},
-			{"/v1/dtql", "/v1/dtql", "litedb"},
+			{"per-database endpoint", "/v1/databases/litedb/tugql", ""},
+			{"/v1/tugql", "/v1/tugql", "litedb"},
 		} {
 			t.Run(name+", "+endpoint.name, func(t *testing.T) {
 				resp := relHTTPPost(t, base, endpoint.path, "", string(relIntRewrite(t, []byte(doc), endpoint.database)))

@@ -110,7 +110,7 @@ func run(dir string, reuse bool, listen string) error {
 			return server.Membership{}, nil
 		},
 	})).Handler()
-	log.Printf("fixtures: %s; DTQL: http://%s/v1/databases/{ingitdb,sqlite}/dtql", dir, listen)
+	log.Printf("fixtures: %s; TugQL: http://%s/v1/databases/{ingitdb,sqlite}/tugql", dir, listen)
 	srv := &http.Server{Addr: listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second}
 	return serveHTTP(srv)
 }
@@ -128,7 +128,7 @@ func policy(database, name, field, value string) string {
 	if database == "ingitdb" {
 		fields += ", $id"
 	}
-	return fmt.Sprintf(`apiVersion: dtql.org/access/v1
+	return fmt.Sprintf(`apiVersion: tugql.org/access/v1
 kind: AccessPolicy
 metadata: {name: %s}
 target: {database: %s}

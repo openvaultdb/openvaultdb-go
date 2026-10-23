@@ -54,23 +54,23 @@ func openEngine(t *testing.T, engine string) (*Database, *queryCountingDB) {
 	return db, fake
 }
 
-const guardDTQL = "from: {name: customers}\n"
+const guardTugQL = "from: {name: customers}\n"
 
 // refusedEntryPoints runs every core entry point that hands a structured query
 // to the driver.
 func refusedEntryPoints(t *testing.T, db *Database) map[string]error {
 	t.Helper()
 	ctx := context.Background()
-	parsed, _, err := ParseDTQL([]byte(guardDTQL))
+	parsed, _, err := ParseTugQL([]byte(guardTugQL))
 	if err != nil {
 		t.Fatal(err)
 	}
 	out := map[string]error{}
 	_, out["Execute"] = db.Execute(ctx, Query{Collection: "customers"})
 	_, out["ExecuteKeysOnly"] = db.Execute(ctx, Query{Collection: "customers", KeysOnly: true})
-	_, out["ExecuteDTQL"] = db.ExecuteDTQL(ctx, []byte(guardDTQL))
-	_, out["ExecuteDTQLQuery"] = db.ExecuteDTQLQuery(ctx, parsed)
-	out["StreamDTQLSnapshot"] = db.StreamDTQLSnapshot(ctx, parsed, func(Record) error { return nil })
+	_, out["ExecuteTugQL"] = db.ExecuteTugQL(ctx, []byte(guardTugQL))
+	_, out["ExecuteTugQLQuery"] = db.ExecuteTugQLQuery(ctx, parsed)
+	out["StreamTugQLSnapshot"] = db.StreamTugQLSnapshot(ctx, parsed, func(Record) error { return nil })
 	_, _, out["SelectAccessSample"] = db.SelectAccessSample(ctx, parsed, 1, access.Principal{})
 	return out
 }
@@ -121,18 +121,18 @@ func TestStructuredQueryReachesQueryableEngines(t *testing.T) {
 		t.Run(engine, func(t *testing.T) {
 			db, fake := openEngine(t, engine)
 			ctx := context.Background()
-			parsed, _, err := ParseDTQL([]byte(guardDTQL))
+			parsed, _, err := ParseTugQL([]byte(guardTugQL))
 			if err != nil {
 				t.Fatal(err)
 			}
 			if _, err := db.Execute(ctx, Query{Collection: "customers"}); !errors.Is(err, errFakeReached) {
 				t.Errorf("Execute: %v", err)
 			}
-			if _, err := db.ExecuteDTQLQuery(ctx, parsed); !errors.Is(err, errFakeReached) {
-				t.Errorf("ExecuteDTQLQuery: %v", err)
+			if _, err := db.ExecuteTugQLQuery(ctx, parsed); !errors.Is(err, errFakeReached) {
+				t.Errorf("ExecuteTugQLQuery: %v", err)
 			}
-			if err := db.StreamDTQLSnapshot(ctx, parsed, func(Record) error { return nil }); !errors.Is(err, errFakeReached) {
-				t.Errorf("StreamDTQLSnapshot: %v", err)
+			if err := db.StreamTugQLSnapshot(ctx, parsed, func(Record) error { return nil }); !errors.Is(err, errFakeReached) {
+				t.Errorf("StreamTugQLSnapshot: %v", err)
 			}
 			if fake.queries != 3 {
 				t.Fatalf("queries = %d, want 3", fake.queries)
@@ -155,12 +155,12 @@ func TestInGitDBMembershipFiltersRefusedBeforeAdapter(t *testing.T) {
 						_, err := db.Execute(ctx, Query{Collection: "customers", Where: []Filter{{Field: "name", Op: "in", Value: []string{"Alice", "Bob"}}}})
 						return err
 					},
-					"DTQL query": func() error {
-						_, err := db.ExecuteDTQLQuery(ctx, query)
+					"TugQL query": func() error {
+						_, err := db.ExecuteTugQLQuery(ctx, query)
 						return err
 					},
 					"snapshot": func() error {
-						return db.StreamDTQLSnapshot(ctx, query, func(Record) error { return nil })
+						return db.StreamTugQLSnapshot(ctx, query, func(Record) error { return nil })
 					},
 				} {
 					if err := run(); !errors.Is(err, ErrQueryNotRunnable) {
@@ -183,7 +183,7 @@ func TestInGitDBMembershipFiltersRefusedBeforeAdapter(t *testing.T) {
 
 func TestQueryUnsupportedErrorIsNotInvalidQuery(t *testing.T) {
 	err := error(&QueryUnsupportedError{Engine: "postgres"})
-	if errors.Is(err, ErrInvalidQuery) || errors.Is(err, ErrInvalidDTQL) {
+	if errors.Is(err, ErrInvalidQuery) || errors.Is(err, ErrInvalidTugQL) {
 		t.Fatal("a refused engine is not a malformed query")
 	}
 }
@@ -288,9 +288,9 @@ func TestWireQuerySafeFieldNamesPass(t *testing.T) {
 	}
 }
 
-// dtqlWith places one field name in every expression position the walker
+// tugqlWith places one field name in every expression position the walker
 // covers, built with the dal builders so the name needs no YAML escaping.
-func dtqlWith(name string) map[string]dal.StructuredQuery {
+func tugqlWith(name string) map[string]dal.StructuredQuery {
 	base := func() dal.IQueryBuilder {
 		return dal.From(dal.NewRootCollectionRef("customers", "")).NewQuery()
 	}
@@ -315,16 +315,16 @@ func dtqlWith(name string) map[string]dal.StructuredQuery {
 	}
 }
 
-func TestDTQLFieldNamesValidatedBeforeAdapter(t *testing.T) {
+func TestTugQLFieldNamesValidatedBeforeAdapter(t *testing.T) {
 	for _, engine := range []string{"sqlite", "ingitdb", "firestore", "postgres", "mysql", "oracle"} {
 		db, fake := openEngine(t, engine)
 		for _, name := range unsafeFieldNamesFor(engine) {
-			for label, query := range dtqlWith(name) {
-				if _, err := db.ExecuteDTQLQuery(context.Background(), query); !errors.Is(err, ErrInvalidDTQL) {
+			for label, query := range tugqlWith(name) {
+				if _, err := db.ExecuteTugQLQuery(context.Background(), query); !errors.Is(err, ErrInvalidTugQL) {
 					t.Errorf("%s %s %.30q: %v", engine, label, name, err)
 				}
-				err := db.StreamDTQLSnapshot(context.Background(), query, func(Record) error { return nil })
-				if !errors.Is(err, ErrInvalidDTQL) {
+				err := db.StreamTugQLSnapshot(context.Background(), query, func(Record) error { return nil })
+				if !errors.Is(err, ErrInvalidTugQL) {
 					t.Errorf("stream %s %s %.30q: %v", engine, label, name, err)
 				}
 			}
@@ -335,28 +335,28 @@ func TestDTQLFieldNamesValidatedBeforeAdapter(t *testing.T) {
 	}
 }
 
-func TestDTQLSafeFieldNamesPass(t *testing.T) {
+func TestTugQLSafeFieldNamesPass(t *testing.T) {
 	db, _ := openEngine(t, "sqlite")
 	for _, name := range safeFieldNames {
-		for label, query := range dtqlWith(name) {
-			if _, err := db.ExecuteDTQLQuery(context.Background(), query); !errors.Is(err, errFakeReached) {
+		for label, query := range tugqlWith(name) {
+			if _, err := db.ExecuteTugQLQuery(context.Background(), query); !errors.Is(err, errFakeReached) {
 				t.Errorf("%s %q: %v", label, name, err)
 			}
 		}
 	}
 }
 
-func TestParseDTQLRefusesUnsafeFieldNames(t *testing.T) {
+func TestParseTugQLRefusesUnsafeFieldNames(t *testing.T) {
 	for _, doc := range []string{
 		"from: {name: customers}\nwhere: {op: '==', left: {field: \"na;me\"}, right: {value: 1}}\n",
 		"from: {name: customers}\norderBy: [{field: \"a;b\"}]\n",
 		"from: {name: customers}\ncolumns: [{field: \"a'b\"}]\n",
 	} {
-		if _, _, err := ParseDTQL([]byte(doc)); !errors.Is(err, ErrInvalidDTQL) {
+		if _, _, err := ParseTugQL([]byte(doc)); !errors.Is(err, ErrInvalidTugQL) {
 			t.Errorf("%q: %v", doc, err)
 		}
 	}
-	if _, _, err := ParseDTQL([]byte("from: {name: customers}\nwhere: {op: '==', left: {field: name}, right: {value: 1}}\norderBy: [{field: address.city}]\n")); err != nil {
+	if _, _, err := ParseTugQL([]byte("from: {name: customers}\nwhere: {op: '==', left: {field: name}, right: {value: 1}}\norderBy: [{field: address.city}]\n")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -369,17 +369,17 @@ type otherExpression struct{}
 
 func (otherExpression) String() string { return "other" }
 
-func TestValidateDTQLFieldsFailsClosedOnUnknownShapes(t *testing.T) {
-	if err := (nameWalker{}).condition(otherCondition{}, 0, nil); !errors.Is(err, ErrInvalidDTQL) {
+func TestValidateTugQLFieldsFailsClosedOnUnknownShapes(t *testing.T) {
+	if err := (nameWalker{}).condition(otherCondition{}, 0, nil); !errors.Is(err, ErrInvalidTugQL) {
 		t.Errorf("unknown condition: %v", err)
 	}
-	if err := (nameWalker{}).expression(otherExpression{}, 0, nil); !errors.Is(err, ErrInvalidDTQL) {
+	if err := (nameWalker{}).expression(otherExpression{}, 0, nil); !errors.Is(err, ErrInvalidTugQL) {
 		t.Errorf("unknown expression: %v", err)
 	}
-	if err := (nameWalker{}).expression(dal.NewComparison(nil, dal.Equal, nil), 0, nil); !errors.Is(err, ErrInvalidDTQL) {
+	if err := (nameWalker{}).expression(dal.NewComparison(nil, dal.Equal, nil), 0, nil); !errors.Is(err, ErrInvalidTugQL) {
 		t.Errorf("comparison used as expression: %v", err)
 	}
-	if err := (nameWalker{}).expression(dal.Param{Name: "bad name"}, 0, nil); !errors.Is(err, ErrInvalidDTQL) {
+	if err := (nameWalker{}).expression(dal.Param{Name: "bad name"}, 0, nil); !errors.Is(err, ErrInvalidTugQL) {
 		t.Errorf("bad param: %v", err)
 	}
 	if err := (nameWalker{}).expression(dal.NewParam("currentUser"), 0, nil); err != nil {
@@ -396,40 +396,40 @@ func TestValidateDTQLFieldsFailsClosedOnUnknownShapes(t *testing.T) {
 	}
 }
 
-func TestValidateDTQLFieldsAggregatesAliasesSourcesAndDepth(t *testing.T) {
+func TestValidateTugQLFieldsAggregatesAliasesSourcesAndDepth(t *testing.T) {
 	root := dal.From(dal.NewRootCollectionRef("customers", "")).NewQuery()
 	build := func(b dal.IQueryBuilder) dal.StructuredQuery {
 		return b.SelectIntoRecord(func() record.Record {
 			return record.NewRecordWithIncompleteKey("customers", 0, map[string]any{})
 		})
 	}
-	if err := validateDTQLFields(root.SelectColumns(dal.CountAs(dal.Field("ok"), "")), 0); err != nil {
+	if err := validateTugQLFields(root.SelectColumns(dal.CountAs(dal.Field("ok"), "")), 0); err != nil {
 		t.Errorf("aggregate: %v", err)
 	}
-	if err := validateDTQLFields(root.SelectColumns(dal.CountAs(dal.Field("a b"), "")), 0); !errors.Is(err, ErrInvalidDTQL) {
+	if err := validateTugQLFields(root.SelectColumns(dal.CountAs(dal.Field("a b"), "")), 0); !errors.Is(err, ErrInvalidTugQL) {
 		t.Errorf("aggregate argument: %v", err)
 	}
-	if err := validateDTQLFields(root.SelectColumns(dal.Count()), 0); err != nil {
+	if err := validateTugQLFields(root.SelectColumns(dal.Count()), 0); err != nil {
 		t.Errorf("count star: %v", err)
 	}
-	if err := validateDTQLFields(root.SelectColumns(dal.Column{Expression: dal.Field("ok"), Alias: "ok_alias"}), 0); err != nil {
+	if err := validateTugQLFields(root.SelectColumns(dal.Column{Expression: dal.Field("ok"), Alias: "ok_alias"}), 0); err != nil {
 		t.Errorf("alias: %v", err)
 	}
 	for _, alias := range []string{"a b", "a.b", "a;"} {
-		if err := validateDTQLFields(root.SelectColumns(dal.Column{Expression: dal.Field("ok"), Alias: alias}), 0); !errors.Is(err, ErrInvalidDTQL) {
+		if err := validateTugQLFields(root.SelectColumns(dal.Column{Expression: dal.Field("ok"), Alias: alias}), 0); !errors.Is(err, ErrInvalidTugQL) {
 			t.Errorf("alias %q: %v", alias, err)
 		}
 	}
-	if err := validateDTQLFields(root.SelectColumns(dal.AllColumnsExceptFrom("c", "x")), 0); err != nil {
+	if err := validateTugQLFields(root.SelectColumns(dal.AllColumnsExceptFrom("c", "x")), 0); err != nil {
 		t.Errorf("wildcard source: %v", err)
 	}
-	if err := validateDTQLFields(root.SelectColumns(dal.AllColumnsExceptFrom("c d", "x")), 0); !errors.Is(err, ErrInvalidDTQL) {
+	if err := validateTugQLFields(root.SelectColumns(dal.AllColumnsExceptFrom("c d", "x")), 0); !errors.Is(err, ErrInvalidTugQL) {
 		t.Errorf("wildcard source: %v", err)
 	}
 	if err := (nameWalker{}).expression(dal.NewFieldRef("c", "x"), 0, nil); err != nil {
 		t.Errorf("qualified field: %v", err)
 	}
-	if err := (nameWalker{}).expression(dal.NewFieldRef("c;", "x"), 0, nil); !errors.Is(err, ErrInvalidDTQL) {
+	if err := (nameWalker{}).expression(dal.NewFieldRef("c;", "x"), 0, nil); !errors.Is(err, ErrInvalidTugQL) {
 		t.Errorf("qualified field source: %v", err)
 	}
 	// Deeply nested conditions are refused rather than walked without bound.
@@ -437,22 +437,22 @@ func TestValidateDTQLFieldsAggregatesAliasesSourcesAndDepth(t *testing.T) {
 	for i := 0; i <= maxQueryTreeDepth+1; i++ {
 		deep = dal.NewGroupCondition(dal.And, deep)
 	}
-	if err := (nameWalker{}).condition(deep, 0, nil); !errors.Is(err, ErrInvalidDTQL) {
+	if err := (nameWalker{}).condition(deep, 0, nil); !errors.Is(err, ErrInvalidTugQL) {
 		t.Errorf("deep condition: %v", err)
 	}
 	var deepExpr dal.Expression = dal.Field("a")
 	for i := 0; i <= maxQueryTreeDepth+1; i++ {
 		deepExpr = dal.Binary(deepExpr, dal.Add, dal.String("x"))
 	}
-	if err := (nameWalker{}).expression(deepExpr, 0, nil); !errors.Is(err, ErrInvalidDTQL) {
+	if err := (nameWalker{}).expression(deepExpr, 0, nil); !errors.Is(err, ErrInvalidTugQL) {
 		t.Errorf("deep expression: %v", err)
 	}
-	if err := validateDTQLFields(build(root), maxQueryTreeDepth+1); !errors.Is(err, ErrInvalidDTQL) {
+	if err := validateTugQLFields(build(root), maxQueryTreeDepth+1); !errors.Is(err, ErrInvalidTugQL) {
 		t.Errorf("deep query: %v", err)
 	}
 }
 
-func TestValidateDTQLFieldsCoversEveryClause(t *testing.T) {
+func TestValidateTugQLFieldsCoversEveryClause(t *testing.T) {
 	root := func() dal.IQueryBuilder { return dal.From(dal.NewRootCollectionRef("customers", "")).NewQuery() }
 	bad := dal.Field("a b")
 	for label, query := range map[string]dal.StructuredQuery{
@@ -461,12 +461,12 @@ func TestValidateDTQLFieldsCoversEveryClause(t *testing.T) {
 		"wildcardExclude": root().SelectColumns(dal.AllColumnsExcept("ok", "a b")),
 		"columnShape":     root().SelectColumns(dal.Column{Expression: otherExpression{}}),
 	} {
-		if err := validateDTQLFields(query, 0); !errors.Is(err, ErrInvalidDTQL) {
+		if err := validateTugQLFields(query, 0); !errors.Is(err, ErrInvalidTugQL) {
 			t.Errorf("%s: %v", label, err)
 		}
 	}
 	good := root().GroupBy(dal.Field("ok")).Having(dal.NewComparison(dal.Field("ok"), dal.Equal, dal.String("x"))).SelectColumns(dal.AllColumnsExcept("x"))
-	if err := validateDTQLFields(good, 0); err != nil {
+	if err := validateTugQLFields(good, 0); err != nil {
 		t.Errorf("good: %v", err)
 	}
 }
@@ -487,8 +487,8 @@ func TestDocumentEngineKeyPseudoFieldReachesAdapter(t *testing.T) {
 				}
 				root := dal.From(dal.NewRootCollectionRef("customers", "")).NewQuery()
 				dq := root.WhereField(name, dal.Equal, "x").OrderBy(dal.AscendingField(name)).SelectColumns(dal.Column{Expression: dal.Field(name)})
-				if _, err := db.ExecuteDTQLQuery(ctx, dq); !errors.Is(err, errFakeReached) {
-					t.Errorf("dtql %q: %v", name, err)
+				if _, err := db.ExecuteTugQLQuery(ctx, dq); !errors.Is(err, errFakeReached) {
+					t.Errorf("tugql %q: %v", name, err)
 				}
 			}
 			if fake.queries != 6 {
@@ -549,11 +549,11 @@ type noFromQuery struct{ dal.StructuredQuery }
 
 func (noFromQuery) From() dal.FromSource { return nil }
 
-// TestValidateDTQLFieldsWalksFromSources is the regression test for the
+// TestValidateTugQLFieldsWalksFromSources is the regression test for the
 // unwalked from clause: every name a subquery's source carries (collection,
 // alias, schema, scan order, join source, join ON operands, derived query)
 // is validated, and an unknown source shape is refused.
-func TestValidateDTQLFieldsWalksFromSources(t *testing.T) {
+func TestValidateTugQLFieldsWalksFromSources(t *testing.T) {
 	const bad = "na'me; DROP TABLE x --"
 	badOrder := dal.AscendingField(bad)
 	valid := func() dal.StructuredQuery { return selectQuery(fromTree(rootRef("other")).NewQuery()) }
@@ -597,19 +597,19 @@ func TestValidateDTQLFieldsWalksFromSources(t *testing.T) {
 		"scalar from":    selectQuery(fromTree(rootRef("customers")).NewQuery().Where(eqCondition(dal.Field("a"), dal.NewQueryExpression(selectQuery(fromTree(rootRef("o2").WithScan(1, badOrder)).NewQuery()), "s")))),
 	}
 	for label, inner := range cases {
-		if err := validateDTQLFields(withExists("customers", inner), 0); !errors.Is(err, ErrInvalidDTQL) {
+		if err := validateTugQLFields(withExists("customers", inner), 0); !errors.Is(err, ErrInvalidTugQL) {
 			t.Errorf("%s: %v", label, err)
 		}
 		if label != "nested join cycle" {
 			// The subquery is also refused when it is the query itself.
-			if err := validateDTQLFields(inner, 0); !errors.Is(err, ErrInvalidDTQL) {
+			if err := validateTugQLFields(inner, 0); !errors.Is(err, ErrInvalidTugQL) {
 				t.Errorf("%s (top): %v", label, err)
 			}
 		}
 	}
 }
 
-func TestValidateDTQLFieldsAcceptsValidFromSources(t *testing.T) {
+func TestValidateTugQLFieldsAcceptsValidFromSources(t *testing.T) {
 	good := map[string]dal.StructuredQuery{
 		"scan order":     selectQuery(fromTree(rootRef("other").WithScan(5, dal.AscendingField("name"))).NewQuery()),
 		"alias":          selectQuery(fromTree(dal.NewRootCollectionRef("other", "o")).NewQuery()),
@@ -618,10 +618,10 @@ func TestValidateDTQLFieldsAcceptsValidFromSources(t *testing.T) {
 		"derived source": selectQuery(fromTree(dal.NewQuerySource(selectQuery(fromTree(rootRef("o2")).NewQuery().WhereField("x", dal.Equal, 1)), "d")).NewQuery()),
 	}
 	for label, inner := range good {
-		if err := validateDTQLFields(inner, 0); err != nil {
+		if err := validateTugQLFields(inner, 0); err != nil {
 			t.Errorf("%s: %v", label, err)
 		}
-		if err := validateDTQLFields(withExists("customers", inner), 0); err != nil {
+		if err := validateTugQLFields(withExists("customers", inner), 0); err != nil {
 			t.Errorf("%s in EXISTS: %v", label, err)
 		}
 	}
@@ -635,38 +635,38 @@ func TestSourceQualifierMayBeAnInScopeCollectionName(t *testing.T) {
 	qualified := func(source string) dal.StructuredQuery {
 		return selectQuery(fromTree(rootRef(spaced)).NewQuery().Where(eqCondition(dal.NewFieldRef(source, "Quantity"), dal.String("x"))))
 	}
-	if err := validateDTQLFields(qualified(spaced), 0); err != nil {
+	if err := validateTugQLFields(qualified(spaced), 0); err != nil {
 		t.Errorf("own collection name: %v", err)
 	}
-	if err := validateDTQLFields(qualified("Other Details"), 0); !errors.Is(err, ErrInvalidDTQL) {
+	if err := validateTugQLFields(qualified("Other Details"), 0); !errors.Is(err, ErrInvalidTugQL) {
 		t.Errorf("name of no source in scope: %v", err)
 	}
-	if err := validateDTQLFields(qualified("a'b"), 0); !errors.Is(err, ErrInvalidDTQL) {
+	if err := validateTugQLFields(qualified("a'b"), 0); !errors.Is(err, ErrInvalidTugQL) {
 		t.Errorf("unsafe qualifier: %v", err)
 	}
 	// A column wildcard qualified by the collection name.
-	if err := validateDTQLFields(fromTree(rootRef(spaced)).NewQuery().SelectColumns(dal.AllColumnsExceptFrom(spaced, "x")), 0); err != nil {
+	if err := validateTugQLFields(fromTree(rootRef(spaced)).NewQuery().SelectColumns(dal.AllColumnsExceptFrom(spaced, "x")), 0); err != nil {
 		t.Errorf("wildcard qualified by own collection name: %v", err)
 	}
-	if err := validateDTQLFields(fromTree(rootRef(spaced)).NewQuery().SelectColumns(dal.AllColumnsExceptFrom("Other Details", "x")), 0); !errors.Is(err, ErrInvalidDTQL) {
+	if err := validateTugQLFields(fromTree(rootRef(spaced)).NewQuery().SelectColumns(dal.AllColumnsExceptFrom("Other Details", "x")), 0); !errors.Is(err, ErrInvalidTugQL) {
 		t.Errorf("wildcard qualified by a name not in scope: %v", err)
 	}
 	// A join source and an outer collection are in scope inside a subquery.
 	joined := selectQuery(fromTree(rootRef("customers"), dal.NewJoinedSource(rootRef(hyphen), dal.JoinInner,
 		eqCondition(dal.NewFieldRef("customers", "id"), dal.NewFieldRef(hyphen, "customer_id")))).NewQuery())
-	if err := validateDTQLFields(joined, 0); err != nil {
+	if err := validateTugQLFields(joined, 0); err != nil {
 		t.Errorf("join source qualifier: %v", err)
 	}
 	inner := selectQuery(fromTree(rootRef("other")).NewQuery().Where(eqCondition(dal.NewFieldRef(spaced, "id"), dal.NewFieldRef("other", "id"))))
-	if err := validateDTQLFields(withExists(spaced, inner), 0); err != nil {
+	if err := validateTugQLFields(withExists(spaced, inner), 0); err != nil {
 		t.Errorf("outer collection qualifier inside a subquery: %v", err)
 	}
-	if err := validateDTQLFields(withExists("customers", inner), 0); !errors.Is(err, ErrInvalidDTQL) {
+	if err := validateTugQLFields(withExists("customers", inner), 0); !errors.Is(err, ErrInvalidTugQL) {
 		t.Errorf("qualifier of a collection that is not in scope: %v", err)
 	}
 }
 
-func TestParseDTQLRefusesQualifiedAndScannedTopLevelSource(t *testing.T) {
+func TestParseTugQLRefusesQualifiedAndScannedTopLevelSource(t *testing.T) {
 	for label, doc := range map[string]string{
 		"scan":          "from: {name: customers, scan: {limit: 1, orderBy: [{field: \"na'me; DROP TABLE x --\"}]}}\n",
 		"safe scan":     "from: {name: customers, scan: {limit: 1, orderBy: [{field: name}]}}\n",
@@ -674,7 +674,7 @@ func TestParseDTQLRefusesQualifiedAndScannedTopLevelSource(t *testing.T) {
 		"database":      "from: {name: customers, database: d}\n",
 		"database+schm": "from: {name: customers, database: d, schema: s}\n",
 	} {
-		if _, _, err := ParseDTQL([]byte(doc)); !errors.Is(err, ErrInvalidDTQL) {
+		if _, _, err := ParseTugQL([]byte(doc)); !errors.Is(err, ErrInvalidTugQL) {
 			t.Errorf("%s: %v", label, err)
 		}
 	}
@@ -685,7 +685,7 @@ func TestParseDTQLRefusesQualifiedAndScannedTopLevelSource(t *testing.T) {
 // NULL test is walked, and every name rule still applies.
 func TestNameWalkerVariantsDifferInTwoPlaces(t *testing.T) {
 	onDatabase := selectQuery(fromTree(dal.NewDatabaseCollectionRef("chinook", "", "Customer", "")).NewQuery())
-	if err := validateDTQLFields(onDatabase, 0); !errors.Is(err, ErrInvalidDTQL) {
+	if err := validateTugQLFields(onDatabase, 0); !errors.Is(err, ErrInvalidTugQL) {
 		t.Errorf("single-collection variant, source with a database: %v", err)
 	}
 	if err := validateRelationalNames(onDatabase); err != nil {
@@ -700,13 +700,13 @@ func TestNameWalkerVariantsDifferInTwoPlaces(t *testing.T) {
 		return selectQuery(fromTree(rootRef("customers")).NewQuery().Where(condition))
 	}
 	for _, negated := range []bool{false, true} {
-		if err := validateDTQLFields(isNull(dal.Field("a"), negated), 0); !errors.Is(err, ErrInvalidDTQL) {
+		if err := validateTugQLFields(isNull(dal.Field("a"), negated), 0); !errors.Is(err, ErrInvalidTugQL) {
 			t.Errorf("single-collection variant, null test (negated %v): %v", negated, err)
 		}
 		if err := validateRelationalNames(isNull(dal.Field("a"), negated)); err != nil {
 			t.Errorf("relational variant, null test (negated %v): %v", negated, err)
 		}
-		if err := validateRelationalNames(isNull(dal.Field("a;b"), negated)); !errors.Is(err, ErrInvalidDTQL) {
+		if err := validateRelationalNames(isNull(dal.Field("a;b"), negated)); !errors.Is(err, ErrInvalidTugQL) {
 			t.Errorf("relational variant, null test of an unsafe field (negated %v): %v", negated, err)
 		}
 	}
@@ -714,7 +714,7 @@ func TestNameWalkerVariantsDifferInTwoPlaces(t *testing.T) {
 	nested := selectQuery(fromTree(rootRef("customers")).NewQuery().Where(dal.NewGroupCondition(dal.And,
 		dal.NewComparison(dal.Field("ok"), dal.Equal, dal.String("x")),
 		dal.NewExistsCondition(selectQuery(fromTree(rootRef("other")).NewQuery().Where(dal.NewIsNotNullCondition(dal.Field("a;b"))))))))
-	if err := validateRelationalNames(nested); !errors.Is(err, ErrInvalidDTQL) {
+	if err := validateRelationalNames(nested); !errors.Is(err, ErrInvalidTugQL) {
 		t.Errorf("relational variant, nested null test: %v", err)
 	}
 
@@ -729,33 +729,33 @@ func TestNameWalkerVariantsDifferInTwoPlaces(t *testing.T) {
 		"alias":        selectQuery(fromTree(dal.NewDatabaseCollectionRef("d", "", "other", "a b")).NewQuery()),
 		"unsafe field": selectQuery(fromTree(dal.NewDatabaseCollectionRef("d", "", "other", "")).NewQuery().WhereField("a;b", dal.Equal, 1)),
 	} {
-		if err := validateRelationalNames(query); !errors.Is(err, ErrInvalidDTQL) {
+		if err := validateRelationalNames(query); !errors.Is(err, ErrInvalidTugQL) {
 			t.Errorf("relational variant, %s: %v", label, err)
 		}
 	}
-	if err := (nameWalker{relational: true}).query(selectQuery(fromTree(rootRef("customers")).NewQuery()), maxQueryTreeDepth+1, nil); !errors.Is(err, ErrInvalidDTQL) {
+	if err := (nameWalker{relational: true}).query(selectQuery(fromTree(rootRef("customers")).NewQuery()), maxQueryTreeDepth+1, nil); !errors.Is(err, ErrInvalidTugQL) {
 		t.Errorf("relational variant, deep query: %v", err)
 	}
 }
 
-// TestParseDTQLRefusesNullTestsThatNoAdapterImplements pins what dalgo
+// TestParseTugQLRefusesNullTestsThatNoAdapterImplements pins what dalgo
 // v0.89.1 (which parses isNull and isNotNull) does to today's endpoint: no
-// adapter pinned here implements the node, so ParseDTQL refuses it with
-// ErrInvalidDTQL, a 400, instead of handing it to an adapter.
-func TestParseDTQLRefusesNullTestsThatNoAdapterImplements(t *testing.T) {
+// adapter pinned here implements the node, so ParseTugQL refuses it with
+// ErrInvalidTugQL, a 400, instead of handing it to an adapter.
+func TestParseTugQLRefusesNullTestsThatNoAdapterImplements(t *testing.T) {
 	for label, doc := range map[string]string{
 		"isNull":     "from: {name: customers}\nwhere: {isNull: {field: x}}\n",
 		"isNotNull":  "from: {name: customers}\nwhere: {isNotNull: {field: x}}\n",
 		"in a group": "from: {name: customers}\nwhere:\n  and:\n    - op: '=='\n      left: {field: a}\n      right: {value: 1}\n    - isNull: {field: x}\n",
 	} {
-		if _, _, err := ParseDTQL([]byte(doc)); !errors.Is(err, ErrInvalidDTQL) {
+		if _, _, err := ParseTugQL([]byte(doc)); !errors.Is(err, ErrInvalidTugQL) {
 			t.Errorf("%s: %v", label, err)
 		}
 	}
 }
 
 // TestNameWalkerChecksTheStringsThatAreNotFieldNames covers three
-// caller-supplied strings /dtql carries besides names: the operator of an
+// caller-supplied strings /tugql carries besides names: the operator of an
 // arithmetic expression, the name of an aggregate function (one of the five of the profile), and the result name
 // of a scalar subquery. None is exploitable today (the SQLite compiler
 // allow-lists operators and function names, no adapter compiles a subquery),
@@ -779,32 +779,32 @@ func TestNameWalkerChecksTheStringsThatAreNotFieldNames(t *testing.T) {
 		"scalar subquery name":     where(dal.NewQueryExpression(sub, injected)),
 		"scalar subquery in a col": fromTree(rootRef("customers")).NewQuery().SelectColumns(dal.Column{Expression: dal.NewQueryExpression(sub, "a b")}),
 	} {
-		if err := validateDTQLFields(query, 0); !errors.Is(err, ErrInvalidDTQL) {
+		if err := validateTugQLFields(query, 0); !errors.Is(err, ErrInvalidTugQL) {
 			t.Errorf("single-collection variant, %s: %v", label, err)
 		}
-		if err := validateRelationalNames(query); !errors.Is(err, ErrInvalidDTQL) {
+		if err := validateRelationalNames(query); !errors.Is(err, ErrInvalidTugQL) {
 			t.Errorf("relational variant, %s: %v", label, err)
 		}
 	}
 	for _, operator := range []dal.ArithmeticOperator{dal.Add, dal.Subtract, dal.Multiply, dal.Divide} {
-		if err := validateDTQLFields(where(dal.Binary(dal.Field("a"), operator, dal.String("1"))), 0); err != nil {
+		if err := validateTugQLFields(where(dal.Binary(dal.Field("a"), operator, dal.String("1"))), 0); err != nil {
 			t.Errorf("operator %q: %v", operator, err)
 		}
 	}
 	for _, name := range []string{"COUNT", "SUM", "AVG", "MIN", "MAX", "sum", "Avg", "max"} {
-		if err := validateDTQLFields(where(dal.NewAggregate(name, false, dal.Field("a"))), 0); err != nil {
+		if err := validateTugQLFields(where(dal.NewAggregate(name, false, dal.Field("a"))), 0); err != nil {
 			t.Errorf("aggregate %q: %v", name, err)
 		}
 	}
 	// first and last are not in the profile: the name walk refuses them as the
 	// classifier does.
 	for _, name := range []string{"FIRST", "LAST", "first", "Last"} {
-		if err := validateDTQLFields(where(dal.NewAggregate(name, false, dal.Field("a"))), 0); !errors.Is(err, ErrInvalidDTQL) || !strings.Contains(err.Error(), strings.ToLower(name)+" is not in the relational profile") {
+		if err := validateTugQLFields(where(dal.NewAggregate(name, false, dal.Field("a"))), 0); !errors.Is(err, ErrInvalidTugQL) || !strings.Contains(err.Error(), strings.ToLower(name)+" is not in the relational profile") {
 			t.Errorf("aggregate %q: %v", name, err)
 		}
 	}
 	for _, name := range []string{"", "s", "total_2"} {
-		if err := validateDTQLFields(where(dal.NewQueryExpression(sub, name)), 0); err != nil {
+		if err := validateTugQLFields(where(dal.NewQueryExpression(sub, name)), 0); err != nil {
 			t.Errorf("scalar subquery name %q: %v", name, err)
 		}
 	}
@@ -817,26 +817,26 @@ func TestNameWalkerChecksTheStringsThatAreNotFieldNames(t *testing.T) {
 func TestValidateIdentifierDoesNotEchoAnOverLongName(t *testing.T) {
 	long := strings.Repeat("a", maxFieldNameLen+1)
 	err := validateIdentifier(long)
-	if !errors.Is(err, ErrInvalidDTQL) {
-		t.Fatalf("err = %v, want ErrInvalidDTQL", err)
+	if !errors.Is(err, ErrInvalidTugQL) {
+		t.Fatalf("err = %v, want ErrInvalidTugQL", err)
 	}
 	if strings.Contains(err.Error(), "aaaa") || !strings.Contains(err.Error(), "256") {
 		t.Fatalf("message must state the limit and omit the name: %q", err)
 	}
 	// An over-long name that is not an identifier is still refused without the echo.
 	err = validateIdentifier(strings.Repeat("a b", maxFieldNameLen))
-	if !errors.Is(err, ErrInvalidDTQL) || strings.Contains(err.Error(), "a b") {
+	if !errors.Is(err, ErrInvalidTugQL) || strings.Contains(err.Error(), "a b") {
 		t.Fatalf("err = %v", err)
 	}
 	// A short refused name is still quoted, so the caller can see which one it was.
-	if err := validateIdentifier("a b"); !errors.Is(err, ErrInvalidDTQL) || !strings.Contains(err.Error(), `"a b"`) {
+	if err := validateIdentifier("a b"); !errors.Is(err, ErrInvalidTugQL) || !strings.Contains(err.Error(), `"a b"`) {
 		t.Fatalf("err = %v", err)
 	}
 	if err := validateIdentifier(strings.Repeat("a", maxFieldNameLen)); err != nil {
 		t.Fatalf("a name at the limit: %v", err)
 	}
 	// The same through a source qualifier that names no source in scope.
-	if err := validateQualifier(long, nil); !errors.Is(err, ErrInvalidDTQL) || strings.Contains(err.Error(), "aaaa") {
+	if err := validateQualifier(long, nil); !errors.Is(err, ErrInvalidTugQL) || strings.Contains(err.Error(), "aaaa") {
 		t.Fatalf("qualifier err = %v", err)
 	}
 }
@@ -911,7 +911,7 @@ func TestFieldRuleFollowsTheEngine(t *testing.T) {
 
 // TestEnginesThatQuoteAcceptNamesTheStrictRuleRefuses: a name with a space or
 // punctuation reaches the adapter on sqlite and ingitdb, from the wire query and
-// from DTQL, and is refused with no adapter call on every other engine
+// from TugQL, and is refused with no adapter call on every other engine
 // (firestore, postgres and mysql among them).
 func TestEnginesThatQuoteAcceptNamesTheStrictRuleRefuses(t *testing.T) {
 	for _, engine := range []string{"sqlite", "ingitdb", "firestore", "postgres", "mysql", "oracle", ""} {
@@ -924,10 +924,10 @@ func TestEnginesThatQuoteAcceptNamesTheStrictRuleRefuses(t *testing.T) {
 				_, wireErr := db.Execute(ctx, Query{Collection: "customers", Where: []Filter{{Field: name, Op: "==", Value: 1}}, OrderBy: []OrderBy{{Field: name}}})
 				root := dal.From(dal.NewRootCollectionRef("customers", "")).NewQuery()
 				parsed := root.WhereField(name, dal.Equal, 1).OrderBy(dal.AscendingField(name)).SelectColumns(dal.Column{Expression: dal.Field(name)})
-				_, dtqlErr := db.ExecuteDTQLQuery(ctx, parsed)
-				streamErr := db.StreamDTQLSnapshot(ctx, parsed, func(Record) error { return nil })
+				_, tugqlErr := db.ExecuteTugQLQuery(ctx, parsed)
+				streamErr := db.StreamTugQLSnapshot(ctx, parsed, func(Record) error { return nil })
 				if quoted {
-					for label, err := range map[string]error{"wire": wireErr, "dtql": dtqlErr, "stream": streamErr} {
+					for label, err := range map[string]error{"wire": wireErr, "tugql": tugqlErr, "stream": streamErr} {
 						if !errors.Is(err, errFakeReached) {
 							t.Errorf("%s %q: %v", label, name, err)
 						}
@@ -936,8 +936,8 @@ func TestEnginesThatQuoteAcceptNamesTheStrictRuleRefuses(t *testing.T) {
 					continue
 				}
 				_, _, sampleErr := db.SelectAccessSample(ctx, parsed, 1, access.Principal{})
-				if !errors.Is(wireErr, ErrInvalidQuery) || !errors.Is(dtqlErr, ErrInvalidDTQL) || !errors.Is(streamErr, ErrInvalidDTQL) || !errors.Is(sampleErr, ErrInvalidDTQL) {
-					t.Errorf("%q: wire %v, dtql %v, stream %v, sample %v", name, wireErr, dtqlErr, streamErr, sampleErr)
+				if !errors.Is(wireErr, ErrInvalidQuery) || !errors.Is(tugqlErr, ErrInvalidTugQL) || !errors.Is(streamErr, ErrInvalidTugQL) || !errors.Is(sampleErr, ErrInvalidTugQL) {
+					t.Errorf("%q: wire %v, tugql %v, stream %v, sample %v", name, wireErr, tugqlErr, streamErr, sampleErr)
 				}
 			}
 			if fake.queries != reached {
@@ -947,26 +947,26 @@ func TestEnginesThatQuoteAcceptNamesTheStrictRuleRefuses(t *testing.T) {
 	}
 }
 
-// TestParseDTQLKnowsNoEngine: ParseDTQL applies the widest rule, because the
+// TestParseTugQLKnowsNoEngine: ParseTugQL applies the widest rule, because the
 // handler parses before it looks at the engine; the Database applies its own.
-func TestParseDTQLKnowsNoEngine(t *testing.T) {
+func TestParseTugQLKnowsNoEngine(t *testing.T) {
 	doc := "from: {name: customers}\nwhere: {op: '==', left: {field: \"zip code\"}, right: {value: 1}}\norderBy: [{field: \"zip code\"}]\n"
-	query, collection, err := ParseDTQL([]byte(doc))
+	query, collection, err := ParseTugQL([]byte(doc))
 	if err != nil || collection != "customers" {
-		t.Fatalf("ParseDTQL: %v", err)
+		t.Fatalf("ParseTugQL: %v", err)
 	}
 	ctx := context.Background()
-	if _, err := openEngineDatabase(t, "sqlite").ExecuteDTQLQuery(ctx, query); !errors.Is(err, errFakeReached) {
+	if _, err := openEngineDatabase(t, "sqlite").ExecuteTugQLQuery(ctx, query); !errors.Is(err, errFakeReached) {
 		t.Errorf("sqlite: %v", err)
 	}
-	if _, err := openEngineDatabase(t, "postgres").ExecuteDTQLQuery(ctx, query); !errors.Is(err, ErrInvalidDTQL) {
+	if _, err := openEngineDatabase(t, "postgres").ExecuteTugQLQuery(ctx, query); !errors.Is(err, ErrInvalidTugQL) {
 		t.Errorf("postgres: %v", err)
 	}
-	if _, err := openEngineDatabase(t, "postgres").ExecuteDTQL(ctx, []byte(doc)); !errors.Is(err, ErrInvalidDTQL) {
+	if _, err := openEngineDatabase(t, "postgres").ExecuteTugQL(ctx, []byte(doc)); !errors.Is(err, ErrInvalidTugQL) {
 		t.Errorf("postgres, from the document: %v", err)
 	}
 	// What no engine takes is refused at the parse.
-	if _, _, err := ParseDTQL([]byte("from: {name: customers}\nwhere: {op: '==', left: {field: \"a;b\"}, right: {value: 1}}\n")); !errors.Is(err, ErrInvalidDTQL) {
+	if _, _, err := ParseTugQL([]byte("from: {name: customers}\nwhere: {op: '==', left: {field: \"a;b\"}, right: {value: 1}}\n")); !errors.Is(err, ErrInvalidTugQL) {
 		t.Errorf("a semicolon: %v", err)
 	}
 }
@@ -985,7 +985,7 @@ func TestWildcardExcludeNamesAFieldWithNoStarOrQuestionMark(t *testing.T) {
 	root := func() dal.IQueryBuilder { return dal.From(rootRef("customers")).NewQuery() }
 	db, _ := openEngine(t, "sqlite")
 	walks := map[string]func(dal.StructuredQuery) error{
-		"single-collection, quoted rule": func(q dal.StructuredQuery) error { return validateDTQLFieldsWith(q, 0, quotedNames) },
+		"single-collection, quoted rule": func(q dal.StructuredQuery) error { return validateTugQLFieldsWith(q, 0, quotedNames) },
 		"relational":                     validateRelationalNames,
 		"relational, engine's rule":      db.checkRelationalNames,
 	}
@@ -997,7 +997,7 @@ func TestWildcardExcludeNamesAFieldWithNoStarOrQuestionMark(t *testing.T) {
 				"after a good name": root().SelectColumns(dal.AllColumnsExcept("ok", "other", name)),
 			} {
 				err := walk(query)
-				if !errors.Is(err, ErrInvalidDTQL) || !strings.Contains(err.Error(), "mask") {
+				if !errors.Is(err, ErrInvalidTugQL) || !strings.Contains(err.Error(), "mask") {
 					t.Errorf("%s, %s, %q: %v", label, shape, name, err)
 				}
 				// The message does not repeat the name (the characters of the
@@ -1016,7 +1016,7 @@ func TestWildcardExcludeNamesAFieldWithNoStarOrQuestionMark(t *testing.T) {
 		}
 	}
 	// The strict rule refuses them as names before the mask rule is reached.
-	if err := validateDTQLFields(root().SelectColumns(dal.AllColumnsExcept("a*")), 0); !errors.Is(err, ErrInvalidDTQL) {
+	if err := validateTugQLFields(root().SelectColumns(dal.AllColumnsExcept("a*")), 0); !errors.Is(err, ErrInvalidTugQL) {
 		t.Errorf("strict rule: %v", err)
 	}
 	// A column that is not a wildcard may be named with these characters on an engine that quotes.

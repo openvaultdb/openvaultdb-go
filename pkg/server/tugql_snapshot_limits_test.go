@@ -43,55 +43,55 @@ func snapshotLimitsDB(t *testing.T) *core.Database {
 	return db
 }
 
-func TestDTQLSnapshotLimitsRefuseResultOverConfiguredBytes(t *testing.T) {
+func TestTugQLSnapshotLimitsRefuseResultOverConfiguredBytes(t *testing.T) {
 	db := snapshotLimitsDB(t)
 	url := func(opts ...server.Option) string {
 		srv := server.New("test", map[string]*core.Database{"big": db}, opts...)
 		t.Cleanup(srv.CloseSnapshots)
 		ts := httptest.NewServer(srv.Handler())
 		t.Cleanup(ts.Close)
-		return ts.URL + "/v1/databases/big/dtql"
+		return ts.URL + "/v1/databases/big/tugql"
 	}
 	doc := "from: {name: items}\norderBy: [{field: id}]\n"
 
 	limited := url(server.WithSnapshotLimits(server.SnapshotLimits{Slots: 2, Bytes: 1 << 20, Rows: 1_000_000}))
-	status, body := pagedDTQL(t, limited, doc, 10, "")
+	status, body := pagedTugQL(t, limited, doc, 10, "")
 	if status != http.StatusRequestEntityTooLarge || body["error"].(map[string]any)["code"] != "snapshot_too_large" {
 		t.Fatalf("limited server: %d %#v", status, body)
 	}
 
-	status, body = pagedDTQL(t, url(), doc, 10, "")
+	status, body = pagedTugQL(t, url(), doc, 10, "")
 	if status != http.StatusOK || body["snapshotToken"] == nil {
 		t.Fatalf("default server: %d", status)
 	}
 }
 
-func TestDTQLSnapshotLimitsRefuseResultOverConfiguredRows(t *testing.T) {
+func TestTugQLSnapshotLimitsRefuseResultOverConfiguredRows(t *testing.T) {
 	db := snapshotLimitsDB(t)
 	srv := server.New("test", map[string]*core.Database{"big": db},
 		server.WithSnapshotLimits(server.SnapshotLimits{Slots: 2, Bytes: 512 << 20, Rows: 5}))
 	defer srv.CloseSnapshots()
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
-	status, body := pagedDTQL(t, ts.URL+"/v1/databases/big/dtql", "from: {name: items}\n", 10, "")
+	status, body := pagedTugQL(t, ts.URL+"/v1/databases/big/tugql", "from: {name: items}\n", 10, "")
 	if status != http.StatusRequestEntityTooLarge || body["error"].(map[string]any)["code"] != "snapshot_too_large" {
 		t.Fatalf("row limit: %d %#v", status, body)
 	}
 }
 
-func TestDTQLSnapshotLimitsConfigureSlots(t *testing.T) {
+func TestTugQLSnapshotLimitsConfigureSlots(t *testing.T) {
 	db := snapshotLimitsDB(t)
 	srv := server.New("test", map[string]*core.Database{"big": db},
 		server.WithSnapshotLimits(server.SnapshotLimits{Slots: 1, Bytes: 512 << 20, Rows: 1_000_000}))
 	defer srv.CloseSnapshots()
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
-	url := ts.URL + "/v1/databases/big/dtql"
+	url := ts.URL + "/v1/databases/big/tugql"
 	doc := "from: {name: items}\n"
-	if status, _ := pagedDTQL(t, url, doc, 1, ""); status != http.StatusOK {
+	if status, _ := pagedTugQL(t, url, doc, 1, ""); status != http.StatusOK {
 		t.Fatalf("first snapshot: %d", status)
 	}
-	status, body := pagedDTQL(t, url, doc, 1, "")
+	status, body := pagedTugQL(t, url, doc, 1, "")
 	if status != http.StatusServiceUnavailable || body["error"].(map[string]any)["code"] != "snapshot_capacity" {
 		t.Fatalf("second snapshot: %d %#v", status, body)
 	}

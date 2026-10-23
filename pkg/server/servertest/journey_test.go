@@ -68,10 +68,10 @@ func fakeAPI(t *testing.T) *httptest.Server {
 			_, _ = io.WriteString(w, `{"records":[],"complete":false,"error":{"code":"query_budget_exceeded","message":"too many rows"}}`)
 		case doc.Where != nil && doc.Where.Left.Field == "b":
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = io.WriteString(w, `{"error":{"code":"invalid_dtql","message":"bytea"}}`)
+			_, _ = io.WriteString(w, `{"error":{"code":"invalid_tugql","message":"bytea"}}`)
 		case doc.Where != nil && doc.Where.Left.Field == "id" && string(doc.Where.Right.Value) != "1" && string(doc.Where.Right.Value) != "9007199254740993":
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = io.WriteString(w, `{"error":{"code":"invalid_dtql","message":"not an integer"}}`)
+			_, _ = io.WriteString(w, `{"error":{"code":"invalid_tugql","message":"not an integer"}}`)
 		case doc.Where != nil && doc.Where.Left.Field == "x":
 			// plain: a bad integer is wrongly answered, and the sample matches nothing.
 			_, _ = io.WriteString(w, `{"records":[],"complete":true}`)

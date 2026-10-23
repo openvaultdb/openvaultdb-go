@@ -91,7 +91,7 @@ func quotedSrcRows(executor dal.QueryExecutor, query dal.StructuredQuery) ([]str
 	}
 }
 
-// quotedSrcDoc is a DTQL document of one collection, as written.
+// quotedSrcDoc is a TugQL document of one collection, as written.
 func quotedSrcDoc(name string) string {
 	return "from: {name: '" + strings.ReplaceAll(name, "'", "''") + "'}\n"
 }
@@ -121,7 +121,7 @@ func TestQueriesNameADeclaredCollectionByItsPublicNameOnly(t *testing.T) {
 	}
 	parse := func(doc string) dal.StructuredQuery {
 		t.Helper()
-		query, _, err := core.ParseDTQL([]byte(doc))
+		query, _, err := core.ParseTugQL([]byte(doc))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -137,26 +137,26 @@ func TestQueriesNameADeclaredCollectionByItsPublicNameOnly(t *testing.T) {
 	records, err := db.Execute(ctx, core.Query{Collection: quotedSrcPublic})
 	reads("Execute, public", quotedSrcNames(records), err)
 
-	// The DTQL document, as the root and in a subquery.
-	_, err = db.ExecuteDTQL(ctx, []byte(quotedSrcDoc(quotedSrcQuoted)))
-	notFound("ExecuteDTQL root, quoted", err)
-	records, err = db.ExecuteDTQL(ctx, []byte(quotedSrcDoc(quotedSrcPublic)))
-	reads("ExecuteDTQL root, public", quotedSrcNames(records), err)
-	_, err = db.ExecuteDTQL(ctx, []byte(subquery(quotedSrcQuoted)))
-	notFound("ExecuteDTQL subquery, quoted", err)
-	records, err = db.ExecuteDTQL(ctx, []byte(subquery(quotedSrcPublic)))
-	reads("ExecuteDTQL subquery, public", quotedSrcNames(records), err)
+	// The TugQL document, as the root and in a subquery.
+	_, err = db.ExecuteTugQL(ctx, []byte(quotedSrcDoc(quotedSrcQuoted)))
+	notFound("ExecuteTugQL root, quoted", err)
+	records, err = db.ExecuteTugQL(ctx, []byte(quotedSrcDoc(quotedSrcPublic)))
+	reads("ExecuteTugQL root, public", quotedSrcNames(records), err)
+	_, err = db.ExecuteTugQL(ctx, []byte(subquery(quotedSrcQuoted)))
+	notFound("ExecuteTugQL subquery, quoted", err)
+	records, err = db.ExecuteTugQL(ctx, []byte(subquery(quotedSrcPublic)))
+	reads("ExecuteTugQL subquery, public", quotedSrcNames(records), err)
 
 	// The snapshot stream.
 	var streamed []core.Record
 	collect := func(rec core.Record) error { streamed = append(streamed, rec); return nil }
-	notFound("StreamDTQLSnapshot, quoted", db.StreamDTQLSnapshot(ctx, parse(quotedSrcDoc(quotedSrcQuoted)), collect))
-	notFound("StreamDTQLSnapshot subquery, quoted", db.StreamDTQLSnapshot(ctx, parse(subquery(quotedSrcQuoted)), collect))
+	notFound("StreamTugQLSnapshot, quoted", db.StreamTugQLSnapshot(ctx, parse(quotedSrcDoc(quotedSrcQuoted)), collect))
+	notFound("StreamTugQLSnapshot subquery, quoted", db.StreamTugQLSnapshot(ctx, parse(subquery(quotedSrcQuoted)), collect))
 	if len(streamed) != 0 {
 		t.Errorf("a refused snapshot emitted %v", quotedSrcNames(streamed))
 	}
-	err = db.StreamDTQLSnapshot(ctx, parse(quotedSrcDoc(quotedSrcPublic)), collect)
-	reads("StreamDTQLSnapshot, public", quotedSrcNames(streamed), err)
+	err = db.StreamTugQLSnapshot(ctx, parse(quotedSrcDoc(quotedSrcPublic)), collect)
+	reads("StreamTugQLSnapshot, public", quotedSrcNames(streamed), err)
 
 	// The access sample.
 	_, _, err = db.SelectAccessSample(ctx, parse(quotedSrcDoc(quotedSrcQuoted)), 1, access.Principal{})
@@ -167,7 +167,7 @@ func TestQueriesNameADeclaredCollectionByItsPublicNameOnly(t *testing.T) {
 	// The join source: Executor and the executor of a read transaction, with
 	// the quoted spelling as the root, as a joined source and in a subquery.
 	join := func(name string) dal.StructuredQuery {
-		return mustDTQL(t, "from: {name: '"+quotedSrcPublic+"', alias: a, joins: [{from: {name: '"+strings.ReplaceAll(name, "'", "''")+"', alias: b}, on: [{op: '==', left: {field: id, source: a}, right: {field: id, source: b}}]}]}\ncolumns: [{field: name, source: a}]\n")
+		return mustTugQL(t, "from: {name: '"+quotedSrcPublic+"', alias: a, joins: [{from: {name: '"+strings.ReplaceAll(name, "'", "''")+"', alias: b}, on: [{op: '==', left: {field: id, source: a}, right: {field: id, source: b}}]}]}\ncolumns: [{field: name, source: a}]\n")
 	}
 	for label, executor := range map[string]func(func(dal.QueryExecutor) error) error{
 		"Executor": func(f func(dal.QueryExecutor) error) error { return f(db.Executor()) },

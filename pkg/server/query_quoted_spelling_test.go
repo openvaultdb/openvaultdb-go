@@ -36,7 +36,7 @@ func TestQueryRoutesNameADeclaredCollectionByItsPublicNameOnly(t *testing.T) {
 		out, _ := json.Marshal(map[string]string{"collection": collection})
 		return string(out)
 	}
-	dtql := func(collection string) string { return "from: {name: '" + collection + "'}\n" }
+	tugql := func(collection string) string { return "from: {name: '" + collection + "'}\n" }
 	inSubquery := func(collection string) string {
 		return "from: {name: '" + publicName + "'}\nwhere: {exists: {query: {from: {name: '" + collection + "'}}}}\n"
 	}
@@ -47,13 +47,13 @@ func TestQueryRoutesNameADeclaredCollectionByItsPublicNameOnly(t *testing.T) {
 	documents := func(document func(string) string) []route {
 		return []route{
 			{"GET", func(c string) guardCall {
-				return guardCall{method: "GET", path: "/v1/databases/dev/dtql?q=" + url.QueryEscape(document(c))}
+				return guardCall{method: "GET", path: "/v1/databases/dev/tugql?q=" + url.QueryEscape(document(c))}
 			}},
 			{"POST", func(c string) guardCall {
-				return guardCall{method: "POST", path: "/v1/databases/dev/dtql", body: document(c)}
+				return guardCall{method: "POST", path: "/v1/databases/dev/tugql", body: document(c)}
 			}},
 			{"snapshot page", func(c string) guardCall {
-				return guardCall{method: "POST", path: "/v1/databases/dev/dtql", body: document(c), headers: map[string]string{"OVDB-Page-Size": "10"}}
+				return guardCall{method: "POST", path: "/v1/databases/dev/tugql", body: document(c), headers: map[string]string{"OVDB-Page-Size": "10"}}
 			}},
 		}
 	}
@@ -64,7 +64,7 @@ func TestQueryRoutesNameADeclaredCollectionByItsPublicNameOnly(t *testing.T) {
 		{"query POST", func(c string) guardCall {
 			return guardCall{method: "POST", path: "/v1/databases/dev/query", body: wire(c)}
 		}},
-	}, documents(dtql)...)
+	}, documents(tugql)...)
 	for _, token := range []string{ownerToken, quotedGrantToken} {
 		withToken := func(call guardCall) guardCall {
 			headers := map[string]string{"Authorization": "Bearer " + token}

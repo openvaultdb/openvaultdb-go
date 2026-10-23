@@ -56,8 +56,8 @@ panics is reported as failed. A required spec that fails fails the call: the
 specs not yet started are skipped (`mount.ErrMountSkipped`) and what was mounted
 is closed.
 
-Database metadata advertises `capabilities.dtql: true` and
-`capabilities.query: false` and `capabilities.read: false` (keyed reads are not served). Native mounts support the catalog-backed DTQL
+Database metadata advertises `capabilities.tugql: true` and
+`capabilities.query: false` and `capabilities.read: false` (keyed reads are not served). Native mounts support the catalog-backed TugQL
 read surface; the legacy `/query` endpoint requires OVDB record keys and is
 answered with `501 query_unsupported`.
 
@@ -104,7 +104,7 @@ db, err := mount.FileWithOptions(manifestPath, mount.Options{
 
 The filter applies only to native read-only PostgreSQL mounts. The omitted
 relation is not described or included in database metadata, and its encoded
-collection ID and schema-qualified DTQL source are both rejected before the
+collection ID and schema-qualified TugQL source are both rejected before the
 provider query. Matching is exact and schema-qualified; a same-named relation
 in another schema remains available. An empty exclusion list preserves the
 existing expose-all behavior. Consumers should keep their exclusions narrowly
@@ -112,7 +112,7 @@ scoped to their own internal or provenance relations.
 
 ## Structured reads
 
-Use the original physical names in schema-qualified DTQL. OVDB first resolves
+Use the original physical names in schema-qualified TugQL. OVDB first resolves
 the exact `(schema, name)` pair against the discovered catalog, then passes the
 resolved relation to the PostgreSQL driver. Names are separately quoted by the
 driver; request text is never concatenated into SQL.
@@ -155,7 +155,7 @@ above 2^53−1; clients that need exact nested JSON numbers must use a lossless
 JSON parser. Binary values are returned as base64 JSON strings. DATE is encoded
 as `YYYY-MM-DD`, timestamp without time zone as a local timestamp without an
 offset, and timestamp with time zone as a UTC RFC3339 value. Filters,
-projections, ordering, and other DTQL operations
+projections, ordering, and other TugQL operations
 are limited to the structured forms supported by the installed DALgo PostgreSQL
 adapter; this mount does not expose arbitrary SQL.
 
@@ -169,7 +169,7 @@ adapter; this mount does not expose arbitrary SQL.
 - On a `smallint`, `integer` or `bigint` column compared with `==`, `In` or
   `NotIn`, a value must be a whole number the column can hold. A fraction
   (`1.5`), a number outside the column's range (`2^70`, or `40000` on a
-  smallint), and a boolean are refused with `400 invalid_dtql`, as text that is
+  smallint), and a boolean are refused with `400 invalid_tugql`, as text that is
   not an integer (`'abc'`, `'1e3'`) already is by PostgreSQL. PostgreSQL would
   otherwise compare such a value as a numeric and silently match no row (or, for
   `NotIn`, every row).
@@ -181,7 +181,7 @@ adapter; this mount does not expose arbitrary SQL.
   hold it, it is a 400.
 - A `bytea` column cannot be compared with a value: the column is returned as
   base64 text, and comparing it with that text would compare the bytes with the
-  bytes of the text. Such a filter is refused with `400 invalid_dtql`. A bytea
+  bytes of the text. Such a filter is refused with `400 invalid_tugql`. A bytea
   column can still be projected and ordered by.
 
 ### Paging
@@ -212,6 +212,6 @@ endpoints and mutation APIs are unsupported. A collection with no primary key
 can still be queried as rows. Composite and keyless tables do not receive a
 synthetic record ID, and this profile does not provide point reads. Names that
 are safely representable as quoted PostgreSQL field names, including spaces,
-can be used in relational DTQL; the exact discovered field catalog is still
+can be used in relational TugQL; the exact discovered field catalog is still
 checked before the query reaches the driver. Names that violate that quoted-name
 rule remain visible as metadata but cannot be used as query fields.

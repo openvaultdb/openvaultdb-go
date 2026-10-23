@@ -62,7 +62,7 @@ func TestQueryCollectionsRefusesASourceThatIsNotAPlainRootCollection(t *testing.
 			"subquery": withExists("customers", selectQuery(fromTree(source).NewQuery())),
 		} {
 			got, err := QueryCollections(query)
-			if !errors.Is(err, ErrInvalidDTQL) || got != nil {
+			if !errors.Is(err, ErrInvalidTugQL) || got != nil {
 				t.Errorf("%s %s: got %v, %v", label, position, got, err)
 			}
 		}
@@ -74,7 +74,7 @@ func TestQueryCollectionsRefusesASourceThatIsNotAPlainRootCollection(t *testing.
 func TestQueryCollectionsFailsClosedOnShapesItDoesNotKnow(t *testing.T) {
 	for label, query := range srcGuardWalkerCases() {
 		got, err := QueryCollections(query)
-		if !errors.Is(err, ErrInvalidDTQL) || got != nil {
+		if !errors.Is(err, ErrInvalidTugQL) || got != nil {
 			t.Errorf("%s: got %v, %v", label, got, err)
 		}
 	}

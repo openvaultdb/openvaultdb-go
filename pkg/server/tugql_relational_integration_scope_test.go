@@ -15,7 +15,7 @@ import (
 // directory in partial mode, which declares only some of its fields and so supplies
 // none. The documents carry an EXISTS test, which puts them on the in-memory
 // evaluation that binds unqualified fields (a join document without a subquery is
-// refused by the DTQL parser before it reaches the engine, for the same reason).
+// refused by the TugQL parser before it reaches the engine, for the same reason).
 // The helpers of this file all start with relInt so they cannot clash with the others
 // of the package.
 
@@ -64,13 +64,13 @@ func relIntScopeServer(t *testing.T) string {
 
 func relIntScopeColumns(columns string) string { return relIntScopeJoin + "columns: " + columns + "\n" }
 
-// relIntScopeRefused requires the 400 invalid_dtql of a scope refusal that names the
+// relIntScopeRefused requires the 400 invalid_tugql of a scope refusal that names the
 // field, says what the caller can do about it and repeats nothing else of the document.
 func relIntScopeRefused(t *testing.T, resp relHTTPResponse, field string, says ...string) {
 	t.Helper()
 	message := resp.errorField("message")
-	if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || resp.body["records"] != nil || resp.body["execution"] != nil {
-		t.Fatalf("status %d, want a 400 invalid_dtql with no rows: %s", resp.status, resp.raw)
+	if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" || resp.body["records"] != nil || resp.body["execution"] != nil {
+		t.Fatalf("status %d, want a 400 invalid_tugql with no rows: %s", resp.status, resp.raw)
 	}
 	if !strings.HasPrefix(message, "scope at ") || !strings.Contains(message, "unqualified field "+field) {
 		t.Fatalf("the message does not name the field %s as a scope refusal: %s", field, resp.raw)
@@ -91,10 +91,10 @@ func relIntScopeRefused(t *testing.T, resp relHTTPResponse, field string, says .
 // qualified is answered, and so is one with a name only one table carries.
 func TestAnUnqualifiedFieldTwoSQLiteMountsCarryIsRefusedAndTheQualifiedOneIsAnswered(t *testing.T) {
 	base := relIntScopeServer(t)
-	refused := relHTTPPost(t, base, "/v1/dtql", "", relIntScopeColumns("[{field: city}]"))
+	refused := relHTTPPost(t, base, "/v1/tugql", "", relIntScopeColumns("[{field: city}]"))
 	relIntScopeRefused(t, refused, "city", "ambiguous")
 
-	answered := relHTTPPost(t, base, "/v1/dtql", "", relIntScopeColumns("[{field: city, source: p, as: home}, {field: city, source: o, as: shipped}]"))
+	answered := relHTTPPost(t, base, "/v1/tugql", "", relIntScopeColumns("[{field: city, source: p, as: home}, {field: city, source: o, as: shipped}]"))
 	relIntRowsAre(t, answered, []map[string]any{{"home": "Leeds", "shipped": "York"}, {"home": "Cork", "shipped": "Cork"}})
 	if answered.execution(t)["route"] != "in-memory" {
 		t.Fatalf("execution = %v", answered.execution(t))
@@ -102,11 +102,11 @@ func TestAnUnqualifiedFieldTwoSQLiteMountsCarryIsRefusedAndTheQualifiedOneIsAnsw
 
 	// The field only the orders carry, and the field only the people carry, are bound to
 	// their own source.
-	unique := relHTTPPost(t, base, "/v1/dtql", "", relIntScopeColumns("[{field: total}, {field: name}]"))
+	unique := relHTTPPost(t, base, "/v1/tugql", "", relIntScopeColumns("[{field: total}, {field: name}]"))
 	relIntRowsAre(t, unique, []map[string]any{{"total": "10", "name": "Ada"}, {"total": "20", "name": "Bea"}})
 
 	// The key column is a column of each table, so the name of the key is ambiguous too.
-	key := relHTTPPost(t, base, "/v1/dtql", "", relIntScopeColumns("[{field: id}]"))
+	key := relHTTPPost(t, base, "/v1/tugql", "", relIntScopeColumns("[{field: id}]"))
 	relIntScopeRefused(t, key, "id", "ambiguous")
 }
 
@@ -121,7 +121,7 @@ func TestAnAmbiguousUnqualifiedFieldIsRefusedInEveryClause(t *testing.T) {
 		"ORDER BY": strings.Replace(relIntScopeJoin, "orderBy: [{field: id, source: o}]", "orderBy: [{field: city}]", 1) + ok,
 	} {
 		t.Run(name, func(t *testing.T) {
-			relIntScopeRefused(t, relHTTPPost(t, base, "/v1/dtql", "", doc), "city", "ambiguous")
+			relIntScopeRefused(t, relHTTPPost(t, base, "/v1/tugql", "", doc), "city", "ambiguous")
 		})
 	}
 }
@@ -129,7 +129,7 @@ func TestAnAmbiguousUnqualifiedFieldIsRefusedInEveryClause(t *testing.T) {
 // A wildcard stands for the columns of its table, in memory too.
 func TestAWildcardIsExpandedInMemoryFromTheColumnsOfTheTable(t *testing.T) {
 	base := relIntScopeServer(t)
-	resp := relHTTPPost(t, base, "/v1/dtql", "", relIntScopeColumns("[{wildcard: {source: p, exclude: [city]}}, {field: total, source: o}]"))
+	resp := relHTTPPost(t, base, "/v1/tugql", "", relIntScopeColumns("[{wildcard: {source: p, exclude: [city]}}, {field: total, source: o}]"))
 	relIntRowsAre(t, resp, []map[string]any{
 		{"id": "p1", "name": "Ada", "total": "10"},
 		{"id": "p2", "name": "Bea", "total": "20"},
@@ -137,7 +137,7 @@ func TestAWildcardIsExpandedInMemoryFromTheColumnsOfTheTable(t *testing.T) {
 	if resp.execution(t)["route"] != "in-memory" {
 		t.Fatalf("execution = %v", resp.execution(t))
 	}
-	excluded := relHTTPPost(t, base, "/v1/dtql", "", relIntScopeColumns("[{wildcard: {source: o, exclude: [id, person_id]}}]"))
+	excluded := relHTTPPost(t, base, "/v1/tugql", "", relIntScopeColumns("[{wildcard: {source: o, exclude: [id, person_id]}}]"))
 	relIntRowsAre(t, excluded, []map[string]any{{"city": "York", "total": "10"}, {"city": "Cork", "total": "20"}})
 }
 
@@ -152,7 +152,7 @@ func TestAnUnqualifiedFieldOfAQueryThatReadsAMountWithoutFieldListsIsRefused(t *
 		"    - {op: '>', left: {field: id, source: p}, right: {value: " + relIntScopeMarker + "}}\n" +
 		"    - exists: {query: {from: {database: crm, name: Person, alias: x}}}\n" +
 		"orderBy: [{field: id, source: p}]\n"
-	refused := relHTTPPost(t, base, "/v1/dtql", "", join+"columns: [{field: mood}]\n")
+	refused := relHTTPPost(t, base, "/v1/tugql", "", join+"columns: [{field: mood}]\n")
 	relIntScopeRefused(t, refused, "mood", "qualify")
 	if strings.Contains(refused.errorField("message"), "ambiguous") {
 		t.Fatalf("a mount without field lists is not an ambiguity: %s", refused.raw)
@@ -160,11 +160,11 @@ func TestAnUnqualifiedFieldOfAQueryThatReadsAMountWithoutFieldListsIsRefused(t *
 
 	// The name only crm carries is refused as well: without the list of notes the
 	// engine cannot tell it is not one of its fields.
-	if name := relHTTPPost(t, base, "/v1/dtql", "", join+"columns: [{field: name}]\n"); name.status != http.StatusBadRequest {
+	if name := relHTTPPost(t, base, "/v1/tugql", "", join+"columns: [{field: name}]\n"); name.status != http.StatusBadRequest {
 		t.Fatalf("status %d: %s", name.status, name.raw)
 	}
 
-	answered := relHTTPPost(t, base, "/v1/dtql", "", join+"columns: [{field: name, source: p}, {field: mood, source: n}]\n")
+	answered := relHTTPPost(t, base, "/v1/tugql", "", join+"columns: [{field: name, source: p}, {field: mood, source: n}]\n")
 	relIntRowsAre(t, answered, []map[string]any{{"name": "Ada", "mood": "calm"}, {"name": "Bea", "mood": "busy"}})
 }
 
@@ -173,8 +173,8 @@ func TestAnUnqualifiedFieldOfAQueryThatReadsAMountWithoutFieldListsIsRefused(t *
 func TestTheDocumentsOfASingleSourceAreUntouched(t *testing.T) {
 	base := relIntScopeServer(t)
 	for path, doc := range map[string]string{
-		"/v1/databases/shop/dtql": "from: {name: Orders}\norderBy: [{field: id}]\ncolumns: [{field: total}, {field: city}]\n",
-		"/v1/dtql":                "from: {database: notes, name: Note}\norderBy: [{field: person_id}]\ncolumns: [{field: mood}]\n",
+		"/v1/databases/shop/tugql": "from: {name: Orders}\norderBy: [{field: id}]\ncolumns: [{field: total}, {field: city}]\n",
+		"/v1/tugql":                "from: {database: notes, name: Note}\norderBy: [{field: person_id}]\ncolumns: [{field: mood}]\n",
 	} {
 		resp := relHTTPPost(t, base, path, "", doc)
 		if resp.status != http.StatusOK || len(resp.rows(t)) != 2 {
@@ -188,7 +188,7 @@ func TestTheDocumentsOfASingleSourceAreUntouched(t *testing.T) {
 // reports, on both engines and both endpoints, and not a refusal for want of lists.
 func TestTheAmbiguousFieldOfTheScopeFixtureIsNamedOnBothEngines(t *testing.T) {
 	dalgo := relIntDalgoDir(t)
-	dir := filepath.Join(dalgo, "dtql", "testdata", "subqueries")
+	dir := filepath.Join(dalgo, "tugql", "testdata", "subqueries")
 	set := relIntLoadSet(t, filepath.Join(dir, "schema.json"), filepath.Join(dir, "dataset.json"))
 	mounts := map[string]*core.Database{}
 	for _, engine := range relIntEngines {
@@ -206,11 +206,11 @@ func TestTheAmbiguousFieldOfTheScopeFixtureIsNamedOnBothEngines(t *testing.T) {
 	}
 	for _, engine := range relIntEngines {
 		for _, endpoint := range []struct{ path, database string }{
-			{"/v1/databases/" + engine.id + "/dtql", ""},
-			{"/v1/dtql", engine.id},
+			{"/v1/databases/" + engine.id + "/tugql", ""},
+			{"/v1/tugql", engine.id},
 		} {
 			resp := relHTTPPost(t, base, endpoint.path, "", string(relIntRewrite(t, doc, endpoint.database)))
-			if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" || !strings.Contains(resp.errorField("message"), "scope at columns[0]: ambiguous unqualified field CustomerId") {
+			if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" || !strings.Contains(resp.errorField("message"), "scope at columns[0]: ambiguous unqualified field CustomerId") {
 				t.Fatalf("%s on %s: %s", endpoint.path, engine.name, relIntDescribe(resp))
 			}
 		}
@@ -225,7 +225,7 @@ func TestAnAmbiguousFieldNameIsClippedInTheRefusal(t *testing.T) {
 	shop := relHTTPMount(t, "shop", "", map[string][]string{"Orders": {"id", "person_id", long}},
 		`CREATE TABLE "Orders" ("id" TEXT PRIMARY KEY, "person_id" TEXT, "`+long+`" TEXT)`, `INSERT INTO "Orders" VALUES ('o1', 'p1', 'b')`)
 	base := relIntServe(t, map[string]*core.Database{"crm": crm, "shop": shop})
-	resp := relHTTPPost(t, base, "/v1/dtql", "", relIntScopeColumns("[{field: "+long+"}]"))
+	resp := relHTTPPost(t, base, "/v1/tugql", "", relIntScopeColumns("[{field: "+long+"}]"))
 	message := resp.errorField("message")
 	if resp.status != http.StatusBadRequest || !strings.Contains(message, "ambiguous unqualified field "+strings.Repeat("f", 50)) || len(message) > 256+len("...") || !strings.HasSuffix(message, "...") {
 		t.Fatalf("status %d, message length %d: %s", resp.status, len(message), resp.raw)

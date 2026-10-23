@@ -14,7 +14,7 @@ import (
 	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/dalgo/dbschema"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 	"github.com/dal-go/dalgo2http"
 	"github.com/dal-go/record"
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
@@ -76,10 +76,10 @@ func TestAccessPlanAndDiscoveryCoverageBatch11(t *testing.T) {
 	}
 	recPlan := httptest.NewRecorder()
 	reqPlan := httptest.NewRequest(http.MethodPost, "/v1/databases/plan_b11/access/evaluate", strings.NewReader(`{
-		"apiVersion": "dtql.org/authorization/v1",
+		"apiVersion": "tugql.org/authorization/v1",
 		"mode": "plan",
 		"diagnosticLevel": "ordinary",
-		"operations": [{"id": "op1", "action": "get", "executionClass": "dtql", "resource": {"databaseId": "plan_b11", "path": "/users", "table": "users"}}]
+		"operations": [{"id": "op1", "action": "get", "executionClass": "tugql", "resource": {"databaseId": "plan_b11", "path": "/users", "table": "users"}}]
 	}`))
 	reqPlan.SetPathValue("db", "plan_b11")
 	srv.handleAccessEvaluate(recPlan, reqPlan)
@@ -139,24 +139,24 @@ func (mockPrivatePolicy) PolicyMetadata() access.PolicyMetadata {
 	}
 }
 
-func TestDTQLAndPagesCoverageBatch11(t *testing.T) {
-	// Not parallel: modifies singleRights, snapshotTimerAfterFunc, finishRelationalStream, createSnapshotTemp, streamDTQLQuery
+func TestTugQLAndPagesCoverageBatch11(t *testing.T) {
+	// Not parallel: modifies singleRights, snapshotTimerAfterFunc, finishRelationalStream, createSnapshotTemp, streamTugQLQuery
 	oldSingle := singleRights
 	oldTimer := snapshotTimerAfterFunc
 	oldRelFinish := finishRelationalStream
 	oldTemp := createSnapshotTemp
-	oldStreamDTQL := streamDTQLQuery
+	oldStreamTugQL := streamTugQLQuery
 	defer func() {
 		singleRights = oldSingle
 		snapshotTimerAfterFunc = oldTimer
 		finishRelationalStream = oldRelFinish
 		createSnapshotTemp = oldTemp
-		streamDTQLQuery = oldStreamDTQL
+		streamTugQLQuery = oldStreamTugQL
 	}()
 
 	pgUsersID, _ := schema.NativePostgresCollectionID("public", "users")
 	mPG := &manifest.Manifest{
-		Database: manifest.Database{ID: "dtql_pg_b11", SchemaMode: schema.ModeStrict},
+		Database: manifest.Database{ID: "tugql_pg_b11", SchemaMode: schema.ModeStrict},
 		Storage:  manifest.Storage{Engine: "postgres", Postgres: &manifest.PostgresOptions{ReadOnly: true}},
 		Schemas: &schema.Schemas{
 			Collections: map[string]schema.Collection{
@@ -171,40 +171,40 @@ func TestDTQLAndPagesCoverageBatch11(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srvPG := New("test", map[string]*core.Database{"dtql_pg_b11": dbPG})
+	srvPG := New("test", map[string]*core.Database{"tugql_pg_b11": dbPG})
 	defer srvPG.CloseSnapshots()
 
-	// 1. dtql.go: line 62-64: providerRequestRestricted with invalid query -> refuseProviderRequest
+	// 1. tugql.go: line 62-64: providerRequestRestricted with invalid query -> refuseProviderRequest
 	srvPG.providerProfilesByDB[dbPG] = ProviderReadProfile{
 		Collection:     "orders",
 		RequestProfile: ECBPublicFreeRequestProfile,
 	}
 	rec62 := httptest.NewRecorder()
-	req62 := httptest.NewRequest(http.MethodPost, "/v1/databases/dtql_pg_b11/dtql", strings.NewReader("from:\n  name: users\nlimit: 10\n"))
-	req62.SetPathValue("db", "dtql_pg_b11")
-	srvPG.handleDTQL(rec62, req62)
+	req62 := httptest.NewRequest(http.MethodPost, "/v1/databases/tugql_pg_b11/tugql", strings.NewReader("from:\n  name: users\nlimit: 10\n"))
+	req62.SetPathValue("db", "tugql_pg_b11")
+	srvPG.handleTugQL(rec62, req62)
 	if rec62.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("expected 422 on refused provider request, got %d", rec62.Code)
 	}
 	delete(srvPG.providerProfilesByDB, dbPG)
 
-	// 2. dtql.go: lines 115-117: NativePostgresReadOnly row emission
-	streamDTQLQuery = func(db *core.Database, ctx context.Context, query dal.StructuredQuery, emit func(core.Record) error) error {
+	// 2. tugql.go: lines 115-117: NativePostgresReadOnly row emission
+	streamTugQLQuery = func(db *core.Database, ctx context.Context, query dal.StructuredQuery, emit func(core.Record) error) error {
 		return emit(core.Record{
 			Key:  record.NewKeyWithID(pgUsersID, "1"),
 			Data: map[string]any{"name": "Alice"},
 		})
 	}
 	rec115 := httptest.NewRecorder()
-	req115 := httptest.NewRequest(http.MethodPost, "/v1/databases/dtql_pg_b11/dtql", strings.NewReader("from:\n  name: "+pgUsersID+"\n"))
-	req115.SetPathValue("db", "dtql_pg_b11")
-	srvPG.handleDTQL(rec115, req115)
+	req115 := httptest.NewRequest(http.MethodPost, "/v1/databases/tugql_pg_b11/tugql", strings.NewReader("from:\n  name: "+pgUsersID+"\n"))
+	req115.SetPathValue("db", "tugql_pg_b11")
+	srvPG.handleTugQL(rec115, req115)
 	if rec115.Code != http.StatusOK {
-		t.Fatalf("expected 200 on native postgres dtql query, got %d, body: %s", rec115.Code, rec115.Body.String())
+		t.Fatalf("expected 200 on native postgres tugql query, got %d, body: %s", rec115.Code, rec115.Body.String())
 	}
-	streamDTQLQuery = oldStreamDTQL
+	streamTugQLQuery = oldStreamTugQL
 
-	// 3. dtql.go: lines 146-153: rightsErr with policies
+	// 3. tugql.go: lines 146-153: rightsErr with policies
 	mPol := &manifest.Manifest{
 		Database: manifest.Database{ID: "rights_b11", SchemaMode: schema.ModeStrict},
 		Storage:  manifest.Storage{Engine: "sqlite", Path: ":memory:"},
@@ -220,90 +220,90 @@ func TestDTQLAndPagesCoverageBatch11(t *testing.T) {
 
 	// stream.started == true (1 row written before rightsErr)
 	rec146 := httptest.NewRecorder()
-	req146 := httptest.NewRequest(http.MethodPost, "/v1/databases/rights_b11/dtql", strings.NewReader("from:\n  name: users\n"))
+	req146 := httptest.NewRequest(http.MethodPost, "/v1/databases/rights_b11/tugql", strings.NewReader("from:\n  name: users\n"))
 	req146.SetPathValue("db", "rights_b11")
 	req146.Header.Set("Accept", queryErrorStreamMediaType)
-	srvPol.handleDTQL(rec146, req146)
+	srvPol.handleTugQL(rec146, req146)
 
 	// stream.started == false (0 rows written before rightsErr)
 	dbEmpty, _ := core.Open(mPol, emptyQueryDB{}, []schema.Mode{schema.ModeStrict}, "", mockAllowPolicy{})
 	srvEmpty := New("test", map[string]*core.Database{"rights_b11": dbEmpty})
 	defer srvEmpty.CloseSnapshots()
 	rec150 := httptest.NewRecorder()
-	req150 := httptest.NewRequest(http.MethodPost, "/v1/databases/rights_b11/dtql", strings.NewReader("from:\n  name: users\n"))
+	req150 := httptest.NewRequest(http.MethodPost, "/v1/databases/rights_b11/tugql", strings.NewReader("from:\n  name: users\n"))
 	req150.SetPathValue("db", "rights_b11")
-	srvEmpty.handleDTQL(rec150, req150)
+	srvEmpty.handleTugQL(rec150, req150)
 	if rec150.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("expected 422 on unstarted rights error, got %d", rec150.Code)
 	}
 	singleRights = oldSingle
 
-	// 4. dtql.go: lines 156-157: stream.errorCompletion with 0 rows -> Cache-Control: no-store
+	// 4. tugql.go: lines 156-157: stream.errorCompletion with 0 rows -> Cache-Control: no-store
 	rec156 := httptest.NewRecorder()
-	req156 := httptest.NewRequest(http.MethodPost, "/v1/databases/rights_b11/dtql", strings.NewReader("from:\n  name: users\n"))
+	req156 := httptest.NewRequest(http.MethodPost, "/v1/databases/rights_b11/tugql", strings.NewReader("from:\n  name: users\n"))
 	req156.SetPathValue("db", "rights_b11")
 	req156.Header.Set("Accept", queryErrorStreamMediaType)
-	srvEmpty.handleDTQL(rec156, req156)
+	srvEmpty.handleTugQL(rec156, req156)
 	if rec156.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("expected Cache-Control: no-store, got %s", rec156.Header().Get("Cache-Control"))
 	}
 
-	// 5. dtql_pages.go: line 193-195: core.QueryCollections error
+	// 5. tugql_pages.go: line 193-195: core.QueryCollections error
 	dbRet, _ := retentionFixture(t, "sqlite", "")
 	srvRet := New("test", map[string]*core.Database{dbRet.ID(): dbRet})
 	defer srvRet.CloseSnapshots()
 	qBad := dal.From(dal.NewQualifiedRootCollectionRef("public", "users", "")).NewQuery().SelectColumns()
 	rec193 := httptest.NewRecorder()
-	req193 := httptest.NewRequest(http.MethodPost, "/v1/databases/"+dbRet.ID()+"/dtql", nil)
+	req193 := httptest.NewRequest(http.MethodPost, "/v1/databases/"+dbRet.ID()+"/tugql", nil)
 	req193.Header.Set("OVDB-Page-Size", "10")
-	srvRet.handlePagedDTQL(rec193, req193, dbRet, qBad, []byte("query-with-schema"))
+	srvRet.handlePagedTugQL(rec193, req193, dbRet, qBad, []byte("query-with-schema"))
 	if rec193.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 on bad collection ref in pages, got %d", rec193.Code)
 	}
 
-	// 6. dtql_pages.go: line 241: snapshotTimerAfterFunc execution
+	// 6. tugql_pages.go: line 241: snapshotTimerAfterFunc execution
 	var timerExecuted atomic.Bool
 	snapshotTimerAfterFunc = func(d time.Duration, f func()) *time.Timer {
 		timerExecuted.Store(true)
 		go f()
 		return time.NewTimer(d)
 	}
-	qGood, _, _ := core.ParseDTQL([]byte("from:\n  name: orders\n"))
+	qGood, _, _ := core.ParseTugQL([]byte("from:\n  name: orders\n"))
 	rec241 := httptest.NewRecorder()
-	req241 := httptest.NewRequest(http.MethodPost, "/v1/databases/"+dbRet.ID()+"/dtql", nil)
+	req241 := httptest.NewRequest(http.MethodPost, "/v1/databases/"+dbRet.ID()+"/tugql", nil)
 	req241.Header.Set("OVDB-Page-Size", "10")
-	srvRet.handlePagedDTQL(rec241, req241, dbRet, qGood, []byte("from:\n  name: orders\n"))
+	srvRet.handlePagedTugQL(rec241, req241, dbRet, qGood, []byte("from:\n  name: orders\n"))
 	if !timerExecuted.Load() {
 		t.Fatalf("expected snapshotTimerAfterFunc callback to execute, status %d, body: %s", rec241.Code, rec241.Body.String())
 	}
 
-	// 7. dtql_pages.go: lines 291-295 & 304: spoolDTQL write & flush failure
+	// 7. tugql_pages.go: lines 291-295 & 304: spoolTugQL write & flush failure
 	dbLarge, _ := core.Open(mPol, dummyLargeRowSampleDB{}, []schema.Mode{schema.ModeStrict}, "")
-	qUsers, _, _ := core.ParseDTQL([]byte("from:\n  name: users\n"))
+	qUsers, _, _ := core.ParseTugQL([]byte("from:\n  name: users\n"))
 	createSnapshotTemp = func(dir string) (snapshotTempFile, error) {
 		return &mockSnapshotTempFile{writeErr: errors.New("write failed")}, nil
 	}
-	_, _, errSpool := spoolDTQL(context.Background(), dbLarge, qUsers, os.TempDir(), SnapshotLimits{Rows: 10, Bytes: 1 << 20}, 0)
+	_, _, errSpool := spoolTugQL(context.Background(), dbLarge, qUsers, os.TempDir(), SnapshotLimits{Rows: 10, Bytes: 1 << 20}, 0)
 	if errSpool == nil {
-		t.Fatal("expected error from spoolDTQL on write failure (large row)")
+		t.Fatal("expected error from spoolTugQL on write failure (large row)")
 	}
-	_, _, errSpoolFlush := spoolDTQL(context.Background(), dbPol, qUsers, os.TempDir(), SnapshotLimits{Rows: 10, Bytes: 1 << 20}, 0)
+	_, _, errSpoolFlush := spoolTugQL(context.Background(), dbPol, qUsers, os.TempDir(), SnapshotLimits{Rows: 10, Bytes: 1 << 20}, 0)
 	if errSpoolFlush == nil {
-		t.Fatal("expected error from spoolDTQL on flush failure")
+		t.Fatal("expected error from spoolTugQL on flush failure")
 	}
 
-	// dtql_pages.go: lines 294-295: WriteByte flush failure with exact 65536 byte row
+	// tugql_pages.go: lines 294-295: WriteByte flush failure with exact 65536 byte row
 	dbExact, _ := core.Open(mPol, dummyExactRowSampleDB{}, []schema.Mode{schema.ModeStrict}, "")
 	createSnapshotTemp = func(dir string) (snapshotTempFile, error) {
 		return &mockSnapshotByteFailFile{}, nil
 	}
-	_, _, errSpoolByte := spoolDTQL(context.Background(), dbExact, qUsers, os.TempDir(), SnapshotLimits{Rows: 10, Bytes: 1 << 20}, 0)
+	_, _, errSpoolByte := spoolTugQL(context.Background(), dbExact, qUsers, os.TempDir(), SnapshotLimits{Rows: 10, Bytes: 1 << 20}, 0)
 	if errSpoolByte == nil {
-		t.Fatal("expected error from spoolDTQL on WriteByte failure")
+		t.Fatal("expected error from spoolTugQL on WriteByte failure")
 	}
 	createSnapshotTemp = oldTemp
 
-	// 8. dtql_pages.go: lines 467-472: damaged snapshot (offset < snap.bytes but file truncated)
+	// 8. tugql_pages.go: lines 467-472: damaged snapshot (offset < snap.bytes but file truncated)
 	fDamaged, err := os.CreateTemp("", "damaged_snap_*.ndjson")
 	if err != nil {
 		t.Fatal(err)
@@ -333,7 +333,7 @@ func TestDTQLAndPagesCoverageBatch11(t *testing.T) {
 		t.Fatalf("expected 410 on damaged snapshot, got %d", rec467.Code)
 	}
 
-	// 9. dtql_relational.go: lines 298-299: finishRelationalStream error when stream.started == false and rights present
+	// 9. tugql_relational.go: lines 298-299: finishRelationalStream error when stream.started == false and rights present
 	finishRelationalStream = func(stream *jsonRowStream, footer map[string]any) error {
 		return errors.New("relational stream error")
 	}
@@ -363,14 +363,14 @@ func TestDTQLAndPagesCoverageBatch11(t *testing.T) {
 		return joinexec.StreamResult{Execution: joinexec.Execution{Sources: []joinexec.ExecutionSource{{Database: "rel_empty_b11", Collection: "users"}}}}, nil
 	}
 	rec298 := httptest.NewRecorder()
-	req298 := httptest.NewRequest(http.MethodPost, "/v1/databases/rel_empty_b11/dtql", nil)
+	req298 := httptest.NewRequest(http.MethodPost, "/v1/databases/rel_empty_b11/tugql", nil)
 	req298.SetPathValue("db", "rel_empty_b11")
-	srvRelEmpty.serveRelationalDTQL(rec298, req298, dbRelEmpty, dal.From(dal.NewRootCollectionRef("users", "")).NewQuery().SelectColumns(), core.Profile{Kind: core.ProfileRelational, Sources: []core.ProfileSource{{Collection: "users"}}})
+	srvRelEmpty.serveRelationalTugQL(rec298, req298, dbRelEmpty, dal.From(dal.NewRootCollectionRef("users", "")).NewQuery().SelectColumns(), core.Profile{Kind: core.ProfileRelational, Sources: []core.ProfileSource{{Collection: "users"}}})
 	if rec298.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500 on relational finish error unstarted, got %d, body: %s", rec298.Code, rec298.Body.String())
 	}
 
-	// dtql_exact_integers.go: lines 30-31: yamlMarshalExact error
+	// tugql_exact_integers.go: lines 30-31: yamlMarshalExact error
 	oldYAMLMarshal := yamlMarshalExact
 	defer func() { yamlMarshalExact = oldYAMLMarshal }()
 	yamlMarshalExact = func(any) ([]byte, error) { return nil, errors.New("forced yaml marshal error") }
@@ -716,11 +716,11 @@ func TestProviderReadsAndRequestCoverageBatch11(t *testing.T) {
 		t.Fatal("expected false for invalid child condition wire")
 	}
 
-	// 7. provider_request.go: lines 300-301: column with alias in validProviderDTQL
+	// 7. provider_request.go: lines 300-301: column with alias in validProviderTugQL
 	cRef := dal.NewRootCollectionRef("daily", "")
 	qColAlias := dal.From(cRef).NewQuery().Limit(10).SelectColumns(dal.Column{Expression: dal.Field("rate"), Alias: "aliased_col"})
-	if validProviderDTQL(dbHTTP, qColAlias, core.Profile{}, ECBPublicFreeRequestProfile) {
-		t.Fatal("expected false for column with alias in validProviderDTQL")
+	if validProviderTugQL(dbHTTP, qColAlias, core.Profile{}, ECBPublicFreeRequestProfile) {
+		t.Fatal("expected false for column with alias in validProviderTugQL")
 	}
 }
 

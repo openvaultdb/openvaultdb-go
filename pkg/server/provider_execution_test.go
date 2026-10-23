@@ -91,8 +91,8 @@ func TestProviderExecutionIndependentAdmission(t *testing.T) {
 	for _, route := range []struct{ path, query string }{
 		{"/v1/databases/ecb/query", `{"collection":"daily"}`},
 		{"/v1/databases/ecb/query", `{"collection":"daily","where":[{"field":"currency","op":"==","value":"ZZZ"}]}`},
-		{"/v1/databases/ecb/dtql", "from: {name: daily}\n"},
-		{"/v1/databases/ecb/dtql", "from: {name: daily}\nwhere: {op: '==', left: {field: currency}, right: {value: ZZZ}}\n"},
+		{"/v1/databases/ecb/tugql", "from: {name: daily}\n"},
+		{"/v1/databases/ecb/tugql", "from: {name: daily}\nwhere: {op: '==', left: {field: currency}, right: {value: ZZZ}}\n"},
 	} {
 		for _, method := range []string{"GET", "POST"} {
 			t.Run(method+route.path+route.query, func(t *testing.T) {
@@ -159,7 +159,7 @@ func TestProviderExecutionInvalidHeadersNeverRead(t *testing.T) {
 		"mixed-case-duplicate": {ProviderExecutionIDHeader: {admitted.Execution.ID}, "ovdb-execution-id": {admitted.Execution.ID}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			for _, route := range []struct{ path, query string }{{"/v1/databases/ecb/query", `{"collection":"daily"}`}, {"/v1/databases/ecb/dtql", "from: {name: daily}\n"}} {
+			for _, route := range []struct{ path, query string }{{"/v1/databases/ecb/query", `{"collection":"daily"}`}, {"/v1/databases/ecb/tugql", "from: {name: daily}\n"}} {
 				w := retentionRequest(s.Handler(), "POST", route.path, route.query, headers)
 				if w.Code != 400 || w.Header().Get("Cache-Control") != "no-store" || !strings.Contains(w.Body.String(), `"invalid_execution_id"`) {
 					t.Fatalf("response %d %s", w.Code, w.Body)

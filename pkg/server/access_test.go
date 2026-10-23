@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/dal-go/dalgo/access"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
@@ -20,7 +20,7 @@ import (
 )
 
 func accessPlanRequest(query string) string {
-	input := api.Request{APIVersion: az.APIVersion, Mode: az.ModePlan, DiagnosticLevel: "references", Operations: []api.Operation{{ID: "q1", Action: "query", Resource: az.Resource{DatabaseID: "crm", Path: "/customers"}, ExecutionClass: az.ExecutionDTQL, Query: &api.Query{Format: "dtql-yaml", Text: query}}}}
+	input := api.Request{APIVersion: az.APIVersion, Mode: az.ModePlan, DiagnosticLevel: "references", Operations: []api.Operation{{ID: "q1", Action: "query", Resource: az.Resource{DatabaseID: "crm", Path: "/customers"}, ExecutionClass: az.ExecutionClass("tugql"), Query: &api.Query{Format: "tugql-yaml", Text: query}}}}
 	data, _ := json.Marshal(input)
 	return string(data)
 }

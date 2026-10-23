@@ -90,11 +90,11 @@ func TestHTTPMountNativeLiveQuery(t *testing.T) {
 	if len(observations) != 1 || observations[0].SHA256 != fmt.Sprintf("%x", sha256.Sum256([]byte(httpSyntheticXML))) || observations[0].Bytes != len(httpSyntheticXML) || observations[0].UpstreamURL != manifest.ECBDailyURL || observations[0].ReferenceDate != "2037-02-03" || observations[0].BaseCurrency != "EUR" || observations[0].Source != dalgo2http.SourceLive {
 		t.Fatalf("observation: %+v", observations)
 	}
-	query, _, err := core.ParseDTQL([]byte("from: {name: daily}\ncolumns: [{field: rate}]\n"))
+	query, _, err := core.ParseTugQL([]byte("from: {name: daily}\ncolumns: [{field: rate}]\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	projected, err := db.ExecuteDTQLQuery(ctx, query)
+	projected, err := db.ExecuteTugQLQuery(ctx, query)
 	if err != nil || len(projected) != 2 || projected[0].Data["time"] != nil || projected[0].Data["rate"] != "001.23000" {
 		t.Fatalf("projection: %v, %v", projected, err)
 	}
@@ -126,12 +126,12 @@ func TestHTTPMountRefusesUnsupportedBeforeFetch(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, suffix := range []string{"offset: 1\n", "order_by: [{field: currency}]\n"} {
-		q, _, err := core.ParseDTQL([]byte("from: {name: daily}\n" + suffix))
+		q, _, err := core.ParseTugQL([]byte("from: {name: daily}\n" + suffix))
 		if err != nil {
 			continue
 		} // an unsupported syntax is also a pre-read refusal
-		if _, err = db.ExecuteDTQLQuery(ctx, q); err == nil {
-			t.Fatal("unsupported DTQL accepted")
+		if _, err = db.ExecuteTugQLQuery(ctx, q); err == nil {
+			t.Fatal("unsupported TugQL accepted")
 		}
 	}
 	fields, err := db.Executor().(dal.JoinFieldsProvider).JoinFields(ctx, dal.NewRootCollectionRef("daily", ""))

@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/dal-go/dalgo/access"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 	"github.com/dal-go/record"
 
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
@@ -222,11 +222,11 @@ func mustInspectionDatabase(t *testing.T) *core.Database {
 
 // updateRequest is a protected PATCH of the record a of the table t.
 func updateRequest(ctx context.Context) (*http.Request, *record.Key) {
-	op := api.Operation{ID: "op1", Action: "update", ExecutionClass: az.ExecutionDTQL, Resource: az.Resource{DatabaseID: "crm", Path: "/t/a"},
+	op := api.Operation{ID: "op1", Action: "update", ExecutionClass: executionTugQL, Resource: az.Resource{DatabaseID: "crm", Path: "/t/a"},
 		Mutation: &api.Mutation{Changes: []api.Change{{Op: "set", Path: []string{"name"}, Value: json.RawMessage(`"x"`)}}}}
 	data, _ := json.Marshal(op)
 	r := requestWithContext(ctx, "PATCH", "/v1/databases/crm/records/t/a", string(data))
-	r.Header.Set("Content-Type", "application/vnd.dtql.operation+json")
+	r.Header.Set("Content-Type", "application/vnd.tugql.operation+json")
 	return r, record.NewKeyWithID("t", "a")
 }
 

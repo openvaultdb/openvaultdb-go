@@ -11,9 +11,9 @@ import (
 	"github.com/dal-go/dalgo/access"
 )
 
-func policy(t *testing.T, field string) access.DTQLDocument {
+func policy(t *testing.T, field string) access.TugQLDocument {
 	t.Helper()
-	doc, err := access.ParseDTQLPolicy([]byte(`apiVersion: dtql.org/access/v1
+	doc, err := access.ParseTugQLPolicy([]byte(`apiVersion: tugql.org/access/v1
 kind: AccessPolicy
 metadata: {name: customers}
 target: {database: crm}
@@ -43,27 +43,27 @@ func TestGenerationActivationCASAndValidation(t *testing.T) {
 	if _, err := store.Load(ctx); err == nil {
 		t.Fatal("missing active generation allowed")
 	}
-	first, err := store.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")})
+	first, err := store.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	same, err := store.Activate(ctx, first.Revision, []access.DTQLDocument{policy(t, "name")})
+	same, err := store.Activate(ctx, first.Revision, []access.TugQLDocument{policy(t, "name")})
 	if err != nil || same.Revision != first.Revision {
 		t.Fatalf("no-op: %v", err)
 	}
-	second, err := store.Activate(ctx, first.Revision, []access.DTQLDocument{policy(t, "email")})
+	second, err := store.Activate(ctx, first.Revision, []access.TugQLDocument{policy(t, "email")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if second.Revision == first.Revision {
 		t.Fatal("changed policy retained generation")
 	}
-	if _, err := store.Activate(ctx, first.Revision, []access.DTQLDocument{policy(t, "secret")}); !errors.Is(err, ErrConflict) {
+	if _, err := store.Activate(ctx, first.Revision, []access.TugQLDocument{policy(t, "secret")}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("CAS: %v", err)
 	}
 	bad := policy(t, "name")
 	bad.Target.Database = "other"
-	if _, err := store.Activate(ctx, second.Revision, []access.DTQLDocument{bad}); err == nil {
+	if _, err := store.Activate(ctx, second.Revision, []access.TugQLDocument{bad}); err == nil {
 		t.Fatal("invalid candidate published")
 	}
 	controller, err := NewController(ctx, store)
@@ -99,7 +99,7 @@ func TestGenerationCrashRecovery(t *testing.T) {
 			}
 			return nil
 		}
-		if _, err := store.Activate(context.Background(), os.Getenv("OVDB_POLICY_EXPECTED"), []access.DTQLDocument{policy(t, "email")}); err != nil {
+		if _, err := store.Activate(context.Background(), os.Getenv("OVDB_POLICY_EXPECTED"), []access.TugQLDocument{policy(t, "email")}); err != nil {
 			t.Fatal(err)
 		}
 		t.Fatal("crash checkpoint not reached")
@@ -107,7 +107,7 @@ func TestGenerationCrashRecovery(t *testing.T) {
 	for _, phase := range []string{"generation-synced", "generation-published", "pointer-synced", "pointer-published"} {
 		t.Run(phase, func(t *testing.T) {
 			store := openTestStore(t, t.TempDir())
-			old, err := store.Activate(context.Background(), "", []access.DTQLDocument{policy(t, "name")})
+			old, err := store.Activate(context.Background(), "", []access.TugQLDocument{policy(t, "name")})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -130,7 +130,7 @@ func TestGenerationMissingReferenceAndUncertainPublication(t *testing.T) {
 	t.Parallel()
 	store := openTestStore(t, t.TempDir())
 	ctx := context.Background()
-	old, err := store.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")})
+	old, err := store.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestGenerationMissingReferenceAndUncertainPublication(t *testing.T) {
 		}
 		return nil
 	}
-	if _, err := controller.Activate(ctx, old.Revision, []access.DTQLDocument{policy(t, "email")}); err == nil {
+	if _, err := controller.Activate(ctx, old.Revision, []access.TugQLDocument{policy(t, "email")}); err == nil {
 		t.Fatal("publication uncertainty hidden")
 	}
 	current, err := controller.Snapshot()
@@ -154,7 +154,7 @@ func TestGenerationMissingReferenceAndUncertainPublication(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(store.root, "generations", current.Revision)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")}); err == nil {
+	if _, err := store.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")}); err == nil {
 		t.Fatal("missing enabled generation treated as bootstrap")
 	}
 }
@@ -168,12 +168,12 @@ func TestGenerationPrivateEditPreservesPublicRevision(t *testing.T) {
 	private := policy(t, "name")
 	private.Metadata.Name = "private"
 	private.Metadata.Visibility = "private"
-	first, err := store.Activate(ctx, "", []access.DTQLDocument{public, private})
+	first, err := store.Activate(ctx, "", []access.TugQLDocument{public, private})
 	if err != nil {
 		t.Fatal(err)
 	}
 	private.Metadata.Description = "updated internal policy"
-	next, err := store.Activate(ctx, first.Revision, []access.DTQLDocument{private, public})
+	next, err := store.Activate(ctx, first.Revision, []access.TugQLDocument{private, public})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestGenerationRejectsSymlinkAndDuplicatePointer(t *testing.T) {
 	t.Parallel()
 	store := openTestStore(t, t.TempDir())
 	ctx := context.Background()
-	first, err := store.Activate(ctx, "", []access.DTQLDocument{policy(t, "name")})
+	first, err := store.Activate(ctx, "", []access.TugQLDocument{policy(t, "name")})
 	if err != nil {
 		t.Fatal(err)
 	}

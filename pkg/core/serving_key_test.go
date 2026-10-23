@@ -44,14 +44,14 @@ func (d *verifiedServingKeyDB) ExecuteQueryToRecordsReader(context.Context, dal.
 func TestConfiguredServingKeyNeverFallsBackToNativeID(t *testing.T) {
 	driver := &verifiedServingKeyDB{}
 	db := openScripted(t, "sqlite", driver)
-	parsed, _, err := ParseDTQL([]byte(guardDTQL))
+	parsed, _, err := ParseTugQL([]byte(guardTugQL))
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, ordinary := db.ExecuteDTQLQuery(context.Background(), parsed)
+	_, ordinary := db.ExecuteTugQLQuery(context.Background(), parsed)
 	_, structured := db.Execute(context.Background(), Query{Collection: "customers"})
 	_, keys := db.Execute(context.Background(), Query{Collection: "customers", KeysOnly: true})
-	snapshot := db.StreamDTQLSnapshot(context.Background(), parsed, func(Record) error { t.Fatal("emitted native fallback key"); return nil })
+	snapshot := db.StreamTugQLSnapshot(context.Background(), parsed, func(Record) error { t.Fatal("emitted native fallback key"); return nil })
 	for name, err := range map[string]error{"ordinary": ordinary, "structured": structured, "keys": keys, "snapshot": snapshot} {
 		if err == nil || !strings.Contains(err.Error(), "no record key") {
 			t.Fatalf("%s substituted native ID: %v", name, err)

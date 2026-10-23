@@ -33,7 +33,7 @@ schemas:
 	if _, err := mount.File(path); err != nil {
 		t.Fatal(err)
 	}
-	policy := `apiVersion: dtql.org/access/v1
+	policy := `apiVersion: tugql.org/access/v1
 kind: AccessPolicy
 metadata: {name: humans}
 target: {database: crm}
@@ -111,7 +111,7 @@ bindings:
 	if issued.Subject == nil || issued.Actor == nil || issued.Subject.ID != "same-id" || issued.Actor.ID != "datatug" {
 		t.Fatalf("binding missing: %s", payload)
 	}
-	code, payload = request(t, ts, http.MethodPost, "/v1/databases/crm/dtql", issued.Token, query)
+	code, payload = request(t, ts, http.MethodPost, "/v1/databases/crm/tugql", issued.Token, query)
 	if code != http.StatusOK {
 		t.Fatalf("issued delegation: %d %s", code, payload)
 	}
@@ -121,26 +121,26 @@ bindings:
 	}
 
 	for token, want := range map[string]int{"human": 200, "second-provider": 200, "service": 403, "wrong-realm": 403, "narrow": 403, ownerToken: 403} {
-		status, body := request(t, ts, http.MethodPost, "/v1/databases/crm/dtql", token, query)
+		status, body := request(t, ts, http.MethodPost, "/v1/databases/crm/tugql", token, query)
 		if status != want {
 			t.Fatalf("%s: %d %s", token, status, body)
 		}
 	}
-	status, body := request(t, ts, http.MethodPost, "/v1/databases/crm/dtql", "human", query+"roles: [admin]\n")
+	status, body := request(t, ts, http.MethodPost, "/v1/databases/crm/tugql", "human", query+"roles: [admin]\n")
 	if status != http.StatusBadRequest {
 		t.Fatalf("caller role injection: %d %s", status, body)
 	}
 	mu.Lock()
 	revoked = true
 	mu.Unlock()
-	status, _ = request(t, ts, http.MethodPost, "/v1/databases/crm/dtql", "human", query)
+	status, _ = request(t, ts, http.MethodPost, "/v1/databases/crm/tugql", "human", query)
 	if status != http.StatusForbidden {
 		t.Fatal("membership revocation did not take effect on next request")
 	}
 	mu.Lock()
 	unavailable = true
 	mu.Unlock()
-	status, _ = request(t, ts, http.MethodPost, "/v1/databases/crm/dtql", "human", query)
+	status, _ = request(t, ts, http.MethodPost, "/v1/databases/crm/tugql", "human", query)
 	if status != http.StatusForbidden {
 		t.Fatal("resolver failure did not fail closed")
 	}

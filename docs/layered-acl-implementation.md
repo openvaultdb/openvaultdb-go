@@ -1,6 +1,6 @@
 # Layered ACL MVP integration
 
-Implementation was approved on 2026-09-08. The implemented vertical slice runs real DTQL
+Implementation was approved on 2026-09-08. The implemented vertical slice runs real TugQL
 queries, protected UPDATE and Explain Access through OpenVaultDB to local
 InGitDB and SQLite databases,
 with database-owned policies enforced using DALgo. Policy viewer and editor
@@ -22,7 +22,7 @@ integration; publication and remote merges are deferred.
 - Verify persistence by remounting and querying again.
 - Return safe authorization errors without exposing private policy contents.
 
-The approved architecture and reviewed contracts are in the DTQL repository's
+The approved architecture and reviewed contracts are in the TugQL repository's
 `design/layered-acl` packet on the local `layered-acl-design` branch. Write and Explain Access implementation follows those contracts. The
 sections below describe the current protected profile and validation evidence.
 
@@ -56,7 +56,7 @@ go run ./examples/layered-acl -dir /tmp/my-fresh-acl-demo -listen 127.0.0.1:8899
 In another terminal with the same query token:
 
 ```sh
-curl -sS http://127.0.0.1:8899/v1/databases/ingitdb/dtql \
+curl -sS http://127.0.0.1:8899/v1/databases/ingitdb/tugql \
   -H "Authorization: Bearer $OVDB_QUERY_TOKEN" \
   --data-binary 'from: {name: customers}
 orderBy: [{field: name}]
@@ -94,7 +94,7 @@ policies: [customers.yaml]
 
 Those files resolve beneath `.ingitdb/access`, independently of OpenVaultDB.
 The policy syntax is demonstrated by `examples/layered-acl/main.go`. Supported
-policies use `dtql.org/access/v1`, `dalgo-hierarchical-v1`, default deny, path
+policies use `tugql.org/access/v1`, `dalgo-hierarchical-v1`, default deny, path
 scopes, row conditions, field allow-lists, and optional user/role/group bindings.
 Visibility defaults to public; private is accepted and retained internally.
 HTTP failures return structured owner/policy diagnostics where authorized, with
@@ -143,9 +143,9 @@ is still required before ordinary CI or an unlinked checkout can build this slic
 ## Verification record — 2026-09-08
 
 All four repositories passed their full Go test suites using the linked workspace.
-Focused static analysis passed for the changed server packages and DALgo access/DTQL;
+Focused static analysis passed for the changed server packages and DALgo access/TugQL;
 InGitDB and the SQL driver passed repository-wide vet. The OpenVaultDB suite includes
-`TestLayeredACL_DTQL` against real InGitDB and SQLite mounts, authentication,
+`TestLayeredACL_TugQL` against real InGitDB and SQLite mounts, authentication,
 restricted projection/filter/order, row filtering before pagination, owner denial,
 collection-scoped token enforcement, and remounting.
 
@@ -182,7 +182,7 @@ implementation commits and evidence. Publication is a separate final task.
 
 ## Supported protected query profile
 
-| Capability | OpenVaultDB DTQL endpoint | SQLite adapter | InGitDB adapter |
+| Capability | OpenVaultDB TugQL endpoint | SQLite adapter | InGitDB adapter |
 | --- | --- | --- | --- |
 | Source | One unaliased root collection | One unparented CollectionRef | One root collection in this profile |
 | Projection | Named stored fields | Field or bound scalar constant; quoted aliases at adapter level | Stored fields; computed values unavailable in protected reads |
@@ -233,25 +233,25 @@ descendants in both images; changing a permitted leaf does not require granting
 its structural parent. Arrays remain opaque and require complete coverage.
 Masked truncate is unsupported. Legacy `fields` matching is unchanged.
 
-Use the DTQL parse/normalize/serialize APIs for portable editing. Legacy DALgo
+Use the TugQL parse/normalize/serialize APIs for portable editing. Legacy DALgo
 serialization refuses policies containing masks rather than dropping them.
 Formatting and comments are not preserved by canonical serialization.
 
 
 ## Execution surfaces
 
-`execution: {allow: [{class: dtql}]}` permits the typed DTQL surface and
+`execution: {allow: [{class: tugql}]}` permits the typed TugQL surface and
 excludes native SQL, native GraphQL and procedure targets at this policy gate.
 An explicitly empty allow array denies every surface; omission adds no gate.
 Database action, table, row, column and lower-owner restrictions still apply.
 
-Secure sessions classify structured queries as DTQL before adapter compilation.
-Opaque query text cannot be relabeled DTQL. Pure policy assessment can supply a
+Secure sessions classify structured queries as TugQL before adapter compilation.
+Opaque query text cannot be relabeled TugQL. Pure policy assessment can supply a
 typed `ExecutionTarget` for a namespaced procedure and evaluate scoped masks
 such as `User_*` or include `*` / exclude `sys_*`. This does not authorize an
 execution path: native/procedure effects remain unsupported by the protected
 HTTP profile. The transport rejects unrecognized execution labels as unknown
-DTQL fields.
+TugQL fields.
 
 ## Typed identity and current memberships
 
@@ -333,7 +333,7 @@ duplicate/case-aliased/unknown JSON keys, conflicting path identifiers,
 overlapping updates, unsupported parameter binding, and request limits before
 evaluation. It never reads a row to construct a plan.
 
-DALgo implements the common wire contract in `dtql/authorization` (the
+DALgo implements the common wire contract in `tugql/authorization` (the
 cycle-safe equivalent of the design's proposed `access/contract` location).
 `access.AssessPlan` shares collection/evaluation machinery with enforcement.
 The HTTP projection retains owner conjunctions and portable source predicates
@@ -372,14 +372,14 @@ successful response contains an opaque whole-record `dataRevision`, with no
 raw hidden image. Policy-admin authority grants no evidence bypass.
 
 `PATCH /v1/databases/{db}/records/{table}/{id}` with content type
-`application/vnd.dtql.operation+json` accepts a normalized C2 operation:
+`application/vnd.tugql.operation+json` accepts a normalized C2 operation:
 
 ```json
 {
   "id": "u1",
   "action": "update",
   "resource": {"databaseId": "crm", "path": "/customers/01"},
-  "executionClass": "dtql",
+  "executionClass": "tugql",
   "mutation": {
     "changes": [{"op": "set", "path": ["name"], "value": "Updated"}],
     "ifDataRevision": "<revision from evidence>"

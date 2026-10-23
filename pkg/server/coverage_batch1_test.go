@@ -79,7 +79,7 @@ func TestHttpErrBranches(t *testing.T) {
 func TestReadProfilesMore(t *testing.T) {
 	t.Parallel()
 	// 1. servingOrderQuery.String()
-	q, _, err := core.ParseDTQL([]byte("from: {name: orders}\n"))
+	q, _, err := core.ParseTugQL([]byte("from: {name: orders}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestReadProfilesMore(t *testing.T) {
 	// Configure read profile on db1
 	srv.readProfilesByDB[db] = ReadProfile{AllowOrdinaryQuery: true, PublishedQuery: true}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/v1/databases/db1/dtql", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/databases/db1/tugql", nil)
 	// prepareImmutableQuery on a collection without serving key ("orders" has no SQLiteRecordKeys on db)
 	if _, ok := srv.prepareImmutableQuery(rec, req, db, q, "orders"); ok {
 		t.Fatal("expected prepareImmutableQuery to fail when serving key unavailable")

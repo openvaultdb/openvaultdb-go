@@ -295,7 +295,7 @@ func pgITKeys(resp relHTTPResponse) []string {
 
 // TestPostgresIntegration_WritesAndSingleCollectionQueries: records are written to a
 // PostgreSQL mount by key, read back, and queried with filters, order and limit on
-// /query and on the per-database /dtql; each answer is the answer a SQLite mount
+// /query and on the per-database /tugql; each answer is the answer a SQLite mount
 // holding the same rows gives, and a record carries the key it was written under.
 func TestPostgresIntegration_WritesAndSingleCollectionQueries(t *testing.T) {
 	admin := pgITAdmin(t)
@@ -340,8 +340,8 @@ func TestPostgresIntegration_WritesAndSingleCollectionQueries(t *testing.T) {
 		{"a filter, an order and a limit", "from: {name: customers}\nwhere: {op: '==', left: {field: country}, right: {value: IE}}\norderBy: [{field: name, desc: true}]\nlimit: 1\n", []string{"Cy"}},
 		{"two conditions", "from: {name: customers}\nwhere:\n  and:\n    - {op: '>=', left: {field: country}, right: {value: IE}}\n    - {op: '<', left: {field: name}, right: {value: Dee}}\norderBy: [{field: name}]\n", []string{"Ada", "Bob", "Cy"}},
 	} {
-		t.Run("/dtql: "+c.name, func(t *testing.T) {
-			resp := pgITBoth(t, base, http.MethodPost, "/v1/databases/pg/dtql", "/v1/databases/lite/dtql", c.doc, c.doc)
+		t.Run("/tugql: "+c.name, func(t *testing.T) {
+			resp := pgITBoth(t, base, http.MethodPost, "/v1/databases/pg/tugql", "/v1/databases/lite/tugql", c.doc, c.doc)
 			if names := pgITRecordNames(t, resp); !reflect.DeepEqual(names, c.wantNames) {
 				t.Fatalf("names = %v, want %v", names, c.wantNames)
 			}
@@ -371,11 +371,11 @@ func nativePostgresProjectionDocuments() map[string]string {
 func TestNativePostgresProjectionDocumentsParseAndClassifyWithoutLiveDatabase(t *testing.T) {
 	for name, doc := range nativePostgresProjectionDocuments() {
 		t.Run(name, func(t *testing.T) {
-			query, err := core.DeserializeDTQL([]byte(doc))
+			query, err := core.DeserializeTugQL([]byte(doc))
 			if err != nil {
 				t.Fatalf("native PostgreSQL fixture does not parse: %v\n%s", err, doc)
 			}
-			if _, err := core.ClassifyDTQL(query); err != nil {
+			if _, err := core.ClassifyTugQL(query); err != nil {
 				t.Fatalf("native PostgreSQL fixture does not classify: %v\n%s", err, doc)
 			}
 		})
@@ -536,7 +536,7 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 	if err := json.Unmarshal([]byte(metadata.raw), &described); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(described.Collections, collections) || described.Capabilities["read"] || described.Capabilities["query"] || !described.Capabilities["dtql"] || described.Capabilities["write"] || described.Endpoints["dtql"] == "" || described.QueryFormat == "" {
+	if !reflect.DeepEqual(described.Collections, collections) || described.Capabilities["read"] || described.Capabilities["query"] || !described.Capabilities["tugql"] || described.Capabilities["write"] || described.Endpoints["tugql"] == "" || described.QueryFormat == "" {
 		t.Fatalf("native metadata capabilities/IDs = %+v, collections=%q", described.Capabilities, described.Collections)
 	}
 	collection := described.Schemas.Collections[id]
@@ -573,7 +573,7 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 	}
 
 	doc := "from: {schema: 'ovdb Native', name: 'Order Details'}\nwhere: {op: '==', left: {field: 'Status Name'}, right: {value: keep}}\nlimit: 5\n"
-	read := relHTTPPost(t, base, "/v1/databases/native/dtql", "", doc)
+	read := relHTTPPost(t, base, "/v1/databases/native/tugql", "", doc)
 	if read.status != http.StatusOK {
 		t.Fatalf("filtered native read: %d %s", read.status, read.raw)
 	}
@@ -608,7 +608,7 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 	}
 	assertProjectedNativeValues := func(name, doc string, outputNames map[string]string) {
 		t.Helper()
-		resp := relHTTPPost(t, base, "/v1/databases/native/dtql", "", doc)
+		resp := relHTTPPost(t, base, "/v1/databases/native/tugql", "", doc)
 		if resp.status != http.StatusOK {
 			t.Fatalf("%s: %d %s; server logs: %s", name, resp.status, resp.raw, logs.String())
 		}
@@ -650,7 +650,7 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 		map[string]string{"order_id": "Order ID", "created": "Created On", "payload": "Payload Data", "binary": "Binary Data"})
 	assertProjectedNativeValues("derived projection", documents["derived projection"],
 		map[string]string{"order_key": "Order ID", "created_at": "Created On", "payload_json": "Payload Data", "blob": "Binary Data"})
-	wildcardJoin := relHTTPPost(t, base, "/v1/databases/native/dtql", "", documents["wildcard type collision"])
+	wildcardJoin := relHTTPPost(t, base, "/v1/databases/native/tugql", "", documents["wildcard type collision"])
 	if wildcardJoin.status != http.StatusOK {
 		t.Fatalf("wildcard join with duplicate native field names: %d %s", wildcardJoin.status, wildcardJoin.raw)
 	}
@@ -672,7 +672,7 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 			t.Errorf("rightmost wildcard field %q = %s, want %s from the joined source", field, got, want)
 		}
 	}
-	aggregate := relHTTPPost(t, base, "/v1/databases/native/dtql", "", documents["wide integer aggregate"])
+	aggregate := relHTTPPost(t, base, "/v1/databases/native/tugql", "", documents["wide integer aggregate"])
 	if aggregate.status != http.StatusOK {
 		t.Fatalf("native wide-integer aggregate: %d %s", aggregate.status, aggregate.raw)
 	}
@@ -688,7 +688,7 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 		t.Errorf("native max(Order ID) = %s, want JS-safe decimal string %s", got, want)
 	}
 	keylessDoc := "from: {schema: 'ovdb Native', name: 'Order Events'}\nwhere: {op: '==', left: {field: 'Event Name'}, right: {value: open}}\nlimit: 5\n"
-	keylessRead := relHTTPPost(t, base, "/v1/databases/native/dtql", "", keylessDoc)
+	keylessRead := relHTTPPost(t, base, "/v1/databases/native/tugql", "", keylessDoc)
 	if keylessRead.status != http.StatusOK {
 		t.Fatalf("bounded keyless read: %d %s", keylessRead.status, keylessRead.raw)
 	}
@@ -708,7 +708,7 @@ func TestPostgresIntegration_NativeReadOnlyCatalogAndFilteredRows(t *testing.T) 
 	if err := admin.QueryRow(`SELECT last_value, is_called FROM "ovdb Native"."side effect seq"`).Scan(&beforeValue, &beforeCalled); err != nil {
 		t.Fatal(err)
 	}
-	mutationRead := relHTTPPost(t, base, "/v1/databases/native/dtql", "", "from: {schema: 'ovdb Native', name: 'Mutation Attempt'}\nlimit: 1\n")
+	mutationRead := relHTTPPost(t, base, "/v1/databases/native/tugql", "", "from: {schema: 'ovdb Native', name: 'Mutation Attempt'}\nlimit: 1\n")
 	if mutationRead.status < http.StatusBadRequest {
 		t.Fatalf("volatile view unexpectedly succeeded in native read-only mount: %d %s", mutationRead.status, mutationRead.raw)
 	}
@@ -839,12 +839,12 @@ func TestPostgresIntegration_NativeRelationExclusionHidesDescriptorAndQueryLooku
 		t.Fatalf("native descriptor = %d %s; want visible table and no excluded relation", metadata.status, metadata.raw)
 	}
 	hiddenQuery := "from: {schema: 'ovdb exclusion', name: _import_manifest}\ncolumns: [{field: source}]\nlimit: 5\n"
-	refused := relHTTPPost(t, base, "/v1/databases/native-exclusion/dtql", "", hiddenQuery)
+	refused := relHTTPPost(t, base, "/v1/databases/native-exclusion/tugql", "", hiddenQuery)
 	if refused.status != http.StatusNotFound || refused.errorField("code") != "not_found" {
 		t.Fatalf("excluded relation query = %d %s, want 404 not_found", refused.status, refused.raw)
 	}
 	visibleQuery := "from: {schema: 'ovdb exclusion', name: 'Visible Data'}\ncolumns: [{field: value}]\nlimit: 5\n"
-	accepted := relHTTPPost(t, base, "/v1/databases/native-exclusion/dtql", "", visibleQuery)
+	accepted := relHTTPPost(t, base, "/v1/databases/native-exclusion/tugql", "", visibleQuery)
 	if accepted.status != http.StatusOK || !strings.Contains(accepted.raw, `"public"`) {
 		t.Fatalf("visible relation query = %d %s, want its public row", accepted.status, accepted.raw)
 	}
@@ -940,7 +940,7 @@ func pgITRoute(resp relHTTPResponse) string {
 
 // TestPostgresIntegration_RelationalDocumentsAnswerAsSQLiteDoes: a join, a GROUP BY
 // with HAVING, a join under a GROUP BY with HAVING, and two subqueries are
-// answered on /v1/dtql by a PostgreSQL mount as by a SQLite mount holding the same
+// answered on /v1/tugql by a PostgreSQL mount as by a SQLite mount holding the same
 // rows. A document of one database without a subquery runs in the database (the
 // route the answer reports); one with a subquery runs in the engine of the server.
 func TestPostgresIntegration_RelationalDocumentsAnswerAsSQLiteDoes(t *testing.T) {
@@ -974,7 +974,7 @@ func TestPostgresIntegration_RelationalDocumentsAnswerAsSQLiteDoes(t *testing.T)
 		{"an IN subquery", pgITIn, "in-memory", []map[string]any{{"name": "Bob", "country": "US"}, {"name": "Cy", "country": "IE"}}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			resp := pgITBoth(t, base, http.MethodPost, "/v1/dtql", "/v1/dtql", pgITDoc(c.doc, "pg"), pgITDoc(c.doc, "lite"))
+			resp := pgITBoth(t, base, http.MethodPost, "/v1/tugql", "/v1/tugql", pgITDoc(c.doc, "pg"), pgITDoc(c.doc, "lite"))
 			relIntRowsAre(t, resp, c.want)
 			if route := pgITRoute(resp); route != c.route {
 				t.Errorf("route = %q, want %q", route, c.route)
@@ -1018,7 +1018,7 @@ columns:
 		"orders in SQLite, customers in PostgreSQL": {"lite", "pg"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			resp := pgITBoth(t, base, http.MethodPost, "/v1/dtql", "/v1/dtql", across(c.orders, c.customers), across("lite", "other"))
+			resp := pgITBoth(t, base, http.MethodPost, "/v1/tugql", "/v1/tugql", across(c.orders, c.customers), across("lite", "other"))
 			if route := pgITRoute(resp); route != "in-memory" {
 				t.Errorf("route = %q, want in-memory", route)
 			}
@@ -1080,7 +1080,7 @@ var pgITCollectionProbes = []string{
 // A value against a text field is bound, so it finds its record or nothing. A value that
 // does not fit its field (a word against the integer field total, a number or a boolean
 // against the text field name), a field the table does not have, a dotted name and a
-// qualifier no source has are the caller's mistakes, and each is a 400 invalid_dtql on
+// qualifier no source has are the caller's mistakes, and each is a 400 invalid_tugql on
 // every route, never a 500: the server logs no error for any probe of the test.
 func TestPostgresIntegration_ProbesAreRowsAnEmptyResultOrARefusal(t *testing.T) {
 	admin := pgITAdmin(t)
@@ -1103,13 +1103,13 @@ func TestPostgresIntegration_ProbesAreRowsAnEmptyResultOrARefusal(t *testing.T) 
 		if wire.status != http.StatusOK || !reflect.DeepEqual(pgITKeys(wire), []string{"customers/" + id}) {
 			t.Errorf("/query by the value %q: status %d: %s", probe, wire.status, wire.raw)
 		}
-		dtql := relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/dtql", "", "from: {name: customers}\nwhere: {op: '==', left: {field: name}, right: {value: "+string(encoded)+"}}\n", nil)
-		if dtql.status != http.StatusOK || !reflect.DeepEqual(pgITKeys(dtql), []string{"customers/" + id}) {
-			t.Errorf("/dtql by the value %q: status %d: %s", probe, dtql.status, dtql.raw)
+		tugql := relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/tugql", "", "from: {name: customers}\nwhere: {op: '==', left: {field: name}, right: {value: "+string(encoded)+"}}\n", nil)
+		if tugql.status != http.StatusOK || !reflect.DeepEqual(pgITKeys(tugql), []string{"customers/" + id}) {
+			t.Errorf("/tugql by the value %q: status %d: %s", probe, tugql.status, tugql.raw)
 		}
-		relational := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", "from: {database: pg, name: customers, alias: c}\nwhere: {op: '==', left: {field: name, source: c}, right: {value: "+string(encoded)+"}}\ncolumns: [{field: id, source: c}]\n", nil)
+		relational := relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", "from: {database: pg, name: customers, alias: c}\nwhere: {op: '==', left: {field: name, source: c}, right: {value: "+string(encoded)+"}}\ncolumns: [{field: id, source: c}]\n", nil)
 		if relational.status != http.StatusOK || len(relational.rows(t)) != 1 {
-			t.Errorf("/v1/dtql by the value %q: status %d: %s", probe, relational.status, relational.raw)
+			t.Errorf("/v1/tugql by the value %q: status %d: %s", probe, relational.status, relational.raw)
 		}
 		if got := relHTTPDo(t, base, http.MethodGet, "/v1/databases/pg/records/customers/"+id, "", "", nil); !strings.Contains(got.raw, string(encoded)) {
 			t.Errorf("the record written with the value %q reads back as %s", probe, got.raw)
@@ -1121,8 +1121,8 @@ func TestPostgresIntegration_ProbesAreRowsAnEmptyResultOrARefusal(t *testing.T) 
 	mistake := func(what string, resp relHTTPResponse) {
 		t.Helper()
 		mistakes++
-		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" {
-			t.Errorf("%s: status %d, want 400 invalid_dtql: %s", what, resp.status, resp.raw)
+		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" {
+			t.Errorf("%s: status %d, want 400 invalid_tugql: %s", what, resp.status, resp.raw)
 		}
 	}
 	against := func(collection, alias, field, encoded string) {
@@ -1130,8 +1130,8 @@ func TestPostgresIntegration_ProbesAreRowsAnEmptyResultOrARefusal(t *testing.T) 
 		what := fmt.Sprintf("the value %s against %s.%s", encoded, collection, field)
 		mistake("/query, "+what, relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/query", "", `{"collection":"`+collection+`","where":[{"field":"`+field+`","op":"==","value":`+encoded+`}]}`, nil))
 		mistake("/query, in, "+what, relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/query", "", `{"collection":"`+collection+`","where":[{"field":"`+field+`","op":"in","value":[`+encoded+`]}]}`, nil))
-		mistake("/dtql, "+what, relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/dtql", "", "from: {name: "+collection+"}\nwhere: {op: '==', left: {field: "+field+"}, right: {value: "+encoded+"}}\n", nil))
-		mistake("/v1/dtql, "+what, relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", "from: {database: pg, name: "+collection+", alias: "+alias+"}\nwhere: {op: '==', left: {field: "+field+", source: "+alias+"}, right: {value: "+encoded+"}}\ncolumns: [{field: id, source: "+alias+"}]\n", nil))
+		mistake("/tugql, "+what, relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/tugql", "", "from: {name: "+collection+"}\nwhere: {op: '==', left: {field: "+field+"}, right: {value: "+encoded+"}}\n", nil))
+		mistake("/v1/tugql, "+what, relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", "from: {database: pg, name: "+collection+", alias: "+alias+"}\nwhere: {op: '==', left: {field: "+field+", source: "+alias+"}, right: {value: "+encoded+"}}\ncolumns: [{field: id, source: "+alias+"}]\n", nil))
 	}
 	for _, probe := range pgITValueProbes {
 		encoded, _ := json.Marshal(probe)
@@ -1144,23 +1144,23 @@ func TestPostgresIntegration_ProbesAreRowsAnEmptyResultOrARefusal(t *testing.T) 
 	mistake("/query, an undeclared field in where", relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/query", "", `{"collection":"customers","where":[{"field":"nosuch","op":"==","value":"x"}]}`, nil))
 	mistake("/query, an undeclared field in orderBy", relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/query", "", `{"collection":"customers","orderBy":[{"field":"nosuch"}]}`, nil))
 	mistake("/query, a dotted name", relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/query", "", `{"collection":"customers","where":[{"field":"name.first","op":"==","value":"x"}]}`, nil))
-	mistake("/dtql, an undeclared field in where", relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/dtql", "", "from: {name: customers}\nwhere: {op: '==', left: {field: nosuch}, right: {value: x}}\n", nil))
-	mistake("/dtql, an undeclared field in orderBy", relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/dtql", "", "from: {name: customers}\norderBy: [{field: nosuch}]\n", nil))
-	mistake("/dtql, an undeclared column", relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/dtql", "", "from: {name: customers}\ncolumns: [{field: nosuch}]\n", nil))
-	mistake("/v1/dtql, an undeclared field", relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", "from: {database: pg, name: customers, alias: c}\nwhere: {op: '==', left: {field: nosuch, source: c}, right: {value: x}}\n", nil))
-	mistake("/v1/dtql, an undeclared column", relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", "from: {database: pg, name: customers, alias: c}\ncolumns: [{field: nosuch, source: c}]\n", nil))
-	mistake("/v1/dtql, a qualifier no source has", relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", "from: {database: pg, name: customers, alias: c}\nwhere: {op: '==', left: {field: name, source: x}, right: {value: x}}\n", nil))
-	mistake("/v1/dtql, a qualifier no source has, in a join", relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", pgITDoc(pgITJoin, "pg")+"where: {op: '==', left: {field: name, source: x}, right: {value: x}}\n", nil))
-	mistake("/v1/dtql, an undeclared field of a joined source", relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", strings.Replace(pgITDoc(pgITJoin, "pg"), "{field: name, source: c, as: customer}", "{field: nosuch, source: c, as: customer}", 1), nil))
+	mistake("/tugql, an undeclared field in where", relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/tugql", "", "from: {name: customers}\nwhere: {op: '==', left: {field: nosuch}, right: {value: x}}\n", nil))
+	mistake("/tugql, an undeclared field in orderBy", relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/tugql", "", "from: {name: customers}\norderBy: [{field: nosuch}]\n", nil))
+	mistake("/tugql, an undeclared column", relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/tugql", "", "from: {name: customers}\ncolumns: [{field: nosuch}]\n", nil))
+	mistake("/v1/tugql, an undeclared field", relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", "from: {database: pg, name: customers, alias: c}\nwhere: {op: '==', left: {field: nosuch, source: c}, right: {value: x}}\n", nil))
+	mistake("/v1/tugql, an undeclared column", relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", "from: {database: pg, name: customers, alias: c}\ncolumns: [{field: nosuch, source: c}]\n", nil))
+	mistake("/v1/tugql, a qualifier no source has", relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", "from: {database: pg, name: customers, alias: c}\nwhere: {op: '==', left: {field: name, source: x}, right: {value: x}}\n", nil))
+	mistake("/v1/tugql, a qualifier no source has, in a join", relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", pgITDoc(pgITJoin, "pg")+"where: {op: '==', left: {field: name, source: x}, right: {value: x}}\n", nil))
+	mistake("/v1/tugql, an undeclared field of a joined source", relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", strings.Replace(pgITDoc(pgITJoin, "pg"), "{field: name, source: c, as: customer}", "{field: nosuch, source: c, as: customer}", 1), nil))
 	// A name that a column carries as its alias is read as the alias only in HAVING and ORDER BY,
 	// outside an aggregate, and in the spelling the column wrote: anywhere else it is a name no
 	// column has, which the server refuses before the driver (and which the adapter would fail as
 	// a plain error). An alias over the 63 bytes of a name in PostgreSQL is refused the same way.
-	mistake("/v1/dtql, a name that is only an alias, in where", relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", "from: {database: pg, name: customers}\ncolumns: [{field: name, as: x}]\nwhere: {op: '==', left: {field: x}, right: {value: Ada}}\n", nil))
-	mistake("/v1/dtql, a name that is only an alias, in group by", relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", "from: {database: pg, name: customers}\ncolumns: [{aggregate: {function: count, args: [{star: true}]}, as: n}]\ngroupBy: [{field: n}]\n", nil))
-	mistake("/v1/dtql, a name that is only an alias, in an aggregate", relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", "from: {database: pg, name: customers}\ncolumns: [{aggregate: {function: count, args: [{star: true}]}, as: n}]\nhaving: {op: '>', left: {aggregate: {function: sum, args: [{field: n}]}}, right: {value: 1}}\n", nil))
-	mistake("/dtql, a name that is only an alias, in where", relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/dtql", "", "from: {name: customers}\ncolumns: [{field: name, as: x}]\nwhere: {op: '==', left: {field: x}, right: {value: Ada}}\n", nil))
-	mistake("/v1/dtql, a source alias over the length of a name", relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", "from: {database: pg, name: customers, alias: "+strings.Repeat("a", 64)+"}\ncolumns: [{field: id, source: "+strings.Repeat("a", 64)+"}]\n", nil))
+	mistake("/v1/tugql, a name that is only an alias, in where", relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", "from: {database: pg, name: customers}\ncolumns: [{field: name, as: x}]\nwhere: {op: '==', left: {field: x}, right: {value: Ada}}\n", nil))
+	mistake("/v1/tugql, a name that is only an alias, in group by", relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", "from: {database: pg, name: customers}\ncolumns: [{aggregate: {function: count, args: [{star: true}]}, as: n}]\ngroupBy: [{field: n}]\n", nil))
+	mistake("/v1/tugql, a name that is only an alias, in an aggregate", relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", "from: {database: pg, name: customers}\ncolumns: [{aggregate: {function: count, args: [{star: true}]}, as: n}]\nhaving: {op: '>', left: {aggregate: {function: sum, args: [{field: n}]}}, right: {value: 1}}\n", nil))
+	mistake("/tugql, a name that is only an alias, in where", relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/tugql", "", "from: {name: customers}\ncolumns: [{field: name, as: x}]\nwhere: {op: '==', left: {field: x}, right: {value: Ada}}\n", nil))
+	mistake("/v1/tugql, a source alias over the length of a name", relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", "from: {database: pg, name: customers, alias: "+strings.Repeat("a", 64)+"}\ncolumns: [{field: id, source: "+strings.Repeat("a", 64)+"}]\n", nil))
 	if want := (len(pgITValueProbes)+3)*4 + 16; mistakes != want {
 		t.Errorf("%d probes of a mistake were made, want %d", mistakes, want)
 	}
@@ -1184,16 +1184,16 @@ func TestPostgresIntegration_ProbesAreRowsAnEmptyResultOrARefusal(t *testing.T) 
 		encoded, _ := json.Marshal(field)
 		check("/query where on the field "+field, relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/query", "", `{"collection":"customers","where":[{"field":`+string(encoded)+`,"op":"==","value":"x"}]}`, nil))
 		check("/query orderBy the field "+field, relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/query", "", `{"collection":"customers","orderBy":[{"field":`+string(encoded)+`}]}`, nil))
-		check("/dtql where on the field "+field, relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/dtql", "", "from: {name: customers}\nwhere: {op: '==', left: {field: "+string(encoded)+"}, right: {value: x}}\n", nil))
-		check("/dtql column "+field, relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/dtql", "", "from: {name: customers}\ncolumns: [{field: "+string(encoded)+"}]\n", nil))
-		check("/v1/dtql column "+field, relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", "from: {database: pg, name: customers, alias: c}\ncolumns: [{field: "+string(encoded)+", source: c}]\n", nil))
+		check("/tugql where on the field "+field, relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/tugql", "", "from: {name: customers}\nwhere: {op: '==', left: {field: "+string(encoded)+"}, right: {value: x}}\n", nil))
+		check("/tugql column "+field, relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/tugql", "", "from: {name: customers}\ncolumns: [{field: "+string(encoded)+"}]\n", nil))
+		check("/v1/tugql column "+field, relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", "from: {database: pg, name: customers, alias: c}\ncolumns: [{field: "+string(encoded)+", source: c}]\n", nil))
 		check("PUT of the field "+field, relHTTPDo(t, base, http.MethodPut, "/v1/databases/pg/records/customers/fieldprobe", "", `{"data":{`+string(encoded)+`:"x"}}`, nil))
 	}
 	for _, collection := range pgITCollectionProbes {
 		encoded, _ := json.Marshal(collection)
 		check("/query on the collection "+collection, relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/query", "", `{"collection":`+string(encoded)+`}`, nil))
-		check("/dtql on the collection "+collection, relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/dtql", "", "from: {name: "+string(encoded)+"}\n", nil))
-		check("/v1/dtql on the collection "+collection, relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", "from: {database: pg, name: "+string(encoded)+"}\n", nil))
+		check("/tugql on the collection "+collection, relHTTPDo(t, base, http.MethodPost, "/v1/databases/pg/tugql", "", "from: {name: "+string(encoded)+"}\n", nil))
+		check("/v1/tugql on the collection "+collection, relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", "from: {database: pg, name: "+string(encoded)+"}\n", nil))
 		check("GET of a record of the collection "+collection, relHTTPDo(t, base, http.MethodGet, "/v1/databases/pg/records/"+url.PathEscape(collection)+"/x", "", "", nil))
 		check("PUT of a record of the collection "+collection, relHTTPDo(t, base, http.MethodPut, "/v1/databases/pg/records/"+url.PathEscape(collection)+"/x", "", `{"data":{"name":"x"}}`, nil))
 	}
@@ -1256,7 +1256,7 @@ columns:
 `
 
 // TestPostgresIntegration_AJoinOfOneDatabaseRunsInTheDatabase: a join of two collections of
-// the PostgreSQL mount, with the database named on each source as /v1/dtql takes it, is run by
+// the PostgreSQL mount, with the database named on each source as /v1/tugql takes it, is run by
 // the server as one statement. The orders table holds 12,005 rows, more than the 10,000 that
 // DALgo reads of a table when it joins the rows itself in the transaction, and the join
 // answers the two orders its filter keeps: it passes only if the filter reaches the server. A
@@ -1274,7 +1274,7 @@ func TestPostgresIntegration_AJoinOfOneDatabaseRunsInTheDatabase(t *testing.T) {
 	}
 
 	t.Run("one statement over 12,005 rows", func(t *testing.T) {
-		resp := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", pgITBulkJoin, nil)
+		resp := relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", pgITBulkJoin, nil)
 		relIntRowsAre(t, resp, []map[string]any{
 			{"order_id": "g11999", "customer": "Dee", "total": float64(12999)},
 			{"order_id": "g12000", "customer": "Ada", "total": float64(13000)},
@@ -1284,7 +1284,7 @@ func TestPostgresIntegration_AJoinOfOneDatabaseRunsInTheDatabase(t *testing.T) {
 		}
 	})
 	t.Run("a join the adapter declines is bound by DALgo", func(t *testing.T) {
-		resp := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", pgITBulkMismatchedJoin, nil)
+		resp := relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", pgITBulkMismatchedJoin, nil)
 		if resp.status != http.StatusUnprocessableEntity || resp.errorField("code") != "query_budget_exceeded" {
 			t.Fatalf("status %d, want 422 query_budget_exceeded: %s", resp.status, resp.raw)
 		}
@@ -1346,22 +1346,22 @@ func TestPostgresIntegration_MixedCaseFieldNames(t *testing.T) {
 			}
 		})
 		doc := "from: {name: people}\nwhere: {op: '==', left: {field: " + spelling + "}, right: {value: Ada}}\n"
-		t.Run("/dtql, "+spelling, func(t *testing.T) {
-			resp := pgITBoth(t, base, http.MethodPost, "/v1/databases/pg/dtql", "/v1/databases/lite/dtql", doc, doc)
+		t.Run("/tugql, "+spelling, func(t *testing.T) {
+			resp := pgITBoth(t, base, http.MethodPost, "/v1/databases/pg/tugql", "/v1/databases/lite/tugql", doc, doc)
 			if keys := pgITKeys(resp); !reflect.DeepEqual(keys, []string{"people/c1"}) || !strings.Contains(resp.raw, `"FirstName":"Ada"`) {
 				t.Fatalf("keys = %v, the answer is %s, want people/c1 under the declared name", keys, resp.raw)
 			}
 		})
-		t.Run("/v1/dtql in one database, "+spelling, func(t *testing.T) {
+		t.Run("/v1/tugql in one database, "+spelling, func(t *testing.T) {
 			doc := strings.ReplaceAll(pgITNameDoc, "SPELLING", spelling)
 			var resp relHTTPResponse
 			if spelling == "FirstName" {
-				resp = pgITBoth(t, base, http.MethodPost, "/v1/dtql", "/v1/dtql", pgITDoc(doc, "pg"), pgITDoc(doc, "lite"))
+				resp = pgITBoth(t, base, http.MethodPost, "/v1/tugql", "/v1/tugql", pgITDoc(doc, "pg"), pgITDoc(doc, "lite"))
 			} else {
 				// A SQLite mount reads the folded spelling as the column it is and answers it under
 				// the name it was declared with, listing both in its columns. The PostgreSQL mount
 				// labels the column as the document wrote it, so it is not compared with it.
-				resp = relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", pgITDoc(doc, "pg"), nil)
+				resp = relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", pgITDoc(doc, "pg"), nil)
 				if got := resp.columns(); !reflect.DeepEqual(got, []string{"id", spelling}) {
 					t.Errorf("columns = %v, want [id %s]", got, spelling)
 				}
@@ -1380,7 +1380,7 @@ func TestPostgresIntegration_MixedCaseFieldNames(t *testing.T) {
 	// either spelling and labels the column as the document wrote it, as a document of one source does.
 	for _, spelling := range []string{"FirstName", "firstname"} {
 		t.Run("a join in one database, "+spelling, func(t *testing.T) {
-			resp := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", across(spelling, "pg", "pg"), nil)
+			resp := relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", across(spelling, "pg", "pg"), nil)
 			relIntRowsAre(t, resp, []map[string]any{{"first": "Ada", "customer": "Ada"}, {"first": "Bob", "customer": "Bob"}})
 			if route := pgITRoute(resp); route != "database" {
 				t.Errorf("route = %q, want database", route)
@@ -1389,7 +1389,7 @@ func TestPostgresIntegration_MixedCaseFieldNames(t *testing.T) {
 				t.Errorf("columns = %v, want [first customer]", got)
 			}
 			if spelling == "FirstName" {
-				lite := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", across(spelling, "lite", "lite"), nil)
+				lite := relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", across(spelling, "lite", "lite"), nil)
 				if !reflect.DeepEqual(resp.body["records"], lite.body["records"]) {
 					t.Fatalf("PostgreSQL: %s\nSQLite:     %s", resp.raw, lite.raw)
 				}
@@ -1397,8 +1397,8 @@ func TestPostgresIntegration_MixedCaseFieldNames(t *testing.T) {
 		})
 	}
 	t.Run("a join across databases, the folded spelling", func(t *testing.T) {
-		pgResp := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", across("firstname", "pg", "lite"), nil)
-		liteResp := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", across("FirstName", "lite", "other"), nil)
+		pgResp := relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", across("firstname", "pg", "lite"), nil)
+		liteResp := relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", across("FirstName", "lite", "other"), nil)
 		if pgResp.status != http.StatusOK || liteResp.status != http.StatusOK {
 			t.Fatalf("status: PostgreSQL %d (%s), SQLite %d (%s)", pgResp.status, pgResp.raw, liteResp.status, liteResp.raw)
 		}
@@ -1408,9 +1408,9 @@ func TestPostgresIntegration_MixedCaseFieldNames(t *testing.T) {
 		relIntRowsAre(t, pgResp, []map[string]any{{"first": "Ada", "customer": "Ada"}, {"first": "Bob", "customer": "Bob"}})
 	})
 	t.Run("a join across databases, the declared spelling", func(t *testing.T) {
-		resp := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", across("FirstName", "pg", "lite"), nil)
-		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" {
-			t.Fatalf("status %d, want 400 invalid_dtql: %s", resp.status, resp.raw)
+		resp := relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", across("FirstName", "pg", "lite"), nil)
+		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" {
+			t.Fatalf("status %d, want 400 invalid_tugql: %s", resp.status, resp.raw)
 		}
 	})
 	// A document with a subquery runs in the engine of this server, over the field list the
@@ -1424,16 +1424,16 @@ func TestPostgresIntegration_MixedCaseFieldNames(t *testing.T) {
 			"orderBy:\n  - {field: id, source: p}\ncolumns:\n  - {field: id, source: p}\n"
 	}
 	t.Run("a document with a subquery, the folded spelling", func(t *testing.T) {
-		resp := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", subquery("firstname"), nil)
+		resp := relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", subquery("firstname"), nil)
 		relIntRowsAre(t, resp, []map[string]any{{"id": "c1"}, {"id": "c2"}})
 		if route := pgITRoute(resp); route != "in-memory" {
 			t.Errorf("route = %q, want in-memory: a document with a subquery runs in the engine of the server", route)
 		}
 	})
 	t.Run("a document with a subquery, the declared spelling", func(t *testing.T) {
-		resp := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", subquery("FirstName"), nil)
-		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" {
-			t.Fatalf("status %d, want 400 invalid_dtql: %s", resp.status, resp.raw)
+		resp := relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", subquery("FirstName"), nil)
+		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" {
+			t.Fatalf("status %d, want 400 invalid_tugql: %s", resp.status, resp.raw)
 		}
 	})
 	// A scalar subquery of one source is evaluated by DALgo row by row, and DALgo checks no
@@ -1455,7 +1455,7 @@ func TestPostgresIntegration_MixedCaseFieldNames(t *testing.T) {
 		{"the declared spelling in its column", "firstname", "FirstName", nil},
 	} {
 		t.Run("a scalar subquery of one source, "+c.name, func(t *testing.T) {
-			resp := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", scalar(c.where, c.selected), nil)
+			resp := relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", scalar(c.where, c.selected), nil)
 			relIntRowsAre(t, resp, []map[string]any{{"id": "c1", "s": c.want}, {"id": "c2", "s": c.want}})
 			if route := pgITRoute(resp); route != "in-memory" {
 				t.Errorf("route = %q, want in-memory: a document with a subquery runs in the engine of the server", route)
@@ -1483,12 +1483,12 @@ func TestPostgresIntegration_WithoutTheSwitchEveryQueryRouteRefusesAndNoStatemen
 		{"wire query, POST", http.MethodPost, "/v1/databases/pg/query", `{"collection":"customers"}`},
 		{"wire query, GET", http.MethodGet, "/v1/databases/pg/query?q=" + url.QueryEscape(`{"collection":"customers"}`), ""},
 		{"wire query, keys only", http.MethodPost, "/v1/databases/pg/query", `{"collection":"customers","keysOnly":true}`},
-		{"DTQL of the database, POST", http.MethodPost, "/v1/databases/pg/dtql", "from: {name: customers}\n"},
-		{"DTQL of the database, GET", http.MethodGet, "/v1/databases/pg/dtql?q=" + url.QueryEscape("from: {name: customers}\n"), ""},
-		{"DTQL of the database, a snapshot", http.MethodPost, "/v1/databases/pg/dtql", "from: {name: customers}\n"},
-		{"relational document, alone", http.MethodPost, "/v1/dtql", "from: {database: pg, name: customers}\n"},
-		{"relational document, joined", http.MethodPost, "/v1/dtql", pgITDoc(pgITJoin, "pg")},
-		{"relational document, joined to SQLite", http.MethodPost, "/v1/dtql", strings.Replace(pgITDoc(pgITJoin, "pg"), "database: pg, name: customers", "database: lite, name: customers", 1)},
+		{"TugQL of the database, POST", http.MethodPost, "/v1/databases/pg/tugql", "from: {name: customers}\n"},
+		{"TugQL of the database, GET", http.MethodGet, "/v1/databases/pg/tugql?q=" + url.QueryEscape("from: {name: customers}\n"), ""},
+		{"TugQL of the database, a snapshot", http.MethodPost, "/v1/databases/pg/tugql", "from: {name: customers}\n"},
+		{"relational document, alone", http.MethodPost, "/v1/tugql", "from: {database: pg, name: customers}\n"},
+		{"relational document, joined", http.MethodPost, "/v1/tugql", pgITDoc(pgITJoin, "pg")},
+		{"relational document, joined to SQLite", http.MethodPost, "/v1/tugql", strings.Replace(pgITDoc(pgITJoin, "pg"), "database: pg, name: customers", "database: lite, name: customers", 1)},
 	}
 	at := pgITNow(t, admin)
 	for _, route := range routes {
@@ -1564,7 +1564,7 @@ func TestPostgresIntegration_ServerIsTheVersionTheLegNames(t *testing.T) {
 // before dalgo2sql v0.26.7 it left the clause out for such a column and PostgreSQL put the
 // NULL last in an ascending order and first in a descending one. The rows asserted are the
 // ones a SQLite mount holding the same rows answers, with a limit, in both directions, on
-// /query, on /dtql and on a relational document. On PostgreSQL 17, which has no such
+// /query, on /tugql and on a relational document. On PostgreSQL 17, which has no such
 // constraint, the same table holds the column as nullable and the rows are the same; the row
 // shows the fix only on 18, which the job runs beside 17.
 func TestPostgresIntegration_OrderOverAColumnWithAnUnvalidatedNotNullConstraint(t *testing.T) {
@@ -1616,15 +1616,15 @@ func TestPostgresIntegration_OrderOverAColumnWithAnUnvalidatedNotNullConstraint(
 					t.Fatalf("keys = %v, want %v", keys, want)
 				}
 			})
-			t.Run(fmt.Sprintf("/dtql, %s, limit %d", direction.name, limit), func(t *testing.T) {
-				resp := pgITBoth(t, base, http.MethodPost, "/v1/databases/pg/dtql", "/v1/databases/lite/dtql", doc, doc)
+			t.Run(fmt.Sprintf("/tugql, %s, limit %d", direction.name, limit), func(t *testing.T) {
+				resp := pgITBoth(t, base, http.MethodPost, "/v1/databases/pg/tugql", "/v1/databases/lite/tugql", doc, doc)
 				if keys := pgITKeys(resp); !reflect.DeepEqual(keys, want) {
 					t.Fatalf("keys = %v, want %v", keys, want)
 				}
 			})
 			t.Run(fmt.Sprintf("relational document, %s, limit %d", direction.name, limit), func(t *testing.T) {
 				relational := fmt.Sprintf("from: {database: DB, name: orders, alias: o}\ncolumns:\n  - {field: id, source: o}\n  - {field: total, source: o}\norderBy: [{field: total, source: o, desc: %v}]\nlimit: %d\n", direction.desc, limit)
-				resp := pgITBoth(t, base, http.MethodPost, "/v1/dtql", "/v1/dtql", pgITDoc(relational, "pg"), pgITDoc(relational, "lite"))
+				resp := pgITBoth(t, base, http.MethodPost, "/v1/tugql", "/v1/tugql", pgITDoc(relational, "pg"), pgITDoc(relational, "lite"))
 				rows := resp.rows(t)
 				if len(rows) != len(want) {
 					t.Fatalf("rows = %v, want %d rows", rows, len(want))
@@ -1660,11 +1660,11 @@ func TestPostgresIntegration_NamesOver63BytesAreA400AndNoStatementIsSent(t *test
 		{"key delete, a collection", http.MethodDelete, "/v1/databases/pg/records/" + long + "/k1", "", "invalid_key"},
 		{"batch, a field", http.MethodPost, "/v1/databases/pg/batch", `{"ops":[{"op":"set","key":"customers/k1","data":{"` + long + `":"x"}}]}`, "bad_request"},
 		{"wire query, a collection", http.MethodPost, "/v1/databases/pg/query", `{"collection":"` + long + `"}`, "invalid_key"},
-		{"wire query, a field", http.MethodPost, "/v1/databases/pg/query", `{"collection":"customers","where":[{"field":"` + long + `","op":"==","value":"x"}]}`, "invalid_dtql"},
-		{"DTQL of the database, a collection", http.MethodPost, "/v1/databases/pg/dtql", "from: {name: " + long + "}\n", "invalid_key"},
-		{"DTQL of the database, a field", http.MethodPost, "/v1/databases/pg/dtql", "from: {name: customers}\norderBy: [{field: " + long + "}]\n", "invalid_dtql"},
-		{"relational document, a collection", http.MethodPost, "/v1/dtql", "from: {database: pg, name: " + long + "}\n", "invalid_key"},
-		{"relational document, a field", http.MethodPost, "/v1/dtql", "from: {database: pg, name: customers, alias: c}\nwhere: {op: '==', left: {field: " + long + ", source: c}, right: {value: x}}\n", "invalid_dtql"},
+		{"wire query, a field", http.MethodPost, "/v1/databases/pg/query", `{"collection":"customers","where":[{"field":"` + long + `","op":"==","value":"x"}]}`, "invalid_tugql"},
+		{"TugQL of the database, a collection", http.MethodPost, "/v1/databases/pg/tugql", "from: {name: " + long + "}\n", "invalid_key"},
+		{"TugQL of the database, a field", http.MethodPost, "/v1/databases/pg/tugql", "from: {name: customers}\norderBy: [{field: " + long + "}]\n", "invalid_tugql"},
+		{"relational document, a collection", http.MethodPost, "/v1/tugql", "from: {database: pg, name: " + long + "}\n", "invalid_key"},
+		{"relational document, a field", http.MethodPost, "/v1/tugql", "from: {database: pg, name: customers, alias: c}\nwhere: {op: '==', left: {field: " + long + ", source: c}, right: {value: x}}\n", "invalid_tugql"},
 	}
 	// The mount must hold a session, or "no statement" would say nothing.
 	if pgITSessions(t, admin, "ovdb-it-names") == 0 {
@@ -1688,7 +1688,7 @@ func TestPostgresIntegration_NamesOver63BytesAreA400AndNoStatementIsSent(t *test
 	// A document the server evaluates itself (a join across databases, a document with a
 	// subquery) hands the mount a plain scan, which holds no field name: the length is not
 	// looked at, the field list is read from the catalog, and a name that no column has is an
-	// unknown field (400 invalid_dtql). It is not written into a statement, but the list is
+	// unknown field (400 invalid_tugql). It is not written into a statement, but the list is
 	// one, so these are not part of the observation above.
 	for _, c := range []struct{ name, doc string }{
 		{"a join across databases", strings.Replace(pgITDoc(pgITJoin, "pg"), "database: pg, name: customers", "database: lite, name: customers", 1) +
@@ -1696,9 +1696,9 @@ func TestPostgresIntegration_NamesOver63BytesAreA400AndNoStatementIsSent(t *test
 		{"a document with a subquery", "from: {database: pg, name: customers, alias: c}\n" +
 			"where: {exists: {query: {from: {database: pg, name: orders, alias: o}, where: {op: '==', left: {field: " + long + ", source: o}, right: {value: x}}}}}\n"},
 	} {
-		resp := relHTTPDo(t, base, http.MethodPost, "/v1/dtql", "", c.doc, nil)
-		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_dtql" {
-			t.Errorf("%s, a field of 64 bytes: status %d, want 400 invalid_dtql: %s", c.name, resp.status, resp.raw)
+		resp := relHTTPDo(t, base, http.MethodPost, "/v1/tugql", "", c.doc, nil)
+		if resp.status != http.StatusBadRequest || resp.errorField("code") != "invalid_tugql" {
+			t.Errorf("%s, a field of 64 bytes: status %d, want 400 invalid_tugql: %s", c.name, resp.status, resp.raw)
 			continue
 		}
 		// The status and the code are the database route's too; what tells this answer from

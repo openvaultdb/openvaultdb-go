@@ -33,7 +33,7 @@ engine.
 - **Key segments** (collection names and record IDs) are percent-decoded individually, then
   checked (`core.ValidateSegment`): empty string, `.`, `..`, control characters, and any `.`/`..`
   component between decoded `/` or `\` separators are rejected with HTTP 400 `invalid_key`.
-  This applies to record URLs (all methods), batch keys, query collection/parent and DTQL
+  This applies to record URLs (all methods), batch keys, query collection/parent and TugQL
   collection names. File-backed drivers (dalgo2ingitdb) *do* join key components into
   filesystem paths, so an escaped id like `%2E%2E%2F%2E%2E%2Fsecrets%2F%24records%2Fs1` once
   escaped its collection and bypassed per-collection capability scoping; the boundary check is
@@ -44,7 +44,7 @@ engine.
   has one canonical name. On the key routes (`/records`, `/read?key=`, `/batch`) a grant scoped
   to any spelling holds for a key written with any of them, and the adapter is given the
   canonical name; the routes that give the adapter or the coordinator the collection as
-  written (`/query`, `/dtql`, the protected `PATCH`, `/access/evaluate`, `/access/evidence`)
+  written (`/query`, `/tugql`, the protected `PATCH`, `/access/evaluate`, `/access/evidence`)
   take the canonical name only, and refuse any other spelling as a collection the database
   does not declare. A nested key on `ingitdb` or `firestore` is a subcollection of the parent record in
   every adapter call (Get, Set, Insert, Update, Delete), so the root collection is the one the
@@ -166,7 +166,7 @@ production-hosting ready — no TLS, no rate limits, no audit log):
   Grants persist with SHA-256 token hashes only (`--auth-store`, mode 0600),
   so the grants file never contains usable credentials.
 - Capabilities follow the spec taxonomy with optional collection scoping;
-  a collection-scoped grant is checked against every collection a DTQL
+  a collection-scoped grant is checked against every collection a TugQL
   document reads (the root, each join, each subquery), and the request is a
   `403` if any is outside the grant; collection-scoped grants cannot
   enumerate databases; `/v1/status` redacts the
@@ -206,7 +206,7 @@ top-level keys, an update's `fieldName` and the first segment of its
 its own: it is a path-safety rule and accepts quotes, spaces and semicolons.
 A write that names nothing to change (an update with no operation, a set of no
 field for a record that exists) is refused with 400 `bad_request` as well.
-Structured queries (`/query`, `/dtql`) are available on this engine only in
+Structured queries (`/query`, `/tugql`) are available on this engine only in
 preview: the environment of the server must hold `OVDB_PREVIEW_POSTGRES_QUERIES=1`
 when the mount opens (read once; any other value, or none, leaves the mount
 answering 501 `query_unsupported` as before, and no statement is sent to the
@@ -218,7 +218,7 @@ column of a declared collection of a strict mount has (a name that a column of t
 query carries as its alias is read as the alias only in HAVING and ORDER BY,
 outside an aggregate, as the compiler reads it), a source qualifier that no source
 of the query has, and a source alias longer than the 63 bytes of a name in
-PostgreSQL (400 `invalid_dtql`, nothing logged). A manifest that declares a collection or a
+PostgreSQL (400 `invalid_tugql`, nothing logged). A manifest that declares a collection or a
 field name that PostgreSQL cannot keep whole (a name over 63 bytes, or one that is not a plain
 ASCII identifier) is refused when it is loaded, before any connection is made, so a name that
 long reaches the server only in a request. Every route that takes a name from the request
@@ -227,7 +227,7 @@ than those 63 bytes
 (PostgreSQL would cut it and address the table or column named by its first 63), and so is a
 field of a query wherever the query or the document is handed to the mount: a collection is
 400 `invalid_key`, a field of a write 400 `bad_request` and a field of a query 400
-`invalid_dtql`; the human page of a collection answers 404 for a name the database does not
+`invalid_tugql`; the human page of a collection answers 404 for a name the database does not
 declare, one over 63 bytes included, and sends no statement. A document the server evaluates itself (a join across databases, a document
 with a subquery) hands each mount a plain scan, so a field of 64 bytes there is not looked at
 for its length: the field list of each source is read from the catalog (one statement a
@@ -237,7 +237,7 @@ that names are folded to lower case. What the adapter says on this path never
 reaches a response or a log: `dal.ErrNotSupported` and an unknown dialect are
 422 `query_unsupported` with a fixed message; a value or a name the server
 refuses by a SQLSTATE read by type (class 22, 42883, 42804, 42703, 42P18, which a
-caller's mistake can cause) is a 400 `invalid_dtql` with a fixed message and
+caller's mistake can cause) is a 400 `invalid_tugql` with a fixed message and
 nothing logged, so no caller can fill the log with them; a refusal that DALgo
 itself raises above the adapter, in its planner or in the join it evaluates when
 the adapter declines one, keeps its type, rebuilt from its category, path and
@@ -253,7 +253,7 @@ the adapter's fixed sentence for the failure and nothing of the connection strin
 host, port, database name, user or password). A read of one collection whose result is
 larger than the 8 MiB response buffer is a 422 `query_budget_exceeded` with a hint to
 narrow or page the read, and is not logged as an error; the body of `POST /query` is read
-up to 1 MiB, as the DTQL endpoints read theirs. A join of the mount's
+up to 1 MiB, as the TugQL endpoints read theirs. A join of the mount's
 own database reaches the adapter without the database its sources name, which
 the source guard has checked is the mount's own. Access control on a PostgreSQL
 mount stays refused when the manifest is mounted. The switch is removed after

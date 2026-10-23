@@ -73,7 +73,7 @@ func capabilitiesFlag(t *testing.T, caps map[string]bool, name string) bool {
 // record reads are served, so it is false for a read-only mount; write and delete
 // are the same flag, false under the server-wide switch or for a read-only mount;
 // reset is false and persistent is true for a server-hosted database. Query and
-// dtql do not depend on read.
+// tugql do not depend on read.
 func TestDatabaseCapabilitiesReadWriteDeleteResetPersistent(t *testing.T) {
 	for _, c := range []struct {
 		name      string
@@ -81,7 +81,7 @@ func TestDatabaseCapabilitiesReadWriteDeleteResetPersistent(t *testing.T) {
 		db        *core.Database
 		wantRead  bool
 		wantWrite bool
-		wantDTQL  bool
+		wantTugQL bool
 	}{
 		{"writable database", false, relFakeMount("alpha", "sqlite", ""), true, true, true},
 		{"server --read-only", true, relFakeMount("alpha", "sqlite", ""), true, false, true},
@@ -101,8 +101,8 @@ func TestDatabaseCapabilitiesReadWriteDeleteResetPersistent(t *testing.T) {
 			if got := capabilitiesFlag(t, caps, "delete"); got != c.wantWrite {
 				t.Errorf("delete = %v, want %v (the same flag as write)", got, c.wantWrite)
 			}
-			if got := capabilitiesFlag(t, caps, "dtql"); got != c.wantDTQL {
-				t.Errorf("dtql = %v, want %v", got, c.wantDTQL)
+			if got := capabilitiesFlag(t, caps, "tugql"); got != c.wantTugQL {
+				t.Errorf("tugql = %v, want %v", got, c.wantTugQL)
 			}
 			if capabilitiesFlag(t, caps, "reset") {
 				t.Errorf("reset = true, want false for a server-hosted database")
@@ -156,7 +156,7 @@ func TestDatabaseCapabilitiesNilDatabase(t *testing.T) {
 	}{{false, true}, {true, false}} {
 		s := New("test", map[string]*core.Database{}, WithReadOnly(c.serverRO))
 		caps := s.databaseCapabilities(nil)
-		if !capabilitiesFlag(t, caps, "read") || capabilitiesFlag(t, caps, "query") || capabilitiesFlag(t, caps, "dtql") {
+		if !capabilitiesFlag(t, caps, "read") || capabilitiesFlag(t, caps, "query") || capabilitiesFlag(t, caps, "tugql") {
 			t.Errorf("nil database: %v", caps)
 		}
 		if capabilitiesFlag(t, caps, "write") != c.want || capabilitiesFlag(t, caps, "delete") != c.want {

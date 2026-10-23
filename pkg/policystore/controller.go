@@ -60,7 +60,7 @@ func (c *Controller) Reload(ctx context.Context) (Snapshot, error) {
 	c.active = &snapshot
 	return copySnapshot(snapshot), nil
 }
-func (c *Controller) Activate(ctx context.Context, expected string, documents []access.DTQLDocument) (Snapshot, error) {
+func (c *Controller) Activate(ctx context.Context, expected string, documents []access.TugQLDocument) (Snapshot, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	_, publishErr := c.store.Activate(ctx, expected, documents)

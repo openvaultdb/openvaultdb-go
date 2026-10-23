@@ -44,13 +44,13 @@ func TestAResultOfExactlyTheBufferIsReadAndOneByteMoreIsRefused(t *testing.T) {
 	ctx := context.Background()
 	for _, engine := range []string{"sqlite", "postgres"} {
 		setPreview(t, true, "1")
-		parsed, _, err := ParseDTQL([]byte(guardDTQL))
+		parsed, _, err := ParseTugQL([]byte(guardTugQL))
 		if err != nil {
 			t.Fatal(err)
 		}
 		routes := map[string]func(*Database) error{
-			"Execute":          func(d *Database) error { _, err := d.Execute(ctx, Query{Collection: "customers"}); return err },
-			"ExecuteDTQLQuery": func(d *Database) error { _, err := d.ExecuteDTQLQuery(ctx, parsed); return err },
+			"Execute":           func(d *Database) error { _, err := d.Execute(ctx, Query{Collection: "customers"}); return err },
+			"ExecuteTugQLQuery": func(d *Database) error { _, err := d.ExecuteTugQLQuery(ctx, parsed); return err },
 		}
 		for name, run := range routes {
 			t.Run(engine+"/"+name+"/at the bound", func(t *testing.T) {
@@ -82,7 +82,7 @@ func TestAResultOfExactlyTheBufferIsReadAndOneByteMoreIsRefused(t *testing.T) {
 // result reached.
 func TestTheRefusalOfAResultOverTheBufferIsItsOwnError(t *testing.T) {
 	err := ErrResultTooLarge
-	for _, other := range []error{ErrInvalidQuery, ErrInvalidDTQL, ErrQueryNotRunnable, ErrQueryDoesNotFit, ErrNotFound, ErrDatabaseUnreachable, dal.ErrNotSupported} {
+	for _, other := range []error{ErrInvalidQuery, ErrInvalidTugQL, ErrQueryNotRunnable, ErrQueryDoesNotFit, ErrNotFound, ErrDatabaseUnreachable, dal.ErrNotSupported} {
 		if errors.Is(err, other) {
 			t.Errorf("ErrResultTooLarge matches %v", other)
 		}

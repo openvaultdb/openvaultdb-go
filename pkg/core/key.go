@@ -48,7 +48,7 @@ func ValidateSegment(s string) error {
 }
 
 // ValidateCollectionName applies ValidateSegment to a collection name taken
-// from a request body (query collection, DTQL source).
+// from a request body (query collection, TugQL source).
 func ValidateCollectionName(name string) error {
 	return ValidateSegment(name)
 }

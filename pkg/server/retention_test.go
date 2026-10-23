@@ -89,9 +89,13 @@ func TestNoRetentionRefusesAllContinuationBeforeAdapterOrSnapshot(t *testing.T) 
 				{"OVDB-Page-Future": {""}},
 			}
 			routes := []struct{ method, path, body string }{
+				{"POST", "/v1/databases/live/tugql", "from: {name: customers}\n"},
+				{"GET", "/v1/databases/live/tugql?q=" + url.QueryEscape("from: {name: customers}\n"), ""},
+				{"POST", "/v1/databases/live/tugql", "from: {name: customers, alias: c}\n"},
+				{"POST", "/v1/tugql", "from: {database: live, name: customers}\n"},
+				// Legacy routes keep the same refusal (removed in TugQL cutover step 9).
 				{"POST", "/v1/databases/live/dtql", "from: {name: customers}\n"},
 				{"GET", "/v1/databases/live/dtql?q=" + url.QueryEscape("from: {name: customers}\n"), ""},
-				{"POST", "/v1/databases/live/dtql", "from: {name: customers, alias: c}\n"},
 				{"POST", "/v1/dtql", "from: {database: live, name: customers}\n"},
 				{"GET", "/v1/databases/live/read?key=customers/a", ""},
 				{"GET", "/v1/databases/live/records/customers/a", ""},
@@ -116,14 +120,14 @@ func TestNoRetentionRefusesAllContinuationBeforeAdapterOrSnapshot(t *testing.T) 
 				assertRetentionRefusal(t, retentionRequest(s.Handler(), "POST", "/v1/databases/live/query", `{"collection":"customers","`+name+`":""}`, nil))
 				assertRetentionRefusal(t, retentionRequest(s.Handler(), "GET", "/v1/databases/live/query?q="+url.QueryEscape(`{"collection":"customers","`+name+`":null}`), "", nil))
 			}
-			query, _, err := core.ParseDTQL([]byte("from: {name: customers}\n"))
+			query, _, err := core.ParseTugQL([]byte("from: {name: customers}\n"))
 			if err != nil {
 				t.Fatal(err)
 			}
 			w := httptest.NewRecorder()
-			s.handlePagedDTQL(w, httptest.NewRequest("POST", "/", nil), db, query, nil)
+			s.handlePagedTugQL(w, httptest.NewRequest("POST", "/", nil), db, query, nil)
 			assertRetentionRefusal(t, w)
-			if _, _, err := spoolDTQL(context.Background(), db, query, s.snapshotDir, DefaultSnapshotLimits(), 0); err != errRetentionNotAuthorized {
+			if _, _, err := spoolTugQL(context.Background(), db, query, s.snapshotDir, DefaultSnapshotLimits(), 0); err != errRetentionNotAuthorized {
 				t.Fatal(err)
 			}
 			for _, close := range []bool{false, true} {
@@ -152,8 +156,8 @@ func TestNoRetentionOrdinaryReadsAndDiscoveryAreNoStore(t *testing.T) {
 	t.Cleanup(s.CloseSnapshots)
 	db.Manifest.Database.CacheTTL = "1h" // defense even after admission
 	routes := []struct{ method, path, body string }{
-		{"POST", "/v1/databases/live/dtql", "from: {name: customers}\nlimit: 2\n"},
-		{"GET", "/v1/databases/live/dtql?q=" + url.QueryEscape("from: {name: customers}\nlimit: 2\n"), ""},
+		{"POST", "/v1/databases/live/tugql", "from: {name: customers}\nlimit: 2\n"},
+		{"GET", "/v1/databases/live/tugql?q=" + url.QueryEscape("from: {name: customers}\nlimit: 2\n"), ""},
 		{"POST", "/v1/databases/live/query", `{"collection":"customers","limit":2}`},
 		{"GET", "/v1/databases/live/query?q=" + url.QueryEscape(`{"collection":"customers","limit":2}`), ""},
 		{"GET", "/v1/databases/live/read?key=customers/a", ""},
@@ -177,7 +181,7 @@ func TestNoRetentionOrdinaryReadsAndDiscoveryAreNoStore(t *testing.T) {
 	}
 	w := retentionRequest(s.Handler(), "GET", "/v1/databases/live", "", nil)
 	metadata := profileDocument(t, w)
-	if metadata["id"] != "live" || metadata["serverId"] != "stable-server" || metadata["retention"] != "none" || metadata["queryFormat"] != queryFormat || metadata["capabilities"].(map[string]any)["dtql"] != true {
+	if metadata["id"] != "live" || metadata["serverId"] != "stable-server" || metadata["retention"] != "none" || metadata["queryFormat"] != queryFormat || metadata["capabilities"].(map[string]any)["tugql"] != true {
 		t.Fatal(metadata)
 	}
 	if relationalCacheControl(true, false, "GET", []cacheFacts{{TTL: 60 * 1e9, NoRetention: true}}) != "no-store" {
@@ -194,14 +198,14 @@ func TestNoRetentionContinuationDocumentsFailClosed(t *testing.T) {
 		{"trailing-junk", "POST", "/v1/databases/live/query", `{"collection":"customers","snapshotToken":"old"}junk`, nil, 422},
 		{"trailing-object", "POST", "/v1/databases/live/query", `{"collection":"customers"}{"snapshotToken":"old"}`, nil, 422},
 		{"malformed-escape", "GET", "/v1/databases/live/read?key=customers/a&snapshotToken=%ZZ", "", nil, 422},
-		{"yaml-post", "POST", "/v1/databases/live/dtql", "from: {name: customers}\nsnapshotToken: old\n", nil, 422},
-		{"yaml-get", "GET", "/v1/databases/live/dtql?q=" + url.QueryEscape("from: {name: customers}\nsnapshotToken: null\n"), "", nil, 422},
-		{"envelope-token", "POST", "/v1/databases/live/dtql", `{"query":"from: {name: customers}\n","snapshotToken":"old"}`, http.Header{"Content-Type": {"application/json"}}, 422},
-		{"envelope-yaml-token", "POST", "/v1/databases/live/dtql", `{"query":"from: {name: customers}\nsnapshotToken: old\n"}`, http.Header{"Content-Type": {"application/json"}}, 422},
+		{"yaml-post", "POST", "/v1/databases/live/tugql", "from: {name: customers}\nsnapshotToken: old\n", nil, 422},
+		{"yaml-get", "GET", "/v1/databases/live/tugql?q=" + url.QueryEscape("from: {name: customers}\nsnapshotToken: null\n"), "", nil, 422},
+		{"envelope-token", "POST", "/v1/databases/live/tugql", `{"query":"from: {name: customers}\n","snapshotToken":"old"}`, http.Header{"Content-Type": {"application/json"}}, 422},
+		{"envelope-yaml-token", "POST", "/v1/databases/live/tugql", `{"query":"from: {name: customers}\nsnapshotToken: old\n"}`, http.Header{"Content-Type": {"application/json"}}, 422},
 		{"ordinary-trailing-junk", "POST", "/v1/databases/live/query", `{"collection":"customers"}junk`, nil, 400},
 		{"ordinary-trailing-object", "POST", "/v1/databases/live/query", `{"collection":"customers"}{}`, nil, 400},
 		{"ordinary-malformed-escape", "GET", "/v1/databases/live/read?key=customers/a&extra=%ZZ", "", nil, 400},
-		{"ordinary-malformed-yaml", "POST", "/v1/databases/live/dtql", "from: [", nil, 400},
+		{"ordinary-malformed-yaml", "POST", "/v1/databases/live/tugql", "from: [", nil, 400},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -233,13 +237,13 @@ func TestNoRetentionCrossDatabaseContinuationBeforeRead(t *testing.T) {
 	s.joinStreamExecute = legacyJoinStream(fake.execute)
 	t.Cleanup(s.CloseSnapshots)
 	doc := strings.ReplaceAll(strings.ReplaceAll(relFakeAcross, "alpha", "native"), "beta", "live") + "\nsnapshotToken: old\n"
-	assertRetentionRefusal(t, retentionRequest(s.Handler(), "POST", "/v1/dtql", doc, nil))
-	assertRetentionRefusal(t, retentionRequest(s.Handler(), "GET", "/v1/dtql?q="+url.QueryEscape(doc), "", nil))
+	assertRetentionRefusal(t, retentionRequest(s.Handler(), "POST", "/v1/tugql", doc, nil))
+	assertRetentionRefusal(t, retentionRequest(s.Handler(), "GET", "/v1/tugql?q="+url.QueryEscape(doc), "", nil))
 	for _, body := range []string{
 		`{"query":` + strconv.Quote(doc) + `}`,
 		`{"query":` + strconv.Quote(strings.TrimSuffix(doc, "\nsnapshotToken: old\n")) + `,"snapshotToken":"old"}`,
 	} {
-		assertRetentionRefusal(t, retentionRequest(s.Handler(), "POST", "/v1/dtql", body, http.Header{"Content-Type": {"application/json"}}))
+		assertRetentionRefusal(t, retentionRequest(s.Handler(), "POST", "/v1/tugql", body, http.Header{"Content-Type": {"application/json"}}))
 	}
 	entries, err := os.ReadDir(s.snapshotDir)
 	if err != nil {
@@ -269,7 +273,7 @@ func TestNativeContinuationAndTrailingDocumentsStayInvalid(t *testing.T) {
 		if strings.HasPrefix(body, "{") {
 			headers.Set("Content-Type", "application/json")
 		}
-		w := retentionRequest(s.Handler(), "POST", "/v1/dtql", body, headers)
+		w := retentionRequest(s.Handler(), "POST", "/v1/tugql", body, headers)
 		if w.Code != 400 {
 			t.Fatal(w.Code, w.Body.String())
 		}
@@ -300,7 +304,7 @@ func TestNativePagingRejectsDuplicateAndEmptyHeadersBeforeRead(t *testing.T) {
 	s := New("test", map[string]*core.Database{"live": db})
 	t.Cleanup(s.CloseSnapshots)
 	for _, headers := range []http.Header{{"OVDB-Page-Size": {""}}, {"OVDB-Page-Size": {"1", "1"}}, {"OVDB-Page-Size": {"1"}, "OVDB-Page-Token": {""}}, {"OVDB-Page-Size": {"1"}, "OVDB-Page-Close": {"true", "true"}}} {
-		w := retentionRequest(s.Handler(), "POST", "/v1/databases/live/dtql", "from: {name: customers}\n", headers)
+		w := retentionRequest(s.Handler(), "POST", "/v1/databases/live/tugql", "from: {name: customers}\n", headers)
 		if w.Code != 400 {
 			t.Fatal(w.Code, w.Body.String())
 		}
@@ -320,12 +324,12 @@ func TestNoRetentionMixedRelationalQueryGuardsBeforeAdmission(t *testing.T) {
 	db.Manifest.Database.CacheTTL = "1h"
 	doc := strings.ReplaceAll(strings.ReplaceAll(relFakeAcross, "alpha", "native"), "beta", "live")
 	for _, headers := range []http.Header{{"OVDB-Page-Size": {"1"}}, {"OVDB-Page-Token": {""}}} {
-		assertRetentionRefusal(t, retentionRequest(s.Handler(), "POST", "/v1/dtql", doc, headers))
+		assertRetentionRefusal(t, retentionRequest(s.Handler(), "POST", "/v1/tugql", doc, headers))
 	}
 	if fake.count() != 0 || driver.reads.Load() != 0 || s.snapshotSlots != 0 {
 		t.Fatal("mixed query reached admission or upstream")
 	}
-	w := retentionRequest(s.Handler(), "GET", "/v1/dtql?q="+url.QueryEscape(doc), "", nil)
+	w := retentionRequest(s.Handler(), "GET", "/v1/tugql?q="+url.QueryEscape(doc), "", nil)
 	if w.Code != 200 || w.Header().Get("Cache-Control") != "no-store" {
 		t.Fatal(w.Code, w.Header(), w.Body.String())
 	}

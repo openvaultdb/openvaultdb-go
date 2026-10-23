@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
 )
@@ -58,7 +58,7 @@ func TestProtectedUpdateOfTheKeyColumnIsABadRequest(t *testing.T) {
 			f := startCanonicalNames(t)
 			op := writeGuardProtectedOp("update", "/customers/01", writeGuardProtectedSet(path...))
 			data, _ := json.Marshal(op)
-			status, body := writeGuardRequest(t, f.ts, "PATCH", "/v1/databases/crm/records/customers/01", "application/vnd.dtql.operation+json", string(data))
+			status, body := writeGuardRequest(t, f.ts, "PATCH", "/v1/databases/crm/records/customers/01", "application/vnd.tugql.operation+json", string(data))
 			if status != http.StatusBadRequest {
 				t.Errorf("protected PATCH: status %d: %s", status, body)
 			}

@@ -104,10 +104,10 @@ var unreachableRoutes = []struct{ name, method, path, body string }{
 	{"database metadata", http.MethodGet, "/v1/databases/pg", ""},
 	{"wire query", http.MethodPost, "/v1/databases/pg/query", `{"collection":"customers"}`},
 	{"wire query, URL form", http.MethodGet, `/v1/databases/pg/query?q=%7B%22collection%22%3A%22customers%22%7D`, ""},
-	{"DTQL of the database", http.MethodPost, "/v1/databases/pg/dtql", "from: {name: customers}\n"},
-	{"relational document, alone", http.MethodPost, "/v1/dtql", "from: {database: pg, name: customers}\n"},
-	{"relational document, in the database", http.MethodPost, "/v1/dtql", previewPGSameDatabaseJoin},
-	{"relational document, joined to another database", http.MethodPost, "/v1/dtql", previewPGRoutes[3].body},
+	{"TugQL of the database", http.MethodPost, "/v1/databases/pg/tugql", "from: {name: customers}\n"},
+	{"relational document, alone", http.MethodPost, "/v1/tugql", "from: {database: pg, name: customers}\n"},
+	{"relational document, in the database", http.MethodPost, "/v1/tugql", previewPGSameDatabaseJoin},
+	{"relational document, joined to another database", http.MethodPost, "/v1/tugql", previewPGRoutes[3].body},
 }
 
 // unreachableServer serves the PostgreSQL mount "pg" over a driver that fails every
@@ -252,7 +252,7 @@ func TestTheHumanPageOfAMountWhoseDriverFailsForAnotherReasonIsStillA500(t *test
 	}
 }
 
-// The paged capture of a DTQL read, which no route above covers (it takes the header of a
+// The paged capture of a TugQL read, which no route above covers (it takes the header of a
 // page size), is the same 503 with the same log line. The decision that a connection that
 // fails under the server's time budget is this answer too is made in core, where the budget
 // is a seam (core.TestAConnectionThatFailsUnderTheBudgetOfTheServerIsUnreachable); this
@@ -261,7 +261,7 @@ func TestAPagedCaptureOfAMountThatCannotBeReachedIsAFixed503(t *testing.T) {
 	for _, kind := range unreachableKinds {
 		t.Run(kind.name, func(t *testing.T) {
 			host, logs := unreachableServer(t, unreachableFailure(kind.kind, kind.sqlState))
-			resp := relFakeDo(t, host, http.MethodPost, "/v1/databases/pg/dtql", "", "from: {name: customers}\n", map[string]string{"OVDB-Page-Size": "10"})
+			resp := relFakeDo(t, host, http.MethodPost, "/v1/databases/pg/tugql", "", "from: {name: customers}\n", map[string]string{"OVDB-Page-Size": "10"})
 			if resp.status != http.StatusServiceUnavailable || resp.code() != "database_unavailable" {
 				t.Fatalf("status %d: %s", resp.status, resp.raw)
 			}
@@ -278,7 +278,7 @@ func TestAPagedCaptureOfAMountThatCannotBeReachedIsAFixed503(t *testing.T) {
 // the timeout it is documented to be (504 query_timeout), not the 503 of an unreachable
 // database: the budget of the document is the server's limit on the whole document, and the
 // adapter reports the attempt it cut short as a connection failure that is also the
-// deadline. This pins the choice made for the documents of /v1/dtql; the routes of one
+// deadline. This pins the choice made for the documents of /v1/tugql; the routes of one
 // collection decide on the request, and answer 503 (see core).
 func TestARelationalDocumentWhoseBudgetEndsOnAConnectionAttemptIsStillA504(t *testing.T) {
 	failure := errors.Join(unreachableFailure(dalgo2postgres.FailureTimeout, ""), context.DeadlineExceeded)
@@ -288,7 +288,7 @@ func TestARelationalDocumentWhoseBudgetEndsOnAConnectionAttemptIsStillA504(t *te
 	} {
 		t.Run(route.name, func(t *testing.T) {
 			host, logs := previewPGServerLimits(t, &unreachableDriver{previewPGDriver: &previewPGDriver{openErr: failure, fieldsErr: failure}, failure: failure}, time.Nanosecond)
-			resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", route.body, nil)
+			resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", route.body, nil)
 			if resp.status != http.StatusGatewayTimeout || resp.code() != "query_timeout" {
 				t.Fatalf("status %d: %s", resp.status, resp.raw)
 			}

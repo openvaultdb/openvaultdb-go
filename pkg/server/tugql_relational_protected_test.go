@@ -82,7 +82,7 @@ func (f *relProtectedFake) RunReadonlyTransaction(context.Context, dal.ROTxWorke
 	return io.ErrUnexpectedEOF
 }
 
-const relProtectedPolicy = `apiVersion: dtql.org/access/v1
+const relProtectedPolicy = `apiVersion: tugql.org/access/v1
 kind: AccessPolicy
 metadata:
   name: readers
@@ -184,7 +184,7 @@ const (
 // relProtectedShapes are the shapes a relational document takes. Each is a format
 // that puts the collection under test where %[1]s stands, with the database of a
 // source written where %[2]s stands (the per-database endpoint takes sources that
-// name none, /v1/dtql needs every source to name one). The documents are the same
+// name none, /v1/tugql needs every source to name one). The documents are the same
 // for the three names.
 var relProtectedShapes = []struct {
 	name string
@@ -243,8 +243,8 @@ func TestARelationalDocumentIsNotRunOnADatabaseWithAccessPolicies(t *testing.T) 
 		for _, endpoint := range []struct {
 			name, path, database string
 		}{
-			{"per-database endpoint", "/v1/databases/crm/dtql", ""},
-			{"/v1/dtql", "/v1/dtql", "database: crm, "},
+			{"per-database endpoint", "/v1/databases/crm/tugql", ""},
+			{"/v1/tugql", "/v1/tugql", "database: crm, "},
 		} {
 			for _, caller := range []struct{ name, token string }{{"owner", relProtectedOwner}, {"granted token", relProtectedGranted}} {
 				for _, shape := range relProtectedShapes {
@@ -296,17 +296,17 @@ func TestTheRefusalOfAProtectedDatabaseComesAfterTheCapabilityAndTheLeaseOnly(t 
 		code                   string
 		names                  string // a collection the message names, when it names one
 	}{
-		{"a paging header", "/v1/dtql", relProtectedOwner, fmt.Sprintf(join, "crm"), map[string]string{"OVDB-Page-Size": "10"}, 422, "authorization_unsupported", ""},
-		{"a protected database next to one that is not mounted", "/v1/dtql", relProtectedOwner, fmt.Sprintf(join, "nowhere"), nil, 404, "not_found", ""},
-		{"no token", "/v1/dtql", "", fmt.Sprintf(join, "crm"), nil, 401, "", ""},
-		{"a source the per-database endpoint does not take", "/v1/databases/crm/dtql", relProtectedOwner, fmt.Sprintf(join, "other"), nil, 400, "invalid_dtql", ""},
+		{"a paging header", "/v1/tugql", relProtectedOwner, fmt.Sprintf(join, "crm"), map[string]string{"OVDB-Page-Size": "10"}, 422, "authorization_unsupported", ""},
+		{"a protected database next to one that is not mounted", "/v1/tugql", relProtectedOwner, fmt.Sprintf(join, "nowhere"), nil, 404, "not_found", ""},
+		{"no token", "/v1/tugql", "", fmt.Sprintf(join, "crm"), nil, 401, "", ""},
+		{"a source the per-database endpoint does not take", "/v1/databases/crm/tugql", relProtectedOwner, fmt.Sprintf(join, "other"), nil, 400, "invalid_tugql", ""},
 		// A token granted one collection of the database is refused a join of two before
 		// the refusal of the database, on both endpoints and whichever of the two the
 		// document starts from: the message names the collection it lacks.
-		{"a token scoped to customers, a join that starts from orders, on /v1/dtql", "/v1/dtql", relProtectedScoped, fmt.Sprintf(join, "crm"), nil, 403, "forbidden", "orders"},
-		{"a token scoped to customers, a join that starts from orders, on the per-database endpoint", "/v1/databases/crm/dtql", relProtectedScoped, fmt.Sprintf(join, "crm"), nil, 403, "forbidden", "orders"},
-		{"a token scoped to customers, a join that starts from customers, on /v1/dtql", "/v1/dtql", relProtectedScoped, inverse, nil, 403, "forbidden", "orders"},
-		{"a token scoped to customers, a join that starts from customers, on the per-database endpoint", "/v1/databases/crm/dtql", relProtectedScoped, inverse, nil, 403, "forbidden", "orders"},
+		{"a token scoped to customers, a join that starts from orders, on /v1/tugql", "/v1/tugql", relProtectedScoped, fmt.Sprintf(join, "crm"), nil, 403, "forbidden", "orders"},
+		{"a token scoped to customers, a join that starts from orders, on the per-database endpoint", "/v1/databases/crm/tugql", relProtectedScoped, fmt.Sprintf(join, "crm"), nil, 403, "forbidden", "orders"},
+		{"a token scoped to customers, a join that starts from customers, on /v1/tugql", "/v1/tugql", relProtectedScoped, inverse, nil, 403, "forbidden", "orders"},
+		{"a token scoped to customers, a join that starts from customers, on the per-database endpoint", "/v1/databases/crm/tugql", relProtectedScoped, inverse, nil, 403, "forbidden", "orders"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := relFakeDo(t, host, http.MethodPost, tc.path, tc.token, tc.doc, tc.headers)
@@ -342,7 +342,7 @@ func TestOnlyADatabaseWithAccessPoliciesRefusesARelationalDocument(t *testing.T)
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := executed.count()
-			resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", fmt.Sprintf(doc, tc.first, tc.second), nil)
+			resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", fmt.Sprintf(doc, tc.first, tc.second), nil)
 			if resp.status != tc.status {
 				t.Fatalf("status %d, want %d: %s", resp.status, tc.status, resp.raw)
 			}

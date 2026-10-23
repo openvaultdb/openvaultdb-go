@@ -8,14 +8,14 @@ import (
 	"testing"
 
 	"github.com/dal-go/dalgo/dal"
-	"github.com/dal-go/dalgo/dtql"
+	"github.com/dal-go/dalgo/tugql"
 	"github.com/dal-go/record"
 	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 )
 
 func mustDeserialize(t *testing.T, doc string) dal.StructuredQuery {
 	t.Helper()
-	query, err := dtql.Deserialize([]byte(doc))
+	query, err := tugql.Deserialize([]byte(doc))
 	if err != nil {
 		t.Fatalf("deserialize: %v\n%s", err, doc)
 	}
@@ -47,8 +47,8 @@ columns:
     as: revenue
 `
 
-func TestClassifyDTQLRelationalJoinGroupHaving(t *testing.T) {
-	profile, err := ClassifyDTQL(mustDeserialize(t, joinGroupHavingDoc))
+func TestClassifyTugQLRelationalJoinGroupHaving(t *testing.T) {
+	profile, err := ClassifyTugQL(mustDeserialize(t, joinGroupHavingDoc))
 	if err != nil {
 		t.Fatalf("classify: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestClassifyDTQLRelationalJoinGroupHaving(t *testing.T) {
 	}
 }
 
-func TestClassifyDTQLAcceptedShapes(t *testing.T) {
+func TestClassifyTugQLAcceptedShapes(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		doc         string
@@ -256,7 +256,7 @@ limit: 10
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			profile, err := ClassifyDTQL(mustDeserialize(t, tc.doc))
+			profile, err := ClassifyTugQL(mustDeserialize(t, tc.doc))
 			if err != nil {
 				t.Fatalf("classify: %v", err)
 			}
@@ -273,7 +273,7 @@ limit: 10
 	}
 }
 
-func TestClassifyDTQLSingleCollectionMatchesValidateDTQL(t *testing.T) {
+func TestClassifyTugQLSingleCollectionMatchesValidateTugQL(t *testing.T) {
 	for _, doc := range []string{
 		"from: {name: customers}\n",
 		"from: {name: customers}\nwhere: {op: '==', left: {field: \"zip code\"}, right: {value: 1}}\norderBy: [{field: \"zip code\"}]\n",
@@ -282,11 +282,11 @@ func TestClassifyDTQLSingleCollectionMatchesValidateDTQL(t *testing.T) {
 		"from: {name: customers}\nwhere: {op: '==', left: {field: name}, right: {param: n}}\norderBy: [{field: name, desc: true}]\n",
 	} {
 		query := mustDeserialize(t, doc)
-		collection, err := validateDTQL(query)
+		collection, err := validateTugQL(query)
 		if err != nil {
-			t.Fatalf("validateDTQL rejects %q: %v", doc, err)
+			t.Fatalf("validateTugQL rejects %q: %v", doc, err)
 		}
-		profile, err := ClassifyDTQL(query)
+		profile, err := ClassifyTugQL(query)
 		if err != nil {
 			t.Fatalf("classify %q: %v", doc, err)
 		}
@@ -297,7 +297,7 @@ func TestClassifyDTQLSingleCollectionMatchesValidateDTQL(t *testing.T) {
 	}
 }
 
-func TestClassifyDTQLRefusals(t *testing.T) {
+func TestClassifyTugQLRefusals(t *testing.T) {
 	deepQuery := func(depth int) string {
 		doc := "from: {name: leaf, alias: l}\n"
 		for i := 0; i < depth; i++ {
@@ -352,7 +352,7 @@ where:
 		{"subquery nested too deep", deepQuery(5), "subquery-depth", "from.query.from.query.from.query.from.query.from.query"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			profile, err := ClassifyDTQL(mustDeserialize(t, tc.doc))
+			profile, err := ClassifyTugQL(mustDeserialize(t, tc.doc))
 			assertRefusal(t, profile, err, tc.rule, tc.path)
 		})
 	}
@@ -368,8 +368,8 @@ func indent(text, prefix string) string {
 
 func assertRefusal(t *testing.T, profile Profile, err error, rule, path string) {
 	t.Helper()
-	if !errors.Is(err, ErrInvalidDTQL) {
-		t.Fatalf("err = %v, want ErrInvalidDTQL (profile %+v)", err, profile)
+	if !errors.Is(err, ErrInvalidTugQL) {
+		t.Fatalf("err = %v, want ErrInvalidTugQL (profile %+v)", err, profile)
 	}
 	if !reflect.DeepEqual(profile, Profile{}) {
 		t.Fatalf("a refused query returned a profile: %+v", profile)
@@ -382,7 +382,7 @@ func assertRefusal(t *testing.T, profile Profile, err error, rule, path string) 
 
 func buildQuery(from dal.FromSource) *dal.QueryBuilder { return from.NewQuery() }
 
-// unknownExpression and unknownCondition are shapes no DTQL document can
+// unknownExpression and unknownCondition are shapes no TugQL document can
 // produce; the validator must refuse them rather than pass them through.
 type unknownExpression struct{}
 
@@ -406,7 +406,7 @@ type nilMoneyQuery struct{ dal.StructuredQuery }
 
 func (nilMoneyQuery) Money() *dal.MoneyConfig { return nil }
 
-// cursorQuery sets the cursors that the DTQL decoder never produces.
+// cursorQuery sets the cursors that the TugQL decoder never produces.
 type cursorQuery struct {
 	dal.StructuredQuery
 	from, after dal.Cursor
@@ -439,7 +439,7 @@ type nilFrom struct{ dal.FromSource }
 
 func (nilFrom) Base() dal.RecordsetSource { return nil }
 
-func TestClassifyDTQLRefusesShapesDTQLCannotProduce(t *testing.T) {
+func TestClassifyTugQLRefusesShapesTugQLCannotProduce(t *testing.T) {
 	base := func() dal.StructuredQuery { return buildQuery(dal.From(rootRef("a"))).SelectIntoRecordset() }
 	withColumn := func(expr dal.Expression) dal.StructuredQuery {
 		return dal.WithColumns(base(), []dal.Column{{Expression: expr}})
@@ -545,9 +545,9 @@ func TestClassifyDTQLRefusesShapesDTQLCannotProduce(t *testing.T) {
 		{"cycle through scalar subqueries", cyclicQuery(), "subquery-depth", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			profile, err := ClassifyDTQL(tc.query)
+			profile, err := ClassifyTugQL(tc.query)
 			if tc.path == "" {
-				if !errors.Is(err, ErrInvalidDTQL) || !strings.Contains(err.Error(), tc.rule) {
+				if !errors.Is(err, ErrInvalidTugQL) || !strings.Contains(err.Error(), tc.rule) {
 					t.Fatalf("err = %v, want rule %s", err, tc.rule)
 				}
 				return
@@ -578,13 +578,13 @@ type selfReferentialPtr struct {
 
 func (q *selfReferentialPtr) Columns() []dal.Column { return q.columns }
 
-func TestClassifyDTQLAcceptsSubqueriesFourLevelsDeep(t *testing.T) {
+func TestClassifyTugQLAcceptsSubqueriesFourLevelsDeep(t *testing.T) {
 	// Four levels are accepted, five are refused (the refusal is asserted above).
 	doc := "from: {name: leaf, alias: l}\n"
 	for i := 0; i < 4; i++ {
 		doc = fmt.Sprintf("from:\n  query:\n    as: q%d\n%s", i, indent(doc, "    "))
 	}
-	profile, err := ClassifyDTQL(mustDeserialize(t, doc))
+	profile, err := ClassifyTugQL(mustDeserialize(t, doc))
 	if err != nil {
 		t.Fatalf("classify: %v", err)
 	}
@@ -593,20 +593,20 @@ func TestClassifyDTQLAcceptsSubqueriesFourLevelsDeep(t *testing.T) {
 	}
 }
 
-func TestClassifyDTQLNilMoneyIsAccepted(t *testing.T) {
+func TestClassifyTugQLNilMoneyIsAccepted(t *testing.T) {
 	query := nilMoneyQuery{buildQuery(dal.From(rootRef("a"))).SelectIntoRecordset()}
-	profile, err := ClassifyDTQL(query)
+	profile, err := ClassifyTugQL(query)
 	if err != nil || profile.Kind != ProfileSingleCollection {
 		t.Fatalf("profile = %+v err = %v", profile, err)
 	}
 }
 
-func TestClassifyDTQLMoneyAggregateUsesRelationalProfile(t *testing.T) {
+func TestClassifyTugQLMoneyAggregateUsesRelationalProfile(t *testing.T) {
 	query := mustDeserialize(t, `from: {name: Amounts, alias: a}
 money: {minorUnitScale: 6, divisionScale: 6, rounding: halfEven}
 columns: [{aggregate: {function: sum, args: [{field: amount, source: a}]}, as: total}]
 `)
-	profile, err := ClassifyDTQL(query)
+	profile, err := ClassifyTugQL(query)
 	if err != nil || profile.Kind != ProfileRelational || !profile.HasAggregation {
 		t.Fatalf("profile = %+v, err = %v", profile, err)
 	}
@@ -616,13 +616,13 @@ columns: [{aggregate: {function: sum, args: [{field: amount, source: a}]}, as: t
 	flatBase := buildQuery(flat).SelectIntoRecordset()
 	flatAggregate := dal.WithColumns(flatBase, []dal.Column{{Expression: dal.NewAggregate("sum", false, field)}})
 	flatMoney := moneyQuery{StructuredQuery: flatAggregate, config: &dal.MoneyConfig{MinorUnitScale: 2, DivisionScale: 4, Rounding: "halfEven"}}
-	flatProfile, err := ClassifyDTQL(flatMoney)
+	flatProfile, err := ClassifyTugQL(flatMoney)
 	if err != nil || flatProfile.Kind != ProfileRelational || !flatProfile.HasAggregation || len(flatProfile.Sources) != 2 {
 		t.Fatalf("flat-join money profile = %+v, err = %v", flatProfile, err)
 	}
 }
 
-func TestClassifyDTQLSubqueryOrDatabaseKeepsASingleSourceRelational(t *testing.T) {
+func TestClassifyTugQLSubqueryOrDatabaseKeepsASingleSourceRelational(t *testing.T) {
 	// These name one root collection, but must not be classified
 	// single-collection: a subquery or a database changes what the server has
 	// to authorise. (An alias and an aggregate are covered by the accepted
@@ -632,7 +632,7 @@ func TestClassifyDTQLSubqueryOrDatabaseKeepsASingleSourceRelational(t *testing.T
 		"from: {name: a}\nwhere:\n  op: In\n  left: {field: x}\n  right:\n    query:\n      from: {name: b, alias: b}\n      columns: [{field: x, source: b}]\n",
 		"from: {database: d, name: a}\n",
 	} {
-		profile, err := ClassifyDTQL(mustDeserialize(t, doc))
+		profile, err := ClassifyTugQL(mustDeserialize(t, doc))
 		if err != nil {
 			t.Fatalf("classify %q: %v", doc, err)
 		}
@@ -642,13 +642,13 @@ func TestClassifyDTQLSubqueryOrDatabaseKeepsASingleSourceRelational(t *testing.T
 	}
 }
 
-// TestClassifyDTQLRefusesTheNamesTheQueryGuardRefuses is the regression test
-// for the relational walk that checked no name: a name /dtql refuses through
-// ParseDTQL must not become an accepted relational document through
-// ClassifyDTQL, and a refusal returns a zero Profile. (Field names use a
+// TestClassifyTugQLRefusesTheNamesTheQueryGuardRefuses is the regression test
+// for the relational walk that checked no name: a name /tugql refuses through
+// ParseTugQL must not become an accepted relational document through
+// ClassifyTugQL, and a refusal returns a zero Profile. (Field names use a
 // semicolon as the unsafe character: a name with a space is a valid name since
 // the quoted-name rule. Aliases and qualifiers keep the identifier rule.)
-func TestClassifyDTQLRefusesTheNamesTheQueryGuardRefuses(t *testing.T) {
+func TestClassifyTugQLRefusesTheNamesTheQueryGuardRefuses(t *testing.T) {
 	const joined = `
 from:
   name: a
@@ -679,9 +679,9 @@ from:
 		{"database root with an unsafe field", "from: {database: chinook, name: Customer}\nwhere: {op: '==', left: {field: \"a;b\"}, right: {value: 1}}\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			profile, err := ClassifyDTQL(mustDeserialize(t, tc.doc))
-			if !errors.Is(err, ErrInvalidDTQL) {
-				t.Fatalf("err = %v, want ErrInvalidDTQL (profile %+v)", err, profile)
+			profile, err := ClassifyTugQL(mustDeserialize(t, tc.doc))
+			if !errors.Is(err, ErrInvalidTugQL) {
+				t.Fatalf("err = %v, want ErrInvalidTugQL (profile %+v)", err, profile)
 			}
 			if !reflect.DeepEqual(profile, Profile{}) {
 				t.Fatalf("a refused query returned a profile: %+v", profile)
@@ -690,7 +690,7 @@ from:
 	}
 }
 
-// boundsQuery overrides the limit and offset of a query, which a DTQL document
+// boundsQuery overrides the limit and offset of a query, which a TugQL document
 // cannot set to a negative number.
 type boundsQuery struct {
 	dal.StructuredQuery
@@ -700,9 +700,9 @@ type boundsQuery struct {
 func (q boundsQuery) Limit() int  { return q.limit }
 func (q boundsQuery) Offset() int { return q.offset }
 
-// TestClassifyDTQLCapsApplyToTheOutermostQueryOnly: a nested query keeps the
+// TestClassifyTugQLCapsApplyToTheOutermostQueryOnly: a nested query keeps the
 // cursor, money and sign checks, and loses only the two caps.
-func TestClassifyDTQLCapsApplyToTheOutermostQueryOnly(t *testing.T) {
+func TestClassifyTugQLCapsApplyToTheOutermostQueryOnly(t *testing.T) {
 	base := func() dal.StructuredQuery { return buildQuery(dal.From(rootRef("a"))).SelectIntoRecordset() }
 	derived := func(inner dal.StructuredQuery) dal.StructuredQuery {
 		return buildQuery(dal.From(dal.NewQuerySource(inner, "d"))).SelectIntoRecordset()
@@ -722,25 +722,25 @@ func TestClassifyDTQLCapsApplyToTheOutermostQueryOnly(t *testing.T) {
 		{"negative limit on the outermost query", boundsQuery{StructuredQuery: base(), limit: -1}, "limit", "$"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			profile, err := ClassifyDTQL(tc.query)
+			profile, err := ClassifyTugQL(tc.query)
 			assertRefusal(t, profile, err, tc.rule, tc.path)
 		})
 	}
 	// A nested query over the caps is accepted.
-	profile, err := ClassifyDTQL(derived(boundsQuery{StructuredQuery: base(), limit: relationalMaxLimit + 1, offset: relationalMaxOffset + 1}))
+	profile, err := ClassifyTugQL(derived(boundsQuery{StructuredQuery: base(), limit: relationalMaxLimit + 1, offset: relationalMaxOffset + 1}))
 	if err != nil || profile.Kind != ProfileRelational || !profile.HasSubquery {
 		t.Fatalf("profile = %+v err = %v", profile, err)
 	}
 }
 
-// TestClassifyDTQLCollectionNameRefusalKeepsBothSentinels: a collection name
-// /dtql refuses today is 400 invalid_key (the key rule's sentinel), and it must
+// TestClassifyTugQLCollectionNameRefusalKeepsBothSentinels: a collection name
+// /tugql refuses today is 400 invalid_key (the key rule's sentinel), and it must
 // stay so when the document is classified: the refusal carries ErrInvalidKey as
-// well as ErrInvalidDTQL.
-func TestClassifyDTQLCollectionNameRefusalKeepsBothSentinels(t *testing.T) {
+// well as ErrInvalidTugQL.
+func TestClassifyTugQLCollectionNameRefusalKeepsBothSentinels(t *testing.T) {
 	for _, name := range []string{"../b", "..", "a\x00b"} {
 		query := buildQuery(dal.From(rootRef(name))).SelectIntoRecordset()
-		profile, err := ClassifyDTQL(query)
+		profile, err := ClassifyTugQL(query)
 		assertRefusal(t, profile, err, "collection-name", "from")
 		if !errors.Is(err, ErrInvalidKey) {
 			t.Errorf("%q: err = %v, want it to wrap ErrInvalidKey as well", name, err)
@@ -748,23 +748,23 @@ func TestClassifyDTQLCollectionNameRefusalKeepsBothSentinels(t *testing.T) {
 	}
 	// A schema-qualified source receives the stable logical ID used for
 	// collection authorization and catalog routes.
-	profile, err := ClassifyDTQL(mustDeserialize(t, "from: {schema: s, name: a, alias: a}\n"))
+	profile, err := ClassifyTugQL(mustDeserialize(t, "from: {schema: s, name: a, alias: a}\n"))
 	wantID, idErr := schema.NativePostgresCollectionID("s", "a")
 	if err != nil || idErr != nil || profile.Kind != ProfileRelational || profile.Sources[0].Collection != wantID {
 		t.Fatalf("schema-qualified profile = %+v, %v; want logical collection %q", profile, err, wantID)
 	}
 }
 
-// TestClassifyDTQLRefusesWhatParseDTQLAccepts documents the shapes the
+// TestClassifyTugQLRefusesWhatParseTugQLAccepts documents the shapes the
 // single-collection profile accepts and the classifier refuses: the relational
 // rules are checked for every document, single-collection ones included. A
 // document with no subquery is classified as relational when it enables money;
-// a subquery in its WHERE, which ParseDTQL accepts, adds nesting deeper than
+// a subquery in its WHERE, which ParseTugQL accepts, adds nesting deeper than
 // the subquery cap, more sources than the source cap, scan bounds on a nested
 // source and money in a nested query. (A schema-qualified root is accepted by
 // the relational classifier for native PostgreSQL mounts but not the
-// single-collection ParseDTQL profile.)
-func TestClassifyDTQLRefusesWhatParseDTQLAccepts(t *testing.T) {
+// single-collection ParseTugQL profile.)
+func TestClassifyTugQLRefusesWhatParseTugQLAccepts(t *testing.T) {
 	const moneyConfig = "money: {minorUnitScale: 2, divisionScale: 4, rounding: halfEven}"
 	// nestedExists is a root whose WHERE holds a chain of EXISTS subqueries,
 	// levels deep: the root is a0 and the subquery at level i reads a<i>.
@@ -796,10 +796,10 @@ func TestClassifyDTQLRefusesWhatParseDTQLAccepts(t *testing.T) {
 		{"scan bounds on a nested source", "from: {name: a}\nwhere:\n  exists:\n    query:\n      from: {name: b, scan: {limit: 5, orderBy: [{field: id}]}}\n", "scan", "where.exists.query.from"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, _, err := ParseDTQL([]byte(tc.doc)); err != nil {
-				t.Fatalf("ParseDTQL refuses the document: %v\n%s", err, tc.doc)
+			if _, _, err := ParseTugQL([]byte(tc.doc)); err != nil {
+				t.Fatalf("ParseTugQL refuses the document: %v\n%s", err, tc.doc)
 			}
-			profile, err := ClassifyDTQL(mustDeserialize(t, tc.doc))
+			profile, err := ClassifyTugQL(mustDeserialize(t, tc.doc))
 			assertRefusal(t, profile, err, tc.rule, tc.path)
 		})
 	}
@@ -808,21 +808,21 @@ func TestClassifyDTQLRefusesWhatParseDTQLAccepts(t *testing.T) {
 		"subqueries nested at the cap": nestedExists(relationalMaxSubqueryDepth),
 		"sources at the cap":           existsSources(relationalMaxSources - 1),
 	} {
-		if _, _, err := ParseDTQL([]byte(doc)); err != nil {
-			t.Errorf("%s: ParseDTQL: %v", name, err)
+		if _, _, err := ParseTugQL([]byte(doc)); err != nil {
+			t.Errorf("%s: ParseTugQL: %v", name, err)
 		}
-		if profile, err := ClassifyDTQL(mustDeserialize(t, doc)); err != nil || profile.Kind != ProfileRelational {
-			t.Errorf("%s: ClassifyDTQL: %+v, %v", name, profile, err)
+		if profile, err := ClassifyTugQL(mustDeserialize(t, doc)); err != nil || profile.Kind != ProfileRelational {
+			t.Errorf("%s: ClassifyTugQL: %+v, %v", name, profile, err)
 		}
 	}
-	if profile, err := ClassifyDTQL(mustDeserialize(t, "from: {schema: main, name: a}\n")); err != nil || profile.Kind != ProfileRelational {
+	if profile, err := ClassifyTugQL(mustDeserialize(t, "from: {schema: main, name: a}\n")); err != nil || profile.Kind != ProfileRelational {
 		t.Errorf("schema-qualified root classification = %+v, %v", profile, err)
 	}
 	for label, doc := range map[string]string{
 		"scan root": "from: {name: a, scan: {limit: 5, orderBy: [{field: id}]}}\n",
 	} {
-		if _, _, err := ParseDTQL([]byte(doc)); !errors.Is(err, ErrInvalidDTQL) {
-			t.Errorf("%s: ParseDTQL err = %v", label, err)
+		if _, _, err := ParseTugQL([]byte(doc)); !errors.Is(err, ErrInvalidTugQL) {
+			t.Errorf("%s: ParseTugQL err = %v", label, err)
 		}
 	}
 }
@@ -845,14 +845,14 @@ func nestedArithmetic(depth int) dal.Expression {
 	return expression
 }
 
-// TestClassifyDTQLNestingCap: the relational walk bounds how deep conditions
+// TestClassifyTugQLNestingCap: the relational walk bounds how deep conditions
 // and expressions may nest, as one more relational rule. (The query guard's own
 // tighter limit still applies afterwards; this is the walk's own bound.) The cap
 // is pinned at its boundary: the deepest accepted and the shallowest refused
 // nesting of each shape. A condition of nestedWhere(n) walks n+1 levels (its
 // comparison's operands are one level deeper than the comparison), an
 // expression of nestedArithmetic(n) walks n.
-func TestClassifyDTQLNestingCap(t *testing.T) {
+func TestClassifyTugQLNestingCap(t *testing.T) {
 	base := func() dal.StructuredQuery { return buildQuery(dal.From(rootRef("a"))).SelectIntoRecordset() }
 	cases := map[string]struct {
 		build           func(depth int) dal.StructuredQuery
@@ -872,34 +872,34 @@ func TestClassifyDTQLNestingCap(t *testing.T) {
 	for label, tc := range cases {
 		t.Run(label, func(t *testing.T) {
 			// The deepest nesting the cap allows is accepted by the walk. (The query
-			// guard's tighter limit refuses it afterwards, in ClassifyDTQL, with its
+			// guard's tighter limit refuses it afterwards, in ClassifyTugQL, with its
 			// own message.)
 			if err := (&profileWalk{}).query(tc.build(tc.largestAccepted), 0); err != nil {
 				t.Fatalf("at the cap: %v", err)
 			}
-			if _, err := ClassifyDTQL(tc.build(tc.largestAccepted)); err == nil || strings.Contains(err.Error(), "relational profile: nesting") {
-				t.Fatalf("ClassifyDTQL at the cap: err = %v, want the query guard's refusal", err)
+			if _, err := ClassifyTugQL(tc.build(tc.largestAccepted)); err == nil || strings.Contains(err.Error(), "relational profile: nesting") {
+				t.Fatalf("ClassifyTugQL at the cap: err = %v, want the query guard's refusal", err)
 			}
 			// One level deeper the walk refuses, naming the rule.
 			err := (&profileWalk{}).query(tc.build(tc.largestAccepted+1), 0)
-			if !errors.Is(err, ErrInvalidDTQL) || !strings.Contains(err.Error(), "relational profile: nesting at ") {
+			if !errors.Is(err, ErrInvalidTugQL) || !strings.Contains(err.Error(), "relational profile: nesting at ") {
 				t.Fatalf("one past the cap: err = %v", err)
 			}
-			// ClassifyDTQL refuses it with a zero profile.
-			profile, err := ClassifyDTQL(tc.build(tc.largestAccepted + 1))
-			if !errors.Is(err, ErrInvalidDTQL) || !strings.Contains(err.Error(), "relational profile: nesting at ") || !reflect.DeepEqual(profile, Profile{}) {
-				t.Fatalf("ClassifyDTQL: profile %+v err %v", profile, err)
+			// ClassifyTugQL refuses it with a zero profile.
+			profile, err := ClassifyTugQL(tc.build(tc.largestAccepted + 1))
+			if !errors.Is(err, ErrInvalidTugQL) || !strings.Contains(err.Error(), "relational profile: nesting at ") || !reflect.DeepEqual(profile, Profile{}) {
+				t.Fatalf("ClassifyTugQL: profile %+v err %v", profile, err)
 			}
 		})
 	}
 }
 
-// TestClassifyDTQLCollectsSourcesFromEverySubqueryPosition: a subquery in
+// TestClassifyTugQLCollectsSourcesFromEverySubqueryPosition: a subquery in
 // GROUP BY, ORDER BY, HAVING, an aggregate argument or a JOIN ON adds its
 // collection to Sources, so the caller authorises it. (Only the unknown-type
 // refusals proved these positions are walked.) The documents are hand-built
-// because a DTQL document cannot place a subquery in some of them.
-func TestClassifyDTQLCollectsSourcesFromEverySubqueryPosition(t *testing.T) {
+// because a TugQL document cannot place a subquery in some of them.
+func TestClassifyTugQLCollectsSourcesFromEverySubqueryPosition(t *testing.T) {
 	inner := func(name string) dal.StructuredQuery {
 		return buildQuery(dal.From(rootRef(name))).SelectIntoRecordset()
 	}
@@ -922,7 +922,7 @@ func TestClassifyDTQLCollectsSourcesFromEverySubqueryPosition(t *testing.T) {
 		{"join on comparison", joinedOn(dal.NewComparison(dal.NewFieldRef("", "id"), dal.Equal, dal.NewQueryExpression(inner("k"), "s"))), []string{"a", "b", "k"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			profile, err := ClassifyDTQL(tc.query)
+			profile, err := ClassifyTugQL(tc.query)
 			if err != nil {
 				t.Fatalf("classify: %v", err)
 			}

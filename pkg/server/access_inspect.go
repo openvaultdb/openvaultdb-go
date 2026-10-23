@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/dal-go/dalgo/access"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 	"github.com/dal-go/record"
 	"github.com/dal-go/record/update"
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
@@ -25,7 +25,7 @@ var errProtectedUnsupported = errors.New("protected operation unsupported")
 const executionTugQL = az.ExecutionClass("tugql")
 
 func protectedOperation(op api.Operation) (access.ProtectedOperation, error) {
-	if (op.ExecutionClass != executionTugQL && op.ExecutionClass != az.ExecutionDTQL) || op.Resource.RowID == "" {
+	if op.ExecutionClass != executionTugQL || op.Resource.RowID == "" {
 		return access.ProtectedOperation{}, errProtectedUnsupported
 	}
 	key := record.NewKeyWithID(op.Resource.Table, op.Resource.RowID)
@@ -636,7 +636,7 @@ func (s *Server) handleAccessEvidence(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "bad_request", "invalid evidence request")
 		return
 	}
-	op := api.Operation{ID: "evidence", Action: "get", Resource: body.Resource, ExecutionClass: az.ExecutionDTQL}
+	op := api.Operation{ID: "evidence", Action: "get", Resource: body.Resource, ExecutionClass: executionTugQL}
 	op.Resource.Columns = body.RequiredFields
 	if err = op.Normalize(db.ID()); err != nil || op.Resource.RowID == "" {
 		writeError(w, 400, "bad_request", "invalid evidence resource or fields")
@@ -706,7 +706,7 @@ var runEvidenceOnce = evidenceOnce
 
 func writeUnavailablePoint(w http.ResponseWriter, db *core.Database, key *record.Key, action string) {
 	resource := az.Resource{DatabaseID: db.ID(), Path: "/" + key.Collection() + "/" + fmt.Sprint(key.ID), Table: key.Collection(), RowID: fmt.Sprint(key.ID)}
-	writeUnavailableOperation(w, az.ModeExecution, api.Operation{ID: "op1", Action: action, Resource: resource, ExecutionClass: az.ExecutionDTQL})
+	writeUnavailableOperation(w, az.ModeExecution, api.Operation{ID: "op1", Action: action, Resource: resource, ExecutionClass: executionTugQL})
 }
 
 // writeUnavailableOperation answers 404 resource_unavailable for one operation:

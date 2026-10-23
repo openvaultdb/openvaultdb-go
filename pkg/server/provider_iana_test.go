@@ -83,8 +83,8 @@ func TestIANANativeOperatorQueryAndEvidence(t *testing.T) {
 		count      int
 	}{
 		{"/query", `{"collection":"rows","limit":1,"where":[{"field":"Value","op":"==","value":"800-899"}]}`, 1},
-		{"/dtql", "from: {name: rows}\ncolumns: [{field: Value}, {field: Reference}]\nlimit: 1\n", 1},
-		{"/dtql", "from: {name: rows}\nwhere: {op: '==', left: {field: Value}, right: {value: never}}\nlimit: 1\n", 0},
+		{"/tugql", "from: {name: rows}\ncolumns: [{field: Value}, {field: Reference}]\nlimit: 1\n", 1},
+		{"/tugql", "from: {name: rows}\nwhere: {op: '==', left: {field: Value}, right: {value: never}}\nlimit: 1\n", 0},
 	} {
 		before := *calls
 		w := retentionRequest(s.Handler(), http.MethodPost, "/v1/databases/iana-http-status"+tc.path, tc.body, nil)
@@ -182,7 +182,7 @@ func TestIANAPublisherHTMLMetadataDistinctFromDiscovery(t *testing.T) {
 			// Startup copies the asserted evidence, so later caller mutation cannot
 			// turn the published rights into another field interpretation.
 			right.PublisherHTMLDefinition.NativeFields[0] = "changed"
-			w := retentionRequest(checked.Handler(), http.MethodPost, "/v1/databases/iana-http-status/dtql", "from: {name: rows}\nlimit: 1\n", nil)
+			w := retentionRequest(checked.Handler(), http.MethodPost, "/v1/databases/iana-http-status/tugql", "from: {name: rows}\nlimit: 1\n", nil)
 			if w.Code != http.StatusOK || *calls != 1 || !strings.Contains(w.Body.String(), `"publisherHtmlDefinition"`) || strings.Contains(w.Body.String(), `"changed"`) {
 				t.Fatalf("distinct publisher evidence: %d calls=%d", w.Code, *calls)
 			}
@@ -196,15 +196,15 @@ func TestIANANativeOperatorRefusesBeforeRead(t *testing.T) {
 		method, path, body string
 		headers            http.Header
 	}{
-		"missing limit":      {http.MethodPost, "/query", `{"collection":"rows"}`, nil},
-		"unknown option":     {http.MethodPost, "/query", `{"collection":"rows","limit":1,"history":false}`, nil},
-		"semantic field":     {http.MethodPost, "/query", `{"collection":"rows","limit":1,"where":[{"field":"statusCode","op":"==","value":"799"}]}`, nil},
-		"numeric value":      {http.MethodPost, "/query", `{"collection":"rows","limit":1,"where":[{"field":"Value","op":"==","value":799}]}`, nil},
-		"paging":             {http.MethodPost, "/query", `{"collection":"rows","limit":1}`, http.Header{"OVDB-Page-Size": {"1"}}},
-		"point read":         {http.MethodGet, "/records/rows/799", "", nil},
-		"write":              {http.MethodPut, "/records/rows/799", `{}`, nil},
-		"join":               {http.MethodPost, "/dtql", "from: {name: rows}\njoins: [{from: {name: rows}}]\nlimit: 1\n", nil},
-		"missing dtql limit": {http.MethodPost, "/dtql", "from: {name: rows}\n", nil},
+		"missing limit":       {http.MethodPost, "/query", `{"collection":"rows"}`, nil},
+		"unknown option":      {http.MethodPost, "/query", `{"collection":"rows","limit":1,"history":false}`, nil},
+		"semantic field":      {http.MethodPost, "/query", `{"collection":"rows","limit":1,"where":[{"field":"statusCode","op":"==","value":"799"}]}`, nil},
+		"numeric value":       {http.MethodPost, "/query", `{"collection":"rows","limit":1,"where":[{"field":"Value","op":"==","value":799}]}`, nil},
+		"paging":              {http.MethodPost, "/query", `{"collection":"rows","limit":1}`, http.Header{"OVDB-Page-Size": {"1"}}},
+		"point read":          {http.MethodGet, "/records/rows/799", "", nil},
+		"write":               {http.MethodPut, "/records/rows/799", `{}`, nil},
+		"join":                {http.MethodPost, "/tugql", "from: {name: rows}\njoins: [{from: {name: rows}}]\nlimit: 1\n", nil},
+		"missing tugql limit": {http.MethodPost, "/tugql", "from: {name: rows}\n", nil},
 	} {
 		t.Run(name, func(t *testing.T) {
 			before := *calls
@@ -242,7 +242,7 @@ func TestIANANativeOperatorRefusesBeforeRead(t *testing.T) {
 func TestIANANativeOperatorMalformedResponseSuppressesRows(t *testing.T) {
 	const marker = "private-synthetic-row-marker"
 	s, _, calls := ianaProviderFixture(t, "Value,Description,Reference\n799,"+marker+",[Invented]\n799,duplicate,[Invented]\n")
-	w := retentionRequest(s.Handler(), http.MethodPost, "/v1/databases/iana-http-status/dtql", "from: {name: rows}\nlimit: 1\n", nil)
+	w := retentionRequest(s.Handler(), http.MethodPost, "/v1/databases/iana-http-status/tugql", "from: {name: rows}\nlimit: 1\n", nil)
 	if w.Code == http.StatusOK || *calls != 1 || w.Header().Get("Cache-Control") != "no-store" ||
 		strings.Contains(w.Body.String(), marker) || strings.Contains(w.Body.String(), "duplicate") {
 		t.Fatalf("malformed IANA response leaked or succeeded: %d %s reads=%d", w.Code, w.Body, *calls)

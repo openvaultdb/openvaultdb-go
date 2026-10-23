@@ -60,7 +60,7 @@ func TestAReadWhoseResultIsLargerThanTheBufferIsARefusalAndNotAnError(t *testing
 	for _, route := range []struct{ name, method, path, body string }{
 		{"wire query", http.MethodPost, "/v1/databases/pg/query", `{"collection":"customers"}`},
 		{"wire query, URL form", http.MethodGet, `/v1/databases/pg/query?q=%7B%22collection%22%3A%22customers%22%7D`, ""},
-		{"DTQL of the database", http.MethodPost, "/v1/databases/pg/dtql", "from: {name: customers}\n"},
+		{"TugQL of the database", http.MethodPost, "/v1/databases/pg/tugql", "from: {name: customers}\n"},
 	} {
 		t.Run(route.name+"/one byte over", func(t *testing.T) {
 			driver := &bufferDriver{previewPGDriver: &previewPGDriver{}, pad: core.ResultBufferBytes - bufferRowOverhead + 1}

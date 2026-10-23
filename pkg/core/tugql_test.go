@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestParseDTQLSupportedProfile(t *testing.T) {
+func TestParseTugQLSupportedProfile(t *testing.T) {
 	for _, doc := range []string{
 		"from: {name: customers, alias: c}\n",
 		"from: {name: customers}\nlimit: -1\n",
@@ -14,15 +14,15 @@ func TestParseDTQLSupportedProfile(t *testing.T) {
 		"from: {name: customers}\ncolumns: [{field: name, as: other}]\n",
 		"from: {name: customers}\n---\nfrom: {name: secret}\n",
 	} {
-		if _, _, err := ParseDTQL([]byte(doc)); !errors.Is(err, ErrInvalidDTQL) {
+		if _, _, err := ParseTugQL([]byte(doc)); !errors.Is(err, ErrInvalidTugQL) {
 			t.Errorf("expected invalid query for %q: %v", doc, err)
 		}
 	}
-	query, collection, err := ParseDTQL([]byte("from: {name: customers}\n"))
+	query, collection, err := ParseTugQL([]byte("from: {name: customers}\n"))
 	if err != nil || collection != "customers" {
 		t.Fatalf("parse: %s %v", collection, err)
 	}
-	bounded := boundedDTQL{query}
+	bounded := boundedTugQL{query}
 	if bounded.Limit() != 1000 || bounded.IntoRecord() == nil {
 		t.Fatalf("missing default limit/record factory")
 	}

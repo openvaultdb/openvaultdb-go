@@ -21,7 +21,7 @@ var nativeIntegerRanges = map[string]struct{ low, high int64 }{
 
 // nativeValue refuses, on a native PostgreSQL mount, a comparison of a column with
 // a value that PostgreSQL would answer with no rows instead of an error, so that
-// every value a column cannot hold is the same 400 invalid_dtql:
+// every value a column cannot hold is the same 400 invalid_tugql:
 //
 //   - on a smallint, integer or bigint column compared by ==, In or NotIn, a number
 //     that is not a whole number, or is outside the range of the column, and a
@@ -46,7 +46,7 @@ func (w fieldWalk) nativeValue(c dal.Comparison) error {
 	}
 	nativeType := w.nativeType(field)
 	if nativeType == "bytea" {
-		return fmt.Errorf("%w: field %q is a bytea column, which a filter cannot compare with a value", ErrInvalidDTQL, clipName(field.Name()))
+		return fmt.Errorf("%w: field %q is a bytea column, which a filter cannot compare with a value", ErrInvalidTugQL, clipName(field.Name()))
 	}
 	limits, integer := nativeIntegerRanges[nativeType]
 	if !integer {
@@ -58,14 +58,14 @@ func (w fieldWalk) nativeValue(c dal.Comparison) error {
 		// that is no number at all is refused.
 		for _, item := range value {
 			if _, isBool := item.(bool); isBool {
-				return fmt.Errorf("%w: field %q is a %s column, and a boolean cannot be compared with it", ErrInvalidDTQL, clipName(field.Name()), nativeType)
+				return fmt.Errorf("%w: field %q is a %s column, and a boolean cannot be compared with it", ErrInvalidTugQL, clipName(field.Name()), nativeType)
 			}
 		}
 		return nil
 	}
 	for _, item := range value {
 		if !nativeIntegerValue(item, limits.low, limits.high) {
-			return fmt.Errorf("%w: field %q is a %s column, and a value compared with it must be a whole number it can hold", ErrInvalidDTQL, clipName(field.Name()), nativeType)
+			return fmt.Errorf("%w: field %q is a %s column, and a value compared with it must be a whole number it can hold", ErrInvalidTugQL, clipName(field.Name()), nativeType)
 		}
 	}
 	return nil

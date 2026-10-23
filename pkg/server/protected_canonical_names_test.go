@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"github.com/dal-go/dalgo/access"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/auth"
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
@@ -24,7 +24,7 @@ import (
 // canonicalNamesPolicy admits the rows of country IE for reading and updating
 // under both spellings of the declared collection: a binding on the public name
 // customers and a binding on its quoted spelling.
-const canonicalNamesPolicy = `apiVersion: dtql.org/access/v1
+const canonicalNamesPolicy = `apiVersion: tugql.org/access/v1
 kind: AccessPolicy
 metadata:
   name: upper
@@ -154,7 +154,7 @@ func TestByKeyAuthorizationRoutesTakeTheCanonicalCollectionName(t *testing.T) {
 	}{
 		{"protected PATCH", func(f canonicalNamesFixture, t *testing.T, token, c string) hiddenSourceAnswer {
 			op := writeGuardProtectedOp("update", "/"+c+"/01", writeGuardProtectedSet("name"))
-			return hiddenSourceAsk(t, f.ts, token, "PATCH", "/v1/databases/crm/records/"+url.PathEscape(c)+"/01", asJSON(op), map[string]string{"Content-Type": "application/vnd.dtql.operation+json"})
+			return hiddenSourceAsk(t, f.ts, token, "PATCH", "/v1/databases/crm/records/"+url.PathEscape(c)+"/01", asJSON(op), map[string]string{"Content-Type": "application/vnd.tugql.operation+json"})
 		}},
 		{"evidence", func(f canonicalNamesFixture, t *testing.T, token, c string) hiddenSourceAnswer {
 			body := map[string]any{"apiVersion": az.APIVersion, "resource": az.Resource{DatabaseID: "crm", Path: "/" + c + "/01"}, "requiredFields": [][]string{{"name"}}}

@@ -9,12 +9,12 @@ import (
 	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
 )
 
-// ProfileKind names the DTQL profile a query belongs to.
+// ProfileKind names the TugQL profile a query belongs to.
 type ProfileKind string
 
 const (
 	// ProfileSingleCollection is today's profile: one plain root collection
-	// of the database the request is addressed to, accepted by validateDTQL.
+	// of the database the request is addressed to, accepted by validateTugQL.
 	ProfileSingleCollection ProfileKind = "single-collection"
 	// ProfileRelational is the bounded relational profile: joins, GROUP BY,
 	// HAVING, aggregates, column aliases and subqueries over root collections.
@@ -76,7 +76,7 @@ type ProfileSource struct {
 	Alias string
 }
 
-// Profile is the classification of a DTQL query.
+// Profile is the classification of a TugQL query.
 type Profile struct {
 	Kind ProfileKind
 	// Sources lists every collection read in the query, in document order,
@@ -90,26 +90,26 @@ type Profile struct {
 	HasAggregation bool
 }
 
-// ClassifyDTQL decides which profile query belongs to and refuses everything
+// ClassifyTugQL decides which profile query belongs to and refuses everything
 // outside both. It is a security boundary: a shape it does not recognise is
-// refused with ErrInvalidDTQL, never passed through.
+// refused with ErrInvalidTugQL, never passed through.
 //
 // The relational rules are checked for every document, single-collection ones
 // included, over the whole query tree and the subqueries in it. A document that
-// ParseDTQL accepts is therefore refused here when it carries a money
-// configuration with a subquery, and, when it has a subquery in its WHERE (which ParseDTQL
+// ParseTugQL accepts is therefore refused here when it carries a money
+// configuration with a subquery, and, when it has a subquery in its WHERE (which ParseTugQL
 // accepts), when that subquery nests deeper than the subquery cap, brings the
 // query past the source cap, puts scan bounds on a nested source or carries a
 // money configuration itself. A schema-qualified root, a scan root and a
-// database on the root are refused by ParseDTQL as well. Names are checked next,
+// database on the root are refused by ParseTugQL as well. Names are checked next,
 // with the query guard's rules (see validateRelationalNames), so a name that
-// ParseDTQL refuses is not an accepted relational document either.
+// ParseTugQL refuses is not an accepted relational document either.
 //
-// A query is single-collection only when validateDTQL accepts it and it also
-// names no database and has no subquery anywhere (validateDTQL checks names
+// A query is single-collection only when validateTugQL accepts it and it also
+// names no database and has no subquery anywhere (validateTugQL checks names
 // inside conditions but does not refuse a subquery there, so a subquery in
 // WHERE would otherwise hide a second source). Every other query is relational.
-func ClassifyDTQL(query dal.StructuredQuery) (Profile, error) {
+func ClassifyTugQL(query dal.StructuredQuery) (Profile, error) {
 	walk := &profileWalk{money: hasMoneyConfig(query)}
 	if err := walk.query(query, 0); err != nil {
 		return Profile{}, err
@@ -130,7 +130,7 @@ func ClassifyDTQL(query dal.StructuredQuery) (Profile, error) {
 		}
 	}
 	if !hasSubquery && !hasMoneyConfig(query) && len(walk.sources) == 1 && walk.sources[0].Database == "" {
-		if collection, err := validateDTQL(query); err == nil {
+		if collection, err := validateTugQL(query); err == nil {
 			return Profile{
 				Kind:    ProfileSingleCollection,
 				Sources: []ProfileSource{{Collection: collection}},
@@ -203,7 +203,7 @@ hashSelected:
 	return "money mode requires an equality join between root and joined fields"
 }
 
-// pathSegment is one step of a DTQL path: a key, with the index of the array
+// pathSegment is one step of a TugQL path: a key, with the index of the array
 // element when the step enters one ("joins[0]").
 type pathSegment struct {
 	key   string
@@ -235,7 +235,7 @@ func (w *profileWalk) pushIndex(key string, i int) {
 
 func (w *profileWalk) pop() { w.path = w.path[:len(w.path)-1] }
 
-// pathText renders the current path as a DTQL path, "$" for the query root.
+// pathText renders the current path as a TugQL path, "$" for the query root.
 func (w *profileWalk) pathText() string {
 	if len(w.path) == 0 {
 		return "$"
@@ -255,14 +255,14 @@ func (w *profileWalk) pathText() string {
 
 // refuse returns the refusal of rule at the current path.
 func (w *profileWalk) refuse(rule, detail string) error {
-	return fmt.Errorf("%w: relational profile: %s at %s: %s", ErrInvalidDTQL, rule, w.pathText(), detail)
+	return fmt.Errorf("%w: relational profile: %s at %s: %s", ErrInvalidTugQL, rule, w.pathText(), detail)
 }
 
 // refuseWith is refuse for a rule that another rule already states: the result
-// wraps cause as well as ErrInvalidDTQL, so a caller that tells the two apart
+// wraps cause as well as ErrInvalidTugQL, so a caller that tells the two apart
 // (a collection name is 400 invalid_key) still can.
 func (w *profileWalk) refuseWith(rule string, cause error) error {
-	return fmt.Errorf("%w: relational profile: %s at %s: %w", ErrInvalidDTQL, rule, w.pathText(), cause)
+	return fmt.Errorf("%w: relational profile: %s at %s: %w", ErrInvalidTugQL, rule, w.pathText(), cause)
 }
 
 // enter counts one more condition or expression level and refuses past the

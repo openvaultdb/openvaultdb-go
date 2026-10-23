@@ -31,7 +31,7 @@ const (
 	snapshotLifetime     = 5 * time.Minute
 )
 
-// SnapshotLimits bounds the disk spool behind paged DTQL queries. The most
+// SnapshotLimits bounds the disk spool behind paged TugQL queries. The most
 // disk a server can use for snapshots is Slots * Bytes.
 type SnapshotLimits struct {
 	Slots int   // concurrent snapshots, including captures still being built
@@ -136,7 +136,7 @@ func (s *Server) pageOffset(token, dbID string, queryHash, actorHash [32]byte, p
 	return parts[0], offset, true
 }
 
-func (s *Server) handlePagedDTQL(w http.ResponseWriter, r *http.Request, db *core.Database, query dal.StructuredQuery, doc []byte) {
+func (s *Server) handlePagedTugQL(w http.ResponseWriter, r *http.Request, db *core.Database, query dal.StructuredQuery, doc []byte) {
 	w.Header().Set("Cache-Control", "no-store")
 	if refuseRetainedOperation(w, db) || !validPagingHeaders(w, r) {
 		return
@@ -151,7 +151,7 @@ func (s *Server) handlePagedDTQL(w http.ResponseWriter, r *http.Request, db *cor
 		return
 	}
 	if query.Limit() != 0 || query.Offset() != 0 {
-		writeError(w, http.StatusBadRequest, "invalid_dtql", "paged DTQL requires limit and offset to be zero")
+		writeError(w, http.StatusBadRequest, "invalid_tugql", "paged TugQL requires limit and offset to be zero")
 		return
 	}
 	queryHash := sha256.Sum256(doc)
@@ -208,7 +208,7 @@ func (s *Server) handlePagedDTQL(w http.ResponseWriter, r *http.Request, db *cor
 		s.rightsError(w, fmt.Errorf("snapshot metadata budget"))
 		return
 	}
-	path, size, err := spoolDTQL(r.Context(), db, query, s.snapshotDir, limits, capture.reservedBytes)
+	path, size, err := spoolTugQL(r.Context(), db, query, s.snapshotDir, limits, capture.reservedBytes)
 	if err != nil {
 		var bound *snapshotBoundError
 		if errors.As(err, &bound) {
@@ -249,7 +249,7 @@ type snapshotBoundError string
 
 func (e *snapshotBoundError) Error() string { return string(*e) }
 
-func spoolDTQL(ctx context.Context, db *core.Database, query dal.StructuredQuery, dir string, limits SnapshotLimits, metadataBytes int) (path string, size int64, err error) {
+func spoolTugQL(ctx context.Context, db *core.Database, query dal.StructuredQuery, dir string, limits SnapshotLimits, metadataBytes int) (path string, size int64, err error) {
 	if db.NoRetention() {
 		return "", 0, errRetentionNotAuthorized
 	}
@@ -267,7 +267,7 @@ func spoolDTQL(ctx context.Context, db *core.Database, query dal.StructuredQuery
 	}()
 	w := bufio.NewWriterSize(f, 64<<10)
 	rows := 0
-	err = db.StreamDTQLSnapshot(ctx, query, func(rec core.Record) error {
+	err = db.StreamTugQLSnapshot(ctx, query, func(rec core.Record) error {
 		row, marshalErr := marshalSnapshotRow(struct {
 			Key  string         `json:"key"`
 			Data map[string]any `json:"data,omitempty"`

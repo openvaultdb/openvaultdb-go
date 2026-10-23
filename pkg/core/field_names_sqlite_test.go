@@ -101,7 +101,7 @@ func yamlString(t *testing.T, s string) string {
 }
 
 // TestQuotedFieldNamesArriveQuotedAtSQLite runs, for every name of every
-// accepted class, a DTQL query and a wire query that put the name in a column
+// accepted class, a TugQL query and a wire query that put the name in a column
 // list, a WHERE and an ORDER BY against a real SQLite file. A name that was not
 // quoted by the compiler would fail to parse or select the wrong row; both
 // queries must return exactly the row whose value matches.
@@ -114,12 +114,12 @@ func TestQuotedFieldNamesArriveQuotedAtSQLite(t *testing.T) {
 				want := "v:" + name
 				doc := fmt.Sprintf("from: {name: things}\ncolumns: [{field: id}, {field: %[1]s}]\nwhere: {op: '==', left: {field: %[1]s}, right: {value: %[2]s}}\norderBy: [{field: %[1]s, desc: true}]\n",
 					yamlString(t, name), yamlString(t, want))
-				records, err := db.ExecuteDTQL(ctx, []byte(doc))
+				records, err := db.ExecuteTugQL(ctx, []byte(doc))
 				if err != nil {
-					t.Fatalf("dtql: %v", err)
+					t.Fatalf("tugql: %v", err)
 				}
 				if len(records) != 1 || records[0].Data[name] != want {
-					t.Fatalf("dtql records = %+v, want one row with %q = %q", records, name, want)
+					t.Fatalf("tugql records = %+v, want one row with %q = %q", records, name, want)
 				}
 				wire, err := db.Execute(ctx, core.Query{
 					Collection: "things",
@@ -147,8 +147,8 @@ func TestNamesTheQuotedRuleRefusesNeverReachSQLite(t *testing.T) {
 	ctx := context.Background()
 	for _, name := range []string{`a"b`, `a'b`, "a`b", `a\b`, "a;b", "a; DROP TABLE things; --", "a\x00b", "a\nb", "a\tb", "", " a", "a ", "a..b", ".a", "a."} {
 		doc := fmt.Sprintf("from: {name: things}\nwhere: {op: '==', left: {field: %s}, right: {value: 1}}\n", yamlString(t, name))
-		if _, err := db.ExecuteDTQL(ctx, []byte(doc)); !errors.Is(err, core.ErrInvalidDTQL) {
-			t.Errorf("dtql %q: %v", name, err)
+		if _, err := db.ExecuteTugQL(ctx, []byte(doc)); !errors.Is(err, core.ErrInvalidTugQL) {
+			t.Errorf("tugql %q: %v", name, err)
 		}
 		_, err := db.Execute(ctx, core.Query{Collection: "things", Where: []core.Filter{{Field: name, Op: "==", Value: 1}}})
 		if !errors.Is(err, core.ErrInvalidQuery) {
@@ -156,7 +156,7 @@ func TestNamesTheQuotedRuleRefusesNeverReachSQLite(t *testing.T) {
 		}
 	}
 	// The table is still there.
-	if records, err := db.ExecuteDTQL(ctx, []byte("from: {name: things}\n")); err != nil || len(records) != 2 {
+	if records, err := db.ExecuteTugQL(ctx, []byte("from: {name: things}\n")); err != nil || len(records) != 2 {
 		t.Fatalf("table damaged: %d records, %v", len(records), err)
 	}
 }

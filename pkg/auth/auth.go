@@ -26,7 +26,7 @@ import (
 // Actions an application capability can name (subset of the spec taxonomy
 // that is meaningful against the MVP API surface).
 const (
-	CapRecordsRead            = "records:read"   // GET/HEAD records, /query, /dtql
+	CapRecordsRead            = "records:read"   // GET/HEAD records, /query, /tugql
 	CapRecordsWrite           = "records:write"  // PUT/POST/PATCH records, batch set/insert/update
 	CapRecordsDelete          = "records:delete" // DELETE records, batch delete
 	CapCollectionsRead        = "collections:read"

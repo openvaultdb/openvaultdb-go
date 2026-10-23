@@ -21,7 +21,7 @@ var ErrQueryUnsupported = errors.New("structured queries are not supported on th
 // ErrNativePostgresCollectionQueryUnsupported identifies the legacy /query
 // contract, which requires OVDB record keys and declared collection names that
 // a native PostgreSQL catalog mount does not provide.
-var ErrNativePostgresCollectionQueryUnsupported = errors.New("native PostgreSQL mounts support DTQL reads; the collection-key /query contract is unavailable")
+var ErrNativePostgresCollectionQueryUnsupported = errors.New("native PostgreSQL mounts support TugQL reads; the collection-key /query contract is unavailable")
 
 // QueryUnsupportedError is the typed refusal of a structured query on an
 // engine that is not yet cleared for queries.
@@ -31,7 +31,7 @@ type QueryUnsupportedError struct {
 }
 
 func (e *QueryUnsupportedError) Error() string {
-	return fmt.Sprintf("the %q storage engine is not yet supported for queries: structured queries (/query, /dtql) are refused on it; key reads and writes still work", e.Engine)
+	return fmt.Sprintf("the %q storage engine is not yet supported for queries: structured queries (/query, /tugql) are refused on it; key reads and writes still work", e.Engine)
 }
 
 // Is makes errors.Is(err, ErrQueryUnsupported) true.
@@ -72,7 +72,7 @@ func (d *Database) queryEngine() string {
 }
 
 // CanQuery reports whether DALgo structured reads are allowed on this mount.
-// Native PostgreSQL supports catalog-backed DTQL reads but not the legacy
+// Native PostgreSQL supports catalog-backed TugQL reads but not the legacy
 // collection-key /query contract (see CanCollectionQuery).
 func (d *Database) CanQuery() bool {
 	return d.externalReadOnly || d.nativePostgres || engineCleared(d.queryEngine(), d.previewPostgres)
@@ -132,7 +132,7 @@ func (d *Database) fieldRule() fieldRule {
 	return strictNames
 }
 
-// fieldNameRe is the strict field-name rule for /query and /dtql, used for
+// fieldNameRe is the strict field-name rule for /query and /tugql, used for
 // every engine that is not in quotedNameEngines. A name is one or
 // more dot-separated segments (nested fields). A segment starts with a letter,
 // a digit or an underscore, or with "$" immediately followed by a letter or
@@ -224,18 +224,18 @@ type sourceScope []string
 
 func (s sourceScope) has(name string) bool { return slices.Contains(s, name) }
 
-// nameWalker walks a parsed DTQL query and refuses a name that is not plain:
+// nameWalker walks a parsed TugQL query and refuses a name that is not plain:
 // its sources (collections, aliases, scan orders, joins with their ON
 // conditions, derived queries) and every expression position (columns,
 // where, orderBy, groupBy, having, and nested subqueries). Expression,
 // condition or source shapes it does not know are refused too: fail closed.
 //
-// The zero value is the single-collection variant, used by validateDTQL for
-// the one-collection profile /dtql serves today.
+// The zero value is the single-collection variant, used by validateTugQL for
+// the one-collection profile /tugql serves today.
 type nameWalker struct {
 	// names is the field-name rule; the zero value is the strict one.
 	names fieldRule
-	// relational selects the relational profile's variant (ClassifyDTQL). It
+	// relational selects the relational profile's variant (ClassifyTugQL). It
 	// differs in two places: a source may name a database (the profile walk
 	// validates the id), and an IS NULL test is walked. The single-collection
 	// variant refuses both, because its adapters name no other database and
@@ -246,20 +246,20 @@ type nameWalker struct {
 	refuseMembership bool
 }
 
-// validateDTQLFields applies the single-collection variant of the name walk
+// validateTugQLFields applies the single-collection variant of the name walk
 // with the strict field-name rule.
-func validateDTQLFields(query dal.StructuredQuery, depth int) error {
-	return validateDTQLFieldsWith(query, depth, strictNames)
+func validateTugQLFields(query dal.StructuredQuery, depth int) error {
+	return validateTugQLFieldsWith(query, depth, strictNames)
 }
 
-// validateDTQLFieldsWith is validateDTQLFields with the given field-name rule.
-func validateDTQLFieldsWith(query dal.StructuredQuery, depth int, names fieldRule) error {
+// validateTugQLFieldsWith is validateTugQLFields with the given field-name rule.
+func validateTugQLFieldsWith(query dal.StructuredQuery, depth int, names fieldRule) error {
 	return nameWalker{names: names}.query(query, depth, nil)
 }
 
 // validateRelationalNames applies the relational variant of the name walk to a
-// whole query. ClassifyDTQL calls it, so that a relational document is held to
-// the names rule ParseDTQL holds a single-collection one to. Like ParseDTQL it
+// whole query. ClassifyTugQL calls it, so that a relational document is held to
+// the names rule ParseTugQL holds a single-collection one to. Like ParseTugQL it
 // knows no engine and applies the widest rule; the Database that reads the
 // query applies the rule of its own engine (checkRelationalNames).
 func validateRelationalNames(query dal.StructuredQuery) error {
@@ -273,7 +273,7 @@ func validateRelationalNamesFor(query dal.StructuredQuery, names fieldRule) erro
 }
 
 // checkRelationalNames runs the relational name walk over a whole query with
-// the field-name rule of this database's engine, as validateDTQLFor does for the
+// the field-name rule of this database's engine, as validateTugQLFor does for the
 // single-collection profile. The join source's guard calls it before every
 // read, so an engine outside quotedNameEngines is held to the strict rule even
 // when an operator lists it as a join engine.
@@ -286,7 +286,7 @@ func (d *Database) checkRelationalNames(query dal.StructuredQuery) error {
 }
 
 // guardQueryConditions refuses membership comparisons an engine cannot run,
-// before the query reaches its adapter. Single-collection DTQL has already been
+// before the query reaches its adapter. Single-collection TugQL has already been
 // shape-validated; wire queries use this narrower walk so parent collection
 // reads retain their existing source rules.
 func (d *Database) guardQueryConditions(query dal.StructuredQuery) error {
@@ -299,10 +299,10 @@ func (d *Database) guardQueryConditions(query dal.StructuredQuery) error {
 
 func (w nameWalker) query(query dal.StructuredQuery, depth int, outer sourceScope) error {
 	if depth > maxQueryTreeDepth {
-		return fmt.Errorf("%w: query nesting is too deep", ErrInvalidDTQL)
+		return fmt.Errorf("%w: query nesting is too deep", ErrInvalidTugQL)
 	}
 	if query == nil {
-		return fmt.Errorf("%w: a query is required", ErrInvalidDTQL)
+		return fmt.Errorf("%w: a query is required", ErrInvalidTugQL)
 	}
 	sources, joins, err := flattenFrom(query.From(), depth)
 	if err != nil {
@@ -339,7 +339,7 @@ func (w nameWalker) query(query dal.StructuredQuery, depth int, outer sourceScop
 				// name of a field. ? has no meaning to DALgo at present and is refused with
 				// it, so that it stays free to mean one.
 				if strings.ContainsAny(excluded, "*?") {
-					return fmt.Errorf("%w: a wildcard exclude names one field: it holds no * (a mask) and no ? (reserved)", ErrInvalidDTQL)
+					return fmt.Errorf("%w: a wildcard exclude names one field: it holds no * (a mask) and no ? (reserved)", ErrInvalidTugQL)
 				}
 			}
 		}
@@ -371,10 +371,10 @@ func (w nameWalker) query(query dal.StructuredQuery, depth int, outer sourceScop
 // tree, refusing a missing clause or a tree nested deeper than the limit.
 func flattenFrom(from dal.FromSource, depth int) ([]dal.RecordsetSource, []dal.JoinedSource, error) {
 	if depth > maxQueryTreeDepth {
-		return nil, nil, fmt.Errorf("%w: query nesting is too deep", ErrInvalidDTQL)
+		return nil, nil, fmt.Errorf("%w: query nesting is too deep", ErrInvalidTugQL)
 	}
 	if from == nil {
-		return nil, nil, fmt.Errorf("%w: a from clause is required", ErrInvalidDTQL)
+		return nil, nil, fmt.Errorf("%w: a from clause is required", ErrInvalidTugQL)
 	}
 	sources := []dal.RecordsetSource{from.Base()}
 	var joins []dal.JoinedSource
@@ -405,7 +405,7 @@ func (w nameWalker) sources(sources []dal.RecordsetSource, depth int, outer sour
 		switch s := source.(type) {
 		case dal.CollectionRef:
 			if s.Parent() != nil || (s.Schema() != "" && !w.relational) || (s.Database() != "" && !w.relational) {
-				return nil, fmt.Errorf("%w: only plain root collections are supported as sources", ErrInvalidDTQL)
+				return nil, fmt.Errorf("%w: only plain root collections are supported as sources", ErrInvalidTugQL)
 			}
 			if s.Schema() != "" {
 				if err := validateNativeIdentifier(s.Schema()); err != nil {
@@ -415,7 +415,7 @@ func (w nameWalker) sources(sources []dal.RecordsetSource, depth int, outer sour
 					return nil, err
 				}
 			} else if err := ValidateCollectionName(s.Name()); err != nil {
-				return nil, fmt.Errorf("%w: %v", ErrInvalidDTQL, err)
+				return nil, fmt.Errorf("%w: %v", ErrInvalidTugQL, err)
 			}
 			scope = append(scope, s.Name())
 			if s.Alias() != "" {
@@ -430,7 +430,7 @@ func (w nameWalker) sources(sources []dal.RecordsetSource, depth int, outer sour
 			}
 			scope = append(scope, s.Alias())
 		default:
-			return nil, fmt.Errorf("%w: unsupported source %T", ErrInvalidDTQL, source)
+			return nil, fmt.Errorf("%w: unsupported source %T", ErrInvalidTugQL, source)
 		}
 	}
 	for _, source := range sources {
@@ -452,7 +452,7 @@ func (w nameWalker) sources(sources []dal.RecordsetSource, depth int, outer sour
 
 func (w nameWalker) field(name string) error {
 	if err := w.names.validate(name); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidDTQL, err)
+		return fmt.Errorf("%w: %v", ErrInvalidTugQL, err)
 	}
 	return nil
 }
@@ -469,10 +469,10 @@ func validateIdentifier(name string) error {
 	// An over-long name is not echoed: the text is the caller's and can be as
 	// large as the request body. ValidateFieldName does the same.
 	if len(name) > maxFieldNameLen {
-		return fmt.Errorf("%w: an alias or qualifier exceeds %d bytes", ErrInvalidDTQL, maxFieldNameLen)
+		return fmt.Errorf("%w: an alias or qualifier exceeds %d bytes", ErrInvalidTugQL, maxFieldNameLen)
 	}
 	if !identifierRe.MatchString(name) {
-		return fmt.Errorf("%w: %q is not a plain identifier", ErrInvalidDTQL, name)
+		return fmt.Errorf("%w: %q is not a plain identifier", ErrInvalidTugQL, name)
 	}
 	return nil
 }
@@ -490,7 +490,7 @@ func validateQualifier(name string, scope sourceScope) error {
 
 func (w nameWalker) condition(condition dal.Condition, depth int, scope sourceScope) error {
 	if depth > maxQueryTreeDepth {
-		return fmt.Errorf("%w: query nesting is too deep", ErrInvalidDTQL)
+		return fmt.Errorf("%w: query nesting is too deep", ErrInvalidTugQL)
 	}
 	switch c := condition.(type) {
 	case nil:
@@ -512,19 +512,19 @@ func (w nameWalker) condition(condition dal.Condition, depth int, scope sourceSc
 		return nil
 	case dal.IsNullCondition:
 		if !w.relational {
-			return fmt.Errorf("%w: unsupported condition %T", ErrInvalidDTQL, condition)
+			return fmt.Errorf("%w: unsupported condition %T", ErrInvalidTugQL, condition)
 		}
 		return w.expression(c.Operand(), depth+1, scope)
 	case dal.ExistsCondition:
 		return w.query(c.Query(), depth+1, scope)
 	default:
-		return fmt.Errorf("%w: unsupported condition %T", ErrInvalidDTQL, condition)
+		return fmt.Errorf("%w: unsupported condition %T", ErrInvalidTugQL, condition)
 	}
 }
 
 func (w nameWalker) expression(expression dal.Expression, depth int, scope sourceScope) error {
 	if depth > maxQueryTreeDepth {
-		return fmt.Errorf("%w: query nesting is too deep", ErrInvalidDTQL)
+		return fmt.Errorf("%w: query nesting is too deep", ErrInvalidTugQL)
 	}
 	switch e := expression.(type) {
 	case nil:
@@ -540,7 +540,7 @@ func (w nameWalker) expression(expression dal.Expression, depth int, scope sourc
 		return nil
 	case dal.Param:
 		if !dal.ValidParamName(e.Name) {
-			return fmt.Errorf("%w: invalid parameter name %q", ErrInvalidDTQL, e.Name)
+			return fmt.Errorf("%w: invalid parameter name %q", ErrInvalidTugQL, e.Name)
 		}
 		return nil
 	case dal.BinaryExpression:
@@ -549,7 +549,7 @@ func (w nameWalker) expression(expression dal.Expression, depth int, scope sourc
 		switch e.Operator {
 		case dal.Add, dal.Subtract, dal.Multiply, dal.Divide:
 		default:
-			return fmt.Errorf("%w: an arithmetic operator must be one of + - * /", ErrInvalidDTQL)
+			return fmt.Errorf("%w: an arithmetic operator must be one of + - * /", ErrInvalidTugQL)
 		}
 		if err := w.expression(e.Left, depth+1, scope); err != nil {
 			return err
@@ -569,7 +569,7 @@ func (w nameWalker) expression(expression dal.Expression, depth int, scope sourc
 		// validates the name only where it runs an aggregation, so a name in a where,
 		// scan or ON operand would otherwise reach an adapter.
 		if !IsAggregateFunction(e.FuncName()) {
-			return fmt.Errorf("%w: %s", ErrInvalidDTQL, unsupportedAggregateText(e.FuncName()))
+			return fmt.Errorf("%w: %s", ErrInvalidTugQL, unsupportedAggregateText(e.FuncName()))
 		}
 		for _, arg := range e.FuncArgs() {
 			if err := w.expression(arg, depth+1, scope); err != nil {
@@ -578,6 +578,6 @@ func (w nameWalker) expression(expression dal.Expression, depth int, scope sourc
 		}
 		return nil
 	default:
-		return fmt.Errorf("%w: unsupported expression %T", ErrInvalidDTQL, expression)
+		return fmt.Errorf("%w: unsupported expression %T", ErrInvalidTugQL, expression)
 	}
 }

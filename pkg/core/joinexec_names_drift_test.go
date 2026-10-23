@@ -19,7 +19,7 @@ import (
 // here.
 //
 // The name check compared with the walk is the one the classifier runs on a
-// relational document, validateRelationalNames (ClassifyDTQL calls it). A
+// relational document, validateRelationalNames (ClassifyTugQL calls it). A
 // document the two answer differently is listed with the named difference that
 // says why; there are four, and every other document gets the same answer from
 // both.
@@ -58,7 +58,7 @@ func (driftRegistry) Lookup(string) (joinexec.Source, bool) { return nil, false 
 
 // driftProfile is the profile of query, built from the document itself: every
 // collection under a FROM tree, a derived source, an EXISTS or a scalar subquery,
-// and whether any subquery is met. It does not come from ClassifyDTQL, which
+// and whether any subquery is met. It does not come from ClassifyTugQL, which
 // refuses some of the documents under test and would leave the walk with a
 // profile that does not describe them.
 func driftProfile(query dal.StructuredQuery) joinexec.Profile {
@@ -402,7 +402,7 @@ func TestJoinexecWalkFieldRuleIsTheStrictRuleOfCore(t *testing.T) {
 // the profile walk does and refuses past the same bound, so it neither refuses a
 // document the profile walk accepted nor lets through one it refused. This
 // compares the walk with the profile walk of this package (relationalMaxNesting,
-// 64) only. The name check that ClassifyDTQL runs after it has a tighter bound of
+// 64) only. The name check that ClassifyTugQL runs after it has a tighter bound of
 // its own (maxQueryTreeDepth, 16), so the classifier refuses a document nested
 // deeper than that, which the walk of pkg/joinexec would still accept; that is
 // the classifier's alone and is listed on Execute. Each shape is
@@ -466,14 +466,14 @@ func TestJoinexecWalkAndCoreAgreeOnTheNestingBound(t *testing.T) {
 	}
 }
 
-// classifiedProfile is the profile of query as ClassifyDTQL reports it, in the
+// classifiedProfile is the profile of query as ClassifyTugQL reports it, in the
 // type Execute takes. It fails the test when the classifier refuses the document
 // or does not call it relational.
 func classifiedProfile(t *testing.T, query dal.StructuredQuery) (Profile, joinexec.Profile) {
 	t.Helper()
-	profile, err := ClassifyDTQL(query)
+	profile, err := ClassifyTugQL(query)
 	if err != nil {
-		t.Fatalf("ClassifyDTQL: %v", err)
+		t.Fatalf("ClassifyTugQL: %v", err)
 	}
 	if profile.Kind != ProfileRelational {
 		t.Fatalf("profile kind = %q, want %q", profile.Kind, ProfileRelational)
@@ -491,7 +491,7 @@ func classifiedProfile(t *testing.T, query dal.StructuredQuery) (Profile, joinex
 // that shape, and one whose profile says less than the document reads would be
 // authorised for less than it reads. The tests of pkg/joinexec derive their
 // profile from the walk and the table above derives it from the document, so
-// none of them hands over the profile ClassifyDTQL makes. This one does, for
+// none of them hands over the profile ClassifyTugQL makes. This one does, for
 // the shapes a relational document takes, under an authoriser that denies every
 // read: the walk accepts the document and finds the first source denied, which
 // means the profile described it.
@@ -658,11 +658,11 @@ func TestJoinexecWalkAcceptsTheDeepestDocumentTheClassifierAccepts(t *testing.T)
 	// One more level of either kind is refused by the classifier, which is what
 	// makes this the deepest.
 	deeper := dal.From(dal.NewQuerySource(query, "dz")).NewQuery().SelectIntoRecord(nil)
-	if _, err := ClassifyDTQL(deeper); !errors.Is(err, ErrInvalidDTQL) {
+	if _, err := ClassifyTugQL(deeper); !errors.Is(err, ErrInvalidTugQL) {
 		t.Fatalf("one more level of subquery: err = %v, want the classifier to refuse it", err)
 	}
 	wider := dal.From(dal.NewRootCollectionRef("t", "extra")).Join(dal.NewNestedJoinedSource(chain(0), dal.JoinInner, dal.NewComparison(id("extra"), dal.Equal, id(alias(0))))).NewQuery().SelectIntoRecord(nil)
-	if _, err := ClassifyDTQL(wider); !errors.Is(err, ErrInvalidDTQL) {
+	if _, err := ClassifyTugQL(wider); !errors.Is(err, ErrInvalidTugQL) {
 		t.Fatalf("one more source: err = %v, want the classifier to refuse it", err)
 	}
 }

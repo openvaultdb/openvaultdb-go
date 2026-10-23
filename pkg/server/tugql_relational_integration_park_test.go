@@ -233,8 +233,8 @@ func relIntCheckCapacity(t *testing.T, base, token string) {
 		otherLabel             string
 		otherIDs               []any
 	}{
-		{"the in-memory route", "in-memory", "/v1/dtql", relIntParkedAcross, "/v1/databases/chinook/dtql", relIntRevenue("", "", true), "database", nil},
-		{"the database route", "database", "/v1/databases/slow/dtql", relIntParkedJoin, "/v1/dtql", relIntSameCountryAsC1, "in-memory", []any{"c1", "c5", "c9"}},
+		{"the in-memory route", "in-memory", "/v1/tugql", relIntParkedAcross, "/v1/databases/chinook/tugql", relIntRevenue("", "", true), "database", nil},
+		{"the database route", "database", "/v1/databases/slow/tugql", relIntParkedJoin, "/v1/tugql", relIntSameCountryAsC1, "in-memory", []any{"c1", "c5", "c9"}},
 	} {
 		t.Run(route.name, func(t *testing.T) {
 			gate := relIntArmPark(t)
@@ -294,7 +294,7 @@ func TestUnmountingAMountWhileAQueryReadsItWaitsForTheQuery(t *testing.T) {
 	t.Cleanup(host.Close)
 	gate := relIntArmPark(t)
 
-	running := relIntAsyncPost(host.URL, "/v1/dtql", "", relIntParkedAcross)
+	running := relIntAsyncPost(host.URL, "/v1/tugql", "", relIntParkedAcross)
 	relIntAwaitParked(t, gate, running)
 
 	unmounted := make(chan error, 1)
@@ -310,7 +310,7 @@ func TestUnmountingAMountWhileAQueryReadsItWaitsForTheQuery(t *testing.T) {
 		}
 		runtime.Gosched()
 	}
-	if resp := relHTTPPost(t, host.URL, "/v1/dtql", "", relIntParkedAcross); resp.status != http.StatusNotFound || resp.errorField("code") != "not_found" {
+	if resp := relHTTPPost(t, host.URL, "/v1/tugql", "", relIntParkedAcross); resp.status != http.StatusNotFound || resp.errorField("code") != "not_found" {
 		t.Fatalf("a new query that names the mount: status %d: %s", resp.status, resp.raw)
 	}
 	select {

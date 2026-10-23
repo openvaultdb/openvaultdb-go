@@ -233,7 +233,7 @@ func TestAnAliasOfTheSelectListIsAFieldOfASourceWhereDALgoReadsItSo(t *testing.T
 // With every list supplied, a name that two lists carry is refused here, as DALgo
 // refuses it on the evaluation that checks it: DALgo's streaming plan of a flat join of
 // two sources binds an unqualified field to the first source without a check, and the
-// DTQL parser, which keeps such a field out of a join without a subquery, is not what
+// TugQL parser, which keeps such a field out of a join without a subquery, is not what
 // Execute may depend on, since it takes any built query.
 func TestAnUnqualifiedFieldTwoSuppliedListsCarryIsRefusedAsAmbiguous(t *testing.T) {
 	lists := map[string][]string{"A": {"id", "x", "only_a"}, "B": {"x", "only_b"}}
@@ -456,7 +456,7 @@ func TestAnUnqualifiedFieldBothSourcesCarryIsRefusedAndNeverReadFromTheFirst(t *
 
 // DALgo's streaming plan of a flat join of two sources (no subquery, no ORDER BY) binds
 // an unqualified field to the first source and checks it against that source's list
-// alone. The DTQL parser keeps such a field out of the document, but Execute takes a
+// alone. The TugQL parser keeps such a field out of the document, but Execute takes a
 // built query: a name both mounts carry is refused here, and a name only the other
 // mount carries is never read from the first source.
 func TestAnUnqualifiedFieldOfAFlatJoinIsNeverReadFromTheWrongSource(t *testing.T) {

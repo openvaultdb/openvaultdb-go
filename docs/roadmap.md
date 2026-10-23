@@ -103,14 +103,14 @@ See [docs/threat-model.md](threat-model.md) for the current posture.
 
 ## Medium term
 
-### DTQL as primary query surface
+### TugQL as primary query surface
 
-DTQL (DALgo Typed Query Language) YAML is parsed, classified and validated by the server, which
+TugQL (DALgo Typed Query Language) YAML is parsed, classified and validated by the server, which
 runs a single-collection document and a bounded relational one (joins, grouping, aggregates,
 subqueries, several mounted databases); see `docs/api.md`. Still to do:
 
 - Return typed, potentially transformed record sets.
-- Evaluate whether DTQL should cover the write path (batch mutations described in DTQL).
+- Evaluate whether TugQL should cover the write path (batch mutations described in TugQL).
 
 ### GraphSpec / ModelSpec integration
 
@@ -228,8 +228,8 @@ are not exposed by the `ovdb` HTTP wire protocol in MVP. The `dalgo2openvaultdb`
 | Query cursors / `StartFrom`       | Pagination via cursor token not in MVP                                  |
 | Query `Offset`                    | Skip-N not in query wire format                                         |
 | Query column projections          | `Columns` field in `dal.Query` not translated                           |
-| Query `GroupBy` / `Having`        | Not in the `/query` wire format (DTQL documents have them)              |
-| Collection-group queries          | Not in the `/query` wire format; a DTQL document with a collection-group source is refused (`400 invalid_dtql`) |
+| Query `GroupBy` / `Having`        | Not in the `/query` wire format (TugQL documents have them)              |
+| Collection-group queries          | Not in the `/query` wire format; a TugQL document with a collection-group source is refused (`400 invalid_tugql`) |
 | Cross-transaction isolation       | No optimistic concurrency; no MVCC                                      |
 
 These are wire-protocol gaps, not engine limitations. Adding any of them requires extending the

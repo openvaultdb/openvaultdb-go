@@ -37,7 +37,7 @@ func (t *fieldsTx) ExecuteQueryToRecordsReader(ctx context.Context, query dal.Qu
 // with an error, which a server engine turns into a built one, so the count is what
 // says it.
 func (f *fieldsDB) reached(err error) bool {
-	return f.queries == 1 && err != nil && !errors.Is(err, ErrInvalidDTQL)
+	return f.queries == 1 && err != nil && !errors.Is(err, ErrInvalidTugQL)
 }
 
 // openFields opens a database of the engine and schema mode over a fake adapter that
@@ -219,7 +219,7 @@ func fieldsCases() []fieldsCase {
 
 // TestTheFieldsAndQualifiersOfAQueryAreCheckedBeforeTheAdapterOnAServerEngine: on a
 // strict PostgreSQL mount a field that no column of the table has, and a qualifier
-// that no source has, are refused (ErrInvalidDTQL) before the adapter is reached, by
+// that no source has, are refused (ErrInvalidTugQL) before the adapter is reached, by
 // every route that hands a query to it; what the tables hold passes.
 func TestTheFieldsAndQualifiersOfAQueryAreCheckedBeforeTheAdapterOnAServerEngine(t *testing.T) {
 	setPreview(t, true, "1")
@@ -233,7 +233,7 @@ func TestTheFieldsAndQualifiersOfAQueryAreCheckedBeforeTheAdapterOnAServerEngine
 				}
 				return
 			}
-			if !errors.Is(err, ErrInvalidDTQL) || !strings.Contains(err.Error(), c.want) {
+			if !errors.Is(err, ErrInvalidTugQL) || !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("%v, want an invalid query that says %q", err, c.want)
 			}
 			if fake.queries != 0 {
@@ -244,13 +244,13 @@ func TestTheFieldsAndQualifiersOfAQueryAreCheckedBeforeTheAdapterOnAServerEngine
 }
 
 // TestEveryRouteThatReadsRefusesAFieldNoColumnHasBeforeTheAdapter: the wire query, the
-// DTQL document, the snapshot of it and a read transaction of the join source refuse
+// TugQL document, the snapshot of it and a read transaction of the join source refuse
 // a field the table does not have, and reach the adapter with one it has.
 func TestEveryRouteThatReadsRefusesAFieldNoColumnHasBeforeTheAdapter(t *testing.T) {
 	setPreview(t, true, "1")
 	ctx := context.Background()
 	parse := func(doc string) dal.StructuredQuery {
-		query, _, err := ParseDTQL([]byte(doc))
+		query, _, err := ParseTugQL([]byte(doc))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -269,16 +269,16 @@ func TestEveryRouteThatReadsRefusesAFieldNoColumnHasBeforeTheAdapter(t *testing.
 			_, err := db.Execute(ctx, Query{Collection: "customers", KeysOnly: true, Where: []Filter{{Field: field, Op: "==", Value: "x"}}})
 			return err
 		},
-		"ExecuteDTQL": func(db *Database, field, _ string) error {
-			_, err := db.ExecuteDTQL(ctx, []byte("from: {name: customers}\nwhere: {op: '==', left: {field: "+field+"}, right: {value: x}}\n"))
+		"ExecuteTugQL": func(db *Database, field, _ string) error {
+			_, err := db.ExecuteTugQL(ctx, []byte("from: {name: customers}\nwhere: {op: '==', left: {field: "+field+"}, right: {value: x}}\n"))
 			return err
 		},
-		"ExecuteDTQLQuery": func(db *Database, field, _ string) error {
-			_, err := db.ExecuteDTQLQuery(ctx, parse("from: {name: customers}\nwhere: {op: '==', left: {field: "+field+"}, right: {value: x}}\n"))
+		"ExecuteTugQLQuery": func(db *Database, field, _ string) error {
+			_, err := db.ExecuteTugQLQuery(ctx, parse("from: {name: customers}\nwhere: {op: '==', left: {field: "+field+"}, right: {value: x}}\n"))
 			return err
 		},
-		"StreamDTQLSnapshot": func(db *Database, field, _ string) error {
-			return db.StreamDTQLSnapshot(ctx, parse("from: {name: customers}\ncolumns: [{field: "+field+"}]\n"), func(Record) error { return nil })
+		"StreamTugQLSnapshot": func(db *Database, field, _ string) error {
+			return db.StreamTugQLSnapshot(ctx, parse("from: {name: customers}\ncolumns: [{field: "+field+"}]\n"), func(Record) error { return nil })
 		},
 		"ReadTx": func(db *Database, field, _ string) error {
 			return db.ReadTx(ctx, func(tx dal.QueryExecutor) error {
@@ -290,7 +290,7 @@ func TestEveryRouteThatReadsRefusesAFieldNoColumnHasBeforeTheAdapter(t *testing.
 	for name, route := range routes {
 		t.Run(name, func(t *testing.T) {
 			db, fake := openFields(t, "postgres", schema.ModeStrict)
-			if err := route(db, "nosuch", ""); !errors.Is(err, ErrInvalidDTQL) || !strings.Contains(err.Error(), `has no field "nosuch"`) {
+			if err := route(db, "nosuch", ""); !errors.Is(err, ErrInvalidTugQL) || !strings.Contains(err.Error(), `has no field "nosuch"`) {
 				t.Fatalf("a field no column has: %v, want an invalid query", err)
 			}
 			if fake.queries != 0 {
@@ -331,7 +331,7 @@ func TestTheFieldCheckLooksAtNothingOnAnEngineThatIsNotAServerOrNotCleared(t *te
 			if !fake.reached(err) {
 				t.Errorf("a field: %v with %d adapter calls, want the query to reach the adapter", err, fake.queries)
 			}
-			if _, err := db.Executor().ExecuteQueryToRecordsReader(context.Background(), unknownQualifier); !errors.Is(err, ErrInvalidDTQL) || fake.queries != 1 {
+			if _, err := db.Executor().ExecuteQueryToRecordsReader(context.Background(), unknownQualifier); !errors.Is(err, ErrInvalidTugQL) || fake.queries != 1 {
 				t.Errorf("a qualifier: %v with %d adapter calls, want it refused", err, fake.queries)
 			}
 		})
@@ -405,7 +405,7 @@ func TestTheFieldCheckOfADatabaseThatDeclaresACollectionNobodyKnowsAndTheFoldOfA
 	if err := db.guardFields(selectQuery(fieldsOf(fromTree(rootRef("customers"))).Where(equalTo(deepExpression, 1)))); !errors.Is(err, errSourcesTooDeep) {
 		t.Errorf("an expression too deep: %v", err)
 	}
-	if err := db.guardFields(noFromQuery{selectQuery(fieldsOf(fromTree(rootRef("customers"))))}); !errors.Is(err, ErrInvalidDTQL) {
+	if err := db.guardFields(noFromQuery{selectQuery(fieldsOf(fromTree(rootRef("customers"))))}); !errors.Is(err, ErrInvalidTugQL) {
 		t.Errorf("a query with no from clause: %v", err)
 	}
 }
@@ -418,7 +418,7 @@ func TestALongSourceAliasIsRefusedWithoutRepeatingIt(t *testing.T) {
 	db, fake := openFields(t, "postgres", schema.ModeStrict)
 	query := selectQuery(fieldsOf(fromTree(dal.NewRootCollectionRef("orders", alias))))
 	_, err := db.Executor().ExecuteQueryToRecordsReader(context.Background(), query)
-	if !errors.Is(err, ErrInvalidDTQL) || strings.Contains(err.Error(), "zyyy") {
+	if !errors.Is(err, ErrInvalidTugQL) || strings.Contains(err.Error(), "zyyy") {
 		t.Fatalf("%v, want an invalid query that does not repeat the alias", err)
 	}
 	if fake.queries != 0 {

@@ -156,13 +156,13 @@ func previewPGServerLimits(t *testing.T, driver dal.DB, timeout time.Duration) (
 }
 
 // previewPGRoutes are the routes a structured query takes to the PostgreSQL mount
-// of previewPGServer: the wire query, the DTQL of the database, and a relational
+// of previewPGServer: the wire query, the TugQL of the database, and a relational
 // document of the cross-database endpoint, alone and joined to another mount.
 var previewPGRoutes = []struct{ name, path, body string }{
 	{"wire query", "/v1/databases/pg/query", `{"collection":"customers"}`},
-	{"DTQL of the database", "/v1/databases/pg/dtql", "from: {name: customers}\n"},
-	{"relational document, alone", "/v1/dtql", "from: {database: pg, name: customers}\n"},
-	{"relational document, joined", "/v1/dtql", `from:
+	{"TugQL of the database", "/v1/databases/pg/tugql", "from: {name: customers}\n"},
+	{"relational document, alone", "/v1/tugql", "from: {database: pg, name: customers}\n"},
+	{"relational document, joined", "/v1/tugql", `from:
   database: pg
   name: orders
   alias: o
@@ -292,7 +292,7 @@ func TestAFailedTransactionOrFieldListOfAPostgresMountRepeatsNoDriverTextInTheAn
 				driver := &previewPGDriver{}
 				c.fail(driver, driverFailure)
 				host, logs, _ := previewPGServerOf(t, driver)
-				resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", route.body, nil)
+				resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", route.body, nil)
 				if resp.status != http.StatusInternalServerError || resp.code() != "internal" {
 					t.Fatalf("status %d: %s", resp.status, resp.raw)
 				}
@@ -307,7 +307,7 @@ func TestAFailedTransactionOrFieldListOfAPostgresMountRepeatsNoDriverTextInTheAn
 				driver := &previewPGDriver{}
 				c.fail(driver, fmt.Errorf("driver: %w: "+previewPGMarker, context.DeadlineExceeded))
 				host, logs, _ := previewPGServerOf(t, driver)
-				resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", route.body, nil)
+				resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", route.body, nil)
 				if resp.status != http.StatusGatewayTimeout || resp.code() != "query_timeout" {
 					t.Fatalf("status %d: %s", resp.status, resp.raw)
 				}
@@ -331,7 +331,7 @@ func (e *previewPGStateError) SQLState() string { return e.code }
 // TestAValueOrANameThePostgresServerRefusesIsA400WithAFixedMessageAndNoLog: a word
 // compared with an integer field (22P02), a number compared with a text field (42883)
 // and a name the table does not have (42703) are mistakes of the caller. On every route
-// they are answered 400 invalid_dtql with one fixed message that repeats nothing of the
+// they are answered 400 invalid_tugql with one fixed message that repeats nothing of the
 // request or of the server, and they are not logged: a caller who may read cannot
 // fill the log of the server with them.
 func TestAValueOrANameThePostgresServerRefusesIsA400WithAFixedMessageAndNoLog(t *testing.T) {
@@ -340,7 +340,7 @@ func TestAValueOrANameThePostgresServerRefusesIsA400WithAFixedMessageAndNoLog(t 
 			t.Run(code+"/"+route.name, func(t *testing.T) {
 				host, logs, driver := previewPGServer(t, fmt.Errorf("failed to get SQL reader: %w", &previewPGStateError{code: code}))
 				resp := relFakeDo(t, host, http.MethodPost, route.path, "", route.body, nil)
-				if resp.status != http.StatusBadRequest || resp.code() != "invalid_dtql" {
+				if resp.status != http.StatusBadRequest || resp.code() != "invalid_tugql" {
 					t.Fatalf("status %d: %s", resp.status, resp.raw)
 				}
 				if message, _ := resp.errorDetail()["message"].(string); message != core.ErrQueryDoesNotFit.Error() {
@@ -363,32 +363,32 @@ func TestAValueOrANameThePostgresServerRefusesIsA400WithAFixedMessageAndNoLog(t 
 // TestAFieldOrQualifierThePostgresTablesDoNotHaveIsARefusalBeforeTheDriver: a field no
 // column of a declared collection has and a qualifier no source has are the caller's
 // mistakes, and on a strict PostgreSQL mount every route refuses them before the driver
-// is reached: 400 invalid_dtql with a sentence that repeats a bounded name, and no log
+// is reached: 400 invalid_tugql with a sentence that repeats a bounded name, and no log
 // record. The adapter would only fail them as a fault of the server.
 func TestAFieldOrQualifierThePostgresTablesDoNotHaveIsARefusalBeforeTheDriver(t *testing.T) {
 	for _, c := range []struct{ name, path, body, want string }{
 		{"wire query, where", "/v1/databases/pg/query", `{"collection":"customers","where":[{"field":"nosuch","op":"==","value":"x"}]}`, `has no field "nosuch"`},
 		{"wire query, order by", "/v1/databases/pg/query", `{"collection":"customers","orderBy":[{"field":"nosuch"}]}`, `has no field "nosuch"`},
 		{"wire query, a dotted name", "/v1/databases/pg/query", `{"collection":"customers","where":[{"field":"name.first","op":"==","value":"x"}]}`, `has no field "name.first"`},
-		{"DTQL of the database, where", "/v1/databases/pg/dtql", "from: {name: customers}\nwhere: {op: '==', left: {field: nosuch}, right: {value: x}}\n", `has no field "nosuch"`},
-		{"DTQL of the database, a column", "/v1/databases/pg/dtql", "from: {name: customers}\ncolumns: [{field: nosuch}]\n", `has no field "nosuch"`},
-		{"relational document, a field", "/v1/dtql", "from: {database: pg, name: customers, alias: c}\nwhere: {op: '==', left: {field: nosuch, source: c}, right: {value: x}}\n", `has no field "nosuch"`},
-		{"relational document, a qualifier", "/v1/dtql", "from: {database: pg, name: customers, alias: c}\nwhere: {op: '==', left: {field: name, source: x}, right: {value: x}}\n", `no source of the query is named "x"`},
-		{"relational document, the collection of an aliased source", "/v1/dtql", "from: {database: pg, name: customers, alias: c}\nwhere: {op: '==', left: {field: name, source: customers}, right: {value: x}}\n", `no source of the query is named "customers"`},
-		{"relational document, a join on", "/v1/dtql", strings.Replace(previewPGSameDatabaseJoin, "{field: customer_id, source: o}", "{field: nosuch, source: o}", 1), `collection "orders" has no field "nosuch"`},
-		{"relational document, a join order", "/v1/dtql", previewPGSameDatabaseJoin + "orderBy: [{field: nosuch, source: c}]\n", `collection "customers" has no field "nosuch"`},
+		{"TugQL of the database, where", "/v1/databases/pg/tugql", "from: {name: customers}\nwhere: {op: '==', left: {field: nosuch}, right: {value: x}}\n", `has no field "nosuch"`},
+		{"TugQL of the database, a column", "/v1/databases/pg/tugql", "from: {name: customers}\ncolumns: [{field: nosuch}]\n", `has no field "nosuch"`},
+		{"relational document, a field", "/v1/tugql", "from: {database: pg, name: customers, alias: c}\nwhere: {op: '==', left: {field: nosuch, source: c}, right: {value: x}}\n", `has no field "nosuch"`},
+		{"relational document, a qualifier", "/v1/tugql", "from: {database: pg, name: customers, alias: c}\nwhere: {op: '==', left: {field: name, source: x}, right: {value: x}}\n", `no source of the query is named "x"`},
+		{"relational document, the collection of an aliased source", "/v1/tugql", "from: {database: pg, name: customers, alias: c}\nwhere: {op: '==', left: {field: name, source: customers}, right: {value: x}}\n", `no source of the query is named "customers"`},
+		{"relational document, a join on", "/v1/tugql", strings.Replace(previewPGSameDatabaseJoin, "{field: customer_id, source: o}", "{field: nosuch, source: o}", 1), `collection "orders" has no field "nosuch"`},
+		{"relational document, a join order", "/v1/tugql", previewPGSameDatabaseJoin + "orderBy: [{field: nosuch, source: c}]\n", `collection "customers" has no field "nosuch"`},
 		// A name that a column carries as its alias is read as the alias only in HAVING and ORDER BY.
-		{"relational document, a name that is only an alias, in where", "/v1/dtql", "from: {database: pg, name: customers}\ncolumns: [{field: name, as: x}]\nwhere: {op: '==', left: {field: x}, right: {value: x}}\n", `has no field "x"`},
-		{"relational document, a name that is only an alias, in group by", "/v1/dtql", "from: {database: pg, name: customers}\ncolumns: [{aggregate: {function: count, args: [{star: true}]}, as: n}]\ngroupBy: [{field: n}]\n", `has no field "n"`},
-		{"relational document, a name that is only an alias, in an aggregate", "/v1/dtql", "from: {database: pg, name: customers}\ncolumns: [{aggregate: {function: count, args: [{star: true}]}, as: n}]\nhaving: {op: '>', left: {aggregate: {function: sum, args: [{field: n}]}}, right: {value: 1}}\n", `has no field "n"`},
-		{"DTQL of the database, a name that is only an alias, in where", "/v1/databases/pg/dtql", "from: {name: customers}\ncolumns: [{field: name, as: x}]\nwhere: {op: '==', left: {field: x}, right: {value: x}}\n", `has no field "x"`},
+		{"relational document, a name that is only an alias, in where", "/v1/tugql", "from: {database: pg, name: customers}\ncolumns: [{field: name, as: x}]\nwhere: {op: '==', left: {field: x}, right: {value: x}}\n", `has no field "x"`},
+		{"relational document, a name that is only an alias, in group by", "/v1/tugql", "from: {database: pg, name: customers}\ncolumns: [{aggregate: {function: count, args: [{star: true}]}, as: n}]\ngroupBy: [{field: n}]\n", `has no field "n"`},
+		{"relational document, a name that is only an alias, in an aggregate", "/v1/tugql", "from: {database: pg, name: customers}\ncolumns: [{aggregate: {function: count, args: [{star: true}]}, as: n}]\nhaving: {op: '>', left: {aggregate: {function: sum, args: [{field: n}]}}, right: {value: 1}}\n", `has no field "n"`},
+		{"TugQL of the database, a name that is only an alias, in where", "/v1/databases/pg/tugql", "from: {name: customers}\ncolumns: [{field: name, as: x}]\nwhere: {op: '==', left: {field: x}, right: {value: x}}\n", `has no field "x"`},
 		// An alias over the 63 bytes of a name in PostgreSQL: the sentence gives the limit and not the alias.
-		{"relational document, a source alias over the length of a name", "/v1/dtql", "from: {database: pg, name: customers, alias: " + strings.Repeat("a", 64) + "}\ncolumns: [{field: id, source: " + strings.Repeat("a", 64) + "}]\n", `a source alias is longer than 63 bytes`},
+		{"relational document, a source alias over the length of a name", "/v1/tugql", "from: {database: pg, name: customers, alias: " + strings.Repeat("a", 64) + "}\ncolumns: [{field: id, source: " + strings.Repeat("a", 64) + "}]\n", `a source alias is longer than 63 bytes`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			host, logs, driver := previewPGServer(t, nil)
 			resp := relFakeDo(t, host, http.MethodPost, c.path, "", c.body, nil)
-			if resp.status != http.StatusBadRequest || resp.code() != "invalid_dtql" {
+			if resp.status != http.StatusBadRequest || resp.code() != "invalid_tugql" {
 				t.Fatalf("status %d: %s", resp.status, resp.raw)
 			}
 			if message, _ := resp.errorDetail()["message"].(string); !strings.Contains(message, c.want) {

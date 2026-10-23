@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/dal-go/dalgo/dal"
-	az "github.com/dal-go/dalgo/dtql/authorization"
+	az "github.com/dal-go/dalgo/tugql/authorization"
 
 	api "github.com/openvaultdb/openvaultdb-go/pkg/authorizationapi"
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
@@ -81,7 +81,7 @@ func TestGuardOperation(t *testing.T) {
 			op := c.op
 			op.ID, op.Action = "op1", action(op)
 			if op.ExecutionClass == "" {
-				op.ExecutionClass = az.ExecutionDTQL
+				op.ExecutionClass = executionTugQL
 			}
 			internal, err := guardOperation(declared(c.engine), op)
 			if c.want == nil && err != nil || c.want != nil && !errors.Is(err, c.want) {

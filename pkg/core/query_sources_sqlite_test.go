@@ -11,7 +11,7 @@ import (
 
 	"github.com/dal-go/dalgo/access"
 	"github.com/dal-go/dalgo/dal"
-	"github.com/dal-go/dalgo/dtql"
+	"github.com/dal-go/dalgo/tugql"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 	"github.com/openvaultdb/openvaultdb-go/pkg/mount"
@@ -49,7 +49,7 @@ func srcSQLiteMount(t *testing.T) *core.Database {
 	return db
 }
 
-// srcSQLiteDocuments are DTQL documents that name a collection the mount does
+// srcSQLiteDocuments are TugQL documents that name a collection the mount does
 // not declare, in every position a document can place one.
 func srcSQLiteDocuments(name string) map[string]string {
 	return map[string]string{
@@ -72,27 +72,27 @@ func TestSQLiteMountQueriesReadOnlyDeclaredCollections(t *testing.T) {
 	}
 	for _, name := range []string{"undeclared_table", "sqlite_master", "sqlite_schema", "sqlite_temp_master", "sqlite_sequence", "Things"} {
 		for label, doc := range srcSQLiteDocuments(name) {
-			_, err := db.ExecuteDTQL(ctx, []byte(doc))
-			refused(name+" dtql "+label, err)
+			_, err := db.ExecuteTugQL(ctx, []byte(doc))
+			refused(name+" tugql "+label, err)
 		}
 		_, err := db.Execute(ctx, core.Query{Collection: name})
 		refused(name+" wire", err)
 		_, err = db.Execute(ctx, core.Query{Collection: name, KeysOnly: true})
 		refused(name+" wire keys", err)
 
-		query, _, err := core.ParseDTQL([]byte(srcSQLiteDocuments(name)["exists"]))
+		query, _, err := core.ParseTugQL([]byte(srcSQLiteDocuments(name)["exists"]))
 		if err != nil {
 			t.Fatal(err)
 		}
-		refused(name+" snapshot", db.StreamDTQLSnapshot(ctx, query, func(core.Record) error { return nil }))
+		refused(name+" snapshot", db.StreamTugQLSnapshot(ctx, query, func(core.Record) error { return nil }))
 		_, _, err = db.SelectAccessSample(ctx, query, 1, access.Principal{})
 		refused(name+" sample", err)
 
 		// Through the join source: as a root, a joined source and a derived one.
 		for label, query := range map[string]dal.StructuredQuery{
-			"root":    mustDTQL(t, srcSQLiteDocuments(name)["root"]),
-			"join":    mustDTQL(t, fmt.Sprintf("from: {name: things, alias: t, joins: [{from: {name: %s, alias: u}, on: [{op: '==', left: {field: id, source: t}, right: {field: id, source: u}}]}]}\n", name)),
-			"derived": mustDTQL(t, fmt.Sprintf("from:\n  query:\n    as: d\n    from: {name: %s}\n", name)),
+			"root":    mustTugQL(t, srcSQLiteDocuments(name)["root"]),
+			"join":    mustTugQL(t, fmt.Sprintf("from: {name: things, alias: t, joins: [{from: {name: %s, alias: u}, on: [{op: '==', left: {field: id, source: t}, right: {field: id, source: u}}]}]}\n", name)),
+			"derived": mustTugQL(t, fmt.Sprintf("from:\n  query:\n    as: d\n    from: {name: %s}\n", name)),
 		} {
 			_, err := db.Executor().ExecuteQueryToRecordsReader(ctx, query)
 			refused(name+" executor "+label, err)
@@ -106,17 +106,17 @@ func TestSQLiteMountQueriesReadOnlyDeclaredCollections(t *testing.T) {
 		refused(name+" join fields", err)
 	}
 	// The table is still there and so is the data: nothing was read or changed.
-	records, err := db.ExecuteDTQL(ctx, []byte("from: {name: things}\norderBy: [{field: id}]\n"))
+	records, err := db.ExecuteTugQL(ctx, []byte("from: {name: things}\norderBy: [{field: id}]\n"))
 	if err != nil || len(records) != 2 {
 		t.Fatalf("declared collection: %d records, %v", len(records), err)
 	}
 }
 
-// mustDTQL decodes a DTQL document without the single-collection restrictions
-// of ParseDTQL, so a join or a derived source can be handed to the join source.
-func mustDTQL(t *testing.T, doc string) dal.StructuredQuery {
+// mustTugQL decodes a TugQL document without the single-collection restrictions
+// of ParseTugQL, so a join or a derived source can be handed to the join source.
+func mustTugQL(t *testing.T, doc string) dal.StructuredQuery {
 	t.Helper()
-	query, err := dtql.Deserialize([]byte(doc))
+	query, err := tugql.Deserialize([]byte(doc))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,13 +128,13 @@ func mustDTQL(t *testing.T, doc string) dal.StructuredQuery {
 func TestSQLiteMountStillQueriesDeclaredCollections(t *testing.T) {
 	db := srcSQLiteMount(t)
 	ctx := context.Background()
-	records, err := db.ExecuteDTQL(ctx, []byte("from: {name: things}\norderBy: [{field: id}]\n"))
+	records, err := db.ExecuteTugQL(ctx, []byte("from: {name: things}\norderBy: [{field: id}]\n"))
 	if err != nil || len(records) != 2 || records[0].Data["name"] != "alpha" {
-		t.Fatalf("dtql: %v %v", records, err)
+		t.Fatalf("tugql: %v %v", records, err)
 	}
-	records, err = db.ExecuteDTQL(ctx, []byte("from: {name: things}\nwhere: {exists: {query: {from: {name: things, alias: t2}, where: {op: '==', left: {field: name}, right: {value: beta}}}}}\norderBy: [{field: id}]\n"))
+	records, err = db.ExecuteTugQL(ctx, []byte("from: {name: things}\nwhere: {exists: {query: {from: {name: things, alias: t2}, where: {op: '==', left: {field: name}, right: {value: beta}}}}}\norderBy: [{field: id}]\n"))
 	if err != nil || len(records) != 2 {
-		t.Fatalf("dtql with a subquery on a declared collection: %v %v", records, err)
+		t.Fatalf("tugql with a subquery on a declared collection: %v %v", records, err)
 	}
 	wire, err := db.Execute(ctx, core.Query{Collection: "things", OrderBy: []core.OrderBy{{Field: "id"}}})
 	if err != nil || len(wire) != 2 {
@@ -146,7 +146,7 @@ func TestSQLiteMountStillQueriesDeclaredCollections(t *testing.T) {
 	if _, err := db.Executor().(dal.JoinFieldsProvider).JoinFields(ctx, dal.NewRootCollectionRef("things", "")); errors.Is(err, core.ErrNotFound) {
 		t.Fatalf("join fields of a declared collection: %v", err)
 	}
-	joined := mustDTQL(t, "from: {name: things, alias: t, joins: [{from: {name: things, alias: u}, on: [{op: '==', left: {field: id, source: t}, right: {field: id, source: u}}]}]}\ncolumns: [{field: id, source: t}]\n")
+	joined := mustTugQL(t, "from: {name: things, alias: t, joins: [{from: {name: things, alias: u}, on: [{op: '==', left: {field: id, source: t}, right: {field: id, source: u}}]}]}\ncolumns: [{field: id, source: t}]\n")
 	reader, err := db.Executor().ExecuteQueryToRecordsReader(ctx, joined)
 	if err != nil {
 		t.Fatalf("a join of a declared collection with itself: %v", err)

@@ -449,7 +449,7 @@ func TestAccessSampleCore(t *testing.T) {
 		t.Fatalf("requesterPolicy.Decide not allowed: %v", dec)
 	}
 
-	q, _, err := ParseDTQL([]byte("from: {name: users}\n"))
+	q, _, err := ParseTugQL([]byte("from: {name: users}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,7 +475,7 @@ func TestAccessSampleCore(t *testing.T) {
 	}
 
 	// sample ordering with key not at end
-	qBadOrder, _, err := ParseDTQL([]byte("from: {name: users}\norderBy: [{field: id}, {field: name}]\n"))
+	qBadOrder, _, err := ParseTugQL([]byte("from: {name: users}\norderBy: [{field: id}, {field: name}]\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -610,7 +610,7 @@ func TestUpdatesCore(t *testing.T) {
 	}
 }
 
-func TestDTQLProfileCore(t *testing.T) {
+func TestTugQLProfileCore(t *testing.T) {
 	t.Parallel()
 	// unsupportedMoneyJoinShape
 	if msg := unsupportedMoneyJoinShape(nil); msg != "money mode requires a root collection" {
@@ -755,7 +755,7 @@ func TestCoreOpenValidations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc, err := access.ParseDTQLPolicy([]byte(`apiVersion: dtql.org/access/v1
+	doc, err := access.ParseTugQLPolicy([]byte(`apiVersion: tugql.org/access/v1
 kind: AccessPolicy
 metadata: {name: customers}
 target: {database: db1}
@@ -768,7 +768,7 @@ scopes:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.Activate(context.Background(), "", []access.DTQLDocument{doc}); err != nil {
+	if _, err := st.Activate(context.Background(), "", []access.TugQLDocument{doc}); err != nil {
 		t.Fatal(err)
 	}
 	ctrl, err := policystore.NewController(context.Background(), st)
@@ -935,7 +935,7 @@ func TestAccessSampleMoreBranches(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. hasKey true (key is last in ordering)
-	qWithKey, _, err := ParseDTQL([]byte("from: {name: customers}\norderBy: [{field: id}]\n"))
+	qWithKey, _, err := ParseTugQL([]byte("from: {name: customers}\norderBy: [{field: id}]\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1057,7 +1057,7 @@ func TestOpenProtectedFactoryAndMore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pDoc, err := access.ParseDTQLPolicy([]byte(`apiVersion: dtql.org/access/v1
+	pDoc, err := access.ParseTugQLPolicy([]byte(`apiVersion: tugql.org/access/v1
 kind: AccessPolicy
 metadata: {name: customers}
 target: {database: db1}
@@ -1068,7 +1068,7 @@ scopes: [{path: /customers, rules: [{id: r1, effect: allow, operations: [query]}
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.Activate(ctx, "", []access.DTQLDocument{pDoc}); err != nil {
+	if _, err := st.Activate(ctx, "", []access.TugQLDocument{pDoc}); err != nil {
 		t.Fatal(err)
 	}
 	ctrl, err := policystore.NewController(ctx, st)
@@ -1099,7 +1099,7 @@ scopes: [{path: /customers, rules: [{id: r1, effect: allow, operations: [query]}
 	if err != nil {
 		t.Fatalf("ReloadPolicies: %v", err)
 	}
-	if _, err := dbSuccess.PublishPolicies(ctx, snap.Revision, []access.DTQLDocument{pDoc}); err != nil {
+	if _, err := dbSuccess.PublishPolicies(ctx, snap.Revision, []access.TugQLDocument{pDoc}); err != nil {
 		t.Fatalf("PublishPolicies: %v", err)
 	}
 
@@ -1718,16 +1718,16 @@ type dummyQueryNoFrom struct {
 
 func (dummyQueryNoFrom) From() dal.FromSource { return nil }
 
-func TestValidateDTQLForMore(t *testing.T) {
+func TestValidateTugQLForMore(t *testing.T) {
 	t.Parallel()
 
 	// 1. query == nil
-	if _, err := validateDTQLFor(nil, quotedNames); err == nil {
+	if _, err := validateTugQLFor(nil, quotedNames); err == nil {
 		t.Fatal("expected error for nil query")
 	}
 
 	// 2. query.From() == nil
-	if _, err := validateDTQLFor(dummyQueryNoFrom{}, quotedNames); err == nil {
+	if _, err := validateTugQLFor(dummyQueryNoFrom{}, quotedNames); err == nil {
 		t.Fatal("expected error for nil From")
 	}
 
@@ -1735,32 +1735,32 @@ func TestValidateDTQLForMore(t *testing.T) {
 	from := dal.From(dal.NewRootCollectionRef("orders", "o"))
 	from.Join(dal.NewJoinedSource(dal.NewRootCollectionRef("customers", "c"), dal.JoinInner, dal.NewComparison(dal.NewFieldRef("o", "customer_id"), dal.Equal, dal.NewFieldRef("c", "id"))))
 	qJoin := from.NewQuery().SelectColumns(dal.Column{Expression: dal.NewFieldRef("o", "id")})
-	if _, err := validateDTQLFor(qJoin, quotedNames); err == nil {
+	if _, err := validateTugQLFor(qJoin, quotedNames); err == nil {
 		t.Fatal("expected error for joins in single-collection profile")
 	}
 
 	// 4. Invalid collection name
 	fromBad := dal.From(dal.NewRootCollectionRef("..", ""))
 	qBadCol := fromBad.NewQuery().SelectColumns(dal.Column{Expression: dal.NewFieldRef("", "id")})
-	if _, err := validateDTQLFor(qBadCol, strictNames); err == nil {
+	if _, err := validateTugQLFor(qBadCol, strictNames); err == nil {
 		t.Fatal("expected error for bad collection name with strictNames")
 	}
 }
 
-func TestBoundedDTQLAndStreamDTQLSnapshotMore(t *testing.T) {
+func TestBoundedTugQLAndStreamTugQLSnapshotMore(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	q, collection, err := ParseDTQL([]byte("from: {name: customers}\n"))
+	q, collection, err := ParseTugQL([]byte("from: {name: customers}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = collection
 
-	// boundedDTQL.String()
-	b := boundedDTQL{q}
+	// boundedTugQL.String()
+	b := boundedTugQL{q}
 	if b.String() == "" {
-		t.Fatal("expected non-empty boundedDTQL String")
+		t.Fatal("expected non-empty boundedTugQL String")
 	}
 
 	d := &Database{
@@ -1780,41 +1780,41 @@ func TestBoundedDTQLAndStreamDTQLSnapshotMore(t *testing.T) {
 		db: &scriptedQueryDB{reader: &scriptedReader{rows: 1}},
 	}
 
-	// StreamDTQLSnapshot limit != 0 error
+	// StreamTugQLSnapshot limit != 0 error
 	qWithLimit := sampleQuery{StructuredQuery: q, count: 5}
-	if err := d.StreamDTQLSnapshot(ctx, qWithLimit, func(Record) error { return nil }); err == nil {
-		t.Fatal("expected error for non-zero limit in StreamDTQLSnapshot")
+	if err := d.StreamTugQLSnapshot(ctx, qWithLimit, func(Record) error { return nil }); err == nil {
+		t.Fatal("expected error for non-zero limit in StreamTugQLSnapshot")
 	}
 
-	// StreamDTQLSnapshot ctx.Err() error
+	// StreamTugQLSnapshot ctx.Err() error
 	cancCtx, cancel := context.WithCancel(ctx)
 	cancel()
-	if err := d.StreamDTQLSnapshot(cancCtx, q, func(Record) error { return nil }); err == nil {
-		t.Fatal("expected error for cancelled ctx in StreamDTQLSnapshot")
+	if err := d.StreamTugQLSnapshot(cancCtx, q, func(Record) error { return nil }); err == nil {
+		t.Fatal("expected error for cancelled ctx in StreamTugQLSnapshot")
 	}
 
-	// StreamDTQLSnapshot emit error
-	if err := d.StreamDTQLSnapshot(ctx, q, func(Record) error { return errors.New("emit fail") }); err == nil {
-		t.Fatal("expected emit error in StreamDTQLSnapshot")
+	// StreamTugQLSnapshot emit error
+	if err := d.StreamTugQLSnapshot(ctx, q, func(Record) error { return errors.New("emit fail") }); err == nil {
+		t.Fatal("expected emit error in StreamTugQLSnapshot")
 	}
 
-	// StreamDTQLQuery emit == nil
-	if err := d.StreamDTQLQuery(ctx, q, nil); err == nil {
-		t.Fatal("expected error for nil emit in StreamDTQLQuery")
+	// StreamTugQLQuery emit == nil
+	if err := d.StreamTugQLQuery(ctx, q, nil); err == nil {
+		t.Fatal("expected error for nil emit in StreamTugQLQuery")
 	}
 
-	// StreamDTQLSnapshot keyless record rebuild
+	// StreamTugQLSnapshot keyless record rebuild
 	dKeyless := &Database{
 		Manifest: d.Manifest,
 		names:    d.names,
 		db:       &scriptedQueryDB{reader: &scriptedKeylessReader{rows: 1}},
 	}
 	var rebuiltSnap Record
-	if err := dKeyless.StreamDTQLSnapshot(ctx, q, func(rec Record) error {
+	if err := dKeyless.StreamTugQLSnapshot(ctx, q, func(rec Record) error {
 		rebuiltSnap = rec
 		return nil
 	}); err != nil {
-		t.Fatalf("StreamDTQLSnapshot keyless: %v", err)
+		t.Fatalf("StreamTugQLSnapshot keyless: %v", err)
 	}
 	if rebuiltSnap.Key == nil || rebuiltSnap.Key.ID != "rebuilt1" {
 		t.Fatalf("expected rebuilt key in snapshot, got %v", rebuiltSnap.Key)
@@ -1851,7 +1851,7 @@ func TestExecuteDalQueryStreamOnBranches(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	q, _, err := ParseDTQL([]byte("from: {name: customers}\n"))
+	q, _, err := ParseTugQL([]byte("from: {name: customers}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}

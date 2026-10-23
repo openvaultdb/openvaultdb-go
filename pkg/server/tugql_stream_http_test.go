@@ -76,7 +76,7 @@ func TestRelationalHTTPStreamsRowsBeforeExecutionReturns(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, host.URL+"/v1/dtql", strings.NewReader(relFakeAcross))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, host.URL+"/v1/tugql", strings.NewReader(relFakeAcross))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestRelationalHTTPWriteDeadlineReleasesSlowClientStream(t *testing.T) {
 		writeFailed <- nil
 		return joinexec.StreamResult{}, nil
 	}
-	req, err := http.NewRequest(http.MethodPost, host.URL+"/v1/dtql", strings.NewReader(relFakeAcross))
+	req, err := http.NewRequest(http.MethodPost, host.URL+"/v1/tugql", strings.NewReader(relFakeAcross))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestRelationalHTTPAbortsWhenEvidenceFailsAfterFirstRow(t *testing.T) {
 				Sources: []joinexec.ExecutionSource{{Database: "unexpected", Collection: "orders"}}},
 		}, nil
 	}
-	resp := internalHTTPPostPartial(t, host.URL, "/v1/dtql", relFakeAcross, queryErrorStreamMediaType)
+	resp := internalHTTPPostPartial(t, host.URL, "/v1/tugql", relFakeAcross, queryErrorStreamMediaType)
 	if got := resp.header.Get("Content-Type"); got != queryErrorStreamMediaType {
 		t.Fatalf("error stream content type = %q", got)
 	}
@@ -212,7 +212,7 @@ func TestRelationalHTTPAbortsWhenLaterRowCannotEncode(t *testing.T) {
 		}
 		return joinexec.StreamResult{}, nil
 	}
-	resp := internalHTTPPostPartial(t, host.URL, "/v1/dtql", relFakeAcross, "application/json")
+	resp := internalHTTPPostPartial(t, host.URL, "/v1/tugql", relFakeAcross, "application/json")
 	if resp.status != http.StatusOK || resp.readErr == nil || resp.body["complete"] == true {
 		t.Fatalf("late encoding failure must abort the response: status %d, read error %v, body %s", resp.status, resp.readErr, resp.raw)
 	}
@@ -226,7 +226,7 @@ func TestRelationalHTTPStreamLateExecutionFailureUsesSanitizedErrorFooter(t *tes
 		}
 		return joinexec.StreamResult{}, errors.New("driver secret: password=do-not-disclose")
 	}
-	resp := internalHTTPPostPartial(t, host.URL, "/v1/dtql", relFakeAcross, queryErrorStreamMediaType)
+	resp := internalHTTPPostPartial(t, host.URL, "/v1/tugql", relFakeAcross, queryErrorStreamMediaType)
 	if resp.status != http.StatusOK || resp.readErr != nil || resp.body["complete"] != false {
 		t.Fatalf("late execution error must finish an error stream: status %d, read error %v, body %s", resp.status, resp.readErr, resp.raw)
 	}
@@ -251,7 +251,7 @@ func TestRelationalHTTPOptInGetErrorStreamIsNotCached(t *testing.T) {
 		}
 		return joinexec.StreamResult{}, errors.New("query failed after first row")
 	}
-	reqURL := host.URL + "/v1/dtql?q=" + url.QueryEscape(relFakeAcross)
+	reqURL := host.URL + "/v1/tugql?q=" + url.QueryEscape(relFakeAcross)
 	resp := internalHTTPDoPartial(t, http.MethodGet, reqURL, "", queryErrorStreamMediaType)
 	if resp.status != http.StatusOK || resp.readErr != nil || resp.body["complete"] != false {
 		t.Fatalf("late GET error should have a valid error terminal: status %d, read error %v, body %s", resp.status, resp.readErr, resp.raw)
@@ -276,7 +276,7 @@ func TestRelationalHTTPOptInGetSuccessStreamIsNotCached(t *testing.T) {
 		}
 		return joinexec.StreamResult{Columns: []string{"id"}, Execution: joinexec.Execution{Route: joinexec.RouteDatabase, RowsReturned: 1}}, nil
 	}
-	reqURL := host.URL + "/v1/dtql?q=" + url.QueryEscape(relFakeAcross)
+	reqURL := host.URL + "/v1/tugql?q=" + url.QueryEscape(relFakeAcross)
 	resp := internalHTTPDoPartial(t, http.MethodGet, reqURL, "", queryErrorStreamMediaType)
 	if resp.status != http.StatusOK || resp.readErr != nil || resp.body["complete"] != true {
 		t.Fatalf("successful GET should finish the opted-in stream: status %d, read error %v, body %s", resp.status, resp.readErr, resp.raw)
@@ -288,7 +288,7 @@ func TestRelationalHTTPOptInGetSuccessStreamIsNotCached(t *testing.T) {
 
 func TestRelationalHTTPErrorStreamOptInKeepsEarlyErrorsAsHTTPJSON(t *testing.T) {
 	_, host := relFakeServer(t, &relFakeExecutor{}, relFakeDefaultMounts())
-	resp := internalHTTPPostPartial(t, host.URL, "/v1/dtql", "not: valid query shape\n", queryErrorStreamMediaType)
+	resp := internalHTTPPostPartial(t, host.URL, "/v1/tugql", "not: valid query shape\n", queryErrorStreamMediaType)
 	if resp.status != http.StatusBadRequest || resp.readErr != nil || resp.header.Get("Content-Type") != "application/json" {
 		t.Fatalf("early refusal must keep ordinary JSON status: status %d, read error %v, content type %q, body %s", resp.status, resp.readErr, resp.header.Get("Content-Type"), resp.raw)
 	}

@@ -4,10 +4,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dal-go/dalgo/dtql/authorization"
+	"github.com/dal-go/dalgo/tugql/authorization"
 )
 
-const inspect = `{"apiVersion":"dtql.org/authorization/v1","mode":"inspect","diagnosticLevel":"ordinary","operations":[{"id":"u1","action":"update","resource":{"databaseId":"crm","path":"/customers/101"},"mutation":{"changes":[{"op":"set","path":["name"],"value":null}]},"executionClass":"dtql"}]}`
+const inspect = `{"apiVersion":"tugql.org/authorization/v1","mode":"inspect","diagnosticLevel":"ordinary","operations":[{"id":"u1","action":"update","resource":{"databaseId":"crm","path":"/customers/101"},"mutation":{"changes":[{"op":"set","path":["name"],"value":null}]},"executionClass":"tugql"}]}`
 
 func TestNormalizeInspect(t *testing.T) {
 	t.Parallel()
@@ -40,8 +40,8 @@ func TestRejectAmbiguousAuthorizationRequests(t *testing.T) {
 		"row mismatch":          strings.Replace(inspect, `"path":"/customers/101"`, `"path":"/customers/101","rowId":"102"`, 1),
 		"columns mismatch":      strings.Replace(inspect, `"path":"/customers/101"`, `"path":"/customers/101","columns":[["secret"]]`, 1),
 		"table inspect":         strings.Replace(inspect, `/customers/101`, `/customers`, 1),
-		"unknown execution":     strings.Replace(inspect, `"dtql"`, `"native"`, 1),
-		"callable absent":       strings.Replace(inspect, `"dtql"`, `"stored_procedure"`, 1),
+		"unknown execution":     strings.Replace(inspect, `"tugql"`, `"native"`, 1),
+		"callable absent":       strings.Replace(inspect, `"tugql"`, `"stored_procedure"`, 1),
 		"duplicate changes":     strings.Replace(inspect, `{"op":"set","path":["name"],"value":null}`, `{"op":"set","path":["name"],"value":null},{"op":"set","path":["name"],"value":"Ada"}`, 1),
 		"dotted physical field": strings.Replace(inspect, `["name"]`, `["address.city"]`, 1),
 		"dotted column":         strings.Replace(inspect, `"path":"/customers/101"`, `"path":"/customers/101","columns":[["address.city"]]`, 1),
@@ -79,7 +79,7 @@ func TestPlanAndSampleValidation(t *testing.T) {
 	if _, err := Parse([]byte(plan), "crm"); err != nil {
 		t.Fatal(err)
 	}
-	sample := strings.Replace(plan, `"mode":"plan"`, `"mode":"sample","sample":{"query":{"format":"dtql-yaml","text":"from: {name: customers}\n"},"limit":5}`, 1)
+	sample := strings.Replace(plan, `"mode":"plan"`, `"mode":"sample","sample":{"query":{"format":"tugql-yaml","text":"from: {name: customers}\n"},"limit":5}`, 1)
 	if _, err := Parse([]byte(sample), "crm"); err != nil {
 		t.Fatal(err)
 	}
@@ -87,8 +87,8 @@ func TestPlanAndSampleValidation(t *testing.T) {
 		strings.Replace(sample, `"limit":5`, `"limit":101`, 1),
 		strings.Replace(sample, `from: {name: customers}`, `from: {name: secrets}`, 1),
 		strings.Replace(sample, `"mode":"sample"`, `"mode":"plan"`, 1),
-		strings.Replace(sample, `"format":"dtql-yaml"`, `"format":"sql"`, 1),
-		strings.Replace(sample, `"format":"dtql-yaml"`, `"format":"dtql-yaml","parameters":{"p":1}`, 1),
+		strings.Replace(sample, `"format":"tugql-yaml"`, `"format":"sql"`, 1),
+		strings.Replace(sample, `"format":"tugql-yaml"`, `"format":"tugql-yaml","parameters":{"p":1}`, 1),
 		strings.Replace(sample, `"text":"from: {name: customers}\n"`, `"text":""`, 1),
 		strings.Replace(sample, `"text":"from: {name: customers}\n"`, `"text":"invalid:yaml:::"`, 1),
 		strings.Replace(sample, `"action":"update"`, `"action":"query"`, 1),
@@ -163,7 +163,7 @@ func TestDecodeStrictEdgeCases(t *testing.T) {
 func TestValidationAPIVersionAndDiagnosticLevels(t *testing.T) {
 	t.Parallel()
 	// APIVersion invalid
-	badVer := strings.Replace(inspect, `"apiVersion":"dtql.org/authorization/v1"`, `"apiVersion":"invalid/v1"`, 1)
+	badVer := strings.Replace(inspect, `"apiVersion":"tugql.org/authorization/v1"`, `"apiVersion":"invalid/v1"`, 1)
 	if _, err := Parse([]byte(badVer), "crm"); err == nil {
 		t.Fatal("expected APIVersion error")
 	}
@@ -223,7 +223,7 @@ func TestSubjectAndSimulationValidation(t *testing.T) {
 func TestOperationActionsAndExecClasses(t *testing.T) {
 	t.Parallel()
 	// Valid query action
-	queryOp := `{"apiVersion":"dtql.org/authorization/v1","mode":"plan","diagnosticLevel":"ordinary","operations":[{"id":"q1","action":"query","resource":{"databaseId":"crm","path":"/customers"},"query":{"format":"dtql-yaml","text":"from: {name: customers}\n"},"executionClass":"dtql"}]}`
+	queryOp := `{"apiVersion":"tugql.org/authorization/v1","mode":"plan","diagnosticLevel":"ordinary","operations":[{"id":"q1","action":"query","resource":{"databaseId":"crm","path":"/customers"},"query":{"format":"tugql-yaml","text":"from: {name: customers}\n"},"executionClass":"tugql"}]}`
 	if _, err := Parse([]byte(queryOp), "crm"); err != nil {
 		t.Fatalf("unexpected error on valid query operation: %v", err)
 	}
@@ -235,13 +235,13 @@ func TestOperationActionsAndExecClasses(t *testing.T) {
 	}
 
 	// Query with mutation
-	queryWithMut := strings.Replace(queryOp, `"dtql"}`, `"dtql"},"mutation":{"changes":[{"op":"set","path":["name"],"value":null}]}`, 1)
+	queryWithMut := strings.Replace(queryOp, `"tugql"}`, `"tugql"},"mutation":{"changes":[{"op":"set","path":["name"],"value":null}]}`, 1)
 	if _, err := Parse([]byte(queryWithMut), "crm"); err == nil {
 		t.Fatal("expected error when query specifies mutation")
 	}
 
 	// Truncate action
-	truncateOp := `{"apiVersion":"dtql.org/authorization/v1","mode":"plan","diagnosticLevel":"ordinary","operations":[{"id":"t1","action":"truncate","resource":{"databaseId":"crm","path":"/customers"},"executionClass":"dtql"}]}`
+	truncateOp := `{"apiVersion":"tugql.org/authorization/v1","mode":"plan","diagnosticLevel":"ordinary","operations":[{"id":"t1","action":"truncate","resource":{"databaseId":"crm","path":"/customers"},"executionClass":"tugql"}]}`
 	if _, err := Parse([]byte(truncateOp), "crm"); err != nil {
 		t.Fatalf("unexpected error on valid truncate: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestOperationActionsAndExecClasses(t *testing.T) {
 	}
 
 	// Insert and Set actions
-	insertOp := `{"apiVersion":"dtql.org/authorization/v1","mode":"plan","diagnosticLevel":"ordinary","operations":[{"id":"i1","action":"insert","resource":{"databaseId":"crm","path":"/customers/101"},"mutation":{"data":{"name":"Alice"}},"executionClass":"dtql"}]}`
+	insertOp := `{"apiVersion":"tugql.org/authorization/v1","mode":"plan","diagnosticLevel":"ordinary","operations":[{"id":"i1","action":"insert","resource":{"databaseId":"crm","path":"/customers/101"},"mutation":{"data":{"name":"Alice"}},"executionClass":"tugql"}]}`
 	if _, err := Parse([]byte(insertOp), "crm"); err != nil {
 		t.Fatalf("unexpected error on valid insert: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestOperationActionsAndExecClasses(t *testing.T) {
 	}
 
 	// Delete action
-	delOp := `{"apiVersion":"dtql.org/authorization/v1","mode":"plan","diagnosticLevel":"ordinary","operations":[{"id":"d1","action":"delete","resource":{"databaseId":"crm","path":"/customers/101"},"mutation":{},"executionClass":"dtql"}]}`
+	delOp := `{"apiVersion":"tugql.org/authorization/v1","mode":"plan","diagnosticLevel":"ordinary","operations":[{"id":"d1","action":"delete","resource":{"databaseId":"crm","path":"/customers/101"},"mutation":{},"executionClass":"tugql"}]}`
 	if _, err := Parse([]byte(delOp), "crm"); err != nil {
 		t.Fatalf("unexpected error on valid delete: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestOperationActionsAndExecClasses(t *testing.T) {
 	}
 
 	// ExecutionClass: stored_procedure
-	spOp := `{"apiVersion":"dtql.org/authorization/v1","mode":"plan","diagnosticLevel":"ordinary","operations":[{"id":"sp1","action":"get","resource":{"databaseId":"crm","path":"/customers/101"},"executionClass":"stored_procedure","callable":{"namespace":"app","name":"do_stuff"}}]}`
+	spOp := `{"apiVersion":"tugql.org/authorization/v1","mode":"plan","diagnosticLevel":"ordinary","operations":[{"id":"sp1","action":"get","resource":{"databaseId":"crm","path":"/customers/101"},"executionClass":"stored_procedure","callable":{"namespace":"app","name":"do_stuff"}}]}`
 	if _, err := Parse([]byte(spOp), "crm"); err != nil {
 		t.Fatalf("unexpected error on stored_procedure: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestOperationActionsAndExecClasses(t *testing.T) {
 
 	// Other execution classes
 	for _, ec := range []string{"tugql", "native_sql", "native_graphql"} {
-		ecOp := strings.Replace(delOp, `"executionClass":"dtql"`, `"executionClass":"`+ec+`"`, 1)
+		ecOp := strings.Replace(delOp, `"executionClass":"tugql"`, `"executionClass":"`+ec+`"`, 1)
 		if _, err := Parse([]byte(ecOp), "crm"); err != nil {
 			t.Fatalf("unexpected error on executionClass %s: %v", ec, err)
 		}
@@ -355,7 +355,7 @@ func TestHelperValidationAndLimits(t *testing.T) {
 	r := Operation{
 		ID:             "o1",
 		Action:         "get",
-		ExecutionClass: "dtql",
+		ExecutionClass: "tugql",
 		Resource: authorization.Resource{
 			DatabaseID: "crm",
 			Path:       "/customers/1",
@@ -370,7 +370,7 @@ func TestHelperValidationAndLimits(t *testing.T) {
 	r2 := Operation{
 		ID:             "o1",
 		Action:         "get",
-		ExecutionClass: "dtql",
+		ExecutionClass: "tugql",
 		Resource: authorization.Resource{
 			DatabaseID: "other",
 			Path:       "/customers/1",
@@ -402,8 +402,8 @@ func TestHelperValidationAndLimits(t *testing.T) {
 		Mode:            authorization.ModePlan,
 		DiagnosticLevel: "ordinary",
 		Operations: []Operation{
-			{ID: "op1", Action: "get", ExecutionClass: "dtql", Resource: authorization.Resource{DatabaseID: "crm", Path: "/customers/1"}},
-			{ID: "op1", Action: "get", ExecutionClass: "dtql", Resource: authorization.Resource{DatabaseID: "crm", Path: "/customers/2"}},
+			{ID: "op1", Action: "get", ExecutionClass: "tugql", Resource: authorization.Resource{DatabaseID: "crm", Path: "/customers/1"}},
+			{ID: "op1", Action: "get", ExecutionClass: "tugql", Resource: authorization.Resource{DatabaseID: "crm", Path: "/customers/2"}},
 		},
 	}
 	if err := dupOpReq.Validate("crm"); err == nil {
@@ -415,33 +415,33 @@ func TestHelperValidationAndLimits(t *testing.T) {
 		APIVersion:      authorization.APIVersion,
 		Mode:            authorization.ModeSample,
 		DiagnosticLevel: "ordinary",
-		Sample:          &Sample{Limit: 5, Query: Query{Format: "dtql-yaml", Text: "from: {name: customers}\n"}},
+		Sample:          &Sample{Limit: 5, Query: Query{Format: "tugql-yaml", Text: "from: {name: customers}\n"}},
 		Operations: []Operation{
-			{ID: "op1", Action: "get", ExecutionClass: "dtql", Resource: authorization.Resource{DatabaseID: "crm", Path: "/customers/1"}},
+			{ID: "op1", Action: "get", ExecutionClass: "tugql", Resource: authorization.Resource{DatabaseID: "crm", Path: "/customers/1"}},
 		},
 	}
 	if err := sampleWithRow.Validate("crm"); err == nil {
 		t.Fatal("expected error on sample mode with row ID")
 	}
 
-	// Normalize: callable supplied on DTQL
+	// Normalize: callable supplied on TugQL
 	opWithCallable := Operation{
 		ID:             "op1",
 		Action:         "get",
-		ExecutionClass: authorization.ExecutionDTQL,
+		ExecutionClass: ExecutionTugQL,
 		Callable:       &authorization.Callable{Namespace: "ns", Name: "name"},
 		Resource:       authorization.Resource{DatabaseID: "crm", Path: "/customers/1"},
 	}
 	if err := opWithCallable.Normalize("crm"); err == nil {
-		t.Fatal("expected error on callable with ExecutionDTQL")
+		t.Fatal("expected error on callable with ExecutionTugQL")
 	}
 
 	// Normalize: query supplied for non-query action
 	opWithQuery := Operation{
 		ID:             "op1",
 		Action:         "get",
-		ExecutionClass: "dtql",
-		Query:          &Query{Format: "dtql-yaml", Text: "from: {name: customers}\n"},
+		ExecutionClass: "tugql",
+		Query:          &Query{Format: "tugql-yaml", Text: "from: {name: customers}\n"},
 		Resource:       authorization.Resource{DatabaseID: "crm", Path: "/customers/1"},
 	}
 	if err := opWithQuery.Normalize("crm"); err == nil {
@@ -452,8 +452,8 @@ func TestHelperValidationAndLimits(t *testing.T) {
 	opBadQuery := Operation{
 		ID:             "op1",
 		Action:         "query",
-		ExecutionClass: "dtql",
-		Query:          &Query{Format: "dtql-yaml", Text: "invalid dtql"},
+		ExecutionClass: "tugql",
+		Query:          &Query{Format: "tugql-yaml", Text: "invalid tugql"},
 		Resource:       authorization.Resource{DatabaseID: "crm", Path: "/customers"},
 	}
 	if err := opBadQuery.Normalize("crm"); err == nil {
@@ -464,7 +464,7 @@ func TestHelperValidationAndLimits(t *testing.T) {
 	opMutGet := Operation{
 		ID:             "op1",
 		Action:         "get",
-		ExecutionClass: "dtql",
+		ExecutionClass: "tugql",
 		Mutation:       &Mutation{},
 		Resource:       authorization.Resource{DatabaseID: "crm", Path: "/customers/1"},
 	}
@@ -476,7 +476,7 @@ func TestHelperValidationAndLimits(t *testing.T) {
 	opNoMutInsert := Operation{
 		ID:             "op1",
 		Action:         "insert",
-		ExecutionClass: "dtql",
+		ExecutionClass: "tugql",
 		Resource:       authorization.Resource{DatabaseID: "crm", Path: "/customers/1"},
 	}
 	if err := opNoMutInsert.Normalize("crm"); err == nil {
@@ -487,7 +487,7 @@ func TestHelperValidationAndLimits(t *testing.T) {
 	opUpdateData := Operation{
 		ID:             "op1",
 		Action:         "update",
-		ExecutionClass: "dtql",
+		ExecutionClass: "tugql",
 		Mutation:       &Mutation{Data: map[string]any{"a": 1}},
 		Resource:       authorization.Resource{DatabaseID: "crm", Path: "/customers/1"},
 	}
@@ -499,7 +499,7 @@ func TestHelperValidationAndLimits(t *testing.T) {
 	opUpdateColLen := Operation{
 		ID:             "op1",
 		Action:         "update",
-		ExecutionClass: "dtql",
+		ExecutionClass: "tugql",
 		Resource: authorization.Resource{
 			DatabaseID: "crm",
 			Path:       "/customers/1",
@@ -519,7 +519,7 @@ func TestHelperValidationAndLimits(t *testing.T) {
 	opUnknownAction := Operation{
 		ID:             "op1",
 		Action:         "unknown_action",
-		ExecutionClass: "dtql",
+		ExecutionClass: "tugql",
 		Resource:       authorization.Resource{DatabaseID: "crm", Path: "/customers/1"},
 	}
 	if err := opUnknownAction.Normalize("crm"); err == nil {

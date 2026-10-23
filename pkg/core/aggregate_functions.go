@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/dal-go/dalgo/dal"
-	"github.com/dal-go/dalgo/dtql"
+	"github.com/dal-go/dalgo/tugql"
 )
 
 // profileAggregateFunctions is the one list of aggregate functions of the
@@ -69,18 +69,18 @@ func unsupportedAggregateText(name string) string {
 // stands (a column, HAVING, ORDER BY), before the classifier looks at it.
 var deserializerAggregateRefusal = regexp.MustCompile(`unsupported aggregate "(?:[^"\\]|\\.)*"`)
 
-// DeserializeDTQL deserializes a DTQL document with DALgo and says what is wrong
-// with one it refuses: the error wraps ErrInvalidDTQL (HTTP 400 invalid_dtql). The
+// DeserializeTugQL deserializes a TugQL document with DALgo and says what is wrong
+// with one it refuses: the error wraps ErrInvalidTugQL (HTTP 400 invalid_tugql). The
 // refusal of an aggregate function DALgo does not know is a message built here
 // that lists the functions of the profile and repeats none of the caller's text;
 // every other refusal carries DALgo's own message.
-func DeserializeDTQL(doc []byte) (dal.StructuredQuery, error) {
-	query, err := dtql.Deserialize(doc)
+func DeserializeTugQL(doc []byte) (dal.StructuredQuery, error) {
+	query, err := tugql.Deserialize(doc)
 	if err != nil {
 		if deserializerAggregateRefusal.MatchString(err.Error()) {
-			return nil, fmt.Errorf("%w: %s", ErrInvalidDTQL, unsupportedAggregateText(""))
+			return nil, fmt.Errorf("%w: %s", ErrInvalidTugQL, unsupportedAggregateText(""))
 		}
-		return nil, fmt.Errorf("%w: %v", ErrInvalidDTQL, err)
+		return nil, fmt.Errorf("%w: %v", ErrInvalidTugQL, err)
 	}
 	return query, nil
 }

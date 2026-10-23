@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/dal-go/dalgo/dal"
-	"github.com/dal-go/dalgo/dtql"
 	"github.com/dal-go/dalgo/recordset"
+	"github.com/dal-go/dalgo/tugql"
 
 	"github.com/openvaultdb/openvaultdb-go/pkg/manifest"
 	"github.com/openvaultdb/openvaultdb-go/pkg/schema"
@@ -125,7 +125,7 @@ func TestNativePostgresValuesAColumnCannotHoldAreRefused(t *testing.T) {
 			if strings.Contains(tc.where, "source: e") || strings.Contains(tc.where, "source: nobody") {
 				text = "from: {schema: 'HumanResources schema', name: EmployeeDepartmentHistory, alias: e}\nwhere: " + tc.where + "\n"
 			}
-			query, err := dtql.Deserialize([]byte(text))
+			query, err := tugql.Deserialize([]byte(text))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -133,8 +133,8 @@ func TestNativePostgresValuesAColumnCannotHoldAreRefused(t *testing.T) {
 			if tc.ok && err != nil {
 				t.Fatalf("refused: %v", err)
 			}
-			if !tc.ok && !errors.Is(err, ErrInvalidDTQL) {
-				t.Fatalf("error = %v, want invalid DTQL", err)
+			if !tc.ok && !errors.Is(err, ErrInvalidTugQL) {
+				t.Fatalf("error = %v, want invalid TugQL", err)
 			}
 		})
 	}

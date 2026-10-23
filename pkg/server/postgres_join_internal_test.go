@@ -131,14 +131,14 @@ func pgJoinRows(count int) *pgJoinReader {
 }
 
 // pgJoinDocument is a join of two collections of the PostgreSQL mount that selects a column
-// of each, in the form /v1/dtql takes it: every source names its database.
+// of each, in the form /v1/tugql takes it: every source names its database.
 const pgJoinDocument = previewPGSameDatabaseJoin + `columns:
   - {field: id, source: o}
   - {field: name, source: c}
 `
 
 // TestAJoinOfOnePostgresDatabaseIsRunByTheMountAsOneStatement: a join of two collections of a
-// PostgreSQL mount, as /v1/dtql takes it with the database named on each source, reaches the
+// PostgreSQL mount, as /v1/tugql takes it with the database named on each source, reaches the
 // adapter once, as the whole join and without the database names that would make the
 // compiler decline it, and the answer says it ran in the database. Read table by table it
 // would reach the adapter once for each, whole, and be bound by DALgo's 10,000 rows.
@@ -147,7 +147,7 @@ func TestAJoinOfOnePostgresDatabaseIsRunByTheMountAsOneStatement(t *testing.T) {
 		return &pgJoinReader{rows: []map[string]any{{"id": "o1", "name": "Ada"}}}, nil
 	}}
 	host, logs := previewPGServerWith(t, dal.NewDB(backend))
-	resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", pgJoinDocument, nil)
+	resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", pgJoinDocument, nil)
 	if resp.status != http.StatusOK {
 		t.Fatalf("status %d: %s", resp.status, resp.raw)
 	}
@@ -173,7 +173,7 @@ func TestAJoinOfOnePostgresDatabaseIsRunByTheMountAsOneStatement(t *testing.T) {
 // the adapter declines for what it cannot write as one statement is read table by table and
 // joined by DALgo, in the transaction, and its refusals are answered as the relational route
 // answers them anywhere else: the bound of its scan is 422 query_budget_exceeded, a field
-// the tables do not give and an alias used twice are 400 invalid_dtql, and a scan that
+// the tables do not give and an alias used twice are 400 invalid_tugql, and a scan that
 // fails is the 500 of any failure of the server, built, with none of the driver's text in the
 // answer or in the log.
 func TestWhatDalgoRefusesInAJoinThePostgresAdapterDeclinesIsARefusalAndNotAFailure(t *testing.T) {
@@ -181,7 +181,7 @@ func TestWhatDalgoRefusesInAJoinThePostgresAdapterDeclinesIsARefusalAndNotAFailu
 	t.Run("the bound of the scan", func(t *testing.T) {
 		backend := &pgJoinBackend{decline: decline, read: func(dal.StructuredQuery) (dal.RecordsReader, error) { return pgJoinRows(10001), nil }}
 		host, logs := previewPGServerWith(t, dal.NewDB(backend))
-		resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", pgJoinDocument, nil)
+		resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", pgJoinDocument, nil)
 		if resp.status != http.StatusUnprocessableEntity || resp.code() != "query_budget_exceeded" {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
@@ -203,8 +203,8 @@ func TestWhatDalgoRefusesInAJoinThePostgresAdapterDeclinesIsARefusalAndNotAFailu
 			return []string{"id", "customer_id"}, nil // the catalog holds no column called name
 		}}
 		host, logs := previewPGServerWith(t, dal.NewDB(backend))
-		resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", pgJoinDocument, nil)
-		if resp.status != http.StatusBadRequest || resp.code() != "invalid_dtql" {
+		resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", pgJoinDocument, nil)
+		if resp.status != http.StatusBadRequest || resp.code() != "invalid_tugql" {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
 		if message := resp.errorDetail()["message"].(string); !strings.Contains(message, `field "name" is unavailable in "c"`) {
@@ -214,7 +214,7 @@ func TestWhatDalgoRefusesInAJoinThePostgresAdapterDeclinesIsARefusalAndNotAFailu
 			t.Errorf("a refusal the caller can act on was logged: %s", logs)
 		}
 	})
-	// An alias used twice never reaches the mount: the DTQL parser refuses the document (join_scope: duplicate alias)
+	// An alias used twice never reaches the mount: the TugQL parser refuses the document (join_scope: duplicate alias)
 	// before any database is looked at, on any engine. The row pins that, and not the
 	// hand-off of a join to the adapter (the core test builds that query directly): the
 	// message is the parser's and the adapter is not reached.
@@ -222,8 +222,8 @@ func TestWhatDalgoRefusesInAJoinThePostgresAdapterDeclinesIsARefusalAndNotAFailu
 		backend := &pgJoinBackend{}
 		host, logs := previewPGServerWith(t, dal.NewDB(backend))
 		body := strings.Replace(previewPGSameDatabaseJoin, "alias: c", "alias: o", 1) + "columns:\n  - {field: id, source: o}\n"
-		resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", body, nil)
-		if resp.status != http.StatusBadRequest || resp.code() != "invalid_dtql" {
+		resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", body, nil)
+		if resp.status != http.StatusBadRequest || resp.code() != "invalid_tugql" {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}
 		if message, _ := resp.errorDetail()["message"].(string); !strings.Contains(message, `duplicate alias "o"`) {
@@ -241,7 +241,7 @@ func TestWhatDalgoRefusesInAJoinThePostgresAdapterDeclinesIsARefusalAndNotAFailu
 			return &pgJoinReader{err: errors.New("connection to server " + previewPGMarker + " lost")}, nil
 		}}
 		host, logs := previewPGServerWith(t, dal.NewDB(backend))
-		resp := relFakeDo(t, host, http.MethodPost, "/v1/dtql", "", pgJoinDocument, nil)
+		resp := relFakeDo(t, host, http.MethodPost, "/v1/tugql", "", pgJoinDocument, nil)
 		if resp.status != http.StatusInternalServerError || resp.code() != "internal" {
 			t.Fatalf("status %d: %s", resp.status, resp.raw)
 		}

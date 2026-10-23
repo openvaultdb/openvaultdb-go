@@ -19,10 +19,10 @@ import (
 	"github.com/openvaultdb/openvaultdb-go/pkg/license"
 )
 
-// This file answers a relational DTQL document: a join, a grouping, an alias, a
+// This file answers a relational TugQL document: a join, a grouping, an alias, a
 // subquery, or a source that names its database. Two endpoints reach it. The
 // per-database endpoint takes a document whose sources all belong to the
-// database in its path; /v1/dtql takes documents that read several databases and
+// database in its path; /v1/tugql takes documents that read several databases and
 // needs every source to name one.
 //
 // The handler is where a request is authorised. joinexec.Execute authorises
@@ -66,25 +66,25 @@ const retryAfterSeconds = "1"
 // pagingHeaders are the request headers of the snapshot paging protocol.
 var pagingHeaders = []string{"OVDB-Page-Size", "OVDB-Page-Token", "OVDB-Page-Close"}
 
-// handleCrossDatabaseDTQL answers POST and GET /v1/dtql. Every document posted
+// handleCrossDatabaseTugQL answers POST and GET /v1/tugql. Every document posted
 // here is relational: a source that names no database is a 400, because there is
 // no database in the path to take it from.
-func (s *Server) handleCrossDatabaseDTQL(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleCrossDatabaseTugQL(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	doc, ok := s.readDTQLDocumentForClassification(w, r, true)
+	doc, ok := s.readTugQLDocumentForClassification(w, r, true)
 	if !ok {
 		return
 	}
 	if hasUnsafeIntegerValue(doc) {
-		writeError(w, http.StatusBadRequest, "invalid_dtql", errUnsafeIntegerValue)
+		writeError(w, http.StatusBadRequest, "invalid_tugql", errUnsafeIntegerValue)
 		return
 	}
-	query, profile, err := classifyDTQLDocument(withoutContinuationFields(doc, false))
+	query, profile, err := classifyTugQLDocument(withoutContinuationFields(doc, false))
 	if err != nil {
 		s.writeMappedError(w, r, clippedError{err})
 		return
 	}
-	s.serveRelationalDTQL(w, r, nil, query, profile)
+	s.serveRelationalTugQL(w, r, nil, query, profile)
 }
 
 // relationalTarget is one collection a document reads, with its database
@@ -94,19 +94,19 @@ type relationalTarget struct {
 	collection string
 }
 
-// serveRelationalDTQL runs a relational document and answers it. endpoint is
+// serveRelationalTugQL runs a relational document and answers it. endpoint is
 // the database of the per-database endpoint, already leased, or nil on
-// /v1/dtql.
-func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, endpoint *core.Database, query dal.StructuredQuery, profile core.Profile) {
+// /v1/tugql.
+func (s *Server) serveRelationalTugQL(w http.ResponseWriter, r *http.Request, endpoint *core.Database, query dal.StructuredQuery, profile core.Profile) {
 	for _, source := range profile.Sources {
 		if source.Schema != "" && (endpoint == nil || !endpoint.NativePostgresReadOnly()) {
-			writeError(w, http.StatusBadRequest, "invalid_dtql", "schema-qualified sources are supported only on a native PostgreSQL read-only database endpoint")
+			writeError(w, http.StatusBadRequest, "invalid_tugql", "schema-qualified sources are supported only on a native PostgreSQL read-only database endpoint")
 			return
 		}
 	}
 	targets, refusal := relationalTargets(profile, endpoint)
 	if refusal != "" {
-		writeError(w, http.StatusBadRequest, "invalid_dtql", refusal)
+		writeError(w, http.StatusBadRequest, "invalid_tugql", refusal)
 		return
 	}
 	allowed := s.readAuthorizer(r)
@@ -133,11 +133,11 @@ func (s *Server) serveRelationalDTQL(w http.ResponseWriter, r *http.Request, end
 	if endpoint == nil {
 		// Native sources keep the ordinary parser refusal for continuation
 		// fields. Classification above removed them only to identify sources.
-		doc, ok := s.readDTQLDocument(w, r)
+		doc, ok := s.readTugQLDocument(w, r)
 		if !ok {
 			return
 		}
-		if _, _, err := classifyDTQLDocument(doc); err != nil {
+		if _, _, err := classifyTugQLDocument(doc); err != nil {
 			s.writeMappedError(w, r, clippedError{err})
 			return
 		}
@@ -335,7 +335,7 @@ type relationalRecord struct {
 
 // relationalTargets settles the database of every source of the profile. On the
 // per-database endpoint a source that names none belongs to the endpoint's
-// database and one that names another database is refused; on /v1/dtql a source
+// database and one that names another database is refused; on /v1/tugql a source
 // that names none is refused. The second result is the reason of a refusal.
 func relationalTargets(profile core.Profile, endpoint *core.Database) ([]relationalTarget, string) {
 	targets := make([]relationalTarget, 0, len(profile.Sources))
@@ -348,7 +348,7 @@ func relationalTargets(profile core.Profile, endpoint *core.Database) ([]relatio
 			database = endpoint.ID()
 		case endpoint != nil && database != endpoint.ID():
 			return nil, fmt.Sprintf("a source names database %q but this endpoint reads only database %q: send a document that reads several databases to POST %s",
-				clipName(database), endpoint.ID(), crossDatabaseDTQLPath)
+				clipName(database), endpoint.ID(), crossDatabaseTugQLPath)
 		}
 		targets = append(targets, relationalTarget{database: database, collection: source.Collection})
 	}
@@ -652,9 +652,9 @@ func (s *Server) writeRelationalErrorMode(w http.ResponseWriter, r *http.Request
 	case errors.Is(err, access.ErrAccessDenied):
 		s.writeMappedError(w, r, err)
 	case errors.As(err, &joinShape) && isRefusedJoin(joinShape):
-		writeError(w, http.StatusBadRequest, "invalid_dtql", clipText(joinShape.Error(), maxEchoText))
+		writeError(w, http.StatusBadRequest, "invalid_tugql", clipText(joinShape.Error(), maxEchoText))
 	case errors.As(err, &queryShape):
-		writeError(w, http.StatusBadRequest, "invalid_dtql", clipText(fmt.Sprintf("%s at %s: %s", queryShape.Category, queryShape.Path, queryShape.Message), maxEchoText))
+		writeError(w, http.StatusBadRequest, "invalid_tugql", clipText(fmt.Sprintf("%s at %s: %s", queryShape.Category, queryShape.Path, queryShape.Message), maxEchoText))
 	case errors.Is(err, joinexec.ErrProfileMismatch):
 		// The classifier and the executor's walk disagree about a document the
 		// classifier passed: a defect of the server, not a mistake of the caller.
@@ -665,12 +665,12 @@ func (s *Server) writeRelationalErrorMode(w http.ResponseWriter, r *http.Request
 			s.logStreamFailure(r)
 		}
 	case errors.Is(err, joinexec.ErrInvalidDocument), errors.Is(err, joinexec.ErrSourceWithoutDatabase):
-		writeError(w, http.StatusBadRequest, "invalid_dtql", clipText(err.Error(), maxEchoText))
+		writeError(w, http.StatusBadRequest, "invalid_tugql", clipText(err.Error(), maxEchoText))
 	case isUnsupportedConditionError(err):
 		writeError(w, http.StatusUnprocessableEntity, "query_unsupported", "the storage engine cannot run a condition of the query")
 	default:
 		if column, ok := unknownColumn(err); ok {
-			writeError(w, http.StatusBadRequest, "invalid_dtql", fmt.Sprintf("the database has no column %q", clipName(column)))
+			writeError(w, http.StatusBadRequest, "invalid_tugql", fmt.Sprintf("the database has no column %q", clipName(column)))
 			return
 		}
 		if writeMappedError(w, clippedError{err}) {

@@ -137,7 +137,7 @@ func joinSrcPlainDB(calls *joinSrcRecorder) dal.DB {
 
 func joinSrcQuery(t *testing.T) dal.Query {
 	t.Helper()
-	q, _, err := ParseDTQL([]byte("from: {name: items}\n"))
+	q, _, err := ParseTugQL([]byte("from: {name: items}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,8 +433,8 @@ func TestJoinSourceExecutorRefusesNonStructuredQueries(t *testing.T) {
 	})
 	check := func(what string, err error) {
 		t.Helper()
-		if !errors.Is(err, ErrInvalidDTQL) {
-			t.Errorf("%s: want ErrInvalidDTQL, got %v", what, err)
+		if !errors.Is(err, ErrInvalidTugQL) {
+			t.Errorf("%s: want ErrInvalidTugQL, got %v", what, err)
 		}
 	}
 	_, err := db.Executor().ExecuteQueryToRecordsReader(ctx, text)

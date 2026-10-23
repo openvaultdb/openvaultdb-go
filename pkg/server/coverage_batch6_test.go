@@ -138,7 +138,7 @@ func TestPrepareSnapshotDirCoverage(t *testing.T) {
 	}
 }
 
-func TestSpoolDTQLCoverage(t *testing.T) {
+func TestSpoolTugQLCoverage(t *testing.T) {
 	// Not parallel: modifies package-level createSnapshotTemp, marshalSnapshotRow
 	oldCreate := createSnapshotTemp
 	oldMarshal := marshalSnapshotRow
@@ -156,13 +156,13 @@ func TestSpoolDTQLCoverage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	query, _, err := classifyDTQLDocument([]byte("from: {name: customers}\n"))
+	query, _, err := classifyTugQLDocument([]byte("from: {name: customers}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// 1. db.NoRetention() returns errRetentionNotAuthorized
-	if _, _, err := spoolDTQL(context.Background(), db, query, t.TempDir(), DefaultSnapshotLimits(), 0); !errors.Is(err, errRetentionNotAuthorized) {
+	if _, _, err := spoolTugQL(context.Background(), db, query, t.TempDir(), DefaultSnapshotLimits(), 0); !errors.Is(err, errRetentionNotAuthorized) {
 		t.Fatalf("expected errRetentionNotAuthorized, got %v", err)
 	}
 
@@ -181,7 +181,7 @@ func TestSpoolDTQLCoverage(t *testing.T) {
 	createSnapshotTemp = func(dir string) (snapshotTempFile, error) {
 		return nil, errors.New("temp file failed")
 	}
-	if _, _, err := spoolDTQL(context.Background(), dbRet, query, t.TempDir(), DefaultSnapshotLimits(), 0); err == nil {
+	if _, _, err := spoolTugQL(context.Background(), dbRet, query, t.TempDir(), DefaultSnapshotLimits(), 0); err == nil {
 		t.Fatal("expected error on temp file failure")
 	}
 
@@ -189,7 +189,7 @@ func TestSpoolDTQLCoverage(t *testing.T) {
 	createSnapshotTemp = func(dir string) (snapshotTempFile, error) {
 		return &mockSnapshotTempFile{closeErr: errors.New("close failed")}, nil
 	}
-	if _, _, err := spoolDTQL(context.Background(), dbRet, query, t.TempDir(), DefaultSnapshotLimits(), 0); err == nil {
+	if _, _, err := spoolTugQL(context.Background(), dbRet, query, t.TempDir(), DefaultSnapshotLimits(), 0); err == nil {
 		t.Fatal("expected error on close failure")
 	}
 	createSnapshotTemp = oldCreate
@@ -198,26 +198,26 @@ func TestSpoolDTQLCoverage(t *testing.T) {
 	marshalSnapshotRow = func(v any) ([]byte, error) {
 		return nil, errors.New("marshal error")
 	}
-	if _, _, err := spoolDTQL(context.Background(), dbRet, query, t.TempDir(), DefaultSnapshotLimits(), 0); err == nil {
+	if _, _, err := spoolTugQL(context.Background(), dbRet, query, t.TempDir(), DefaultSnapshotLimits(), 0); err == nil {
 		t.Fatal("expected error on marshal error")
 	}
 	marshalSnapshotRow = oldMarshal
 
 	// 5. Row exceeds page size limit
 	limits := DefaultSnapshotLimits()
-	if _, _, err := spoolDTQL(context.Background(), dbRet, query, t.TempDir(), limits, maxPageBytes); err == nil {
+	if _, _, err := spoolTugQL(context.Background(), dbRet, query, t.TempDir(), limits, maxPageBytes); err == nil {
 		t.Fatal("expected error on row budget exceeded")
 	}
 
 	// 6. Limit rows reached
 	limitsRow0 := SnapshotLimits{Rows: 0, Bytes: 1000000, Slots: 10}
-	if _, _, err := spoolDTQL(context.Background(), dbRet, query, t.TempDir(), limitsRow0, 0); err == nil {
+	if _, _, err := spoolTugQL(context.Background(), dbRet, query, t.TempDir(), limitsRow0, 0); err == nil {
 		t.Fatal("expected error on row limit exceeded")
 	}
 
 	// 7. Limit bytes reached
 	limitsByte0 := SnapshotLimits{Rows: 100, Bytes: 1, Slots: 10}
-	if _, _, err := spoolDTQL(context.Background(), dbRet, query, t.TempDir(), limitsByte0, 0); err == nil {
+	if _, _, err := spoolTugQL(context.Background(), dbRet, query, t.TempDir(), limitsByte0, 0); err == nil {
 		t.Fatal("expected error on byte limit exceeded")
 	}
 
@@ -225,15 +225,15 @@ func TestSpoolDTQLCoverage(t *testing.T) {
 	createSnapshotTemp = func(dir string) (snapshotTempFile, error) {
 		return &mockSnapshotTempFile{writeErr: errors.New("write failed")}, nil
 	}
-	if _, _, err := spoolDTQL(context.Background(), dbRet, query, t.TempDir(), DefaultSnapshotLimits(), 0); err == nil {
+	if _, _, err := spoolTugQL(context.Background(), dbRet, query, t.TempDir(), DefaultSnapshotLimits(), 0); err == nil {
 		t.Fatal("expected error on write failure")
 	}
 	createSnapshotTemp = oldCreate
 
 	// 9. Successful spool
-	path, size, err := spoolDTQL(context.Background(), dbRet, query, t.TempDir(), DefaultSnapshotLimits(), 0)
+	path, size, err := spoolTugQL(context.Background(), dbRet, query, t.TempDir(), DefaultSnapshotLimits(), 0)
 	if err != nil {
-		t.Fatalf("spoolDTQL failed: %v", err)
+		t.Fatalf("spoolTugQL failed: %v", err)
 	}
 	if size == 0 {
 		t.Fatal("expected non-zero size")
@@ -487,19 +487,19 @@ func TestRecordsAndBatchCoverage(t *testing.T) {
 	finishRecordStream = oldFinish
 }
 
-func TestDTQLAndStreamCoverage(t *testing.T) {
-	// Not parallel: modifies finishDTQLStream, finishRelationalStream, flushJSONStream
-	oldDTQLFinish := finishDTQLStream
+func TestTugQLAndStreamCoverage(t *testing.T) {
+	// Not parallel: modifies finishTugQLStream, finishRelationalStream, flushJSONStream
+	oldTugQLFinish := finishTugQLStream
 	oldRelFinish := finishRelationalStream
 	oldFlush := flushJSONStream
 	defer func() {
-		finishDTQLStream = oldDTQLFinish
+		finishTugQLStream = oldTugQLFinish
 		finishRelationalStream = oldRelFinish
 		flushJSONStream = oldFlush
 	}()
 
 	m := &manifest.Manifest{
-		Database: manifest.Database{ID: "dtql_cov_db", SchemaMode: schema.ModeStrict, Retention: manifest.RetentionNone},
+		Database: manifest.Database{ID: "tugql_cov_db", SchemaMode: schema.ModeStrict, Retention: manifest.RetentionNone},
 		Storage:  manifest.Storage{Engine: "sqlite", Path: ":memory:"},
 		Schemas:  &schema.Schemas{Collections: map[string]schema.Collection{"users": {Fields: map[string]schema.Field{"name": {Type: schema.TypeString}}}}},
 	}
@@ -507,87 +507,87 @@ func TestDTQLAndStreamCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := New("test", map[string]*core.Database{"dtql_cov_db": db})
+	srv := New("test", map[string]*core.Database{"tugql_cov_db": db})
 
-	// 1. handleDTQL with streamErr via failDeadlineWriter
+	// 1. handleTugQL with streamErr via failDeadlineWriter
 	recDeadline := failDeadlineWriter{ResponseRecorder: httptest.NewRecorder()}
-	reqDeadline := httptest.NewRequest(http.MethodPost, "/v1/databases/dtql_cov_db/dtql", strings.NewReader("from: {name: users}\n"))
-	reqDeadline.SetPathValue("db", "dtql_cov_db")
-	srv.handleDTQL(recDeadline, reqDeadline)
+	reqDeadline := httptest.NewRequest(http.MethodPost, "/v1/databases/tugql_cov_db/tugql", strings.NewReader("from: {name: users}\n"))
+	reqDeadline.SetPathValue("db", "tugql_cov_db")
+	srv.handleTugQL(recDeadline, reqDeadline)
 	if recDeadline.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500 on streamErr in handleDTQL, got %d", recDeadline.Code)
+		t.Fatalf("expected 500 on streamErr in handleTugQL, got %d", recDeadline.Code)
 	}
 
-	// 2. handleDTQL with finishDTQLStream error
-	finishDTQLStream = func(s *jsonRowStream, footer map[string]any) error {
-		return errors.New("finish dtql error")
+	// 2. handleTugQL with finishTugQLStream error
+	finishTugQLStream = func(s *jsonRowStream, footer map[string]any) error {
+		return errors.New("finish tugql error")
 	}
 	recFinishErr := httptest.NewRecorder()
-	reqFinishErr := httptest.NewRequest(http.MethodPost, "/v1/databases/dtql_cov_db/dtql", strings.NewReader("from: {name: users}\n"))
-	reqFinishErr.SetPathValue("db", "dtql_cov_db")
-	srv.handleDTQL(recFinishErr, reqFinishErr)
+	reqFinishErr := httptest.NewRequest(http.MethodPost, "/v1/databases/tugql_cov_db/tugql", strings.NewReader("from: {name: users}\n"))
+	reqFinishErr.SetPathValue("db", "tugql_cov_db")
+	srv.handleTugQL(recFinishErr, reqFinishErr)
 	if recFinishErr.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500 on finishDTQLStream error, got %d", recFinishErr.Code)
+		t.Fatalf("expected 500 on finishTugQLStream error, got %d", recFinishErr.Code)
 	}
-	finishDTQLStream = oldDTQLFinish
+	finishTugQLStream = oldTugQLFinish
 
-	// 3. dtql URL query errors in parseDTQLURL
+	// 3. tugql URL query errors in parseTugQLURL
 	urlTests := []struct {
 		url     string
 		wantErr string
 	}{
-		{"/v1/databases/dtql_cov_db/dtql?unknown=1", "unsupported DTQL URL parameter"},
-		{"/v1/databases/dtql_cov_db/dtql?q=", "DTQL URL requires exactly one nonempty q parameter"},
-		{"/v1/databases/dtql_cov_db/dtql?q=test&parameters=", "DTQL URL requires one JSON parameters object"},
-		{"/v1/databases/dtql_cov_db/dtql?q=test&parameters=[1]", "DTQL URL parameters must be a JSON object"},
+		{"/v1/databases/tugql_cov_db/tugql?unknown=1", "unsupported TugQL URL parameter"},
+		{"/v1/databases/tugql_cov_db/tugql?q=", "TugQL URL requires exactly one nonempty q parameter"},
+		{"/v1/databases/tugql_cov_db/tugql?q=test&parameters=", "TugQL URL requires one JSON parameters object"},
+		{"/v1/databases/tugql_cov_db/tugql?q=test&parameters=[1]", "TugQL URL parameters must be a JSON object"},
 	}
 	for _, tc := range urlTests {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, tc.url, nil)
-		req.SetPathValue("db", "dtql_cov_db")
-		srv.handleDTQL(rec, req)
+		req.SetPathValue("db", "tugql_cov_db")
+		srv.handleTugQL(rec, req)
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400 for %s, got %d: %s", tc.url, rec.Code, rec.Body.String())
 		}
 	}
 
-	// 4. bindDTQLParameters errors
+	// 4. bindTugQLParameters errors
 	paramTests := []struct {
 		body    string
 		wantErr string
 	}{
-		{`{"query":"from: {name: users}\nwhere: {param: p}\n","parameters":{"p":"invalid JSON}`, "invalid DTQL JSON"},
+		{`{"query":"from: {name: users}\nwhere: {param: p}\n","parameters":{"p":"invalid JSON}`, "invalid TugQL JSON"},
 		{`{"query":"from: {name: users}\nwhere: {param: p}\n","parameters":{"p":null}}`, "cannot be null"},
 		{`{"query":"from: {name: users}\nwhere: {param: p}\n","parameters":{"p":[null]}}`, "must contain only non-null scalars"},
 		{`{"query":"from: {name: users}\nwhere: {param: p}\n","parameters":{"p":{"nested":1}}}`, "must be a scalar or array"},
 	}
 	for _, tc := range paramTests {
-		_, err := bindDTQLParameters([]byte(tc.body))
+		_, err := bindTugQLParameters([]byte(tc.body))
 		if err == nil {
 			t.Fatalf("expected error for %s, got nil", tc.body)
 		}
 	}
 
-	// 5. Array with > 1000 items in bindDTQLParameters
+	// 5. Array with > 1000 items in bindTugQLParameters
 	bigArr := make([]any, 1001)
 	for i := range bigArr {
 		bigArr[i] = i
 	}
 	bigArrJSON, _ := json.Marshal(bigArr)
 	body1001 := fmt.Sprintf(`{"query":"from: {name: users}\nwhere: {param: p}\n","parameters":{"p":%s}}`, string(bigArrJSON))
-	if _, err := bindDTQLParameters([]byte(body1001)); err == nil {
+	if _, err := bindTugQLParameters([]byte(body1001)); err == nil {
 		t.Fatal("expected error for >1000 parameters")
 	}
 
-	// 6. encodeDTQLParamNode error
-	oldEncode := encodeDTQLParamNode
-	encodeDTQLParamNode = func(node *yaml.Node, value any) error {
+	// 6. encodeTugQLParamNode error
+	oldEncode := encodeTugQLParamNode
+	encodeTugQLParamNode = func(node *yaml.Node, value any) error {
 		return errors.New("encode error")
 	}
-	if _, err := bindDTQLParameters([]byte(`{"query":"from: {name: users}\nwhere: {param: p}\n","parameters":{"p":"valid"}}`)); err == nil {
-		t.Fatal("expected error when encodeDTQLParamNode fails")
+	if _, err := bindTugQLParameters([]byte(`{"query":"from: {name: users}\nwhere: {param: p}\n","parameters":{"p":"valid"}}`)); err == nil {
+		t.Fatal("expected error when encodeTugQLParamNode fails")
 	}
-	encodeDTQLParamNode = oldEncode
+	encodeTugQLParamNode = oldEncode
 
 	// 7. Stream JSON coverage
 	// FinishFailure errors
@@ -607,18 +607,18 @@ func TestDTQLAndStreamCoverage(t *testing.T) {
 	flushJSONStream = oldFlush
 }
 
-func TestRelationalDTQLStreamFinishCoverage(t *testing.T) {
+func TestRelationalTugQLStreamFinishCoverage(t *testing.T) {
 	// Not parallel: modifies finishRelationalStream
 	oldRelFinish := finishRelationalStream
 	defer func() { finishRelationalStream = oldRelFinish }()
 
 	service, _ := relFakeServer(t, &relFakeExecutor{}, relFakeDefaultMounts())
 
-	// 1. streamErr via failDeadlineWriter on relational DTQL
+	// 1. streamErr via failDeadlineWriter on relational TugQL
 	relDoc := "from: {database: alpha, name: orders}\n"
 	recDeadline := failDeadlineWriter{ResponseRecorder: httptest.NewRecorder()}
-	reqDeadline := httptest.NewRequest(http.MethodPost, "/v1/dtql", strings.NewReader(relDoc))
-	service.handleCrossDatabaseDTQL(recDeadline, reqDeadline)
+	reqDeadline := httptest.NewRequest(http.MethodPost, "/v1/tugql", strings.NewReader(relDoc))
+	service.handleCrossDatabaseTugQL(recDeadline, reqDeadline)
 	if recDeadline.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500 on relational streamErr, got %d: %s", recDeadline.Code, recDeadline.Body.String())
 	}
@@ -628,8 +628,8 @@ func TestRelationalDTQLStreamFinishCoverage(t *testing.T) {
 		return errors.New("relational finish error")
 	}
 	recRelFinishErr := httptest.NewRecorder()
-	reqRelFinishErr := httptest.NewRequest(http.MethodPost, "/v1/dtql", strings.NewReader(relDoc))
-	service.handleCrossDatabaseDTQL(recRelFinishErr, reqRelFinishErr)
+	reqRelFinishErr := httptest.NewRequest(http.MethodPost, "/v1/tugql", strings.NewReader(relDoc))
+	service.handleCrossDatabaseTugQL(recRelFinishErr, reqRelFinishErr)
 	if recRelFinishErr.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500 on finishRelationalStream error, got %d: %s", recRelFinishErr.Code, recRelFinishErr.Body.String())
 	}

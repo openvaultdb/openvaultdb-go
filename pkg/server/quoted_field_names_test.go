@@ -16,7 +16,7 @@ import (
 
 // TestSQLiteColumnWithASpaceIsQueryableOverHTTP shows that a declared SQLite
 // table with a string id and a column named "zip code" is selected, filtered and
-// ordered on every query route: the wire query, DTQL over GET and POST, and a
+// ordered on every query route: the wire query, TugQL over GET and POST, and a
 // snapshot page. It goes through the real handler and a real SQLite file, and
 // the name arrives quoted, so the rows returned are the right ones. The table
 // models any declared relation with such a column; the test does not show that a
@@ -53,7 +53,7 @@ func TestSQLiteColumnWithASpaceIsQueryableOverHTTP(t *testing.T) {
 	host := httptest.NewServer(service.Handler())
 	defer host.Close()
 
-	const dtql = "from: {name: customer_list}\n" +
+	const tugql = "from: {name: customer_list}\n" +
 		"columns: [{field: name}, {field: \"zip code\"}]\n" +
 		"where: {op: '==', left: {field: \"zip code\"}, right: {value: '35200'}}\n" +
 		"orderBy: [{field: \"zip code\"}, {field: name, desc: true}]\n"
@@ -81,22 +81,22 @@ func TestSQLiteColumnWithASpaceIsQueryableOverHTTP(t *testing.T) {
 		return got
 	}
 	const prefix = "/v1/databases/sample"
-	t.Run("dtql POST", func(t *testing.T) {
-		status, body := send(t, host, guardCall{method: "POST", path: prefix + "/dtql", body: dtql})
+	t.Run("tugql POST", func(t *testing.T) {
+		status, body := send(t, host, guardCall{method: "POST", path: prefix + "/tugql", body: tugql})
 		if status != http.StatusOK {
 			t.Fatalf("status %d body %v", status, body)
 		}
 		names(t, body, wantNames)
 	})
-	t.Run("dtql GET", func(t *testing.T) {
-		status, body := send(t, host, guardCall{method: "GET", path: prefix + "/dtql?q=" + url.QueryEscape(dtql)})
+	t.Run("tugql GET", func(t *testing.T) {
+		status, body := send(t, host, guardCall{method: "GET", path: prefix + "/tugql?q=" + url.QueryEscape(tugql)})
 		if status != http.StatusOK {
 			t.Fatalf("status %d body %v", status, body)
 		}
 		names(t, body, wantNames)
 	})
-	t.Run("dtql snapshot page", func(t *testing.T) {
-		status, body := send(t, host, guardCall{method: "POST", path: prefix + "/dtql", body: dtql, headers: map[string]string{"OVDB-Page-Size": "10"}})
+	t.Run("tugql snapshot page", func(t *testing.T) {
+		status, body := send(t, host, guardCall{method: "POST", path: prefix + "/tugql", body: tugql, headers: map[string]string{"OVDB-Page-Size": "10"}})
 		if status != http.StatusOK {
 			t.Fatalf("status %d body %v", status, body)
 		}
@@ -113,7 +113,7 @@ func TestSQLiteColumnWithASpaceIsQueryableOverHTTP(t *testing.T) {
 	})
 	// The characters that could end a quoted identifier are still a 400.
 	t.Run("a quote in the name", func(t *testing.T) {
-		status, body := send(t, host, guardCall{method: "POST", path: prefix + "/dtql", body: "from: {name: customer_list}\norderBy: [{field: \"zip\\\" code\"}]\n"})
+		status, body := send(t, host, guardCall{method: "POST", path: prefix + "/tugql", body: "from: {name: customer_list}\norderBy: [{field: \"zip\\\" code\"}]\n"})
 		if status != http.StatusBadRequest {
 			t.Fatalf("status %d body %v", status, body)
 		}

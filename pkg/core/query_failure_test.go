@@ -121,7 +121,7 @@ func openScripted(t *testing.T, engine string, fake dal.DB) *Database {
 func queryRoutes(t *testing.T, db *Database) map[string]error {
 	t.Helper()
 	ctx := context.Background()
-	parsed, _, err := ParseDTQL([]byte(guardDTQL))
+	parsed, _, err := ParseTugQL([]byte(guardTugQL))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,8 +141,8 @@ func queryRoutes(t *testing.T, db *Database) map[string]error {
 	}
 	out := map[string]error{}
 	_, out["Execute"] = db.Execute(ctx, Query{Collection: "customers"})
-	_, out["ExecuteDTQLQuery"] = db.ExecuteDTQLQuery(ctx, parsed)
-	out["StreamDTQLSnapshot"] = db.StreamDTQLSnapshot(ctx, parsed, func(Record) error { return nil })
+	_, out["ExecuteTugQLQuery"] = db.ExecuteTugQLQuery(ctx, parsed)
+	out["StreamTugQLSnapshot"] = db.StreamTugQLSnapshot(ctx, parsed, func(Record) error { return nil })
 	out["Executor, records"] = drain(db.Executor().ExecuteQueryToRecordsReader(ctx, parsed))
 	_, recordsetErr := db.Executor().ExecuteQueryToRecordsetReader(ctx, parsed)
 	out["Executor, recordset"] = recordsetErr
@@ -288,7 +288,7 @@ func TestAReadThatEndsOrFailsCleanlyIsNotChangedByTheBuiltErrors(t *testing.T) {
 	if err != nil || len(records) != 2 {
 		t.Fatalf("Execute: %d records, %v", len(records), err)
 	}
-	parsed, _, err := ParseDTQL([]byte(guardDTQL))
+	parsed, _, err := ParseTugQL([]byte(guardTugQL))
 	if err != nil {
 		t.Fatal(err)
 	}

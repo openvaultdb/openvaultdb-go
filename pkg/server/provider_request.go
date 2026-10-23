@@ -70,19 +70,19 @@ func (s *Server) guardProviderRequest(w http.ResponseWriter, r *http.Request, db
 	}
 	requestProfile := s.providerProfilesByDB[db].RequestProfile
 	path := r.URL.Path
-	query, dtql := strings.HasSuffix(path, "/query"), strings.HasSuffix(path, "/dtql")
+	query, tugql := strings.HasSuffix(path, "/query"), isTugQLEndpointPath(path)
 	if strings.HasSuffix(path, "/read") || strings.Contains(path, "/records/") || strings.HasSuffix(path, "/batch") {
 		refuseProviderRequest(w, requestProfile)
 		return false
 	}
-	if !query && !dtql {
+	if !query && !tugql {
 		return true // other routes retain the existing HTTP mount capability checks
 	}
 	values, err := url.ParseQuery(r.URL.RawQuery)
 	valid := err == nil && !hasPagingHeaders(r)
 	for name, entries := range values {
 		valid = valid && r.Method == http.MethodGet && len(entries) == 1 &&
-			(name == "q" || (dtql && name == "parameters"))
+			(name == "q" || (tugql && name == "parameters"))
 	}
 	var body []byte
 	switch r.Method {
@@ -114,7 +114,7 @@ func (s *Server) guardProviderRequest(w http.ResponseWriter, r *http.Request, db
 }
 
 // YAML nodes retain duplicate keys even in JSON. Reject aliases/merge keys and
-// duplicates recursively before either JSON or DTQL binding consumes them.
+// duplicates recursively before either JSON or TugQL binding consumes them.
 func providerWireNode(data []byte) *yaml.Node {
 	d := yaml.NewDecoder(bytes.NewReader(data))
 	var node yaml.Node
@@ -182,7 +182,7 @@ func validProviderJSONQuery(body []byte) bool {
 	return true
 }
 
-func validProviderDTQLWire(doc []byte) bool {
+func validProviderTugQLWire(doc []byte) bool {
 	fields, ok := providerMapping(providerWireNode(doc), "from", "columns", "where", "limit")
 	if !ok {
 		return false
@@ -282,7 +282,7 @@ func validProviderQuery(db *core.Database, q core.Query, requestProfile string) 
 	return true
 }
 
-func validProviderDTQL(db *core.Database, q dal.StructuredQuery, profile core.Profile, requestProfile string) bool {
+func validProviderTugQL(db *core.Database, q dal.StructuredQuery, profile core.Profile, requestProfile string) bool {
 	if profile.Kind == core.ProfileRelational || q.Limit() < 1 || q.Limit() > 50 || q.Offset() != 0 || len(q.OrderBy()) != 0 {
 		return false
 	}

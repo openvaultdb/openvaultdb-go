@@ -7,7 +7,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// exactIntegerValues rewrites, in a DTQL document for a native PostgreSQL
+// exactIntegerValues rewrites, in a TugQL document for a native PostgreSQL
 // database, each integer literal of a value (value: or an item of values:) that
 // JavaScript cannot hold exactly, above 2^53-1 or below -(2^53-1), as the same
 // digits in a string. DALgo accepts only portable numbers as values, so it would
@@ -36,7 +36,7 @@ func exactIntegerValues(doc []byte) []byte {
 
 // errUnsafeIntegerValue is the refusal, on an engine that compares values as
 // JSON numbers, of an integer value outside JavaScript's exact range.
-const errUnsafeIntegerValue = "invalid or unsupported DTQL query: an integer value exceeds the exact range (2^53-1) of this engine; send it as a string"
+const errUnsafeIntegerValue = "invalid or unsupported TugQL query: an integer value exceeds the exact range (2^53-1) of this engine; send it as a string"
 
 // hasUnsafeIntegerValue reports whether the document has an integer value that
 // exactIntegerValues would rewrite. Every engine but native PostgreSQL refuses

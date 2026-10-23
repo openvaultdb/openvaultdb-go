@@ -15,7 +15,7 @@ import (
 	"github.com/openvaultdb/openvaultdb-go/pkg/core"
 )
 
-// maxRequestBodyBytes is the most bytes of a body the query endpoints read: the DTQL
+// maxRequestBodyBytes is the most bytes of a body the query endpoints read: the TugQL
 // endpoints cap a POST body at it, and so does POST /query. maxQueryRequestBytes is the
 // same bound for the q parameter of a GET.
 const (
@@ -198,7 +198,7 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 // authorization API's update), not the update list of the plain records route.
 func isProtectedUpdate(r *http.Request) bool {
 	ct := strings.Split(r.Header.Get("Content-Type"), ";")[0]
-	return r.Method == http.MethodPatch && (ct == "application/vnd.tugql.operation+json" || ct == "application/vnd.dtql.operation+json")
+	return r.Method == http.MethodPatch && (ct == "application/vnd.tugql.operation+json" || ct == legacyDTQLOperationMediaType)
 }
 
 func (s *Server) readRecord(w http.ResponseWriter, r *http.Request, db *core.Database, key *record.Key) {
@@ -288,7 +288,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 }
 
 // decodeQuery reads the wire query of a request: the q parameter of a GET, or the body
-// of a POST. A body is read whole, up to maxRequestBodyBytes, as the DTQL endpoints read
+// of a POST. A body is read whole, up to maxRequestBodyBytes, as the TugQL endpoints read
 // theirs: a body over the bound is the error they answer with (400 bad_request, "failed
 // to read body"), whatever follows the query in it.
 func decodeQuery(w http.ResponseWriter, r *http.Request, q *core.Query) error {
@@ -338,7 +338,7 @@ func (s *Server) executeQuery(w http.ResponseWriter, r *http.Request, db *core.D
 		return
 	}
 	if s.boundedImmutable(db) {
-		writeError(w, http.StatusUnprocessableEntity, "read_profile_unsupported", "immutable lookup pages require the guarded ordinary DTQL route")
+		writeError(w, http.StatusUnprocessableEntity, "read_profile_unsupported", "immutable lookup pages require the guarded ordinary TugQL route")
 		return
 	}
 	capture, rightsErr := s.singleRights(db, scope)
@@ -440,7 +440,7 @@ func (s *Server) cacheReadResponse(w http.ResponseWriter, r *http.Request, db *c
 	if s.readOnly && ttl > 0 && r.Method == http.MethodGet &&
 		isReadCacheEndpoint(r) &&
 		s.authCfg == nil && !db.HasAccessPolicies() {
-		if strings.HasSuffix(r.URL.Path, "/dtql") {
+		if isTugQLEndpointPath(r.URL.Path) {
 			w.Header().Add("Vary", "OVDB-Page-Size, OVDB-Page-Token, OVDB-Page-Close")
 		}
 		seconds := int(ttl.Seconds())

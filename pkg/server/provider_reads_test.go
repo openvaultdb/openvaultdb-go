@@ -68,8 +68,8 @@ func TestProviderObservedHTTPResponses(t *testing.T) {
 	}{
 		{"/v1/databases/ecb/query", `{"collection":"daily"}`, false},
 		{"/v1/databases/ecb/query", `{"collection":"daily","where":[{"field":"currency","op":"==","value":"ZZZ"}]}`, true},
-		{"/v1/databases/ecb/dtql", "from: {name: daily}\n", false},
-		{"/v1/databases/ecb/dtql", "from: {name: daily}\nwhere: {op: '==', left: {field: currency}, right: {value: ZZZ}}\n", true},
+		{"/v1/databases/ecb/tugql", "from: {name: daily}\n", false},
+		{"/v1/databases/ecb/tugql", "from: {name: daily}\nwhere: {op: '==', left: {field: currency}, right: {value: ZZZ}}\n", true},
 	} {
 		before := calls
 		w := retentionRequest(s.Handler(), "POST", route.path, route.query, nil)
@@ -110,7 +110,7 @@ func TestProviderObservedHTTPResponses(t *testing.T) {
 	}
 	// Missing observations refuse before output; unsupported joins do not read.
 	before := calls
-	w := retentionRequest(s.Handler(), "POST", "/v1/databases/ecb/dtql", "from: {name: daily, as: a}\njoins: [{from: {name: daily, as: b}, on: {left: a.currency, right: b.currency}}]\n", nil)
+	w := retentionRequest(s.Handler(), "POST", "/v1/databases/ecb/tugql", "from: {name: daily, as: a}\njoins: [{from: {name: daily, as: b}, on: {left: a.currency, right: b.currency}}]\n", nil)
 	if w.Code == 200 || calls != before {
 		t.Fatalf("join read: %d %s", w.Code, w.Body)
 	}

@@ -52,7 +52,7 @@ func joinSrcSQLiteMount(t *testing.T) *core.Database {
 
 func joinSrcReadAll(t *testing.T, executor dal.QueryExecutor, doc string) []string {
 	t.Helper()
-	query, _, err := core.ParseDTQL([]byte(doc))
+	query, _, err := core.ParseTugQL([]byte(doc))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestJoinSourceOnSQLiteMount(t *testing.T) {
 				}
 			}()
 			_ = db.ReadTx(ctx, func(tx dal.QueryExecutor) error {
-				query, _, err := core.ParseDTQL([]byte("from: {name: items}\norderBy: [{field: id}]\n"))
+				query, _, err := core.ParseTugQL([]byte("from: {name: items}\norderBy: [{field: id}]\n"))
 				if err != nil {
 					t.Error(err)
 					return err
@@ -159,7 +159,7 @@ func TestJoinSourceOnSQLiteMount(t *testing.T) {
 		defer cancel()
 		err := db.ReadTx(ctx, func(tx dal.QueryExecutor) error {
 			cancel()
-			query, _, err := core.ParseDTQL([]byte("from: {name: items}\n"))
+			query, _, err := core.ParseTugQL([]byte("from: {name: items}\n"))
 			if err != nil {
 				t.Error(err)
 				return err
