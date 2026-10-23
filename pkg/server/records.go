@@ -198,7 +198,7 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 // authorization API's update), not the update list of the plain records route.
 func isProtectedUpdate(r *http.Request) bool {
 	ct := strings.Split(r.Header.Get("Content-Type"), ";")[0]
-	return r.Method == http.MethodPatch && (ct == "application/vnd.tugql.operation+json" || ct == legacyDTQLOperationMediaType)
+	return r.Method == http.MethodPatch && ct == "application/vnd.tugql.operation+json"
 }
 
 func (s *Server) readRecord(w http.ResponseWriter, r *http.Request, db *core.Database, key *record.Key) {

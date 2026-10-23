@@ -394,7 +394,6 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /v1/databases/{db}/tugql", s.handleTugQL)
 	mux.HandleFunc("POST /v1/tugql", s.handleCrossDatabaseTugQL)
 	mux.HandleFunc("GET /v1/tugql", s.handleCrossDatabaseTugQL)
-	s.registerLegacyDTQLRoutes(mux)
 	mux.HandleFunc("POST /v1/databases/{db}/access/evaluate", s.handleAccessEvaluate)
 	mux.HandleFunc("POST /v1/databases/{db}/access/evidence", s.handleAccessEvidence)
 	mux.HandleFunc("GET /v1/databases/{db}/access/layers", s.handleAccessLayers)
@@ -479,7 +478,7 @@ func isReadCacheEndpoint(r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
 	}
-	if r.URL.Path == crossDatabaseTugQLPath || r.URL.Path == legacyDTQLCrossDatabasePath {
+	if r.URL.Path == crossDatabaseTugQLPath {
 		return true
 	}
 	return strings.HasPrefix(r.URL.Path, "/v1/databases/") &&
@@ -709,7 +708,7 @@ func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
 			endpointID = r.PathValue("db")
 		}
 		endpointBase := s.humanOrigin(r) + "/v1/databases/" + url.PathEscape(endpointID)
-		metadata["endpoints"] = map[string]string{"tugql": endpointBase + "/tugql", legacyDTQLEndpointKey: endpointBase + legacyDTQLDatabaseSuffix}
+		metadata["endpoints"] = map[string]string{"tugql": endpointBase + "/tugql"}
 		metadata["queryFormat"] = "tugql-yaml+json"
 	}
 	rights, err := s.databaseRights(db, append([]string{""}, collections...)...)
